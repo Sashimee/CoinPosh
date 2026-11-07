@@ -1,21 +1,19 @@
 import {
   AlbumSetIdSchema,
+  CATALOG_KEY,
+  CATALOG_KEY_MAX_LENGTH,
+  CatalogKeySchema,
+  COIN_TIER_IDS,
   CollectibleIdSchema,
+  CURRENCY_IDS,
+  DROP_SOURCE_IDS,
+  RARITY_IDS,
   UpgradeLineIdSchema,
-  VenueIdSchema,
+  VENUE_IDS,
 } from '@coinposh/shared';
 import { ODDS_SCALE, oddsTotal, weightToPercent } from './odds.ts';
 import { rarityRank } from './pity.ts';
-import {
-  CASCADE_TIER_IDS,
-  COIN_TIER_IDS,
-  CURRENCY_IDS,
-  DROP_SOURCE_IDS,
-  PACING_TARGET_IDS,
-  RARITY_IDS,
-  VENUE_IDS,
-  type EconomyConfig,
-} from './types.ts';
+import { CASCADE_TIER_IDS, PACING_TARGET_IDS, type EconomyConfig } from './types.ts';
 
 export interface ValidationIssue {
   readonly path: string;
@@ -51,17 +49,12 @@ interface KeySchema {
   safeParse(key: string): { success: boolean };
 }
 
-// TODO(P-10): check generic keys with a CatalogKeySchema once @coinposh/shared exports one.
-// Every catalog-key schema there applies the same pattern and 64-char cap today, so the
-// upgrade-line schema stands in for keys that have no branded kind of their own.
-const GENERIC_KEY: KeySchema = UpgradeLineIdSchema;
-
 function checkKeys(config: EconomyConfig, report: Report): void {
-  const check = (path: string, key: string, schema: KeySchema = GENERIC_KEY): void => {
+  const check = (path: string, key: string, schema: KeySchema = CatalogKeySchema): void => {
     if (!schema.safeParse(key).success) {
       report(
         path,
-        `key "${key}" must match ^[a-z][a-zA-Z0-9]*([-_.:][a-zA-Z0-9]+)*$ and be ≤ 64 characters`,
+        `key "${key}" must match ${CATALOG_KEY.source} and be ≤ ${CATALOG_KEY_MAX_LENGTH} characters`,
       );
     }
   };
@@ -77,7 +70,8 @@ function checkKeys(config: EconomyConfig, report: Report): void {
     check(`upgradeLines[${i}].effect.stat`, line.effect.stat);
   }
   for (const [i, t] of config.dropTables.entries()) check(`dropTables[${i}].source`, t.source);
-  for (const [i, v] of config.venues.entries()) check(`venues[${i}].id`, v.id, VenueIdSchema);
+  // Key format only: membership in VENUE_IDS is reported by checkProgression.
+  for (const [i, v] of config.venues.entries()) check(`venues[${i}].id`, v.id);
   for (const [i, set] of config.album.entries()) {
     check(`album[${i}].id`, set.id, AlbumSetIdSchema);
     for (const [j, item] of set.items.entries()) {

@@ -1,14 +1,79 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  COIN_TIER_IDS,
   COIN_TIERS,
   CURRENCIES,
+  CURRENCY_IDS,
+  CoinTierIdSchema,
+  CurrencyIdSchema,
+  DROP_SOURCE_IDS,
+  DropSourceIdSchema,
+  LOOT_SOURCES,
+  LootSourceSchema,
+  RARITIES,
+  RARITY_IDS,
+  RarityIdSchema,
   RewardPreviewSchema,
   RewardSchema,
   WalletSchema,
   nextCoinTier,
+  type CoinTier,
+  type CoinTierId,
+  type Currency,
+  type CurrencyId,
+  type DropSourceId,
+  type LootSource,
+  type Rarity,
+  type RarityId,
 } from './domain.ts';
 import { ids } from './test/fixtures.ts';
 import { roundTrip } from './test/roundTrip.ts';
+
+describe('economy id unions', () => {
+  it('names each id list after the economy config keys it validates', () => {
+    expect(CURRENCY_IDS).toBe(CURRENCIES);
+    expect(COIN_TIER_IDS).toBe(COIN_TIERS);
+    expect(RARITY_IDS).toBe(RARITIES);
+    expectTypeOf<CurrencyId>().toEqualTypeOf<Currency>();
+    expectTypeOf<CoinTierId>().toEqualTypeOf<CoinTier>();
+    expectTypeOf<RarityId>().toEqualTypeOf<Rarity>();
+    expectTypeOf<CoinTierId>().toEqualTypeOf<
+      'copper' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'heirloom'
+    >();
+  });
+
+  it('parses ids with the matching schema', () => {
+    expect(CurrencyIdSchema.parse('goldBars')).toBe('goldBars');
+    expect(CoinTierIdSchema.parse('heirloom')).toBe('heirloom');
+    expect(RarityIdSchema.parse('exquisite')).toBe('exquisite');
+    expect(CoinTierIdSchema.safeParse('bronze').success).toBe(false);
+  });
+});
+
+describe('drop sources', () => {
+  it('is one union, keyed as the economy drop tables are', () => {
+    expect(DROP_SOURCE_IDS).toEqual(['vaultCrate', 'goldSafe', 'gacha', 'scratch']);
+    for (const source of DROP_SOURCE_IDS) {
+      const { parsed, reparsed } = roundTrip(DropSourceIdSchema, source);
+      expect(parsed).toBe(source);
+      expect(reparsed).toBe(source);
+    }
+  });
+
+  it('rejects the retired short names', () => {
+    for (const retired of ['crate', 'safe', 'VaultCrate', '']) {
+      expect(DropSourceIdSchema.safeParse(retired).success).toBe(false);
+    }
+  });
+
+  it('keeps the deprecated LootSource names as aliases of the same union', () => {
+    /* eslint-disable @typescript-eslint/no-deprecated -- the aliases under test are deprecated on purpose */
+    expect(LOOT_SOURCES).toBe(DROP_SOURCE_IDS);
+    expect(LootSourceSchema).toBe(DropSourceIdSchema);
+    expectTypeOf<LootSource>().toEqualTypeOf<DropSourceId>();
+    /* eslint-enable @typescript-eslint/no-deprecated */
+  });
+});
 
 describe('nextCoinTier', () => {
   it('walks the fusion ladder from copper to heirloom', () => {

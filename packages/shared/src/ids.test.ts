@@ -1,6 +1,9 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   BoardIdSchema,
+  CATALOG_KEY,
+  CATALOG_KEY_MAX_LENGTH,
+  CatalogKeySchema,
   CharmIdSchema,
   CoinIdSchema,
   CrateIdSchema,
@@ -12,6 +15,7 @@ import {
   ScratchCardIdSchema,
   SeasonIdSchema,
   UpgradeLineIdSchema,
+  VENUE_IDS,
   VenueIdSchema,
   type CoinId,
   type CrateId,
@@ -75,19 +79,60 @@ describe('PlayerIdSchema', () => {
 });
 
 describe('catalog keys', () => {
-  it.each(['riviera', 'pusher-speed', 'goldenPeg', 'weekly:2026-w45', 'salon.paris'])(
-    'accepts %s',
-    (key) => {
-      expect(VenueIdSchema.safeParse(key).success).toBe(true);
-    },
-  );
+  it.each([
+    'riviera',
+    'pusher-speed',
+    'goldenPeg',
+    'weekly:2026-w45',
+    'salon.paris',
+    'a'.repeat(64),
+  ])('accepts %s', (key) => {
+    expect(CatalogKeySchema.safeParse(key).success).toBe(true);
+    expect(BoardIdSchema.safeParse(key).success).toBe(true);
+    expect(CATALOG_KEY.test(key)).toBe(true);
+  });
 
   it.each(['', 'Riviera', '9lives', 'pusher speed', '../admin', 'trailing-', 'a'.repeat(65)])(
     'rejects %j',
     (key) => {
+      expect(CatalogKeySchema.safeParse(key).success).toBe(false);
       expect(BoardIdSchema.safeParse(key).success).toBe(false);
     },
   );
+
+  it('caps keys at CATALOG_KEY_MAX_LENGTH even when the pattern matches', () => {
+    const tooLong = 'a'.repeat(CATALOG_KEY_MAX_LENGTH + 1);
+    expect(CATALOG_KEY.test(tooLong)).toBe(true);
+    expect(CatalogKeySchema.safeParse(tooLong).success).toBe(false);
+  });
+});
+
+describe('VenueIdSchema', () => {
+  it('accepts exactly the venues, in unlock order, and every one is a catalog key', () => {
+    expect(VENUE_IDS).toEqual([
+      'rivieraYacht',
+      'salonDeParis',
+      'tokyoPenthouse',
+      'alpineChalet',
+      'orbitalCasino',
+    ]);
+    for (const venue of VENUE_IDS) {
+      const { parsed, reparsed } = roundTrip(VenueIdSchema, venue);
+      expect(parsed).toBe(venue);
+      expect(reparsed).toBe(venue);
+      expect(CatalogKeySchema.safeParse(venue).success).toBe(true);
+    }
+  });
+
+  it.each(['riviera', 'RivieraYacht', 'salon-de-paris', 'moonBase', ''])('rejects %j', (key) => {
+    expect(VenueIdSchema.safeParse(key).success).toBe(false);
+  });
+
+  it('types a venue as the literal union', () => {
+    expectTypeOf<VenueId>().toEqualTypeOf<(typeof VENUE_IDS)[number]>();
+    expectTypeOf<'rivieraYacht'>().toExtend<VenueId>();
+    expectTypeOf<string>().not.toExtend<VenueId>();
+  });
 });
 
 describe('brands', () => {
