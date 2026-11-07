@@ -14,6 +14,14 @@ export const meta = {
 const A = args || {}
 const MAX = A.maxTasks || 8
 const FIX_ROUNDS = 2
+const GIT_NAME = 'Claude'
+const GIT_EMAIL = 'noreply@anthropic.com'
+const GIT_IDENTITY = `Before any git merge, commit or other git step that writes history, give this worktree the fixed workflow identity.
+Run these as plain commands (never git -c flags, GIT_AUTHOR_*/GIT_COMMITTER_* env vars, or --global config):
+git config extensions.worktreeConfig true
+git config --worktree user.name "${GIT_NAME}"
+git config --worktree user.email "${GIT_EMAIL}"
+Then verify both: git config user.name must print ${GIT_NAME} and git config user.email must print ${GIT_EMAIL}. If either differs, stop and report it.`
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -105,7 +113,9 @@ const implPrompt = t => `Implement roadmap task ${t.id} · ${t.title} for CoinPo
 
 ${t.brief}
 
-You are in an isolated git worktree. Work on a detached HEAD: if a branch task/${t.id} exists from an earlier attempt,
+You are in an isolated git worktree.
+${GIT_IDENTITY}
+Work on a detached HEAD: if a branch task/${t.id} exists from an earlier attempt,
 run git switch --detach task/${t.id} && git merge --no-edit ${plan.base}; otherwise git switch --detach ${plan.base}.
 Never switch to or create a task/* branch: other worktrees may hold it. Install deps if needed (pnpm i).
 Write ONLY within the owns paths: ${t.owns.join(', ')}.
@@ -124,6 +134,7 @@ sim nondeterminism, disabled/skipped tests, missing i18n, perf budget risk, or a
 Do not edit code. Return approved + concrete issues (file:line — problem — fix).`
 
 const fixPrompt = (t, issues, tip) => `Fix review findings for task ${t.id} (${t.title}) on top of commit ${tip}.
+${GIT_IDENTITY}
 In your isolated worktree: git switch --detach ${tip}. Never switch to or create a task/* branch. Stay within owns paths: ${t.owns.join(', ')}.
 Findings:
 - ${issues.join('\n- ')}
@@ -156,6 +167,7 @@ const approved = done.filter(r => r.approved)
 const rejected = done.filter(r => !r.approved)
 const integration = await agent(
   `Integrate this CoinPosh wave into ${plan.base} in the main checkout.
+${GIT_IDENTITY}
 First record every reviewed tip, since task/* refs may be stale or checked out in old worktrees:
 ${done.filter(r => r.tip).map(r => `git update-ref refs/heads/${r.branch} ${r.tip}`).join('\n') || '(none)'}
 Approved commits (merge one at a time by sha with git merge --no-ff <sha> -m "Merge <branch>: <title>", run pnpm check after each; if a merge breaks checks, revert that merge and mark it blocked):
@@ -176,6 +188,7 @@ if (A.playtest !== false && approved.length) {
   phase('Playtest')
   critique = await agent(
     `Playtest CoinPosh on ${plan.base} as a picky player who wants a premium, addictive coin pusher.
+${GIT_IDENTITY}
 If apps/web exists and builds: pnpm --filter web build && serve the dist, drive it with Playwright (chromium preinstalled; --trace off),
 portrait 390x844, take screenshots at key moments (boot, first drop, cascade, crate unbox, menus), and judge against
 docs/plan/00-VISION.md and 03-ART-AUDIO-JUICE.md: beauty, juice, readability, FTUE timings, fps.
