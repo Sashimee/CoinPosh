@@ -1,4 +1,4 @@
-import type { World } from '@dimforge/rapier3d-deterministic-compat';
+import type { RigidBody, World } from '@dimforge/rapier3d-deterministic-compat';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { COIN } from '../coin.ts';
 import { FIXED_DT, GRAVITY, TICK_RATE_HZ } from '../constants.ts';
@@ -12,6 +12,7 @@ import { COIN_MATERIAL, configureTableWorld, TABLE_SOLVER } from './tuning.ts';
 
 const FLAT = { x: 0, y: 0, z: 0, w: 1 } as const;
 const SEED = 0x7ab1e001;
+const SCALE = TABLE_SOLVER.worldScale;
 
 interface Rig {
   readonly world: World;
@@ -408,12 +409,11 @@ function penetrationDepth(a: TableCoin, b: TableCoin): number {
 }
 
 /**
- * The overlap a settled pair is held to. Coins carry a contact skin and rest apart,
- * and Rapier lets a contact sink only 0.15 mm at the table's length unit (see
- * TABLE_SOLVER), so a resting pair sits well inside this.
+ * The deepest any pair may sink into another, on any tick. The separation pass (see
+ * TABLE_SOLVER) holds every pair to 0.2 mm after a tick; this leaves room for the
+ * difference between its measure and this file's.
  */
 const OVERLAP_TOLERANCE = 0.0005;
-const DEEP_OVERLAP = 0.001;
 
 /** Every pair of coins whose bounding spheres touch, with its penetration depth. */
 function touchingPairs(coins: readonly TableCoin[]): { pair: string; depth: number }[] {
@@ -437,39 +437,15 @@ function touchingPairs(coins: readonly TableCoin[]): { pair: string; depth: numb
   return pairs;
 }
 
-/** Most consecutive ticks any one pair has stayed past a depth. */
-class RunTracker {
-  longest = 0;
-  #runs = new Map<string, number>();
-
-  update(pairs: readonly string[]): void {
-    const next = new Map<string, number>();
-    for (const pair of pairs) {
-      const run = (this.#runs.get(pair) ?? 0) + 1;
-      next.set(pair, run);
-      this.longest = Math.max(this.longest, run);
-    }
-    this.#runs = next;
-  }
-}
-
 /** Pair overlaps measured on every tick of a session, from the first drop to the end. */
 class OverlapLog {
   ticks = 0;
   deepest = 0;
   /** Fewest touching pairs on any tick from FULL_TABLE_TICKS on. */
   fewestNearOnFullTable = Number.POSITIVE_INFINITY;
-  /** Sum over ticks of the pairs past OVERLAP_TOLERANCE. */
-  pairTicksPastTolerance = 0;
-  mostPastToleranceAtOnce = 0;
-  mostDeepAtOnce = 0;
-  readonly pastTolerance = new RunTracker();
-  readonly deep = new RunTracker();
 
   record(coins: readonly TableCoin[], tick: number): void {
     const pairs = touchingPairs(coins);
-    const past = pairs.filter((p) => p.depth > OVERLAP_TOLERANCE).map((p) => p.pair);
-    const deep = pairs.filter((p) => p.depth > DEEP_OVERLAP).map((p) => p.pair);
     this.ticks += 1;
     for (const { depth } of pairs) {
       this.deepest = Math.max(this.deepest, depth);
@@ -477,11 +453,6 @@ class OverlapLog {
     if (tick >= FULL_TABLE_TICKS) {
       this.fewestNearOnFullTable = Math.min(this.fewestNearOnFullTable, pairs.length);
     }
-    this.pairTicksPastTolerance += past.length;
-    this.mostPastToleranceAtOnce = Math.max(this.mostPastToleranceAtOnce, past.length);
-    this.mostDeepAtOnce = Math.max(this.mostDeepAtOnce, deep.length);
-    this.pastTolerance.update(past);
-    this.deep.update(deep);
   }
 }
 
@@ -613,7 +584,7 @@ describe('determinism', () => {
     const { hashes } = await referenceTo(SESSION_TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"18542c554c6831a6"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"881d8f36290854e2"`);
   });
 
   it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
@@ -717,6 +688,88 @@ async function dropOntoRestingCoin(offset: number, tilt: number): Promise<Impact
   return { deepest, hash: tableHash(rig), top, bottom };
 }
 
+/** The body of the coin with this id, found in the world by its pose. */
+function bodyOf(rig: Rig, id: number): RigidBody {
+  const coin = rig.table.coins().find((c) => c.id === id);
+  if (!coin) {
+    throw new Error(`coin ${id} is not on the table`);
+  }
+  let found: RigidBody | undefined;
+  rig.world.forEachRigidBody((body) => {
+    const t = body.translation();
+    if (
+      t.x / SCALE === coin.translation.x &&
+      t.y / SCALE === coin.translation.y &&
+      t.z / SCALE === coin.translation.z
+    ) {
+      found = body;
+    }
+  });
+  if (!found) {
+    throw new Error(`no body in the world at coin ${id}'s pose`);
+  }
+  return found;
+}
+
+/** Sideways speed of a coin in m/s. */
+function speedX(rig: Rig, id: number): number {
+  return bodyOf(rig, id).linvel().x / SCALE;
+}
+
+function launch(rig: Rig, id: number, vx: number): void {
+  bodyOf(rig, id).setLinvel({ x: vx * SCALE, y: 0, z: 0 }, true);
+}
+
+interface Collision {
+  readonly deepest: number;
+  readonly hash: string;
+  /** Sideways speeds in m/s, of the left then the right coin, before every tick. */
+  readonly speeds: (readonly [number, number])[];
+  readonly left: TableCoin;
+  readonly right: TableCoin;
+}
+
+/**
+ * Lays two coins flat on the lower tier 10 cm apart, settles them, launches them
+ * sideways at `leftSpeed` and `rightSpeed` m/s and follows them for a second.
+ */
+async function collideFlat(leftSpeed: number, rightSpeed: number): Promise<Collision> {
+  const rig = await createRig();
+  const z = PLAYFIELD.fieldFrontZ - 0.04;
+  const left = rig.table.addCoin({ x: -0.05, y: COIN.halfThickness, z }, FLAT);
+  const right = rig.table.addCoin({ x: 0.05, y: COIN.halfThickness, z }, FLAT);
+  runTicks(rig, TICK_RATE_HZ / 2);
+  launch(rig, left, leftSpeed);
+  launch(rig, right, rightSpeed);
+  let deepest = 0;
+  const speeds: (readonly [number, number])[] = [];
+  for (let i = 0; i < TICK_RATE_HZ; i++) {
+    speeds.push([speedX(rig, left), speedX(rig, right)]);
+    rig.step();
+    const [a, b] = rig.table.coins();
+    if (!a || !b) {
+      throw new Error(`expected two coins on the table, found ${rig.table.coinCount}`);
+    }
+    expect(a.translation.x).toBeLessThan(b.translation.x);
+    for (const { depth } of touchingPairs([a, b])) {
+      deepest = Math.max(deepest, depth);
+    }
+  }
+  const [a, b] = rig.table.coins();
+  if (!a || !b) {
+    throw new Error(`expected two coins on the table, found ${rig.table.coinCount}`);
+  }
+  return { deepest, hash: tableHash(rig), speeds, left: a, right: b };
+}
+
+function speedsBefore(run: Collision, tick: number): readonly [number, number] {
+  const speeds = run.speeds[tick];
+  if (!speeds) {
+    throw new Error(`no speeds recorded before tick ${tick} of ${run.speeds.length}`);
+  }
+  return speeds;
+}
+
 describe('contacts', () => {
   it('measures the full depth of two flat coins planted rim into rim', () => {
     const a = flatCoinAt(0, 0);
@@ -783,24 +836,58 @@ describe('contacts', () => {
     }
   });
 
+  it('hands a coin sliding fast along the floor into a resting one its momentum, without sinking into it', async () => {
+    const run = await collideFlat(1.5, 0);
+    // The striker's first hit along its path is the floor it slides on, which is not
+    // closing; the brake has to look past it to find the coin ahead.
+    expect(run.deepest).toBeLessThan(OVERLAP_TOLERANCE);
+    const struck = run.speeds.findIndex(([, right]) => right > 0.5);
+    expect(struck).toBeGreaterThan(0);
+    const [before] = speedsBefore(run, struck - 1);
+    const [left, right] = speedsBefore(run, struck);
+    expect(before).toBeGreaterThan(1.2);
+    // Floor friction takes about 0.06 m/s a tick from each coin.
+    expect(left + right).toBeGreaterThan(0.85 * before);
+    expect(left + right).toBeLessThan(before);
+    expect(right).toBeGreaterThan(0.4 * before);
+    expect(run.right.translation.x).toBeGreaterThan(0.06);
+    expect((await collideFlat(1.5, 0)).hash).toBe(run.hash);
+  });
+
+  it('stops two fast coins sliding into each other rim to rim without either passing through', async () => {
+    const run = await collideFlat(2.5, -2.5);
+    expect(run.deepest).toBeLessThan(OVERLAP_TOLERANCE);
+    const met = run.speeds.findIndex(([left]) => left < 1);
+    expect(met).toBeGreaterThan(0);
+    const [left, right] = speedsBefore(run, met);
+    expect(Math.abs(left + right)).toBeLessThan(0.1);
+    for (const coin of [run.left, run.right]) {
+      expect(coin.translation.y).toBeLessThan(3 * COIN.halfThickness + 0.001);
+    }
+    expect((await collideFlat(2.5, -2.5)).hash).toBe(run.hash);
+  });
+
   it('keeps coins in the full, moving pile from sinking into each other, checked every tick', async () => {
     const overlaps = (await referenceTo(SESSION_TICKS)).overlaps;
-    // Measured on this session, every pair on every tick of the minute (441 to about
-    // 700 touching pairs a tick once the table is full): the deepest 2.89 mm, 770
-    // pair-ticks past 0.5 mm in all (0.2 a tick), at most 4 pairs past 0.5 mm and 3
-    // past 1 mm on any tick, and no pair past 0.5 mm for more than 16 ticks in a row
-    // or past 1 mm for more than 13. What is left is a pair squeezed rim to rim by
-    // the pusher loading the upper heap, a coin rocking across another's rim, or two
-    // coins tumbling over the lip together, each clearing within about a quarter second.
-    // Before the rounded rim and the impact sweep the deepest was 10.2 mm, with 3546
-    // pair-ticks past 0.5 mm.
+    // Measured on this session, every pair on every tick of the minute (over 400
+    // touching pairs a tick once the table is full): the deepest 0.29 mm. Before the
+    // separation pass it was 2.9 mm, with 770 pair-ticks past 0.5 mm, and before the
+    // rounded rim and the impact brake 10.2 mm.
     expect(overlaps.ticks).toBe(SESSION_TICKS);
     expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
-    expect(overlaps.deepest).toBeLessThan(0.0035);
-    expect(overlaps.pairTicksPastTolerance).toBeLessThanOrEqual(1000);
-    expect(overlaps.mostPastToleranceAtOnce).toBeLessThanOrEqual(5);
-    expect(overlaps.mostDeepAtOnce).toBeLessThanOrEqual(4);
-    expect(overlaps.pastTolerance.longest).toBeLessThanOrEqual(TICK_RATE_HZ / 3);
-    expect(overlaps.deep.longest).toBeLessThanOrEqual(TICK_RATE_HZ / 4);
+    expect(overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
   });
+
+  // Seven more seeds measured over a full minute peaked at 0.25 to 0.36 mm; these
+  // play 40 s, ten seconds of it on a full table, to fit the test timeout.
+  it.each([12345, 777, 424242, 2024])(
+    'keeps a full table from sinking into itself on seed %i too, checked every tick',
+    async (seed) => {
+      const session = new Session(await createRig({}, seed), new OverlapLog()).advanceTo(
+        FULL_TABLE_TICKS + 10 * TICK_RATE_HZ,
+      );
+      expect(session.overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
+      expect(session.overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
+    },
+  );
 });

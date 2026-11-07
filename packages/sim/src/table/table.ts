@@ -18,6 +18,7 @@ import {
   TABLE_INNER_HALF_WIDTH,
 } from './layout.ts';
 import { DEFAULT_PUSHER_MOTION, PusherClock, type PusherMotion } from './pusher.ts';
+import { CoinSeparator, type Obstacle } from './separation.ts';
 import { COIN_MATERIAL, TABLE_MATERIAL, TABLE_SOLVER } from './tuning.ts';
 
 /** Mirrors FallEdge in packages/shared, which packages/sim cannot import yet. */
@@ -71,6 +72,7 @@ export class PusherTable {
   readonly #pusher: RigidBody;
   readonly #clock: PusherClock;
   readonly #coinShape: Shape;
+  readonly #separator: CoinSeparator;
   /** Insertion-ordered by ascending coin id, which fixes the iteration order. */
   readonly #coins = new Map<number, RigidBody>();
   #nextCoinId = 0;
@@ -84,8 +86,20 @@ export class PusherTable {
       (COIN.radius - COIN_MATERIAL.rimRadius) * SCALE,
       COIN_MATERIAL.rimRadius * SCALE,
     );
-    this.#buildCabinet();
-    this.#pusher = this.#buildPusher();
+    const obstacles: Obstacle[] = [];
+    this.#buildCabinet(obstacles);
+    this.#pusher = this.#buildPusher(obstacles);
+    this.#separator = new CoinSeparator(
+      rapier,
+      this.#coinShape,
+      {
+        coreHalfHeight: (COIN.halfThickness - COIN_MATERIAL.rimRadius) * SCALE,
+        coreRadius: (COIN.radius - COIN_MATERIAL.rimRadius) * SCALE,
+        rim: COIN_MATERIAL.rimRadius * SCALE,
+      },
+      obstacles,
+      { slop: TABLE_SOLVER.separationSlop * SCALE, passes: TABLE_SOLVER.separationPasses },
+    );
   }
 
   get coinCount(): number {
@@ -178,39 +192,64 @@ export class PusherTable {
       this.#absorbImpacts();
       this.#world.step();
     }
+    this.#separator.separate(Array.from(this.#coins.values()));
     return this.#collectFalls(tick);
   }
 
   /**
-   * Lands every fast coin that would strike something during the coming substep:
-   * the coin is moved forward to the point of contact and loses its closing speed
-   * along the contact normal, as if the struck body were immovable. See
-   * COIN_MATERIAL.impactSpeed for why the solver is not left to do this.
+   * Brakes every fast coin that would strike something during the coming substep,
+   * like a speculative contact: the closing speed along the contact normal is cut so
+   * the coin only just reaches the contact by the end of the substep, and the
+   * momentum it loses goes to the struck coin as an equal and opposite impulse (a
+   * slab or the pusher absorbs it). Nothing is moved, so every cast sees the poses
+   * the solver will start from. See COIN_MATERIAL.impactSpeed for why the solver is
+   * not left to do this.
    */
   #absorbImpacts(): void {
+    let fastest = 0;
+    for (const body of this.#coins.values()) {
+      const v = body.linvel();
+      fastest = Math.max(fastest, v.x * v.x + v.y * v.y + v.z * v.z);
+    }
+    if (fastest <= IMPACT_SPEED_SQ) {
+      return;
+    }
+    fastest = Math.sqrt(fastest);
     for (const body of this.#coins.values()) {
       if (body.isSleeping()) {
         continue;
       }
-      for (let pass = 0; pass < IMPACT_PASSES && this.#absorbImpact(body); pass++) {
-        // Each pass lands the coin on the nearest thing in its path; a glancing hit
-        // leaves it sliding, so look again along the new velocity.
+      const checked: number[] = [];
+      for (
+        let pass = 0;
+        pass < IMPACT_PASSES && this.#absorbImpact(body, fastest, checked);
+        pass++
+      ) {
+        // A braked coin keeps its sliding speed, so look again along the new velocity.
       }
     }
   }
 
-  /** Returns whether the coin hit something and had its motion changed. */
-  #absorbImpact(body: RigidBody): boolean {
+  /**
+   * Casts the coin along its velocity past every collider in `checked`, brakes it
+   * against the first thing it would hit and adds that collider to `checked`.
+   * Returns whether there was anything to cast against. The cast reaches as far as
+   * the coin and the fastest coin on the table could close in a substep, since what
+   * it strikes may be coming the other way.
+   */
+  #absorbImpact(body: RigidBody, fastest: number, checked: number[]): boolean {
     const v = body.linvel();
-    if (v.x * v.x + v.y * v.y + v.z * v.z <= IMPACT_SPEED_SQ) {
+    const speedSq = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (speedSq <= IMPACT_SPEED_SQ) {
       return false;
     }
     const dt = this.#world.timestep;
-    const t = body.translation();
+    const reach = (1 + fastest / Math.sqrt(speedSq)) * dt;
+    const cast = { x: v.x * reach, y: v.y * reach, z: v.z * reach };
     const hit = this.#world.castShape(
-      t,
+      body.translation(),
       body.rotation(),
-      { x: v.x * dt, y: v.y * dt, z: v.z * dt },
+      cast,
       this.#coinShape,
       IMPACT_MARGIN,
       1,
@@ -219,23 +258,36 @@ export class PusherTable {
       undefined,
       undefined,
       body,
+      (collider) => !checked.includes(collider.handle),
     );
-    if (!hit || hit.time_of_impact >= 1) {
+    if (!hit) {
       return false;
     }
+    checked.push(hit.collider.handle);
     const n = hit.normal1;
     const other = hit.collider.parent();
     const u = other && !other.isFixed() ? other.linvel() : ZERO;
     const closing = (v.x - u.x) * n.x + (v.y - u.y) * n.y + (v.z - u.z) * n.z;
-    if (closing >= 0) {
-      return false;
+    const gap = Math.max(0, -hit.time_of_impact * (cast.x * n.x + cast.y * n.y + cast.z * n.z));
+    const removed = closing + gap / dt;
+    if (removed >= 0) {
+      return true;
     }
-    const ahead = hit.time_of_impact * dt;
-    body.setTranslation({ x: t.x + v.x * ahead, y: t.y + v.y * ahead, z: t.z + v.z * ahead }, true);
+    const mass = body.mass();
+    const otherMass = other?.isDynamic() ? other.mass() : 0;
+    const share = otherMass > 0 ? otherMass / (mass + otherMass) : 1;
     body.setLinvel(
-      { x: v.x - closing * n.x, y: v.y - closing * n.y, z: v.z - closing * n.z },
+      {
+        x: v.x - removed * share * n.x,
+        y: v.y - removed * share * n.y,
+        z: v.z - removed * share * n.z,
+      },
       true,
     );
+    if (other && otherMass > 0) {
+      const impulse = removed * mass * share;
+      other.applyImpulse({ x: impulse * n.x, y: impulse * n.y, z: impulse * n.z }, true);
+    }
     return true;
   }
 
@@ -277,7 +329,7 @@ export class PusherTable {
     return h;
   }
 
-  #buildCabinet(): void {
+  #buildCabinet(obstacles: Obstacle[]): void {
     const { RigidBodyDesc, ColliderDesc, CoefficientCombineRule } = this.#rapier;
     const { fieldHalfWidth, fieldFrontZ, floorThickness, wallThickness, wallHeight } = PLAYFIELD;
     const cabinet = this.#world.createRigidBody(RigidBodyDesc.fixed());
@@ -299,6 +351,9 @@ export class PusherTable {
       [x, y, z]: readonly [number, number, number],
       friction: number,
     ): void => {
+      const shape = new this.#rapier.Cuboid(hx * SCALE, hy * SCALE, hz * SCALE);
+      const centre = { x: x * SCALE, y: y * SCALE, z: z * SCALE };
+      obstacles.push({ shape, half: shape.halfExtents, centre: () => centre });
       this.#world.createCollider(
         ColliderDesc.cuboid(hx * SCALE, hy * SCALE, hz * SCALE)
           .setTranslation(x * SCALE, y * SCALE, z * SCALE)
@@ -332,7 +387,7 @@ export class PusherTable {
     );
   }
 
-  #buildPusher(): RigidBody {
+  #buildPusher(obstacles: Obstacle[]): RigidBody {
     const { RigidBodyDesc, ColliderDesc, CoefficientCombineRule } = this.#rapier;
     const centre = this.#pusherCentre(this.#clock.offset);
     const body = this.#world.createRigidBody(
@@ -349,6 +404,12 @@ export class PusherTable {
         .setRestitutionCombineRule(CoefficientCombineRule.Min),
       body,
     );
+    const shape = new this.#rapier.Cuboid(
+      (PLAYFIELD.fieldHalfWidth - PUSHER.sideClearance) * SCALE,
+      (PUSHER.height / 2) * SCALE,
+      (PUSHER.depth / 2) * SCALE,
+    );
+    obstacles.push({ shape, half: shape.halfExtents, centre: () => body.translation() });
     return body;
   }
 
