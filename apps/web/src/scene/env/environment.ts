@@ -21,12 +21,12 @@ export interface EnvironmentOptions {
   readonly hdri: HdriAsset;
   /** Yaw of the venue's sun; the HDRI is rotated so its glow sits behind the venue's sun. */
   readonly sunYaw: number;
-  readonly intensity: number;
 }
 
 /**
  * Lights the scene with an HDRI used only for image-based lighting and reflections; the
- * visible backdrop is procedural. WebGPURenderer pre-filters equirect environments into a
+ * visible backdrop is procedural. Its strength, `scene.environmentIntensity`, belongs to the
+ * render look (`applyRenderLook`), so this only installs and orients the map. WebGPURenderer pre-filters equirect environments into a
  * PMREM on first use, so no PMREMGenerator is needed here.
  */
 export async function applyHdriEnvironment(
@@ -42,7 +42,6 @@ export async function applyHdriEnvironment(
   texture.mapping = EquirectangularReflectionMapping;
   texture.name = 'venue-hdri';
   scene.environment = texture;
-  scene.environmentIntensity = options.intensity;
   scene.environmentRotation.set(0, options.hdri.sunYaw - options.sunYaw, 0);
   return texture;
 }

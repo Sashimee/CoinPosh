@@ -1,19 +1,11 @@
-import {
-  AgXToneMapping,
-  Group,
-  PCFShadowMap,
-  type Scene,
-  type ShadowMapType,
-  type Texture,
-  type ToneMapping,
-  type Vector3,
-} from 'three/webgpu';
+import { Group, type Scene, type Texture, type Vector3 } from 'three/webgpu';
 import {
   applyHdriEnvironment,
   SUNSET_HDRI,
   type EnvironmentOptions,
 } from '../../env/environment.ts';
 import { createNoiseTexture } from '../../env/noise-texture.ts';
+import { applyRenderLook, type LookRenderer, type RenderLook } from '../../post/look.ts';
 import { createOcean } from '../../env/ocean.ts';
 import { createSunsetSky } from '../../env/sky.ts';
 import { CALM_SEA, DeckSway, type SwayPose } from '../../env/sway.ts';
@@ -35,22 +27,30 @@ export type { CameraPreset } from './layout.ts';
 export type { RivieraQuality } from './materials.ts';
 
 const SUN_DIRECTION = RIVIERA_SUN_DIRECTION;
-const EXPOSURE = 0.85;
-const ENVIRONMENT_INTENSITY = 0.32;
 const REDUCED_MOTION_WAVE_RATE = 0.3;
 const MAX_FRAME_DELTA = 0.25;
 
-/** The renderer state the venue configures; a WebGPURenderer satisfies it. */
-export interface VenueRenderer {
-  toneMapping: ToneMapping;
-  toneMappingExposure: number;
-  readonly shadowMap: { enabled: boolean; type: ShadowMapType | null };
-}
+/**
+ * The Riviera grade from the art bible: AgX at 0.85 and a restrained 0.32 IBL, with the
+ * key light's shadow map. Hand it to the post pipeline (`createAdaptiveRendering` /
+ * `post.setLook`), which is the only writer of these renderer settings.
+ */
+export const RIVIERA_RENDER_LOOK: RenderLook = {
+  exposure: 0.85,
+  environmentIntensity: 0.32,
+  shadows: true,
+};
+
+/** The sunset rim light; the post vignette leans toward it so the frame edges glow warm. */
+export const RIVIERA_VIGNETTE_TINT = rivieraTones.rimWarm;
 
 export type EnvironmentLoader = (scene: Scene, options: EnvironmentOptions) => Promise<Texture>;
 
 export interface RivieraVenueOptions {
-  /** Shadow-casting key light. Quality tiers (T-1.06) may turn it off on low-end devices. */
+  /**
+   * Shadow-casting key light; must match the `shadows` of the look the renderer was given.
+   * Defaults to `RIVIERA_RENDER_LOOK.shadows`.
+   */
   readonly shadows?: boolean;
   /**
    * `low` drops the deck's clearcoat, the sea's near-hull ripples and the sky's cloud band
@@ -76,6 +76,8 @@ export interface RivieraVenue {
   readonly sway: DeckSway;
   readonly sunDirection: Vector3;
   readonly quality: RivieraQuality;
+  /** The grade this venue was built for; its `shadows` matches the venue's shadow casters. */
+  readonly look: RenderLook;
   /** Seconds of sea animation so far; advances slower than real time under reduced motion. */
   readonly waveTime: number;
   cameraPreset(aspect: number): CameraPreset;
@@ -93,24 +95,26 @@ function prefersReducedMotion(): boolean {
 
 /**
  * Builds the Riviera Yacht venue into `scene`: the lacquered table, the teak deck and stern
- * rail, the procedural sunset sky and sea, the HDRI environment and the venue's lights. It
- * also sets the renderer's AgX tonemapping and exposure for this venue. Resolves once the
- * HDRI is loaded so the first frame is fully lit.
+ * rail, the procedural sunset sky and sea, the HDRI environment and the venue's lights.
+ * Resolves once the HDRI is loaded so the first frame is fully lit.
+ *
+ * The game passes `null` for `renderer`: its post pipeline owns tonemapping, exposure, the
+ * shadow map and the IBL intensity, fed with `venue.look`. A harness that renders without
+ * the post pipeline passes its renderer and the venue applies `look` through
+ * `applyRenderLook`.
  */
 export async function createRivieraVenue(
   scene: Scene,
-  renderer: VenueRenderer,
+  renderer: LookRenderer | null,
   options: RivieraVenueOptions = {},
 ): Promise<RivieraVenue> {
-  const shadows = options.shadows ?? true;
+  const shadows = options.shadows ?? RIVIERA_RENDER_LOOK.shadows;
+  const look: RenderLook = { ...RIVIERA_RENDER_LOOK, shadows };
   const quality = options.quality ?? 'high';
   const loadEnvironment = options.loadEnvironment ?? applyHdriEnvironment;
   let reducedMotion = options.reducedMotion ?? prefersReducedMotion();
 
-  renderer.toneMapping = AgXToneMapping;
-  renderer.toneMappingExposure = EXPOSURE;
-  renderer.shadowMap.enabled = shadows;
-  renderer.shadowMap.type = PCFShadowMap;
+  if (renderer) applyRenderLook(renderer, scene, look);
 
   const root = new Group();
   root.name = 'venue-riviera';
@@ -165,7 +169,6 @@ export async function createRivieraVenue(
     environment = await loadEnvironment(scene, {
       hdri: SUNSET_HDRI,
       sunYaw: Math.atan2(SUN_DIRECTION.z, SUN_DIRECTION.x),
-      intensity: ENVIRONMENT_INTENSITY,
     });
   } catch (error) {
     disposeParts();
@@ -184,6 +187,7 @@ export async function createRivieraVenue(
     sway,
     sunDirection: SUN_DIRECTION.clone(),
     quality,
+    look,
     get waveTime() {
       return ocean.time.value;
     },
