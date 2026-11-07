@@ -43,7 +43,7 @@ const renderer = new WebGPURenderer({
 renderer.toneMapping = params.get('tonemap') === 'aces' ? ACESFilmicToneMapping : AgXToneMapping;
 renderer.toneMappingExposure = Number(params.get('exposure') ?? 1.05);
 renderer.shadowMap.enabled = true;
-renderer.setPixelRatio(1);
+renderer.setPixelRatio(Number(params.get('dpr') ?? 1));
 renderer.setSize(window.innerWidth, window.innerHeight, false);
 await renderer.init();
 
@@ -83,6 +83,7 @@ const camera = new PerspectiveCamera(30, window.innerWidth / window.innerHeight,
 const coins = new CoinField({ capacity: 600, radius: view === 'pile' ? 0.42 : 1 });
 coins.bake(renderer, Number(params.get('res') ?? 1024));
 coins.setReducedMotion(params.has('still'));
+coins.castShadowsFrom(key);
 scene.add(coins.object);
 
 const q = new Quaternion();
@@ -179,7 +180,7 @@ await renderer.setAnimationLoop(() => {
   else if (view === 'edge') placeEdge(time);
   else if (view === 'pile') placePile();
   else placeHero(time);
-  const stats = coins.update(camera, renderer.domElement.height);
+  const stats = coins.update(camera, canvas.clientHeight);
   renderer.render(scene, camera);
   frames += 1;
   window.__lookdev = {

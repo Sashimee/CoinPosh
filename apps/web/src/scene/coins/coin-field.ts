@@ -6,7 +6,9 @@ import {
   InstancedBufferAttribute,
   InstancedMesh,
   Matrix4,
+  MeshBasicNodeMaterial,
   Vector3,
+  type LightShadow,
   type PerspectiveCamera,
   type WebGPURenderer,
 } from 'three/webgpu';
@@ -18,6 +20,7 @@ import {
   pixelsPerUnit,
   type LodOutput,
   type LodSettings,
+  type LodView,
 } from './lod.ts';
 import { createCoinMaterial, type CoinMaterial } from './materials.ts';
 import { COIN_LOOKS, COIN_TIER_IDS, type CoinTierId } from './tiers.ts';
@@ -26,9 +29,17 @@ export interface CoinFieldOptions {
   readonly capacity: number | Readonly<Record<CoinTierId, number>>;
   readonly radius?: number;
   readonly lod?: LodSettings;
+  /** Adds the far-LOD shadow caster; it only shows up once a light opts in via `castShadowsFrom`. */
   readonly castShadow?: boolean;
   readonly receiveShadow?: boolean;
 }
+
+/**
+ * The layer the coin shadow caster lives on. The main camera never enables it, so the caster
+ * costs nothing in the colour pass; a light's shadow camera enables it through
+ * `CoinField.castShadowsFrom`.
+ */
+export const COIN_SHADOW_LAYER = 30;
 
 export interface CoinFieldStats {
   readonly near: number;
@@ -43,6 +54,7 @@ interface TierBatch {
   readonly positions: Float32Array;
   readonly quaternions: Float32Array;
   readonly lodState: Uint8Array;
+  readonly seeds: Float32Array;
   readonly lists: LodOutput;
   readonly near: InstancedMesh;
   readonly far: InstancedMesh;
@@ -52,6 +64,8 @@ interface TierBatch {
 }
 
 const SEED_STRIDE = 7919;
+// Keeps seeds exact in the float32 instance attribute however large the caller's ids get.
+const SEED_RANGE = 1 << 20;
 const projection = new Matrix4();
 const worldToLocal = new Matrix4();
 const cameraLocal = new Vector3();
@@ -113,8 +127,15 @@ function writeInstance(
   target[o + 15] = 1;
 }
 
+type MutableLodView = { -readonly [K in keyof LodView]: LodView[K] };
+type MutableStats = { -readonly [K in keyof CoinFieldStats]: CoinFieldStats[K] };
+
 /**
- * Every coin on the table, drawn as two instanced meshes per tier (near and far LOD).
+ * Every coin on the table, drawn as two instanced meshes per tier (near and far LOD), so the
+ * colour pass costs at most two draw calls per tier rather than the single call per tier in
+ * 01-ARCHITECTURE; the second call is what the LOD buys. Shadows come from one far-LOD caster
+ * holding every coin of every tier, so the shadow pass is a single draw call that is
+ * independent of main-camera culling.
  * Transforms arrive per tier as flat arrays indexed by a stable slot, so the sim worker can
  * hand over its typed arrays directly; `update` then culls, picks a LOD per coin and uploads.
  */
@@ -125,7 +146,16 @@ export class CoinField {
   private readonly lod: LodSettings;
   private readonly motion = uniform(1);
   private readonly frustum = new Frustum();
-  private lastStats: CoinFieldStats = { near: 0, far: 0, culled: 0, drawCalls: 0 };
+  private readonly shadowCaster: InstancedMesh | null;
+  private shadowsEnabled = false;
+  private readonly view: MutableLodView = {
+    cameraX: 0,
+    cameraY: 0,
+    cameraZ: 0,
+    pixelsPerUnitAtUnitDistance: 0,
+    frustum: null,
+  };
+  private readonly lastStats: MutableStats = { near: 0, far: 0, culled: 0, drawCalls: 0 };
 
   constructor(options: CoinFieldOptions) {
     this.radius = options.radius ?? 1;
@@ -137,6 +167,7 @@ export class CoinField {
     const nearBase = createCoinGeometry(NEAR_COIN_GEOMETRY);
     const farBase = createCoinGeometry(FAR_COIN_GEOMETRY);
     const batches = new Map<CoinTierId, TierBatch>();
+    let totalSlots = 0;
 
     for (const tier of COIN_TIER_IDS) {
       const capacity =
@@ -158,7 +189,7 @@ export class CoinField {
         mesh.count = 0;
         mesh.visible = false;
         mesh.frustumCulled = false;
-        mesh.castShadow = options.castShadow ?? true;
+        mesh.castShadow = false;
         mesh.receiveShadow = options.receiveShadow ?? true;
         this.object.add(mesh);
       }
@@ -168,6 +199,7 @@ export class CoinField {
         positions: new Float32Array(slots * 3),
         quaternions: new Float32Array(slots * 4).map((_, i) => (i % 4 === 3 ? 1 : 0)),
         lodState: new Uint8Array(slots),
+        seeds: new Float32Array(slots).map((_, i) => i),
         lists: {
           near: new Uint32Array(slots),
           far: new Uint32Array(slots),
@@ -180,6 +212,21 @@ export class CoinField {
         count: 0,
         bake: null,
       });
+      totalSlots += slots;
+    }
+
+    this.shadowCaster = null;
+    if (options.castShadow ?? true) {
+      const caster = new InstancedMesh(farBase.clone(), new MeshBasicNodeMaterial(), totalSlots);
+      caster.name = 'coins-shadow-caster';
+      caster.layers.set(COIN_SHADOW_LAYER);
+      caster.count = 0;
+      caster.visible = false;
+      caster.frustumCulled = false;
+      caster.castShadow = true;
+      caster.receiveShadow = false;
+      this.object.add(caster);
+      this.shadowCaster = caster;
     }
     nearBase.dispose();
     farBase.dispose();
@@ -230,12 +277,18 @@ export class CoinField {
     batch.quaternions[index * 4 + 3] = qw;
   }
 
-  /** Copies `count` coins from xyz positions and xyzw quaternions, replacing the tier's set. */
+  /**
+   * Copies `count` coins from xyz positions and xyzw quaternions, replacing the tier's set.
+   * Each coin's tint variation is seeded from `ids[i]` when given, otherwise from its slot
+   * index; without ids the caller must keep a coin in the same slot for its whole life, or it
+   * changes colour whenever the slots are compacted or reordered.
+   */
   setTransforms(
     tier: CoinTierId,
     positions: ArrayLike<number>,
     quaternions: ArrayLike<number>,
     count: number,
+    ids?: ArrayLike<number>,
   ): void {
     const batch = this.batch(tier);
     if (positions.length < count * 3 || quaternions.length < count * 4) {
@@ -243,9 +296,32 @@ export class CoinField {
         `CoinField.setTransforms(${tier}): ${count} coins need ${count * 3} position and ${count * 4} quaternion values`,
       );
     }
+    if (ids && ids.length < count) {
+      throw new Error(`CoinField.setTransforms(${tier}): ${count} coins need ${count} ids`);
+    }
     this.setCount(tier, count);
     for (let i = 0; i < count * 3; i += 1) batch.positions[i] = positions[i] ?? 0;
     for (let i = 0; i < count * 4; i += 1) batch.quaternions[i] = quaternions[i] ?? 0;
+    for (let i = 0; i < count; i += 1) {
+      const id = ids ? (ids[i] ?? i) : i;
+      if (!Number.isFinite(id)) {
+        throw new Error(`CoinField.setTransforms(${tier}): id ${i} is ${id}, expected a number`);
+      }
+      batch.seeds[i] = ((Math.trunc(id) % SEED_RANGE) + SEED_RANGE) % SEED_RANGE;
+    }
+  }
+
+  /**
+   * Lets `light` cast coin shadows by enabling COIN_SHADOW_LAYER on its shadow camera. The
+   * shadow camera then keeps its own layer mask instead of copying the main camera's, so any
+   * other layers that should cast must be enabled on it too.
+   */
+  castShadowsFrom(light: { readonly shadow: LightShadow }): void {
+    if (!this.shadowCaster) {
+      throw new Error('CoinField.castShadowsFrom: this field was built with castShadow: false');
+    }
+    light.shadow.camera.layers.enable(COIN_SHADOW_LAYER);
+    this.shadowsEnabled = true;
   }
 
   /** Bakes every tier's embossed face. Call once after `renderer.init()`. */
@@ -261,7 +337,8 @@ export class CoinField {
     this.motion.value = reduced ? 0 : 1;
   }
 
-  update(camera: PerspectiveCamera, viewportHeightPx: number): CoinFieldStats {
+  /** `viewportHeightCssPx` is the canvas height in CSS pixels, not device pixels. */
+  update(camera: PerspectiveCamera, viewportHeightCssPx: number): CoinFieldStats {
     this.object.updateWorldMatrix(true, false);
     camera.updateMatrixWorld();
     projection
@@ -271,13 +348,12 @@ export class CoinField {
     worldToLocal.copy(this.object.matrixWorld).invert();
     cameraLocal.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(worldToLocal);
 
-    const view = {
-      cameraX: cameraLocal.x,
-      cameraY: cameraLocal.y,
-      cameraZ: cameraLocal.z,
-      pixelsPerUnitAtUnitDistance: pixelsPerUnit(camera.fov / camera.zoom, viewportHeightPx),
-      frustum: this.frustum,
-    };
+    const view = this.view;
+    view.cameraX = cameraLocal.x;
+    view.cameraY = cameraLocal.y;
+    view.cameraZ = cameraLocal.z;
+    view.pixelsPerUnitAtUnitDistance = pixelsPerUnit(camera.fov / camera.zoom, viewportHeightCssPx);
+    view.frustum = this.frustum;
 
     let near = 0;
     let far = 0;
@@ -302,8 +378,13 @@ export class CoinField {
       far += batch.lists.farCount;
       drawCalls += (batch.lists.nearCount > 0 ? 1 : 0) + (batch.lists.farCount > 0 ? 1 : 0);
     }
-    this.lastStats = { near, far, culled: total - near - far, drawCalls };
-    return this.lastStats;
+    if (this.shadowCaster && this.shadowsEnabled) this.uploadShadowCaster(this.shadowCaster);
+    const stats = this.lastStats;
+    stats.near = near;
+    stats.far = far;
+    stats.culled = total - near - far;
+    stats.drawCalls = drawCalls;
+    return stats;
   }
 
   get stats(): CoinFieldStats {
@@ -314,7 +395,16 @@ export class CoinField {
     return this.batch(tier)[level];
   }
 
+  get shadowCasterMesh(): InstancedMesh | null {
+    return this.shadowCaster;
+  }
+
   dispose(): void {
+    if (this.shadowCaster) {
+      this.shadowCaster.geometry.dispose();
+      (this.shadowCaster.material as MeshBasicNodeMaterial).dispose();
+      this.shadowCaster.dispose();
+    }
     for (const batch of this.batches.values()) {
       batch.bake?.dispose();
       batch.material.material.dispose();
@@ -337,7 +427,7 @@ export class CoinField {
     for (let k = 0; k < count; k += 1) {
       const index = slots[k] ?? 0;
       writeInstance(matrices, k, batch.positions, batch.quaternions, index, this.radius);
-      seedArray[k] = seedOffset + index;
+      seedArray[k] = seedOffset + (batch.seeds[index] ?? index);
     }
     mesh.instanceMatrix.clearUpdateRanges();
     mesh.instanceMatrix.addUpdateRange(0, count * 16);
@@ -345,6 +435,23 @@ export class CoinField {
     seeds.clearUpdateRanges();
     seeds.addUpdateRange(0, count);
     seeds.needsUpdate = true;
+  }
+
+  private uploadShadowCaster(caster: InstancedMesh): void {
+    const matrices = caster.instanceMatrix.array as Float32Array;
+    let written = 0;
+    for (const batch of this.batches.values()) {
+      for (let i = 0; i < batch.count; i += 1) {
+        writeInstance(matrices, written, batch.positions, batch.quaternions, i, this.radius);
+        written += 1;
+      }
+    }
+    caster.count = written;
+    caster.visible = written > 0;
+    if (written === 0) return;
+    caster.instanceMatrix.clearUpdateRanges();
+    caster.instanceMatrix.addUpdateRange(0, written * 16);
+    caster.instanceMatrix.needsUpdate = true;
   }
 
   private batch(tier: CoinTierId): TierBatch {

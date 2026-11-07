@@ -5,6 +5,7 @@ import {
   createCoinGeometry,
   FAR_COIN_GEOMETRY,
   NEAR_COIN_GEOMETRY,
+  NEAR_COIN_TRIANGLE_BUDGET,
   type CoinGeometryOptions,
 } from './geometry.ts';
 
@@ -132,9 +133,15 @@ describe('reeded edge', () => {
     expect(Math.max(...far) - Math.min(...far)).toBeLessThan(1e-6);
   });
 
+  it('keeps the near mesh within its triangle budget', () => {
+    const triangles = (createCoinGeometry(NEAR_COIN_GEOMETRY).getIndex()?.count ?? 0) / 3;
+    expect(triangles).toBeGreaterThan(0);
+    expect(triangles).toBeLessThanOrEqual(NEAR_COIN_TRIANGLE_BUDGET);
+  });
+
   it('keeps the far mesh much lighter than the near mesh', () => {
     const near = createCoinGeometry(NEAR_COIN_GEOMETRY).getIndex()?.count ?? 0;
     const far = createCoinGeometry(FAR_COIN_GEOMETRY).getIndex()?.count ?? 0;
-    expect(far * 8).toBeLessThan(near);
+    expect(far * 4).toBeLessThan(near);
   });
 });

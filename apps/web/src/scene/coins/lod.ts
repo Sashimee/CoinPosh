@@ -8,7 +8,10 @@ export interface LodSettings {
   readonly hysteresis: number;
 }
 
-export const DEFAULT_LOD_SETTINGS: LodSettings = { nearPixelRadius: 26, hysteresis: 0.15 };
+// Measured in CSS pixels so the switch point does not move with devicePixelRatio. At 64 px the
+// 90 reeds are still about 4.5 px apart; below that they blur together and the near mesh's
+// extra triangles stop paying for themselves.
+export const DEFAULT_LOD_SETTINGS: LodSettings = { nearPixelRadius: 64, hysteresis: 0.15 };
 
 export interface LodView {
   readonly cameraX: number;
@@ -32,8 +35,8 @@ export interface LodOutput {
   farCount: number;
 }
 
-export function pixelsPerUnit(fovDegrees: number, viewportHeightPx: number): number {
-  return viewportHeightPx / (2 * Math.tan((fovDegrees * Math.PI) / 360));
+export function pixelsPerUnit(fovDegrees: number, viewportHeightCssPx: number): number {
+  return viewportHeightCssPx / (2 * Math.tan((fovDegrees * Math.PI) / 360));
 }
 
 // Coins switch on projected size rather than raw distance so the threshold holds across

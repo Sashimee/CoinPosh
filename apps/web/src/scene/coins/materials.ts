@@ -16,6 +16,7 @@ import {
   mix,
   normalize,
   normalView,
+  normalViewGeometry,
   positionView,
   positionViewDirection,
   pow,
@@ -28,6 +29,7 @@ import {
   uv,
   vec2,
   vec3,
+  vertexStage,
 } from 'three/tsl';
 import {
   Color,
@@ -38,6 +40,7 @@ import {
   type Node,
   type Texture,
 } from 'three/webgpu';
+import { NEAR_COIN_GEOMETRY } from './geometry.ts';
 import type { CoinLook } from './tiers.ts';
 
 type F = Node<'float'>;
@@ -48,6 +51,10 @@ export interface CoinMaterial {
   readonly material: MeshPhysicalNodeMaterial;
   setEmboss(texture: Texture): void;
 }
+
+// Matches the analytic slope of the reed cut in geometry.ts (depth * reeds / 2), so the
+// per-pixel reeds line up with the notched silhouette of the near mesh.
+const REED_SLOPE = (NEAR_COIN_GEOMETRY.reedDepth * NEAR_COIN_GEOMETRY.reeds) / 2;
 
 let flatEmboss: DataTexture | null = null;
 
@@ -86,7 +93,9 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
   const st = uv();
   const part = attribute('coinPart', 'float');
   const face = float(1).sub(part);
-  const seed = hash(attribute('coinSeed', 'float'));
+  // Hashed per vertex: the seed is a large integer, and hashing the interpolated value per
+  // fragment turns the tiny interpolation error into per-pixel noise in every seeded term.
+  const seed = vertexStage(hash(attribute('coinSeed', 'float')));
 
   const p = st.mul(2).sub(1);
   const r = length(p);
@@ -96,15 +105,29 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
   const lip = smoothstep(0.855, 0.88, r).mul(face);
 
   let slope: V2 = embossNode.xy.mul(2).sub(1).mul(face);
+  const reedCoord = st.x.mul(NEAR_COIN_GEOMETRY.reeds);
+  const reedResolved = float(1).sub(smoothstep(0.25, 0.5, fwidth(reedCoord)));
+  slope = slope.add(
+    vec2(
+      sin(reedCoord.mul(Math.PI * 2))
+        .mul(REED_SLOPE)
+        .mul(reedResolved)
+        .mul(part),
+      0,
+    ),
+  );
   if (look.sparkle > 0) {
-    const scale = mix(vec2(150, 150), vec2(420, 14), part);
+    const scale = mix(vec2(150, 150), vec2(120, 14), part);
     const cells = st.mul(scale);
     const cell = floor(cells);
     const id = cell.x.add(cell.y.mul(4099));
     const pick = hash(id);
     const spin = hash(id.add(7919)).mul(Math.PI * 2);
     const within = smoothstep(0.46, 0.18, length(fract(cells).sub(0.5)));
-    const resolved = clamp(float(1.6).sub(fwidth(cells.x).mul(1.8)), 0, 1);
+    // A flake needs a few pixels to read as a glint; any smaller and it is sub-pixel noise
+    // that the thin-film layer turns into crawling colour speckle.
+    const footprint = max(fwidth(cells.x), fwidth(cells.y));
+    const resolved = float(1).sub(smoothstep(0.15, 0.35, footprint));
     const flake = smoothstep(0.955, 0.965, pick)
       .mul(within)
       .mul(resolved)
@@ -149,7 +172,10 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
   const edgeAnisotropy = vec2(1, 0).mul(Math.min(look.anisotropy, 0.6));
   const anisotropy = mix(faceAnisotropy, edgeAnisotropy, part);
 
-  const facing = clamp(dot(normalView, positionViewDirection), 0, 1);
+  // The geometric normal, not the shaded one: in a colour node `normalView` already carries the
+  // emboss and flake detail, and feeding that into the prismatic hue turns sub-pixel relief into
+  // per-pixel rainbow noise.
+  const facing = clamp(dot(normalViewGeometry, positionViewDirection), 0, 1);
   let metal: V3 = linear(look.metal);
   let emissive: V3 | null = null;
   if (look.prismatic) {

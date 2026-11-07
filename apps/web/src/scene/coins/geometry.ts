@@ -13,17 +13,19 @@ export interface CoinGeometryOptions {
 export const COIN_FIELD_RADIUS = 0.84;
 
 export const NEAR_COIN_GEOMETRY: CoinGeometryOptions = {
-  segments: 96,
+  segments: 64,
   reeds: 90,
-  reedSamples: 4,
+  reedSamples: 2,
   reedDepth: 0.011,
   cornerSteps: 3,
-  fieldRings: 3,
+  fieldRings: 2,
   halfThickness: 0.1,
 };
 
+export const NEAR_COIN_TRIANGLE_BUDGET = 2500;
+
 export const FAR_COIN_GEOMETRY: CoinGeometryOptions = {
-  segments: 28,
+  segments: 32,
   reeds: 0,
   reedSamples: 1,
   reedDepth: 0,
@@ -61,10 +63,7 @@ function mirror(p: ProfilePoint): ProfilePoint {
   return { r: p.r, y: -p.y, nr: p.nr, ny: -p.ny, reed: p.reed };
 }
 
-function topProfile(
-  o: CoinGeometryOptions,
-  outerSegments: number,
-): { inner: Strip[]; corner: ProfilePoint[] } {
+function topProfile(o: CoinGeometryOptions): { inner: Strip[]; corner: ProfilePoint[] } {
   const h = o.halfThickness;
   const fieldY = h * 0.74;
   const dish = h * 0.08;
@@ -91,7 +90,7 @@ function topProfile(
   const arc: ProfilePoint[] = [];
   for (let i = 0; i <= o.cornerSteps; i += 1) {
     const a = (Math.PI / 2) * (1 - i / o.cornerSteps);
-    const reed = o.reeds > 0 ? Math.sin((Math.PI / 2) * (i / o.cornerSteps)) ** 2 : 0;
+    const reed = o.reeds > 0 && i === o.cornerSteps ? 1 : 0;
     arc.push(
       point(
         lipOuter + corner * Math.cos(a),
@@ -107,26 +106,24 @@ function topProfile(
     inner: [
       { points: field, segments: o.segments, uv: 'top', part: CoinPart.face },
       { points: bevel, segments: o.segments, uv: 'top', part: CoinPart.face },
-      {
-        points: lip,
-        segments: o.segments,
-        uv: 'top',
-        part: CoinPart.face,
-        lastRingSegments: outerSegments,
-      },
+      { points: lip, segments: o.segments, uv: 'top', part: CoinPart.face },
     ],
     corner: arc,
   };
 }
 
+// Only the band ring carries the reed cut, so only it pays for reed-rate sampling; the rest
+// of the corner arc stays at the base segment count and zips into the fine ring at its end.
+// The per-pixel reed shading lives in the material, the geometry just notches the silhouette.
 function buildStrips(o: CoinGeometryOptions): Strip[] {
   const outerSegments = o.reeds > 0 ? o.reeds * o.reedSamples : o.segments;
-  const { inner, corner } = topProfile(o, outerSegments);
+  const { inner, corner } = topProfile(o);
   const cornerStrip = (points: readonly ProfilePoint[], uv: UvMode): Strip => ({
     points,
-    segments: outerSegments,
+    segments: o.segments,
     uv,
     part: CoinPart.face,
+    lastRingSegments: outerSegments,
   });
 
   const lastCorner = corner[corner.length - 1];
