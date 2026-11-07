@@ -74,12 +74,11 @@ describe('bundled locales', () => {
       const tree = BUNDLED_RESOURCES[language].ui;
       if (!tree) throw new Error(`${language} ui bundle is missing`);
       const leaves = new Set(leafKeys(tree));
-      const has = (key: string): boolean => leaves.has(key) || leaves.has(`${key}_other`);
+      const plural = upgradeLines.map((line) => `currency.${line.currency}`);
       const templated = [
         ...upgradeLines.flatMap((line) => [
           `upgrades.line.${line.id}.name`,
           `upgrades.line.${line.id}.description`,
-          `currency.${line.currency}`,
         ]),
         ...cascade.tiers.map((tier) => `combo.tier.${tier.id}`),
         ...QUALITY_OPTIONS.map((value) => `settings.qualityOption.${value}`),
@@ -89,7 +88,10 @@ describe('bundled locales', () => {
       ];
       expect(upgradeLines.length).toBeGreaterThan(0);
       expect(cascade.tiers.length).toBeGreaterThan(0);
-      expect(templated.filter((key) => !has(key))).toEqual([]);
+      expect(templated.filter((key) => !leaves.has(key))).toEqual([]);
+      expect(
+        plural.filter((key) => !leaves.has(`${key}_one`) || !leaves.has(`${key}_other`)),
+      ).toEqual([]);
     },
   );
 });

@@ -15,7 +15,7 @@
   --cp-hairline-soft: rgb(var(--cp-gold-brushed-rgb) / 0.22);
   --cp-ink: var(--cp-ivory);
   --cp-ink-muted: rgb(var(--cp-champagne-rgb) / 0.72);
-  --cp-lacquer: rgb(var(--cp-navy-lacquer-rgb) / 0.62);
+  --cp-lacquer: rgb(var(--cp-navy-lacquer-rgb));
   --cp-lacquer-deep: rgb(var(--cp-navy-lacquer-rgb) / 0.86);
   --cp-warning: var(--cp-coral-sunset);
   --cp-focus: var(--cp-sea-glass);
@@ -89,8 +89,6 @@
   border: 1px solid var(--cp-hairline);
   border-radius: var(--cp-radius-lg);
   box-shadow: var(--cp-shadow), var(--cp-glow-inner);
-  backdrop-filter: blur(18px) saturate(1.35);
-  -webkit-backdrop-filter: blur(18px) saturate(1.35);
   transition: box-shadow 160ms ease;
 }
 
@@ -233,8 +231,6 @@
   border-radius: 999px;
   border: 1px solid var(--cp-hairline);
   background: var(--cp-lacquer);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   font-family: var(--cp-font-display);
   font-size: 18px;
   font-weight: 600;
@@ -312,14 +308,9 @@
   width: 76px;
   padding: 10px 6px 12px;
   border-radius: var(--cp-radius-lg);
-  background: linear-gradient(
-    180deg,
-    rgb(var(--cp-navy-lacquer-rgb) / 0.55),
-    rgb(var(--cp-navy-lacquer-rgb) / 0.25)
-  );
+  background:
+    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.06), transparent 42%), var(--cp-lacquer);
   border: 1px solid var(--cp-hairline-soft);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
 .cp-side-label {
@@ -1225,21 +1216,15 @@
   animation-iteration-count: 1 !important;
 }
 
-/* Backdrop blur is recomputed every frame over the live canvas; only high quality pays for it. */
+/* Backdrop blur is recomputed every frame over the live canvas, so persistent HUD chrome stays
+   opaque and only an open sheet on high quality pays for frosting. */
+.cp-ui-host[data-quality='high'] .cp-sheet-layer.is-open .cp-sheet {
+  backdrop-filter: blur(18px) saturate(1.35);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+}
+
 .cp-ui-host:not([data-quality='high']) {
-  --cp-lacquer: rgb(var(--cp-navy-lacquer-rgb));
   --cp-lacquer-deep: rgb(var(--cp-navy-lacquer-rgb));
-}
-
-.cp-ui-host:not([data-quality='high']) :is(.cp-panel, .cp-chip, .cp-side-meter) {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.cp-ui-host:not([data-quality='high']) .cp-side-meter {
-  background:
-    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.06), transparent 42%),
-    rgb(var(--cp-navy-lacquer-rgb));
 }
 
 .cp-ui-host[data-motion='reduced'] .cp-flute-bubbles {
