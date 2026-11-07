@@ -92,7 +92,7 @@ export const TABLE_MATERIAL = {
 /**
  * Solver settings the table is tuned against, measured over a minute of play with
  * an exact minimum-translation overlap check between coin pairs (see table.test.ts),
- * sampled from 30 s on, when the table is full.
+ * taken on every tick from the first drop to the end of the minute.
  *
  * - worldScale 10: the table lives in the Rapier world at ten times its real size
  *   (a coin is 27 cm across inside the solver). At true scale the 2.6 mm coins hit
@@ -121,47 +121,58 @@ export const TABLE_MATERIAL = {
  *   between runs is what lets flat neighbours slide into each other rim first (one
  *   step of 6 iterations was four times worse). Three substeps cost 4.3 to 4.9 ms
  *   a tick, over the 4 ms budget.
- * - numSolverIterations 2 with numInternalPgsIterations 4: the pile is a wide,
- *   shallow web of contacts that each outer iteration only partly resolves, and the
- *   inner PGS passes are where a squeezed pair gets pushed apart. 3 outer with 1
- *   inner left 3 to 4 times as many pairs past 0.5 mm as 2 with 4; 3 with 2 matched
- *   2 with 4 but cost 3.8 ms a tick against 3.3.
+ * - numSolverIterations 1 with numInternalPgsIterations 6: the separation pass
+ *   (below) caps the depth Rapier leaves, so the solver only has to carry the
+ *   dynamics, and the outer iteration is the expensive part of Rapier's step. Over
+ *   the scripted minute and four more seeds (table.test.ts), all checked on every
+ *   tick:
  *
- * - separationSlop 0.2 mm, separationPasses 20: after the last substep of every tick
+ *   | outer x inner | mean, p99 ms a tick   | deepest | most passes | front falls a minute |
+ *   | ------------- | --------------------- | ------- | ----------- | -------------------- |
+ *   | 2 x 4         | 3.58, 4.19            | 0.29 mm | 28          | 191 to 224           |
+ *   | 2 x 2         | 3.47, 4.21            | 0.34 mm | 37          | 161 to 216           |
+ *   | 1 x 8         | 3.09, 3.88            | 0.28 mm | 31          | 145 to 186           |
+ *   | 1 x 6         | 3.01-3.06, 3.72-3.83  | 0.28 mm | 39          | 119 to 202           |
+ *   | 1 x 4         | 3.09, 4.03            | 0.32 mm | 55          | 145 to 202           |
+ *   | 1 x 2         | 3.55, 5.36            | 0.36 mm | over 40     | 187 to 218           |
+ *
+ *   Two outer iterations alone reach 4 ms at the 99th percentile. With one, fewer
+ *   inner iterations leave the separation pass more to do, which is what puts 1 x 4
+ *   and 1 x 2 back over the budget. 1 x 6 is the cheapest at the tail. A full table
+ *   drains about a sixth slower over the front than with 2 x 4 (173 against 207 a
+ *   minute on average over the five seeds, while the script drops a coin every
+ *   6 ticks), a rate far above what a player feeds it.
+ * - separationSlop 0.2 mm, separationPasses 60: after the last substep of every tick
  *   a position pass (CoinSeparator) moves every coin pair, or coin and slab, deeper
  *   than the slop apart along Rapier's contact normal, to half the slop. Velocities
- *   are left alone, so Rapier's contacts still do all the dynamics. Without it (and
- *   with an earlier impact sweep that teleported coins) the scripted minute reached
- *   2.9 mm with 770 pair-ticks past 0.5 mm, and six more seeds 4.0 to 7.5 mm. With
- *   it, every pair on every tick of a minute on eight seeds (0x7ab1e001, 12345, 777,
- *   99, 424242, 31337, 2024, 5) stays within 0.25 to 0.36 mm. Fewer passes do not
- *   converge in a jammed column (4 left 0.9 to 1.8 mm, measured before the pass
- *   caught Rapier's misreported contacts, see CoinSeparator). Pushing pairs apart to
- *   the full slop instead of half rebounds the pile into itself and takes more
- *   passes, not fewer.
+ *   are left alone, so Rapier's contacts still do all the dynamics. Every
+ *   pair on every tick of the minute on five seeds (table.test.ts) stays within
+ *   0.24 to 0.28 mm, and the pass clears every pair within 39 passes; the tests fail
+ *   on any tick where it runs out. A jammed column takes that many because each push
+ *   drives a coin into the next. Pushing pairs apart to the full slop instead of
+ *   half rebounds the pile into itself and takes more passes, not fewer.
  *
- * Nothing on a full table sleeps: rapier3d 0.21 exposes no sleep thresholds, a body
- * only sleeps with its whole contact island, and the moving pusher wakes every coin
- * it touches, which on a full table connect to nearly all the others. The 4 ms
- * budget is for 250 coins all awake: table.bench.ts measures 3.5 to 3.7 ms a tick on
- * average and 4.1 to 4.4 ms at the 99th percentile. The separation pass is about
- * 0.16 ms of that on average and the impact brake 0.06 ms; Rapier's step alone
- * reached 3.94 to 4.04 ms at the 99th percentile. One outer iteration was 0.5 ms
- * cheaper on average but let pairs reach 0.69 mm and sent fewer coins over the
- * front; 2 inner PGS iterations saved 0.1 ms on average, nothing at the 99th
- * percentile, and let pairs past 0.5 mm.
+ * Nothing on a full table sleeps for long: rapier3d 0.21 exposes no sleep
+ * thresholds, a body only sleeps with its whole contact island, and the moving
+ * pusher wakes every coin it touches, which on a full table connect to nearly all
+ * the others. The 4 ms budget is for 250 coins, at most one of them asleep:
+ * table.bench.ts measures 3.01 to 3.06 ms a tick on average and 3.72 to 3.83 ms at
+ * the 99th percentile. Rapier's step is about 2.75 ms of that on average (3.25 ms
+ * at its own 99th percentile), the separation pass 0.19 ms (0.72 ms at its 99th,
+ * on ticks that need 14 or more passes) and the impact brake and fall detection
+ * 0.09 ms.
  */
 export const TABLE_SOLVER = {
   worldScale: 10,
   substeps: 2,
   lengthUnit: 0.03,
   normalizedPredictionDistance: 0.067,
-  numSolverIterations: 2,
-  numInternalPgsIterations: 4,
+  numSolverIterations: 1,
+  numInternalPgsIterations: 6,
   maxCcdSubsteps: SOLVER.maxCcdSubsteps,
   contactNaturalFrequency: 600,
   separationSlop: 0.0002,
-  separationPasses: 20,
+  separationPasses: 60,
 } as const;
 
 /**

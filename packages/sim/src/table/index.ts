@@ -16,6 +16,7 @@ export {
   pusherExtension,
   type PusherMotion,
 } from './pusher.ts';
+export type { SeparationResult } from './separation.ts';
 export {
   type FallEdge,
   type FallEvent,

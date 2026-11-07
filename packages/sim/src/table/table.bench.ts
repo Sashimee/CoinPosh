@@ -12,14 +12,14 @@ import { configureTableWorld } from './tuning.ts';
  * The table is filled by playing, not by placing coins, so the bench measures the
  * real steady state: a full upper tier riding the pusher, a packed lower tier being
  * shoved over the edge, and a fresh drop every tick that the table is short of 250,
- * which holds it at 241 to 250 coins (a sweep over the edge can take a dozen at
- * once), none of them asleep (see TABLE_SOLVER). Measured with the impact brake
- * (COIN_MATERIAL.impactSpeed) and the separation pass (TABLE_SOLVER): 3.67 ms
- * mean, 3.81 ms at the 75th percentile and 4.1 to 4.4 ms at the 99th, so the mean
- * holds the budget with about 10% to spare but the slowest couple of percent of
- * ticks run past it; Rapier's step alone already reaches 4 ms there. The coin and
- * sleeping counts over the measured ticks are printed after the run, so the result
- * always says what it measured.
+ * which holds it at 240 to 250 coins (a sweep over the edge can take a dozen at
+ * once), at most one of them asleep (see TABLE_SOLVER). Measured with the impact
+ * brake (COIN_MATERIAL.impactSpeed), the separation pass and the solver settings in
+ * TABLE_SOLVER, over three runs: 3.01 to 3.06 ms mean, 3.15 to 3.21 ms at the 75th
+ * percentile and 3.72 to 3.83 ms at the 99th, so even the slowest percent of ticks
+ * holds the budget with 4% to 7% to spare. The coin and sleeping counts over the
+ * measured ticks are printed after the run, so the result always says what it
+ * measured.
  */
 const TARGET_COINS = 250;
 const WARMUP_TICKS = 45 * TICK_RATE_HZ;

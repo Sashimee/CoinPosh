@@ -415,6 +415,9 @@ function penetrationDepth(a: TableCoin, b: TableCoin): number {
  */
 const OVERLAP_TOLERANCE = 0.0005;
 
+/** Seeds besides SEED whose whole minute is checked for overlap and convergence. */
+const EXTRA_SEEDS = [12345, 777, 424242, 2024];
+
 /** Every pair of coins whose bounding spheres touch, with its penetration depth. */
 function touchingPairs(coins: readonly TableCoin[]): { pair: string; depth: number }[] {
   const reach = 2 * Math.sqrt(COIN.radius * COIN.radius + COIN.halfThickness * COIN.halfThickness);
@@ -473,6 +476,9 @@ class Session {
   readonly hashes: string[] = [];
   readonly falls: Record<FallEvent['edge'], number> = { front: 0, left: 0, right: 0 };
   upperTierPeak = 0;
+  /** Ticks on which the separation pass ran out of passes before it cleared every pair. */
+  readonly unconverged: number[] = [];
+  mostSeparationPasses = 0;
   readonly #rig: Rig;
   readonly #overlaps: OverlapLog | undefined;
 
@@ -498,6 +504,11 @@ class Session {
       for (const fall of tickFalls) {
         this.falls[fall.edge] += 1;
       }
+      const { converged, passes } = rig.table.separation;
+      if (!converged) {
+        this.unconverged.push(rig.tick);
+      }
+      this.mostSeparationPasses = Math.max(this.mostSeparationPasses, passes);
       this.#overlaps?.record(rig.table.coins(), rig.tick);
       if (rig.tick % TICK_RATE_HZ === 0) {
         const upper = rig.table.coins().filter(onUpperTier).length;
@@ -584,7 +595,7 @@ describe('determinism', () => {
     const { hashes } = await referenceTo(SESSION_TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"881d8f36290854e2"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"c090d32a142ce2b7"`);
   });
 
   it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
@@ -869,25 +880,42 @@ describe('contacts', () => {
 
   it('keeps coins in the full, moving pile from sinking into each other, checked every tick', async () => {
     const overlaps = (await referenceTo(SESSION_TICKS)).overlaps;
-    // Measured on this session, every pair on every tick of the minute (over 400
-    // touching pairs a tick once the table is full): the deepest 0.29 mm. Before the
-    // separation pass it was 2.9 mm, with 770 pair-ticks past 0.5 mm, and before the
-    // rounded rim and the impact brake 10.2 mm.
+    // Every pair on every tick of the minute, over 400 touching pairs a tick once the
+    // table is full. Measured: 0.28 mm deepest.
     expect(overlaps.ticks).toBe(SESSION_TICKS);
     expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
     expect(overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
   });
 
-  // Seven more seeds measured over a full minute peaked at 0.25 to 0.36 mm; these
-  // play 40 s, ten seconds of it on a full table, to fit the test timeout.
-  it.each([12345, 777, 424242, 2024])(
-    'keeps a full table from sinking into itself on seed %i too, checked every tick',
-    async (seed) => {
-      const session = new Session(await createRig({}, seed), new OverlapLog()).advanceTo(
-        FULL_TABLE_TICKS + 10 * TICK_RATE_HZ,
-      );
-      expect(session.overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
-      expect(session.overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
-    },
-  );
+  it('clears every pair within its passes on every tick of the minute', async () => {
+    const session = await referenceTo(SESSION_TICKS);
+    expect(session.unconverged).toEqual([]);
+    expect(session.mostSeparationPasses).toBeLessThan(TABLE_SOLVER.separationPasses);
+  });
+
+  describe.each(EXTRA_SEEDS)('on seed %i', (seed) => {
+    let session: Promise<Session> | undefined;
+    const sessionTo = async (ticks: number): Promise<Session> => {
+      session ??= buildRig({}, seed).then((rig) => new Session(rig, new OverlapLog()));
+      return (await session).advanceTo(ticks);
+    };
+    afterAll(async () => {
+      (await session)?.rig.world.free();
+    });
+
+    // The minute is played across one test per checkpoint, like the scripted one, so
+    // no single test risks the timeout.
+    it.each(CHECKPOINT_TICKS)(
+      'keeps every pair apart and the separation converged up to tick %i',
+      async (tick) => {
+        const { overlaps, unconverged } = await sessionTo(tick);
+        expect(overlaps.ticks).toBe(tick);
+        expect(unconverged).toEqual([]);
+        expect(overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
+        if (tick > FULL_TABLE_TICKS) {
+          expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
+        }
+      },
+    );
+  });
 });

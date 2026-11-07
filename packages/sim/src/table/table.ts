@@ -18,7 +18,7 @@ import {
   TABLE_INNER_HALF_WIDTH,
 } from './layout.ts';
 import { DEFAULT_PUSHER_MOTION, PusherClock, type PusherMotion } from './pusher.ts';
-import { CoinSeparator, type Obstacle } from './separation.ts';
+import { CoinSeparator, type Obstacle, type SeparationResult } from './separation.ts';
 import { COIN_MATERIAL, TABLE_MATERIAL, TABLE_SOLVER } from './tuning.ts';
 
 /** Mirrors FallEdge in packages/shared, which packages/sim cannot import yet. */
@@ -76,6 +76,7 @@ export class PusherTable {
   /** Insertion-ordered by ascending coin id, which fixes the iteration order. */
   readonly #coins = new Map<number, RigidBody>();
   #nextCoinId = 0;
+  #separation: SeparationResult = { moved: 0, passes: 0, converged: true };
 
   constructor(rapier: Rapier, world: World, options: TableOptions = {}) {
     this.#rapier = rapier;
@@ -108,6 +109,11 @@ export class PusherTable {
 
   get nextCoinId(): number {
     return this.#nextCoinId;
+  }
+
+  /** What the separation pass did on the last tick. */
+  get separation(): SeparationResult {
+    return this.#separation;
   }
 
   get pusher(): PusherState {
@@ -192,7 +198,7 @@ export class PusherTable {
       this.#absorbImpacts();
       this.#world.step();
     }
-    this.#separator.separate(Array.from(this.#coins.values()));
+    this.#separation = this.#separator.separate(this.#coins.values());
     return this.#collectFalls(tick);
   }
 

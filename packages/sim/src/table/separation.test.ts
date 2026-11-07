@@ -2,7 +2,7 @@ import type { RigidBody, Vector, World } from '@dimforge/rapier3d-deterministic-
 import { afterEach, describe, expect, it } from 'vitest';
 import { COIN } from '../coin.ts';
 import { loadRapier, type Rapier } from '../rapier.ts';
-import { CoinSeparator, type Obstacle } from './separation.ts';
+import { CoinSeparator, type Obstacle, type SeparationSettings } from './separation.ts';
 import { COIN_MATERIAL, TABLE_SOLVER } from './tuning.ts';
 
 const SCALE = TABLE_SOLVER.worldScale;
@@ -33,7 +33,10 @@ afterEach(() => {
   }
 });
 
-async function createRig(obstacles: (rapier: Rapier) => Obstacle[] = () => []): Promise<Rig> {
+async function createRig(
+  obstacles: (rapier: Rapier) => Obstacle[] = () => [],
+  settings: SeparationSettings = SETTINGS,
+): Promise<Rig> {
   const rapier = await loadRapier();
   const world = new rapier.World({ x: 0, y: 0, z: 0 });
   live.push(world);
@@ -41,7 +44,7 @@ async function createRig(obstacles: (rapier: Rapier) => Obstacle[] = () => []): 
   return {
     rapier,
     world,
-    separator: new CoinSeparator(rapier, shape, GEOMETRY, obstacles(rapier), SETTINGS),
+    separator: new CoinSeparator(rapier, shape, GEOMETRY, obstacles(rapier), settings),
     coin(at) {
       return world.createRigidBody(
         rapier.RigidBodyDesc.dynamic().setTranslation(at.x, at.y, at.z).setRotation(FLAT),
@@ -77,6 +80,14 @@ function floor(rapier: Rapier): Obstacle[] {
   ];
 }
 
+function entryAt(bodies: readonly RigidBody[], i: number): RigidBody {
+  const body = bodies[i];
+  if (!body) {
+    throw new Error(`no body at index ${i} of ${bodies.length}`);
+  }
+  return body;
+}
+
 function poses(bodies: readonly RigidBody[]): number[] {
   return bodies.flatMap((body) => {
     const t = body.translation();
@@ -91,7 +102,7 @@ describe('CoinSeparator', () => {
     const b = rig.coin({ x: DIAMETER - 0.02, y: 1, z: 0 });
     a.setLinvel({ x: 1, y: 0, z: 0 }, true);
     b.setLinvel({ x: -1, y: 0, z: 0 }, true);
-    expect(rig.separator.separate([a, b])).toBe(2);
+    expect(rig.separator.separate([a, b])).toEqual({ moved: 2, passes: 2, converged: true });
 
     expect(flatDepth(a, b)).toBeCloseTo(SLOP / 2, 4);
     expect(a.translation().x).toBeCloseTo(-(0.02 - SLOP / 2) / 2, 5);
@@ -107,7 +118,7 @@ describe('CoinSeparator', () => {
     const a = rig.coin({ x: 0, y: 1, z: 0 });
     const b = rig.coin({ x: DIAMETER - SLOP / 2, y: 1, z: 0 });
     const before = poses([a, b]);
-    expect(rig.separator.separate([a, b])).toBe(0);
+    expect(rig.separator.separate([a, b])).toEqual({ moved: 0, passes: 1, converged: true });
     expect(poses([a, b])).toEqual(before);
   });
 
@@ -117,7 +128,7 @@ describe('CoinSeparator', () => {
     const b = rig.coin({ x: DIAMETER - 1.25 * SLOP, y: 1 - 0.00001, z: 0 });
     const ya = a.translation().y;
     const yb = b.translation().y;
-    expect(rig.separator.separate([a, b])).toBe(2);
+    expect(rig.separator.separate([a, b]).moved).toBe(2);
     expect(flatDepth(a, b)).toBeCloseTo(SLOP / 2, 4);
     expect(a.translation().y).toBe(ya);
     expect(b.translation().y).toBe(yb);
@@ -133,6 +144,36 @@ describe('CoinSeparator', () => {
       expect(flatDepth(previous, coin)).toBeLessThanOrEqual(SLOP);
       return coin;
     });
+  });
+
+  it('reports that it did not converge when the passes run out on a jammed row', async () => {
+    const rig = await createRig(undefined, { ...SETTINGS, passes: 2 });
+    const row = Array.from({ length: 6 }, (_, i) =>
+      rig.coin({ x: i * (DIAMETER - 0.015), y: 1, z: 0 }),
+    );
+    const result = rig.separator.separate(row);
+    expect(result).toEqual({ moved: 6, passes: 2, converged: false });
+    const deepest = Math.max(...row.slice(1).map((coin, i) => flatDepth(entryAt(row, i), coin)));
+    expect(deepest).toBeGreaterThan(SLOP);
+  });
+
+  it('leaves two sleeping coins and a sleeping coin in a slab alone, and parts them once a neighbour wakes', async () => {
+    const rig = await createRig(floor);
+    const a = rig.coin({ x: 0, y: 1, z: 0 });
+    const b = rig.coin({ x: DIAMETER - 0.02, y: 1, z: 0 });
+    const sunk = rig.coin({ x: 1, y: THICKNESS / 2 - 0.01, z: 0 });
+    for (const coin of [a, b, sunk]) {
+      coin.sleep();
+    }
+    const before = poses([a, b, sunk]);
+    expect(rig.separator.separate([a, b, sunk])).toEqual({ moved: 0, passes: 1, converged: true });
+    expect(poses([a, b, sunk])).toEqual(before);
+
+    b.wakeUp();
+    expect(rig.separator.separate([a, b, sunk]).moved).toBe(2);
+    expect(flatDepth(a, b)).toBeCloseTo(SLOP / 2, 4);
+    expect(a.isSleeping()).toBe(false);
+    expect(sunk.translation().y).toBe(before[7]);
   });
 
   it('pushes a coin sunk into a slab out of it, and holds it there while the coin above is cleared', async () => {

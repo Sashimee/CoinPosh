@@ -36,29 +36,53 @@ interface Axis {
   readonly az: number;
 }
 
-/** One coin's working state during a call. */
+/** One coin's working state during a call, kept between calls so nothing is allocated per tick. */
 interface Slot extends Axis {
   readonly index: number;
-  readonly body: RigidBody;
-  readonly rotation: Rotation;
+  body: RigidBody;
+  rotation: Rotation;
   x: number;
   y: number;
   z: number;
+  ax: number;
+  ay: number;
+  az: number;
   /** Half the coin's extent along each world axis. */
-  readonly ex: number;
-  readonly ey: number;
-  readonly ez: number;
+  ex: number;
+  ey: number;
+  ez: number;
   /** The normal of the slab the coin is held against, zero while it is free. */
   hx: number;
   hy: number;
   hz: number;
-  /** The last pass that moved the coin, or -1. */
+  /** The last pass that moved the coin; ASLEEP or AWAKE before it has moved. */
   movedIn: number;
   /** Where the coin was when the candidate pairs were last found. */
   sweptX: number;
   sweptY: number;
   sweptZ: number;
 }
+
+export interface SeparationResult {
+  /** How many coins were moved. */
+  readonly moved: number;
+  /** How many passes ran. */
+  readonly passes: number;
+  /**
+   * Whether the last pass found nothing deeper than the slop. False means the passes
+   * ran out while some pair or coin and slab may still be too deep.
+   */
+  readonly converged: boolean;
+}
+
+/**
+ * A sleeping coin starts below the first pass's threshold, so a pair of two sleeping
+ * coins, or a sleeping coin and a slab, is skipped: neither has moved since it was
+ * last separated. A coin pushed by an awake neighbour is looked at from then on.
+ */
+const ASLEEP = -3;
+const AWAKE = -1;
+const FIRST_SINCE = -2;
 
 const IDENTITY = { x: 0, y: 0, z: 0, w: 1 } as const;
 /** Local search over directions: first and last step, in radians near enough. */
@@ -109,8 +133,14 @@ export class CoinSeparator {
   readonly #reachSq: number;
   /** A coin may move this far, squared, before the candidate pairs are found again. */
   readonly #driftSq: number;
+  /** One slot per coin, reused from call to call. */
+  readonly #slots: Slot[] = [];
   /** Coin indices sorted along x, kept between calls. */
-  #order: number[] = [];
+  readonly #order: number[] = [];
+  readonly #sorted: Slot[] = [];
+  /** Candidate pairs, flattened: pair p is #pairs[2p] and #pairs[2p + 1]. */
+  readonly #pairs: Slot[] = [];
+  #pairCount = 0;
   #boundX = 0;
   #boundY = 0;
   #boundZ = 0;
@@ -138,36 +168,12 @@ export class CoinSeparator {
     this.#driftSq = (margin / 2) * (margin / 2);
   }
 
-  /** Separates `bodies`, given in a fixed order. Returns how many coins it moved. */
-  separate(bodies: readonly RigidBody[]): number {
-    const coins = bodies.map((body, index): Slot => {
-      const t = body.translation();
-      const q = body.rotation();
-      const ax = 2 * (q.x * q.y - q.w * q.z);
-      const ay = 1 - 2 * (q.x * q.x + q.z * q.z);
-      const az = 2 * (q.y * q.z + q.w * q.x);
-      return {
-        index,
-        body,
-        rotation: q,
-        x: t.x,
-        y: t.y,
-        z: t.z,
-        ax,
-        ay,
-        az,
-        ex: this.#halfExtent(ax),
-        ey: this.#halfExtent(ay),
-        ez: this.#halfExtent(az),
-        hx: 0,
-        hy: 0,
-        hz: 0,
-        movedIn: -1,
-        sweptX: t.x,
-        sweptY: t.y,
-        sweptZ: t.z,
-      };
-    });
+  /**
+   * Separates `bodies`, given in a fixed order. Pairs of sleeping coins and sleeping
+   * coins against slabs are skipped until an awake neighbour pushes them.
+   */
+  separate(bodies: Iterable<RigidBody>): SeparationResult {
+    const coins = this.#load(bodies);
     const { slop, passes } = this.#settings;
     const contact = this.#contact;
     const shape = this.#shape;
@@ -193,13 +199,17 @@ export class CoinSeparator {
       return sx * x + sy * y + sz * z;
     };
 
-    let pairs = this.#candidatePairs(coins);
+    this.#candidatePairs(coins);
+    const pairs = this.#pairs;
     /** Pairs and obstacles are looked at again only for coins whose `movedIn` is at least this. */
-    let since = -2;
+    let since = FIRST_SINCE;
     let sweptAfter = 0;
+    let converged = false;
     for (; pass < passes; pass++) {
       let pushed = false;
-      for (const [a, b] of pairs) {
+      for (let p = 0; p < this.#pairCount; p++) {
+        const a = entry(pairs, 2 * p);
+        const b = entry(pairs, 2 * p + 1);
         if (a.movedIn < since && b.movedIn < since) {
           continue;
         }
@@ -301,6 +311,8 @@ export class CoinSeparator {
         }
       }
       if (!pushed) {
+        converged = true;
+        pass += 1;
         break;
       }
       since = pass;
@@ -309,28 +321,96 @@ export class CoinSeparator {
         // that both stayed put were within reach of each other then too.
         since = sweptAfter;
         sweptAfter = pass + 1;
-        pairs = this.#candidatePairs(coins);
+        this.#candidatePairs(coins);
       }
     }
-    let count = 0;
+    let moved = 0;
     for (const coin of coins) {
       if (coin.movedIn >= 0) {
         coin.body.setTranslation({ x: coin.x, y: coin.y, z: coin.z }, true);
-        count += 1;
+        moved += 1;
       }
     }
-    return count;
+    return { moved, passes: pass, converged };
+  }
+
+  /** Fills the slots from `bodies`, making new ones only for coins beyond the last call's count. */
+  #load(bodies: Iterable<RigidBody>): readonly Slot[] {
+    const slots = this.#slots;
+    let n = 0;
+    for (const body of bodies) {
+      const t = body.translation();
+      const q = body.rotation();
+      const ax = 2 * (q.x * q.y - q.w * q.z);
+      const ay = 1 - 2 * (q.x * q.x + q.z * q.z);
+      const az = 2 * (q.y * q.z + q.w * q.x);
+      const movedIn = body.isSleeping() ? ASLEEP : AWAKE;
+      const ex = this.#halfExtent(ax);
+      const ey = this.#halfExtent(ay);
+      const ez = this.#halfExtent(az);
+      const slot = slots[n];
+      if (slot === undefined) {
+        slots.push({
+          index: n,
+          body,
+          rotation: q,
+          x: t.x,
+          y: t.y,
+          z: t.z,
+          ax,
+          ay,
+          az,
+          ex,
+          ey,
+          ez,
+          hx: 0,
+          hy: 0,
+          hz: 0,
+          movedIn,
+          sweptX: t.x,
+          sweptY: t.y,
+          sweptZ: t.z,
+        });
+      } else {
+        slot.body = body;
+        slot.rotation = q;
+        slot.x = slot.sweptX = t.x;
+        slot.y = slot.sweptY = t.y;
+        slot.z = slot.sweptZ = t.z;
+        slot.ax = ax;
+        slot.ay = ay;
+        slot.az = az;
+        slot.ex = ex;
+        slot.ey = ey;
+        slot.ez = ez;
+        slot.hx = slot.hy = slot.hz = 0;
+        slot.movedIn = movedIn;
+      }
+      n += 1;
+    }
+    slots.length = n;
+    return slots;
   }
 
   /**
-   * Pairs of coins whose centres are within the reach, by a sweep along x; each coin
-   * is marked as swept where it stands. The order depends only on the positions and
-   * the input order, so it is the same on every replay.
+   * Finds the pairs of coins whose centres are within the reach, by a sweep along x,
+   * into #pairs; each coin is marked as swept where it stands. The order depends only
+   * on the positions and the input order, so it is the same on every replay.
    */
-  #candidatePairs(coins: readonly Slot[]): (readonly [Slot, Slot])[] {
+  #candidatePairs(coins: readonly Slot[]): void {
     const n = coins.length;
-    const sorted =
-      this.#order.length === n ? this.#order.map((i) => entry(coins, i)) : coins.slice();
+    const order = this.#order;
+    const sorted = this.#sorted;
+    sorted.length = n;
+    if (order.length === n) {
+      for (let s = 0; s < n; s++) {
+        sorted[s] = entry(coins, entry(order, s));
+      }
+    } else {
+      for (let s = 0; s < n; s++) {
+        sorted[s] = entry(coins, s);
+      }
+    }
     // Insertion sort: the coins barely move between calls, so the last order is
     // nearly sorted already. Ties go by index, so the result is the same whatever
     // order it starts from.
@@ -346,8 +426,12 @@ export class CoinSeparator {
       }
       sorted[u + 1] = coin;
     }
-    this.#order = sorted.map((coin) => coin.index);
-    const pairs: (readonly [Slot, Slot])[] = [];
+    order.length = n;
+    for (let s = 0; s < n; s++) {
+      order[s] = entry(sorted, s).index;
+    }
+    const pairs = this.#pairs;
+    let count = 0;
     const reach = this.#reach;
     const reachSq = this.#reachSq;
     for (let s = 0; s < n; s++) {
@@ -364,11 +448,14 @@ export class CoinSeparator {
         const dy = b.y - a.y;
         const dz = b.z - a.z;
         if (dx * dx + dy * dy + dz * dz <= reachSq) {
-          pairs.push([a, b]);
+          pairs[2 * count] = a;
+          pairs[2 * count + 1] = b;
+          count += 1;
         }
       }
     }
-    return pairs;
+    pairs.length = 2 * count;
+    this.#pairCount = count;
   }
 
   /**
