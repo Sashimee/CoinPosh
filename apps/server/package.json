@@ -12,9 +12,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "hono": "4.13.16"
+    "@coinposh/economy": "workspace:*",
+    "@coinposh/shared": "workspace:*",
+    "hono": "4.13.16",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.6.0",
     "@cloudflare/workers-types": "5.20261104.1",
     "vitest": "4.1.12",
     "wrangler": "4.158.0"
