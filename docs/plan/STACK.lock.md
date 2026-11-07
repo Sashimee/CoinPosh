@@ -6,7 +6,8 @@ Exact versions in use. Every `package.json` pins exact versions (no `^`/`~`), an
 Only lead-architect changes this file. Bump a version here in the same commit
 that bumps it in a `package.json`.
 
-Recorded 2026-11-07 (T-0.01).
+Recorded 2026-11-07 (T-0.01). Caught up 2026-11-07 (P-3, P-4, P-5, P-6) with T-0.02 to T-0.05,
+T-1.04 and T-1.13.
 
 ## Toolchain
 
@@ -22,7 +23,26 @@ Recorded 2026-11-07 (T-0.01).
 | eslint-config-prettier | 10.1.8 | root | |
 | globals | 17.14.0 | root | |
 | Prettier | 3.9.10 | root | `.prettierrc.json` |
-| Vitest | 4.1.12 | `apps/web`, `apps/server` | Held on 4.1.x: `@cloudflare/vitest-pool-workers` 0.23.0 (for T-1.07) peers on `vitest ^4.1.0` |
+| Vitest | 4.1.12 | `apps/web`, `apps/server`, `packages/shared`, `packages/sim`, `packages/economy` | Held on 4.1.x: `@cloudflare/vitest-pool-workers` 0.23.0 (for T-1.07) peers on `vitest ^4.1.0` |
+| @types/node | 24.19.2 | `packages/shared`, `packages/sim`, `packages/economy` | Node 24 line, matches `.nvmrc`; also the version vite, vitest and wrangler resolve against |
+
+## Shared types (`packages/shared`)
+
+| Package | Version | Notes |
+|---|---|---|
+| zod | 4.6.7 | Runtime schemas behind the shared types, validated at trust boundaries |
+
+## Simulation (`packages/sim`)
+
+| Package | Version | Notes |
+|---|---|---|
+| @dimforge/rapier3d-deterministic-compat | 0.21.0 | Cross-platform deterministic build of Rapier, WASM inlined (`-compat`) so it loads in browsers and Workers alike |
+
+## Economy (`packages/economy`)
+
+| Package | Version | Notes |
+|---|---|---|
+| fast-check | 4.10.2 | Property tests for economy invariants (dev only) |
 
 ## Client (`apps/web`)
 
@@ -32,8 +52,15 @@ Recorded 2026-11-07 (T-0.01).
 | three | 0.187.0 | `three/webgpu` `WebGPURenderer`, automatic WebGL2 fallback |
 | @types/three | 0.187.0 | Matches `three` |
 
+T-1.04 (`src/scene`) and T-1.13 (`src/audio`) added no packages: the scene uses `three/webgpu`,
+`three/tsl` and `three/addons` from `three` 0.187.0, and all audio is synthesized with the Web
+Audio API. The one vendored asset is `src/scene/env/hdri/venice_sunset_512.hdr` (Poly Haven,
+CC0), pinned by SHA-256 in `src/scene/env/hdri/SOURCES.md`; audio provenance lives in
+`public/audio/CREDITS.md`.
+
 Planned, added by the owning task through lead-architect: React 19, @react-three/fiber 9,
-drei, Tailwind v4, Motion, zustand, i18next, Playwright, @dimforge/rapier3d.
+drei, Tailwind v4, Motion, zustand, i18next, Playwright. Physics is not planned here: Rapier
+lives in `packages/sim` (above), and the client will reach it only through `@coinposh/sim`.
 
 ## Server (`apps/server`)
 
@@ -46,3 +73,17 @@ drei, Tailwind v4, Motion, zustand, i18next, Playwright, @dimforge/rapier3d.
 Worker config (`apps/server/wrangler.jsonc`): `compatibility_date` 2026-10-31, D1 binding
 `DB` → database `coinposh` (`d68b147d-653d-40a6-bca4-f07997f40fd3`). The account ID comes
 from the `CLOUDFLARE_ACCOUNT_ID` environment variable, not the config file.
+
+## CI actions (`.github/workflows`)
+
+Every `uses:` is pinned to a full commit SHA with the release tag as a trailing comment.
+Bump the SHA and the comment together, and update this table in the same commit.
+
+| Action | Version | Commit | Used in |
+|---|---|---|---|
+| actions/checkout | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | `ci.yml`, `deploy-web.yml`, `deploy-server.yml` |
+| pnpm/action-setup | v6.1.0 | `ea17c68df8912ef543352723c149a84f56e3d413` | `ci.yml`, `deploy-web.yml`, `deploy-server.yml` |
+| actions/setup-node | v7.1.0 | `949feb2413d6458794dcd2491c4babbbce0c15c1` | `ci.yml`, `deploy-web.yml`, `deploy-server.yml` |
+| actions/configure-pages | v6.0.0 | `45bfe0192ca1faeb007ade9deae92b16b8254a0d` | `deploy-web.yml` |
+| actions/upload-pages-artifact | v5.0.0 | `fc324d3547104276b827a68afc52ff2a11cc49c9` | `deploy-web.yml` |
+| actions/deploy-pages | v5.0.1 | `368f82528645a54fb793d4d04e342629a3f51346` | `deploy-web.yml` |

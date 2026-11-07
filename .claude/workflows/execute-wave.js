@@ -51,6 +51,16 @@ const IMPL_SCHEMA = {
   required: ['branch', 'commit', 'checksPassed', 'summary'],
 }
 
+const FIX_SCHEMA = {
+  type: 'object',
+  properties: {
+    commit: { type: 'string', description: 'full sha of HEAD after the fix commit' },
+    checksPassed: { type: 'boolean' },
+    summary: { type: 'string' },
+  },
+  required: ['commit', 'checksPassed', 'summary'],
+}
+
 const VERDICT_SCHEMA = {
   type: 'object',
   properties: {
@@ -95,30 +105,30 @@ const implPrompt = t => `Implement roadmap task ${t.id} · ${t.title} for CoinPo
 
 ${t.brief}
 
-You are in an isolated git worktree. First run: git switch -c task/${t.id} ${plan.base}
-(if the branch exists, git switch task/${t.id}). Install deps if needed (pnpm i).
+You are in an isolated git worktree. Work on a detached HEAD: if a branch task/${t.id} exists from an earlier attempt,
+run git switch --detach task/${t.id} && git merge --no-edit ${plan.base}; otherwise git switch --detach ${plan.base}.
+Never switch to or create a task/* branch: other worktrees may hold it. Install deps if needed (pnpm i).
 Write ONLY within the owns paths: ${t.owns.join(', ')}.
 Meet every acceptance criterion at the highest polish level — this game must feel premium and addictive.
-Run pnpm check (or filtered equivalents) until green. Commit on task/${t.id} with message "${t.id}: <summary>".
-Then run git switch --detach so task/${t.id} is free for the review and fix worktrees.
-Do NOT push and do NOT merge. Return branch, commit sha, whether checks passed, and a summary.`
+Run pnpm check (or filtered equivalents) until green. Commit with message "${t.id}: <summary>".
+Do NOT push and do NOT merge. Return branch "task/${t.id}", the full sha from git rev-parse HEAD as commit, whether checks passed, and a summary.`
 
-const reviewPrompt = (t, impl) => `Review task branch task/${t.id} (base ${plan.base}) for roadmap task ${t.id} · ${t.title}.
+const reviewPrompt = (t, impl, tip) => `Review commit ${tip} (task ${t.id}, base ${plan.base}) for roadmap task ${t.id} · ${t.title}.
 
 ${t.brief}
 
 Implementer summary: ${impl.summary}
-You are in an isolated worktree: run git switch --detach task/${t.id}, pnpm i, pnpm check. Review the tip of task/${t.id}, not an older commit. Diff with git diff ${plan.base}...task/${t.id}.
+You are in an isolated worktree: run git switch --detach ${tip}, pnpm i, pnpm check. Review exactly ${tip}; ignore any task/${t.id}* branch refs. Diff with git diff ${plan.base}...${tip}.
 Verify each acceptance criterion with evidence. Reject on any ownership violation, client-trusted value,
 sim nondeterminism, disabled/skipped tests, missing i18n, perf budget risk, or anything that feels cheap.
 Do not edit code. Return approved + concrete issues (file:line — problem — fix).`
 
-const fixPrompt = (t, issues) => `Fix review findings on task branch task/${t.id} (${t.title}).
-In your isolated worktree: git switch task/${t.id}. Stay within owns paths: ${t.owns.join(', ')}.
+const fixPrompt = (t, issues, tip) => `Fix review findings for task ${t.id} (${t.title}) on top of commit ${tip}.
+In your isolated worktree: git switch --detach ${tip}. Never switch to or create a task/* branch. Stay within owns paths: ${t.owns.join(', ')}.
 Findings:
 - ${issues.join('\n- ')}
-Fix all of them, run pnpm check until green, commit "${t.id}: address review" on task/${t.id} (never on a new branch),
-then run git switch --detach so the branch is free. Do not push.`
+Fix all of them, run pnpm check until green, commit "${t.id}: address review" on the detached HEAD. Do not push.
+Return the full sha from git rev-parse HEAD as commit, whether checks passed, and a summary.`
 
 // ---------- Build → Review (→ Fix)* pipelined per task ----------
 const results = await pipeline(
@@ -126,13 +136,16 @@ const results = await pipeline(
   t => agent(implPrompt(t), { label: `build:${t.id}`, phase: 'Build', agentType: t.agent, isolation: 'worktree', schema: IMPL_SCHEMA }),
   async (impl, t) => {
     if (!impl) return { id: t.id, approved: false, issues: ['implementation agent failed'] }
-    let verdict = await agent(reviewPrompt(t, impl), { label: `review:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA })
+    let tip = impl.commit
+    let verdict = await agent(reviewPrompt(t, impl, tip), { label: `review:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA })
     for (let round = 1; verdict && !verdict.approved && round <= FIX_ROUNDS; round++) {
       log(`${t.id}: fix round ${round} (${verdict.issues.length} issues)`)
-      await agent(fixPrompt(t, verdict.issues), { label: `fix${round}:${t.id}`, phase: 'Review', agentType: t.agent, isolation: 'worktree' })
-      verdict = await agent(reviewPrompt(t, impl), { label: `re-review${round}:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA })
+      const fix = await agent(fixPrompt(t, verdict.issues, tip), { label: `fix${round}:${t.id}`, phase: 'Review', agentType: t.agent, isolation: 'worktree', schema: FIX_SCHEMA })
+      if (!fix || !fix.commit) { log(`${t.id}: fix round ${round} returned no commit`); break }
+      tip = fix.commit
+      verdict = await agent(reviewPrompt(t, impl, tip), { label: `re-review${round}:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA })
     }
-    return { id: t.id, title: t.title, branch: `task/${t.id}`, approved: !!(verdict && verdict.approved), issues: verdict ? verdict.issues : ['review failed'], requests: impl.outOfScopeRequests || [] }
+    return { id: t.id, title: t.title, branch: `task/${t.id}`, tip, approved: !!(verdict && verdict.approved), issues: verdict ? verdict.issues : ['review failed'], requests: impl.outOfScopeRequests || [] }
   },
 )
 
@@ -143,8 +156,10 @@ const approved = done.filter(r => r.approved)
 const rejected = done.filter(r => !r.approved)
 const integration = await agent(
   `Integrate this CoinPosh wave into ${plan.base} in the main checkout.
-Approved branches (merge one at a time with --no-ff, run pnpm check after each; if a merge breaks checks, revert that merge and mark it blocked):
-${approved.map(r => `- ${r.branch} (${r.title})`).join('\n') || '- none'}
+First record every reviewed tip, since task/* refs may be stale or checked out in old worktrees:
+${done.filter(r => r.tip).map(r => `git update-ref refs/heads/${r.branch} ${r.tip}`).join('\n') || '(none)'}
+Approved commits (merge one at a time by sha with git merge --no-ff <sha> -m "Merge <branch>: <title>", run pnpm check after each; if a merge breaks checks, revert that merge and mark it blocked):
+${approved.map(r => `- ${r.tip} as ${r.branch} (${r.title})`).join('\n') || '- none'}
 Rejected (do NOT merge; mark "blocked(review: <short reason>)" in STATUS.md, keep the branch):
 ${rejected.map(r => `- ${r.id}: ${r.issues.slice(0, 3).join(' | ')}`).join('\n') || '- none'}
 Out-of-scope requests raised by implementers (append to docs/plan/POLISH.md as "ready" items naming the owning agent):
