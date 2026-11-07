@@ -140,7 +140,8 @@ export class PusherTable {
         .setDensity(COIN.density / (SCALE * SCALE * SCALE))
         .setFriction(COIN_MATERIAL.friction)
         .setRestitution(COIN_MATERIAL.restitution)
-        .setRestitutionCombineRule(CoefficientCombineRule.Min),
+        .setRestitutionCombineRule(CoefficientCombineRule.Min)
+        .setContactSkin(COIN_MATERIAL.contactSkin * SCALE),
       body,
     );
     const id = this.#nextCoinId;
@@ -182,8 +183,7 @@ export class PusherTable {
       }
       const v = body.linvel();
       const fast = v.x * v.x + v.y * v.y + v.z * v.z > SOFT_CCD_SPEED_SQ;
-      if (fast !== body.isCcdEnabled()) {
-        body.enableCcd(fast);
+      if (fast !== body.softCcdPrediction() > 0) {
         body.setSoftCcdPrediction(fast ? SOFT_CCD_ON : 0);
       }
     }

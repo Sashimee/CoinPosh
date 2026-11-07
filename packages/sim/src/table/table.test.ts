@@ -8,7 +8,7 @@ import { loadRapier } from '../rapier.ts';
 import { BACKBOARD, GUTTER_START_Z, PLAYFIELD, PUSHER, TABLE_INNER_HALF_WIDTH } from './layout.ts';
 import { DEFAULT_PUSHER_MOTION } from './pusher.ts';
 import { type FallEvent, PusherTable, type TableCoin, type TableOptions } from './table.ts';
-import { configureTableWorld, TABLE_SOLVER } from './tuning.ts';
+import { COIN_MATERIAL, configureTableWorld, TABLE_SOLVER } from './tuning.ts';
 
 const FLAT = { x: 0, y: 0, z: 0, w: 1 } as const;
 const SEED = 0x7ab1e001;
@@ -124,8 +124,8 @@ describe('PusherTable layout', () => {
       }
     }
     const coin = onlyCoin(rig.table);
-    expect(lowest).toBeGreaterThan(restY - 0.0006);
-    expect(peakAfterLanding - restY).toBeLessThan(0.0017);
+    expect(lowest).toBeGreaterThan(restY);
+    expect(peakAfterLanding - coin.translation.y).toBeLessThan(0.0005);
     expect(coin.translation.y).toBeCloseTo(restY, 3);
     expect(faceUp(coin.rotation)).toBeGreaterThan(0.9999);
   });
@@ -403,8 +403,9 @@ interface OverlapSample {
 }
 
 /**
- * The overlap the pile is held to. Rapier lets a contact rest 0.15 mm deep at the
- * table's length unit (see TABLE_SOLVER), so a settled pair sits well inside this.
+ * The overlap the pile is held to. Coins carry a contact skin and rest apart, and
+ * Rapier lets a contact sink only 0.15 mm at the table's length unit (see
+ * TABLE_SOLVER), so a settled pair sits well inside this.
  */
 const OVERLAP_TOLERANCE = 0.0005;
 
@@ -454,6 +455,11 @@ interface Session {
   readonly nextCoinId: number;
   /** Overlap samples, once a second from FULL_TABLE_TICKS on. */
   readonly overlaps: OverlapSample[];
+  /**
+   * For every pair a sample caught past OVERLAP_TOLERANCE: how many ticks it took,
+   * checked every tick from then on, to get back within it.
+   */
+  readonly releaseTicks: number[];
 }
 
 const FULL_TABLE_TICKS = 30 * TICK_RATE_HZ;
@@ -462,26 +468,70 @@ function onUpperTier(coin: { translation: { y: number } }): boolean {
   return coin.translation.y > PUSHER.height;
 }
 
+/**
+ * Follows pairs caught past OVERLAP_TOLERANCE tick by tick until they are back within
+ * it (or one coin has left the table), recording how long each took.
+ */
+class OverlapWatch {
+  readonly releaseTicks: number[] = [];
+  readonly #since = new Map<string, number>();
+
+  watch(pairs: readonly string[], tick: number): void {
+    for (const pair of pairs) {
+      if (!this.#since.has(pair)) {
+        this.#since.set(pair, tick);
+      }
+    }
+  }
+
+  update(table: PusherTable, tick: number): void {
+    if (this.#since.size === 0) {
+      return;
+    }
+    const byId = new Map(table.coins().map((coin) => [coin.id, coin]));
+    for (const [pair, since] of this.#since) {
+      const [a, b] = pair.split('-').map((id) => byId.get(Number(id)));
+      if (!a || !b || penetrationDepth(a, b) <= OVERLAP_TOLERANCE) {
+        this.releaseTicks.push(tick - since);
+        this.#since.delete(pair);
+      }
+    }
+  }
+
+  /** Pairs still past the tolerance count as held until `tick`. */
+  close(tick: number): void {
+    for (const since of this.#since.values()) {
+      this.releaseTicks.push(tick - since);
+    }
+    this.#since.clear();
+  }
+}
+
 async function recordSession(seed = SEED, ticks = SESSION_TICKS): Promise<Session> {
   const rig = await createRig({}, seed);
   const hashes: string[] = [];
   const overlaps: OverlapSample[] = [];
+  const watch = new OverlapWatch();
   const falls = { front: 0, left: 0, right: 0 };
   let upperTierPeak = 0;
   playSession(rig, ticks, (tickFalls) => {
     for (const fall of tickFalls) {
       falls[fall.edge] += 1;
     }
+    watch.update(rig.table, rig.tick);
     if (rig.tick % TICK_RATE_HZ === 0) {
       upperTierPeak = Math.max(upperTierPeak, rig.table.coins().filter(onUpperTier).length);
       if (rig.tick >= FULL_TABLE_TICKS) {
-        overlaps.push(sampleOverlaps(rig.table.coins()));
+        const sample = sampleOverlaps(rig.table.coins());
+        overlaps.push(sample);
+        watch.watch(sample.pastTolerance, rig.tick);
       }
     }
     if (rig.tick % HASH_INTERVAL === 0) {
       hashes.push(tableHash(rig));
     }
   });
+  watch.close(rig.tick);
   return {
     hashes,
     falls,
@@ -489,6 +539,7 @@ async function recordSession(seed = SEED, ticks = SESSION_TICKS): Promise<Sessio
     coins: rig.table.coins(),
     nextCoinId: rig.table.nextCoinId,
     overlaps,
+    releaseTicks: watch.releaseTicks,
   };
 }
 
@@ -578,7 +629,7 @@ describe('contacts', () => {
     );
   });
 
-  it('measures no overlap for two coins resting face to face, and a planted one exactly', async () => {
+  it('rests two coins face to face a skin apart, and measures a planted one exactly', async () => {
     const rig = await createRig();
     const z = PLAYFIELD.fieldFrontZ - 0.04;
     rig.table.addCoin({ x: 0, y: COIN.halfThickness, z }, FLAT);
@@ -588,31 +639,37 @@ describe('contacts', () => {
     if (!bottom || !top) {
       throw new Error(`expected two coins on the table, found ${rig.table.coinCount}`);
     }
-    const resting = penetrationDepth(bottom, top);
-    expect(resting).toBeLessThan(ALLOWED_PENETRATION);
-    expect(top.translation.y - bottom.translation.y).toBeGreaterThan(
-      2 * COIN.halfThickness - ALLOWED_PENETRATION,
-    );
-    const sunk = { ...top, translation: { ...top.translation, y: top.translation.y - 0.0005 } };
-    expect(penetrationDepth(bottom, sunk) - resting).toBeCloseTo(0.0005, 5);
+    expect(penetrationDepth(bottom, top)).toBe(0);
+    const gap = top.translation.y - bottom.translation.y - 2 * COIN.halfThickness;
+    expect(gap).toBeGreaterThan(2 * COIN_MATERIAL.contactSkin - ALLOWED_PENETRATION);
+    expect(gap).toBeLessThan(2 * COIN_MATERIAL.contactSkin + ALLOWED_PENETRATION);
+    const sunk = {
+      ...top,
+      translation: { ...top.translation, y: top.translation.y - gap - 0.0005 },
+    };
+    expect(penetrationDepth(bottom, sunk)).toBeCloseTo(0.0005, 4);
   });
 
   it('keeps coins in the full, moving pile from sinking into each other', async () => {
-    const { overlaps } = await referenceSession();
+    const { overlaps, releaseTicks } = await referenceSession();
     expect(overlaps).toHaveLength((SESSION_TICKS - FULL_TABLE_TICKS) / TICK_RATE_HZ + 1);
-    // Measured on this session (31 samples, 600 to 760 touching pairs each): 3 to 20
-    // pairs past 0.5 mm and at most 5 past 1 mm per sample; 60 pair-samples still
-    // past 0.5 mm a second later, 8 still past 1 mm, and no pair past 0.5 mm for more
-    // than 6 samples in a row. Rapier's default length unit left about 40 past 0.5 mm
-    // per sample and some locked together for 19 s.
+    // Measured on this session (31 samples, 504 to 760 touching pairs each): at most
+    // 3 pairs past 0.5 mm and 2 past 1 mm per sample, the deepest 1.65 mm; 22 pairs
+    // caught past 0.5 mm, each back within it after at most 8 ticks; 2 pair-samples
+    // still past 0.5 mm a second later (none past 1 mm), and no pair in more than 2
+    // samples in a row. Before the contact skin and the inner PGS iterations this
+    // session had 3 to 20 pairs past 0.5 mm per sample and a pair held for 6 s.
     for (const sample of overlaps) {
       expect(sample.near).toBeGreaterThan(500);
-      expect(sample.pastTolerance.length / sample.near).toBeLessThan(0.04);
-      expect(sample.pastOneMm.length).toBeLessThanOrEqual(8);
+      expect(sample.pastTolerance.length).toBeLessThanOrEqual(4);
+      expect(sample.pastOneMm.length).toBeLessThanOrEqual(2);
+      expect(sample.deepest).toBeLessThan(0.002);
     }
-    expect(persistentPairs(overlaps, (s) => s.pastTolerance).length).toBeLessThanOrEqual(90);
-    expect(persistentPairs(overlaps, (s) => s.pastOneMm).length).toBeLessThanOrEqual(12);
-    expect(longestPersistence(overlaps)).toBeLessThanOrEqual(8);
+    expect(releaseTicks.length).toBeGreaterThan(0);
+    expect(Math.max(...releaseTicks)).toBeLessThanOrEqual(TICK_RATE_HZ / 4);
+    expect(persistentPairs(overlaps, (s) => s.pastTolerance).length).toBeLessThanOrEqual(4);
+    expect(persistentPairs(overlaps, (s) => s.pastOneMm)).toEqual([]);
+    expect(longestPersistence(overlaps)).toBeLessThanOrEqual(2);
   });
 });
 
@@ -629,7 +686,7 @@ describe('determinism', () => {
     const { hashes } = await referenceSession();
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"0b42195f90e56e0f"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"0f07d3e911f71f99"`);
   });
 
   it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
