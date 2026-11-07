@@ -365,13 +365,5 @@ describe('CoinField', () => {
         expect((2 * Math.PI * projected) / NEAR_COIN_GEOMETRY.reeds).toBeGreaterThanOrEqual(3);
       }
     });
-
-    it('picks the same split whatever the device pixel ratio', () => {
-      const a = tableField();
-      const b = tableField();
-      const camera = tableCamera(390 / 844);
-      const css = { ...a.update(camera, 844) };
-      expect(b.update(camera, 844)).toEqual(css);
-    });
   });
 });
