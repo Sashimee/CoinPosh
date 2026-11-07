@@ -1,9 +1,12 @@
 name: Deploy web
 
+# Publishes the web build that CI made and verified, and only after that CI run passed, so a
+# red main never reaches Pages and the app is built once. To redeploy by hand, run CI on main.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,69 +16,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build apps/web
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install
-        run: pnpm i --frozen-lockfile
-
-      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-
-      - name: Build
-        env:
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
-        run: pnpm --filter @coinposh/web build
-
-      - name: Verify Pages output
-        working-directory: apps/web/dist
-        run: |
-          test -f index.html || { echo "::error::apps/web/dist/index.html is missing; the Vite build produced no entry page."; exit 1; }
-          test -f 404.html || { echo "::error::apps/web/dist/404.html is missing; deep links would hit the GitHub 404 page. Check apps/web/public/404.html."; exit 1; }
-          grep -q 'src="/CoinPosh/assets/' index.html || { echo "::error::index.html does not load assets from /CoinPosh/; check base in apps/web/vite.config.ts."; exit 1; }
-
-      - name: Summarize build mode
-        env:
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
-        run: |
-          if [ -z "${VITE_API_URL//[[:space:]]/}" ]; then
-            mode="Demo Mode (repo variable VITE_API_URL is unset or empty)"
-          else
-            mode="Live API at $VITE_API_URL"
-          fi
-          echo "::notice title=CoinPosh web build::$mode"
-          echo "### CoinPosh web build: $mode" >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: apps/web/dist
-
   deploy:
     name: Deploy to GitHub Pages
-    needs: build
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Download CI web build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Check artifact
+        working-directory: dist
+        run: |
+          test -f index.html || { echo "::error::The web-dist artifact from CI run ${{ github.event.workflow_run.id }} has no index.html. Check the Upload web build step in .github/workflows/ci.yml."; exit 1; }
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist
+
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
       - name: Report URL
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          echo "::notice title=CoinPosh web deployed::${{ steps.deployment.outputs.page_url }}"
-          echo "### Deployed to ${{ steps.deployment.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=CoinPosh web deployed::$PAGE_URL (${SHA:0:7})"
+          echo "### Deployed ${SHA:0:7} to $PAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Built and verified by CI: $CI_RUN" >> "$GITHUB_STEP_SUMMARY"

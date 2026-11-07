@@ -50,6 +50,24 @@ export interface PlayerState {
   pity: PityState;
   dropCarry: number;
   milestones: Partial<Record<MilestoneId, number>>;
+  /**
+   * Rates derived from levels, venue, charms and album bonus. Cleared whenever one of
+   * those changes: recomputing them every tick dominated the sim's run time.
+   */
+  rates: PlayerRates | null;
+}
+
+export interface PlayerRates {
+  readonly grossPerDrop: number;
+  readonly dropsPerSecond: number;
+  readonly netPerSecond: number;
+  readonly crateChancePerDrop: number;
+  readonly cheapestVenueUpgrade: UpgradeOffer | null;
+}
+
+export interface UpgradeOffer {
+  readonly line: UpgradeLineDef;
+  readonly cost: number;
 }
 
 export interface PlayerContext {
@@ -60,6 +78,13 @@ export interface PlayerContext {
   readonly albumByRarity: ReadonlyMap<string, ReadonlyMap<RarityId, readonly AlbumItemDef[]>>;
   readonly cascadeMean: number;
   readonly seasonStars: number;
+  readonly venueLines: readonly UpgradeLineDef[];
+  readonly globalLines: readonly UpgradeLineDef[];
+  /** The line that drives each stat; stats without a line stay at 1. */
+  readonly statLines: ReadonlyMap<UpgradeStatId, UpgradeLineDef>;
+  /** `upgradeCost(line, level)` and `upgradeStat(line, level)` for every reachable level. */
+  readonly costByLevel: ReadonlyMap<string, readonly number[]>;
+  readonly statByLevel: ReadonlyMap<string, readonly number[]>;
 }
 
 export function createContext(config: EconomyConfig, model: SimModel, rng: Rng): PlayerContext {
@@ -89,6 +114,21 @@ export function createContext(config: EconomyConfig, model: SimModel, rng: Rng):
   if (comboShare > 1) throw new Error('simModel.cascadeShare must sum to ≤ 1');
   cascadeMean += 1 - comboShare;
 
+  const statLines = new Map<UpgradeStatId, UpgradeLineDef>();
+  const costByLevel = new Map<string, number[]>();
+  const statByLevel = new Map<string, number[]>();
+  for (const line of config.upgradeLines) {
+    if (!statLines.has(line.effect.stat)) statLines.set(line.effect.stat, line);
+    costByLevel.set(
+      line.id,
+      Array.from({ length: line.maxLevel }, (_, level) => upgradeCost(line, level)),
+    );
+    statByLevel.set(
+      line.id,
+      Array.from({ length: line.maxLevel + 1 }, (_, level) => upgradeStat(line, level)),
+    );
+  }
+
   return {
     config,
     model,
@@ -97,6 +137,11 @@ export function createContext(config: EconomyConfig, model: SimModel, rng: Rng):
     albumByRarity,
     cascadeMean,
     seasonStars: config.season.freeTiers * config.season.starsPerTier,
+    venueLines: config.upgradeLines.filter((l) => l.scope === 'venue'),
+    globalLines: config.upgradeLines.filter((l) => l.scope === 'global'),
+    statLines,
+    costByLevel,
+    statByLevel,
   };
 }
 
@@ -121,6 +166,7 @@ export function createPlayer(ctx: PlayerContext): PlayerState {
     pity: initialPityState(ctx.config.pity),
     dropCarry: 0,
     milestones: {},
+    rates: null,
   };
   player.coins = stat(ctx, player, 'startingCoins');
   return player;
@@ -130,10 +176,35 @@ function levelOf(player: PlayerState, line: UpgradeLineDef): number {
   return player.levels.get(line.id) ?? 0;
 }
 
+function lookup(
+  table: ReadonlyMap<string, readonly number[]>,
+  line: UpgradeLineDef,
+  level: number,
+) {
+  const value = table.get(line.id)?.[level];
+  if (value === undefined) throw new Error(`Upgrade "${line.id}" has no entry for level ${level}`);
+  return value;
+}
+
 function stat(ctx: PlayerContext, player: PlayerState, id: UpgradeStatId): number {
-  const line = ctx.config.upgradeLines.find((l) => l.effect.stat === id);
+  const line = ctx.statLines.get(id);
   if (line === undefined) return 1;
-  return upgradeStat(line, levelOf(player, line));
+  return lookup(ctx.statByLevel, line, levelOf(player, line));
+}
+
+function cheapestUpgrade(
+  ctx: PlayerContext,
+  player: PlayerState,
+  lines: readonly UpgradeLineDef[],
+): UpgradeOffer | null {
+  let best: UpgradeOffer | null = null;
+  for (const line of lines) {
+    const level = levelOf(player, line);
+    if (level >= line.maxLevel) continue;
+    const cost = lookup(ctx.costByLevel, line, level);
+    if (best === null || cost < best.cost) best = { line, cost };
+  }
+  return best;
 }
 
 export function currentVenue(ctx: PlayerContext, player: PlayerState): VenueDef {
@@ -171,6 +242,22 @@ export function netRatePerSecond(ctx: PlayerContext, player: PlayerState): numbe
   return Math.max(0, dropsPerSecond(ctx, player) * (grossPerDrop(ctx, player) - 1));
 }
 
+export function rates(ctx: PlayerContext, player: PlayerState): PlayerRates {
+  player.rates ??= {
+    grossPerDrop: grossPerDrop(ctx, player),
+    dropsPerSecond: dropsPerSecond(ctx, player),
+    netPerSecond: netRatePerSecond(ctx, player),
+    crateChancePerDrop: crateChancePerDrop(ctx, player),
+    cheapestVenueUpgrade: cheapestUpgrade(ctx, player, ctx.venueLines),
+  };
+  return player.rates;
+}
+
+function setLevel(player: PlayerState, line: UpgradeLineDef, level: number): void {
+  player.levels.set(line.id, level);
+  player.rates = null;
+}
+
 function mark(player: PlayerState, id: MilestoneId): void {
   player.milestones[id] ??= player.activeSeconds;
 }
@@ -192,6 +279,7 @@ function grantAlbumCard(ctx: PlayerContext, player: PlayerState, rarity: RarityI
     if (set.items.every((i) => player.albumCards.has(i.id))) {
       player.completedSets.add(set.id);
       player.albumBonus += set.globalBonus;
+      player.rates = null;
       player.stars += ctx.config.season.starsPerAlbumSet;
       mark(player, 'firstAlbumSet');
     }
@@ -213,13 +301,14 @@ function openCrate(ctx: PlayerContext, player: PlayerState, scripted: boolean): 
   const reward = config.crateRewards[rarity];
   player.crates += 1;
   mark(player, 'firstCrate');
-  earn(player, reward.incomeSeconds * netRatePerSecond(ctx, player));
+  earn(player, reward.incomeSeconds * rates(ctx, player).netPerSecond);
   player.pearls += reward.pearls;
   player.keys += reward.keys;
   player.tickets += reward.tickets;
   player.stars += config.season.starsPerCrate;
   if (forceCharm || rng.nextInt(ODDS_SCALE) < reward.charmChance) {
     player.charms += 1;
+    player.rates = null;
     mark(player, 'firstCharm');
   }
   if (reward.albumCard) grantAlbumCard(ctx, player, rarity);
@@ -233,35 +322,21 @@ function crateChancePerDrop(ctx: PlayerContext, player: PlayerState): number {
 }
 
 function buyUpgrades(ctx: PlayerContext, player: PlayerState): void {
-  const venueLines = ctx.config.upgradeLines.filter((l) => l.scope === 'venue');
   for (;;) {
-    let best: { line: UpgradeLineDef; cost: number } | null = null;
-    for (const line of venueLines) {
-      const level = levelOf(player, line);
-      if (level >= line.maxLevel) continue;
-      const cost = upgradeCost(line, level);
-      if (best === null || cost < best.cost) best = { line, cost };
-    }
+    const best = rates(ctx, player).cheapestVenueUpgrade;
     if (best === null || player.coins - best.cost < ctx.model.dropReserve) return;
     player.coins -= best.cost;
-    player.levels.set(best.line.id, levelOf(player, best.line) + 1);
+    setLevel(player, best.line, levelOf(player, best.line) + 1);
     mark(player, 'firstUpgrade');
   }
 }
 
 function buyFamilyOffice(ctx: PlayerContext, player: PlayerState): void {
-  const globalLines = ctx.config.upgradeLines.filter((l) => l.scope === 'global');
   for (;;) {
-    let best: { line: UpgradeLineDef; cost: number } | null = null;
-    for (const line of globalLines) {
-      const level = levelOf(player, line);
-      if (level >= line.maxLevel) continue;
-      const cost = upgradeCost(line, level);
-      if (best === null || cost < best.cost) best = { line, cost };
-    }
+    const best = cheapestUpgrade(ctx, player, ctx.globalLines);
     if (best === null || best.cost > player.goldBars) return;
     player.goldBars -= best.cost;
-    player.levels.set(best.line.id, levelOf(player, best.line) + 1);
+    setLevel(player, best.line, levelOf(player, best.line) + 1);
   }
 }
 
@@ -278,9 +353,8 @@ function tryAscend(ctx: PlayerContext, player: PlayerState): void {
   if (venue.order === 1) mark(player, 'ascendVenue1');
   if (venue.order === 2) mark(player, 'ascendVenue2');
   player.venueIndex += 1;
-  for (const line of ctx.config.upgradeLines) {
-    if (line.scope === 'venue') player.levels.delete(line.id);
-  }
+  for (const line of ctx.venueLines) player.levels.delete(line.id);
+  player.rates = null;
   buyFamilyOffice(ctx, player);
   player.venueWinnings = 0;
   player.coins = stat(ctx, player, 'startingCoins');
@@ -290,9 +364,12 @@ function tryAscend(ctx: PlayerContext, player: PlayerState): void {
 export function activeTick(ctx: PlayerContext, player: PlayerState): void {
   const { model, config } = ctx;
   const dt = model.tickSeconds;
-  player.dropCarry += dropsPerSecond(ctx, player) * dt;
-  const gross = grossPerDrop(ctx, player);
-  const crateChance = crateChancePerDrop(ctx, player);
+  const {
+    dropsPerSecond,
+    grossPerDrop: gross,
+    crateChancePerDrop: crateChance,
+  } = rates(ctx, player);
+  player.dropCarry += dropsPerSecond * dt;
   while (player.dropCarry >= 1 && player.coins >= 1) {
     player.dropCarry -= 1;
     player.coins -= 1;
@@ -314,7 +391,7 @@ export function activeTick(ctx: PlayerContext, player: PlayerState): void {
 
 /** Claim the offline vault after `hoursAway`, as the server would on session start. */
 export function claimOffline(ctx: PlayerContext, player: PlayerState, hoursAway: number): number {
-  const ratePerHour = netRatePerSecond(ctx, player) * 3_600;
+  const ratePerHour = rates(ctx, player).netPerSecond * 3_600;
   const coins = offlineEarnings(
     hoursAway,
     stat(ctx, player, 'offlineHours'),
