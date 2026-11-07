@@ -283,6 +283,7 @@ describe('upgrade feedback', () => {
       delay: (run, ms) => {
         delays.push(ms);
         run();
+        return () => undefined;
       },
     });
     events.emit('upgrade:purchased', { lineId: 'dropRate', level: 1, wallet: walletWith(1) });
@@ -291,6 +292,36 @@ describe('upgrade feedback', () => {
 
     events.emit('upgrade:rejected', { lineId: 'dropRate', level: 2, reason: 'offline' });
     expect(notices).toEqual([UPGRADE_STRINGS.fr.rejected.offline]);
+  });
+
+  it('silences chime notes still pending when it is disposed', () => {
+    const i18n = createI18n({ language: 'en', resources: { en: {}, fr: {}, de: {} } });
+    registerUpgradeStrings(i18n);
+    const events = createBus<UpgradeEvents>();
+    const played: ImpactEvent[] = [];
+    const notices: string[] = [];
+    const queued = new Map<number, () => void>();
+    let nextId = 0;
+    const dispose = bindUpgradeFeedback({
+      events,
+      i18n,
+      audio: () => ({ playImpact: (event) => played.push(event) }),
+      notify: (message) => notices.push(message),
+      delay: (run, ms) => {
+        const id = nextId++;
+        if (ms === 0) run();
+        else queued.set(id, run);
+        return () => queued.delete(id);
+      },
+    });
+    events.emit('upgrade:purchased', { lineId: 'dropRate', level: 1, wallet: walletWith(1) });
+    expect(played).toEqual([PURCHASE_CHIME[0]?.sound]);
+    expect(queued.size).toBe(PURCHASE_CHIME.length - 1);
+
+    dispose();
+    expect(queued.size).toBe(0);
+    expect(played).toHaveLength(1);
+    expect(notices).toEqual([]);
   });
 });
 

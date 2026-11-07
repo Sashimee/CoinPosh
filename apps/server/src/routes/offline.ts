@@ -41,8 +41,9 @@ function settledThrough(sql: SqlStorage): number | null {
 }
 
 /**
- * Coins per hour the player actually won (front-edge falls only) during their last
- * stretch of play. Vault payouts are not play, so they never compound into the rate.
+ * Net coins per hour the wallet gained from play (falls won minus drops paid) during the
+ * last stretch of play, matching the balancing sim's net rate. Vault payouts are not play,
+ * so they never compound into the rate.
  */
 export function measuredActiveRate(sql: SqlStorage): number {
   const end = maxAt(
@@ -57,12 +58,13 @@ export function measuredActiveRate(sql: SqlStorage): number {
       `SELECT
          (SELECT MIN(at) FROM ledger WHERE at >= ? AND kind IN (${PLAY_KIND_PLACEHOLDERS})) AS first,
          (SELECT SUM(delta) FROM ledger
-           WHERE at >= ? AND at <= ? AND kind = 'claim.fall'
+           WHERE at >= ? AND at <= ? AND kind IN (${PLAY_KIND_PLACEHOLDERS})
              AND account = 'wallet' AND unit = 'coins') AS won`,
       windowStart,
       ...PLAY_KINDS,
       windowStart,
       end,
+      ...PLAY_KINDS,
     )
     .one();
   const won = row.won ?? 0;

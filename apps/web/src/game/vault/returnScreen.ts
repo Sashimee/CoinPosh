@@ -85,6 +85,8 @@ export function showVaultReturn(options: VaultReturnOptions): VaultReturnScreen 
   );
   const amountSr = h('span', { class: 'cp-sr-only' });
   const away = h('p', { class: 'cp-vault-away' });
+  const credited = h('p', { class: 'cp-vault-away' });
+  credited.hidden = !settlement.capped;
   const capNote = h('p', { class: 'cp-vault-cap' });
   capNote.hidden = !settlement.capped;
   const collectLabel = h('span');
@@ -106,6 +108,7 @@ export function showVaultReturn(options: VaultReturnOptions): VaultReturnScreen 
     amount,
     amountSr,
     away,
+    credited,
     capNote,
     collect,
     skipHint,
@@ -137,6 +140,7 @@ export function showVaultReturn(options: VaultReturnOptions): VaultReturnScreen 
         : t('awayMinutes', { minutes: settlement.away.minutes }),
     ),
   );
+  ctx.own(loc.text(credited, () => t('credited', settlement.credited)));
   ctx.own(
     loc.text(capNote, () => `${t('capped', { hours: settlement.credited.hours })} ${t('hint')}`),
   );
@@ -260,8 +264,11 @@ export function showVaultReturn(options: VaultReturnOptions): VaultReturnScreen 
   } else {
     root.tabIndex = -1;
     root.focus({ preventScroll: true });
-    requestAnimationFrame(() => {
+    const doorFrame = requestAnimationFrame(() => {
       door.classList.add('is-open');
+    });
+    ctx.own(() => {
+      cancelAnimationFrame(doorFrame);
     });
     ctx.own(schedule(frame));
   }
@@ -281,7 +288,8 @@ export function showVaultReturn(options: VaultReturnOptions): VaultReturnScreen 
 
 const COIN_LIGHT = rivieraTokens.champagne;
 const COIN_BASE = rivieraTokens['gold-brushed'];
-const COIN_RIM = '#8A6A1E';
+const COIN_RIM_SHADE = rivieraTokens['navy-lacquer'];
+const COIN_RIM_SHADE_ALPHA = 0.4;
 
 function draw(paint: CanvasRenderingContext2D, coins: readonly AvalancheCoin[]): void {
   paint.clearRect(0, 0, CHAMBER_WIDTH, CHAMBER_HEIGHT);
@@ -294,8 +302,12 @@ function draw(paint: CanvasRenderingContext2D, coins: readonly AvalancheCoin[]):
     paint.rotate(Math.sin(coin.angle) * 0.25);
     paint.beginPath();
     paint.ellipse(0, height * 0.18, coin.radius, height / 2, 0, 0, Math.PI * 2);
-    paint.fillStyle = COIN_RIM;
+    paint.fillStyle = COIN_BASE;
     paint.fill();
+    paint.globalAlpha = COIN_RIM_SHADE_ALPHA;
+    paint.fillStyle = COIN_RIM_SHADE;
+    paint.fill();
+    paint.globalAlpha = 1;
     const shine = paint.createLinearGradient(-coin.radius, -height, coin.radius, height);
     shine.addColorStop(0, coin.tint > 0.5 ? COIN_LIGHT : COIN_BASE);
     shine.addColorStop(1, COIN_BASE);

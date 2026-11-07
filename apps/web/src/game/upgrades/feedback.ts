@@ -26,18 +26,31 @@ export interface UpgradeFeedbackTargets {
   /** Read on every event, so audio attached after the first gesture is picked up. */
   readonly audio: () => Pick<UiAudio, 'playImpact'> | null;
   readonly notify: (message: string) => void;
-  readonly delay?: (run: () => void, ms: number) => void;
+  /** Schedules `run` after `ms` and returns a function that cancels it if it has not run yet. */
+  readonly delay?: (run: () => void, ms: number) => () => void;
 }
 
 export function bindUpgradeFeedback(targets: UpgradeFeedbackTargets): () => void {
   const delay =
     targets.delay ??
     ((run: () => void, ms: number) => {
-      setTimeout(run, ms);
+      const handle = setTimeout(run, ms);
+      return () => {
+        clearTimeout(handle);
+      };
     });
+  /** Notes not yet played; the cancel is null only while `delay` is scheduling it. */
+  const pending = new Map<number, (() => void) | null>();
+  let nextNote = 0;
   const offPurchased = targets.events.on('upgrade:purchased', () => {
     for (const note of PURCHASE_CHIME) {
-      delay(() => targets.audio()?.playImpact(note.sound), note.delayMs);
+      const id = nextNote++;
+      pending.set(id, null);
+      const cancel = delay(() => {
+        pending.delete(id);
+        targets.audio()?.playImpact(note.sound);
+      }, note.delayMs);
+      if (pending.has(id)) pending.set(id, cancel);
     }
   });
   const offRejected = targets.events.on('upgrade:rejected', ({ reason }) => {
@@ -46,5 +59,7 @@ export function bindUpgradeFeedback(targets: UpgradeFeedbackTargets): () => void
   return () => {
     offPurchased();
     offRejected();
+    for (const cancel of pending.values()) cancel?.();
+    pending.clear();
   };
 }
