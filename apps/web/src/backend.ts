@@ -9,6 +9,10 @@ export function detectBackend(backend: object): RenderBackend {
   return 'isWebGPUBackend' in backend && backend.isWebGPUBackend === true ? 'webgpu' : 'webgl2';
 }
 
+export function fallbackBackend(failed: RenderBackend): RenderBackend | null {
+  return failed === 'webgpu' ? 'webgl2' : null;
+}
+
 export function reportBackend(kind: RenderBackend, logger: BackendLogger = console): void {
   if (kind === 'webgpu') {
     logger.info('[CoinPosh] Renderer backend: WebGPU');

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { detectBackend, reportBackend } from './backend.ts';
+import { detectBackend, fallbackBackend, reportBackend } from './backend.ts';
 
 function recordingLogger() {
   return { info: vi.fn<(message: string) => void>(), warn: vi.fn<(message: string) => void>() };
@@ -14,6 +14,16 @@ describe('detectBackend', () => {
     expect(detectBackend({})).toBe('webgl2');
     expect(detectBackend({ isWebGPUBackend: false })).toBe('webgl2');
     expect(detectBackend({ isWebGLBackend: true })).toBe('webgl2');
+  });
+});
+
+describe('fallbackBackend', () => {
+  it('rebuilds on WebGL2 when the WebGPU backend fails to start or loses its device', () => {
+    expect(fallbackBackend('webgpu')).toBe('webgl2');
+  });
+
+  it('has nothing left to fall back to once WebGL2 has failed', () => {
+    expect(fallbackBackend('webgl2')).toBeNull();
   });
 });
 
