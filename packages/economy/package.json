@@ -12,6 +12,9 @@
     "test": "vitest run",
     "sim": "node sim/cli.ts"
   },
+  "dependencies": {
+    "@coinposh/shared": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "24.19.2",
     "fast-check": "4.10.2",
