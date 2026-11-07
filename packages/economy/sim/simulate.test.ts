@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { economyConfig } from '../src/config/index.ts';
 import { simModel } from './model.ts';
@@ -21,14 +22,27 @@ describe('percentile', () => {
 describe('runSimulation', () => {
   const options = { days: 3, players: 12, seed: 5 };
   const result = runSimulation(economyConfig, simModel, options);
+  // Seed handling is per player, so determinism and seed variance need only one player;
+  // the full 12-player cohort above is reserved for the pacing assertions.
+  const small = { days: 2, players: 1, seed: 5 };
 
   it('is deterministic for a seed', () => {
-    expect(runSimulation(economyConfig, simModel, options)).toEqual(result);
+    fc.assert(
+      fc.property(fc.nat(), (seed) => {
+        const run = { ...small, seed };
+        expect(runSimulation(economyConfig, simModel, run)).toEqual(
+          runSimulation(economyConfig, simModel, run),
+        );
+      }),
+      { numRuns: 5 },
+    );
   });
 
   it('varies with the seed', () => {
-    const other = runSimulation(economyConfig, simModel, { ...options, seed: 6 });
-    expect(other.active.firstAlbumSet).not.toEqual(result.active.firstAlbumSet);
+    const a = runSimulation(economyConfig, simModel, small);
+    const b = runSimulation(economyConfig, simModel, { ...small, seed: 6 });
+    expect(b.active.firstAlbumSet).not.toEqual(a.active.firstAlbumSet);
+    expect(b.casualDays).not.toEqual(a.casualDays);
   });
 
   it('evaluates every pacing target in 02-ECONOMY.md', () => {
