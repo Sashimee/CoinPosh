@@ -1,6 +1,7 @@
 import { HEADERS, type CoinId, type MintedCoin } from '@coinposh/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Connectivity, Scheduler } from './connectivity.ts';
+import { MOCK_RULES } from './mock/rules.ts';
 import type { MockServer } from './mock/server.ts';
 import { Outbox } from './outbox.ts';
 import { TableSync, type TableEvent } from './tableSync.ts';
@@ -73,8 +74,9 @@ function dropNow(sync: TableSync): MintedCoin {
   return coin;
 }
 
+/** Lets the coin cross the table first, as the server's travel envelope requires. */
 function fallNow(sync: TableSync, coinId: CoinId): void {
-  time.advance(100);
+  time.advance(MOCK_RULES.minFallMsAfterDrop);
   sync.claimFall(coinId, time.tick(), 'front');
 }
 
@@ -192,6 +194,46 @@ describe('TableSync offline queue', () => {
       wallet: serverWallet(server, requirePlayerId(alice)),
       provisionalCoins: 0,
     });
+    expectConserved();
+  });
+
+  it('expires a queue replayed after more than the claim expiry, crediting nothing', async () => {
+    const { sync, events } = await openTable();
+    const settled = dropNow(sync);
+    await sync.flush();
+    server.setNetwork('down');
+    fallNow(sync, settled.id);
+    const offlineDrop = dropNow(sync);
+    fallNow(sync, offlineDrop.id);
+    await sync.flush();
+    expect(sync.pending).toBe(3);
+
+    time.advance(MOCK_RULES.claimExpiryMs + 1_000);
+    server.setNetwork('up');
+    sync.hydrate(await alice.client.call('state'));
+    await sync.flush();
+    expect(sync.pending).toBe(0);
+    expect(sync.status).toBe('synced');
+    const claimResults = events.flatMap((event) =>
+      event.type === 'claimSettled' ? [event.result] : [],
+    );
+    expect(claimResults).toEqual([
+      { status: 'rejected', reason: 'expired' },
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'dropRejected',
+        coinId: offlineDrop.id,
+        error: expect.objectContaining({ code: 'conflict' }) as unknown,
+      }),
+    );
+    expect(credits(settled.id)).toBe(0);
+    expect(credits(offlineDrop.id)).toBe(0);
+    expect(sync.balance?.provisionalCoins).toBe(0);
+    const { table } = await alice.client.call('state');
+    expect(table.coins.map((coin) => coin.id)).toContain(settled.id);
+    expect(table.buffer.map((coin) => coin.id)).toContain(offlineDrop.id);
     expectConserved();
   });
 

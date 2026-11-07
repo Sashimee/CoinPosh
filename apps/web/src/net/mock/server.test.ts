@@ -5,6 +5,7 @@ import {
   ErrorEnvelopeSchema,
   GuestAuthResponseSchema,
   StateResponseSchema,
+  type Claim,
   type ClaimResult,
   type CoinId,
   type MintedCoin,
@@ -60,14 +61,27 @@ async function dropBuffered(player: Player = alice): Promise<MintedCoin> {
   return response.coin;
 }
 
+/** Lets a freshly dropped coin cross the table, as it physically has to before it can fall. */
+function travel(): void {
+  time.advance(MOCK_RULES.minFallMsAfterDrop);
+}
+
 async function claimFall(coinId: CoinId, player: Player = alice): Promise<ClaimResult> {
-  time.advance(100);
+  travel();
   const { results } = await player.client.call('tableClaims', {
     body: { claims: [{ kind: 'fall', coinId, tick: time.tick(), edge: 'front' }] },
   });
   const [result] = results;
   if (result === undefined) throw new Error('Expected one claim result.');
   return result;
+}
+
+async function claimAt(claims: readonly Claim[], player: Player = alice) {
+  return (await player.client.call('tableClaims', { body: { claims: [...claims] } })).results;
+}
+
+function fallAt(coin: MintedCoin, tick: number): Claim {
+  return { kind: 'fall', coinId: coin.id, tick, edge: 'front' };
 }
 
 async function accessToken(player: Player = alice): Promise<string> {
@@ -113,21 +127,15 @@ describe('mock server: value is minted and conserved server-side', () => {
     expect(seqs).toEqual(seqs.map((_, i) => i));
   });
 
-  it('applies the cascade multiplier from the economy config, never from the client', async () => {
+  it('applies the cascade multiplier to plausible, forward-moving falls after the travel time', async () => {
     const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
-    time.advance(100);
-    const tick = time.tick();
-    const { results } = await alice.client.call('tableClaims', {
-      body: {
-        claims: coins.map((coin) => ({
-          kind: 'fall' as const,
-          coinId: coin.id,
-          tick,
-          edge: 'front' as const,
-        })),
-      },
-    });
+    travel();
+    const start = time.tick();
+    const gap = Math.floor(((cascade.windowMs / 1000) * MOCK_RULES.ticksPerSecond) / 2);
+    const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * gap)));
     const third = cascadeTierFor(3, cascade);
+    expect(third).not.toBeNull();
+    expect(results.map((result) => result.status)).toEqual(['accepted', 'accepted', 'accepted']);
     expect(results[2]).toEqual({
       status: 'accepted',
       credited: Math.floor((coins[2]?.value ?? 0) * (third?.multiplier ?? 1)),
@@ -137,9 +145,25 @@ describe('mock server: value is minted and conserved server-side', () => {
     expectConserved();
   });
 
+  it('breaks the cascade when falls are further apart than the cascade window', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    travel();
+    const start = time.tick();
+    const apart = Math.ceil((cascade.windowMs / 1000) * MOCK_RULES.ticksPerSecond) + 1;
+    const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * apart)));
+    expect(results).toEqual(
+      coins.map((coin) => ({
+        status: 'accepted',
+        credited: coin.value,
+        cascade: null,
+        minted: null,
+      })),
+    );
+  });
+
   it('credits nothing for coins that slide off the side gutters', async () => {
     const coin = await dropBuffered();
-    time.advance(100);
+    travel();
     const { results } = await alice.client.call('tableClaims', {
       body: { claims: [{ kind: 'fall', coinId: coin.id, tick: time.tick(), edge: 'left' }] },
     });
@@ -162,7 +186,7 @@ describe('mock server: value is minted and conserved server-side', () => {
 
   it('fuses three same-tier coins into the next tier at the economy fusion value', async () => {
     const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
-    time.advance(100);
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
     const { results } = await alice.client.call('tableClaims', {
       body: {
         claims: [
@@ -257,7 +281,7 @@ describe('mock server: attacks from a compromised client', () => {
     expect(await claimFall(coin.id)).toEqual({ status: 'rejected', reason: 'already_claimed' });
 
     const other = await dropBuffered();
-    time.advance(100);
+    travel();
     const tick = time.tick();
     const { results } = await alice.client.call('tableClaims', {
       body: {
@@ -547,26 +571,134 @@ describe('mock server: attacks from a compromised client', () => {
     expect(refused).toMatchObject({ code: 'bad_request' });
   });
 
-  it('banks at most maxBankedMs of a long pause for a later burst', async () => {
+  it('expires a claim whose tick is older than the 10-minute claim expiry, however late it arrives', async () => {
+    const coin = await dropBuffered();
+    travel();
+    const stale = time.tick();
+    time.advance(MOCK_RULES.claimExpiryMs + 1_000);
+    expect(await claimAt([fallAt(coin, stale)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    time.advance(3 * 86_400_000);
+    expect(await claimAt([fallAt(coin, stale + 1)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(0);
+    expect((await claimFall(coin.id)).status).toBe('accepted');
+    expectConserved();
+  });
+
+  it('accepts a queued claim still inside the expiry window', async () => {
+    const coin = await dropBuffered();
+    travel();
+    const queued = time.tick();
+    time.advance(MOCK_RULES.claimExpiryMs - 1_000);
+    expect((await claimAt([fallAt(coin, queued)]))[0]?.status).toBe('accepted');
+  });
+
+  it('refuses a buffered-coin drop older than the expiry and keeps the coin in the buffer', async () => {
     await dropBuffered();
-    const pausedAt = time.tick();
-    time.advance(60 * 60_000);
-    const forged = 'coin_AAAAAAAAAAAAAAAA' as CoinId;
-    const claimAt = async (tick: number) => {
-      const { results } = await alice.client.call('tableClaims', {
-        body: { claims: [{ kind: 'fall', coinId: forged, tick, edge: 'front' }] },
-      });
-      return results[0];
-    };
-    const ticksPerMs = MOCK_RULES.ticksPerSecond / 1000;
-    expect(await claimAt(pausedAt + 1)).toEqual({ status: 'rejected', reason: 'unknown_entity' });
-    const withinBank = pausedAt + 1 + Math.floor((MOCK_RULES.maxBankedMs - 1_000) * ticksPerMs);
-    expect(await claimAt(withinBank)).toEqual({ status: 'rejected', reason: 'unknown_entity' });
-    const pastBank =
-      pausedAt +
-      1 +
-      Math.ceil((MOCK_RULES.maxBankedMs + MOCK_RULES.tickSlackMs + 1_000) * ticksPerMs);
-    expect(await claimAt(pastBank)).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    const stale = time.tick() + MOCK_RULES.minTicksBetweenDrops;
+    time.advance(MOCK_RULES.claimExpiryMs + 1_000);
+    const coin = await bufferedCoin();
+    await expect(
+      alice.client.call('tableDrop', { body: { x: 0, tick: stale, coinId: coin.id } }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect((await state()).table.buffer.map((buffered) => buffered.id)).toContain(coin.id);
+    expect(await claimFall(coin.id)).toEqual({ status: 'rejected', reason: 'not_on_table' });
+    expectConserved();
+  });
+
+  it('rejects a fall claimed in the same instant as its drop (no table crossing)', async () => {
+    const coin = await bufferedCoin();
+    time.advance(100);
+    const tick = time.tick();
+    await alice.client.call('tableDrop', { body: { x: 0, tick, coinId: coin.id } });
+    const before = server.ledger().length;
+    expect(await claimAt([fallAt(coin, tick)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    const justShort =
+      tick + Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond) - 1;
+    time.advance(MOCK_RULES.minFallMsAfterDrop);
+    expect(await claimAt([fallAt(coin, justShort)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    expect(server.ledger()).toHaveLength(before);
+    expect((await claimFall(coin.id)).status).toBe('accepted');
+    expectConserved();
+  });
+
+  it('defeats a drop-then-claim farming bot: no credit or bullion without the table crossing', async () => {
+    const before = (await state()).wallet;
+    const results: ClaimResult[] = [];
+    for (let i = 0; i < 8; i++) {
+      const coin = await dropBuffered();
+      results.push(...(await claimAt([fallAt(coin, time.tick())])));
+    }
+    expect(results).toEqual(results.map(() => ({ status: 'rejected', reason: 'over_envelope' })));
+    expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(0);
+    expect((await state()).wallet.bullion).toBe(before.bullion);
+    expectConserved();
+  });
+
+  it('caps a burst of same-tick claims and never multiplies it into a high cascade', async () => {
+    const coins: MintedCoin[] = [];
+    for (let i = 0; i < 10; i++) coins.push(await dropBuffered());
+    travel();
+    const tick = time.tick();
+    const results = await claimAt(coins.map((coin) => fallAt(coin, tick)));
+    const { maxPerTick } = MOCK_RULES.fallEnvelope;
+    expect(results.slice(0, maxPerTick).map((result) => result.status)).toEqual(
+      Array.from({ length: maxPerTick }, () => 'accepted'),
+    );
+    expect(results.slice(maxPerTick)).toEqual(
+      coins.slice(maxPerTick).map(() => ({ status: 'rejected', reason: 'over_envelope' })),
+    );
+    const best = cascadeTierFor(maxPerTick, cascade);
+    expect(results[maxPerTick - 1]).toMatchObject({ cascade: best?.id ?? null });
+    expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(
+      maxPerTick,
+    );
+    expectConserved();
+  });
+
+  it('caps falls per sliding window even when the bot spreads its ticks', async () => {
+    const { max, windowMs } = MOCK_RULES.fallEnvelope;
+    const coins: MintedCoin[] = [];
+    while (coins.length < max + 3) coins.push(await dropBuffered());
+    travel();
+    const start = time.tick();
+    const windowTicks = (windowMs / 1000) * MOCK_RULES.ticksPerSecond;
+    const step = Math.max(1, Math.floor(windowTicks / coins.length));
+    const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * step)));
+    expect(results.filter((result) => result.status === 'accepted')).toHaveLength(max);
+    expect(results.at(-1)).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    expectConserved();
+  });
+
+  it('rejects claim ticks that go backwards, so out-of-order ticks cannot extend a cascade', async () => {
+    const first = await dropBuffered();
+    const second = await dropBuffered();
+    travel();
+    const tick = time.tick();
+    expect((await claimAt([fallAt(first, tick)]))[0]?.status).toBe('accepted');
+    expect(await claimAt([fallAt(second, tick - 1)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    expect((await claimAt([fallAt(second, tick)]))[0]?.status).toBe('accepted');
+  });
+
+  it('rejects a fusion of coins that have not landed yet', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    const ids = coins.map((coin) => coin.id) as [CoinId, CoinId, CoinId];
+    expect(await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
+    expect((await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }]))[0]?.status).toBe(
+      'accepted',
+    );
   });
 
   it('enforces the minimum spacing between drops (over-envelope bot)', async () => {
@@ -639,7 +771,7 @@ describe('mock server: attacks from a compromised client', () => {
 
   it('refuses fusing coins of different tiers', async () => {
     const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
-    time.advance(100);
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
     const fused = await alice.client.call('tableClaims', {
       body: {
         claims: [
@@ -654,7 +786,7 @@ describe('mock server: attacks from a compromised client', () => {
     const silver = fused.results[0]?.status === 'accepted' ? fused.results[0].minted : null;
     if (silver === null) throw new Error('Expected a silver coin.');
     const coppers = [await dropBuffered(), await dropBuffered()];
-    time.advance(100);
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
     const { results } = await alice.client.call('tableClaims', {
       body: {
         claims: [
@@ -850,7 +982,7 @@ describe('mock server: every endpoint honours its shared contract', () => {
       token,
     });
     const parsed = DropResponseSchema.parse(drop.body);
-    time.advance(100);
+    travel();
     const claims = await forge(server, alice.device, {
       method: 'POST',
       path: '/v1/table/claims',

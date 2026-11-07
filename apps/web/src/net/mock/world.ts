@@ -103,6 +103,7 @@ interface CoinRecord {
   coin: MintedCoin;
   place: 'buffer' | 'table';
   spawnTick: number | null;
+  origin: 'drop' | 'fusion';
 }
 
 interface CrateRecord {
@@ -136,7 +137,12 @@ export interface MockPlayer {
   frozenUntil: number | null;
   drops: number;
   lastDropTick: number | null;
-  tickAnchor: { tick: number; at: number } | null;
+  tickAnchor: { tick: number; at: number; earliestAt: number } | null;
+  /** Highest tick of an accepted claim: claim ticks only move forward. */
+  lastClaimTick: number | null;
+  /** Ticks of recently accepted falls (any edge) and fusions, oldest first. */
+  recentFalls: number[];
+  recentFusions: number[];
   cascadeChain: { lastTick: number; count: number } | null;
   lifetimeValue: number;
   lifetimeBullion: number;
@@ -148,7 +154,32 @@ export interface MockPlayer {
 }
 
 const DROP_TIER = coinTiers[0];
-const CASCADE_WINDOW_TICKS = Math.round((cascade.windowMs / 1000) * MOCK_RULES.ticksPerSecond);
+const MS_PER_TICK = 1000 / MOCK_RULES.ticksPerSecond;
+
+function ticksFor(ms: number): number {
+  return Math.ceil(ms / MS_PER_TICK);
+}
+
+const CASCADE_WINDOW_TICKS = ticksFor(cascade.windowMs);
+const MIN_FALL_TICKS = {
+  drop: ticksFor(MOCK_RULES.minFallMsAfterDrop),
+  fusion: ticksFor(MOCK_RULES.minFallMsAfterFusion),
+} as const;
+const MIN_FUSION_TICKS = ticksFor(MOCK_RULES.minFusionMsAfterSpawn);
+const FALL_WINDOW_TICKS = ticksFor(MOCK_RULES.fallEnvelope.windowMs);
+const FUSION_WINDOW_TICKS = ticksFor(MOCK_RULES.fusionEnvelope.windowMs);
+
+type TickVerdict = 'ok' | 'ahead' | 'expired';
+
+/**
+ * Drops ticks that slid out of the window ending at `tick`, then says whether one more event
+ * still fits under `max`. Claim ticks only move forward, so `recent` stays sorted.
+ */
+function admitToWindow(recent: number[], tick: number, windowTicks: number, max: number): boolean {
+  const firstInWindow = recent.findIndex((seen) => seen > tick - windowTicks);
+  recent.splice(0, firstInWindow === -1 ? recent.length : firstInWindow);
+  return recent.length < max;
+}
 /** Charm kinds are the album's charm entries until the economy config grows a charm catalog. */
 const ALBUM_ITEMS: readonly AlbumItem[] = album.flatMap((set): readonly AlbumItem[] => set.items);
 const CHARM_TYPES = ALBUM_ITEMS.filter((item) => item.id.endsWith('Charm'));
@@ -255,6 +286,9 @@ export class MockWorld {
       drops: 0,
       lastDropTick: null,
       tickAnchor: null,
+      lastClaimTick: null,
+      recentFalls: [],
+      recentFusions: [],
       cascadeChain: null,
       lifetimeValue: 0,
       lifetimeBullion: 0,
@@ -326,13 +360,14 @@ export class MockWorld {
     value: number,
     place: CoinRecord['place'],
     spawnTick: number | null,
+    origin: CoinRecord['origin'] = 'drop',
   ) {
     const coin: MintedCoin = {
       id: CoinIdSchema.parse(entityId(ENTITY_ID_PREFIXES.coin)),
       tier,
       value,
     };
-    player.coins.set(coin.id, { coin, place, spawnTick });
+    player.coins.set(coin.id, { coin, place, spawnTick, origin });
     return coin;
   }
 
@@ -365,22 +400,44 @@ export class MockWorld {
   }
 
   /**
-   * Ticks may never run ahead of server time (a sped-up client), and paused time banks at most
-   * `maxBankedMs`, so a long pause cannot be spent later as a burst.
+   * Maps a tick to server time. The first tick ever seen may have waited in an offline queue, but
+   * it cannot predate the player's first buffer nor be older than the claim expiry. The anchor
+   * starts at its arrival and may only move earlier, within that bound, as later ticks of the
+   * same backlog show how long it waited. It never moves later, so a stale queue cannot re-anchor
+   * itself as fresh, and a sped-up client is caught as soon as the bound is used up.
    */
-  #tickAhead(player: MockPlayer, tick: number, now: number): boolean {
-    const msPerTick = 1000 / MOCK_RULES.ticksPerSecond;
-    let anchor = player.tickAnchor;
+  #tickClock(player: MockPlayer, tick: number, now: number): TickVerdict {
+    const anchor = player.tickAnchor;
     if (anchor === null) {
-      player.tickAnchor = { tick, at: now };
-      return false;
+      player.tickAnchor = {
+        tick,
+        at: now,
+        earliestAt: Math.max(player.createdAt, now - MOCK_RULES.claimExpiryMs),
+      };
+      return 'ok';
     }
-    const implied = anchor.at + (tick - anchor.tick) * msPerTick;
-    if (implied < now - MOCK_RULES.maxBankedMs) {
-      anchor = { tick, at: now - MOCK_RULES.maxBankedMs };
-      player.tickAnchor = anchor;
+    const implied = anchor.at + (tick - anchor.tick) * MS_PER_TICK;
+    if (implied > now + MOCK_RULES.tickSlackMs) {
+      const at = anchor.at - (implied - now - MOCK_RULES.tickSlackMs);
+      if (at < anchor.earliestAt) return 'ahead';
+      anchor.at = at;
+      return 'ok';
     }
-    return anchor.at + (tick - anchor.tick) * msPerTick > now + MOCK_RULES.tickSlackMs;
+    if (implied < now - MOCK_RULES.claimExpiryMs) return 'expired';
+    return 'ok';
+  }
+
+  #checkActionTick(player: MockPlayer, action: string, tick: number, now: number): void {
+    const verdict = this.#tickClock(player, tick, now);
+    if (verdict === 'ahead') {
+      throw new MockFailure('bad_request', `${action} tick runs ahead of the server clock.`);
+    }
+    if (verdict === 'expired') {
+      throw new MockFailure(
+        'conflict',
+        `${action} tick is older than the ${MOCK_RULES.claimExpiryMs / 60_000}-minute expiry.`,
+      );
+    }
   }
 
   #decorum(player: MockPlayer, now: number): number {
@@ -504,9 +561,7 @@ export class MockWorld {
     },
 
     tableDrop: (player, body, _params, now) => {
-      if (this.#tickAhead(player, body.tick, now)) {
-        throw new MockFailure('bad_request', 'Drop tick runs ahead of the server clock.');
-      }
+      this.#checkActionTick(player, 'Drop', body.tick, now);
       if (
         player.lastDropTick !== null &&
         body.tick < player.lastDropTick + MOCK_RULES.minTicksBetweenDrops
@@ -575,9 +630,7 @@ export class MockWorld {
       if (player.frozenUntil !== null) {
         throw new MockFailure('table_frozen', 'The Concierge has frozen the table for a moment.');
       }
-      if (this.#tickAhead(player, body.tick, now)) {
-        throw new MockFailure('bad_request', 'Nudge tick runs ahead of the server clock.');
-      }
+      this.#checkActionTick(player, 'Nudge', body.tick, now);
       player.decorumPoints += MOCK_RULES.decorumPerNudge;
       const capacity = stat(player, 'decorumCapacity');
       if (player.decorumPoints >= capacity) {
@@ -736,6 +789,8 @@ export class MockWorld {
       player.lifetimeBullion = 0;
       player.lifetimeValue = 0;
       player.cascadeChain = null;
+      player.recentFalls = [];
+      player.recentFusions = [];
       this.#credit(player, now, 'ascend.startingCoins', {
         coins: Math.floor(stat(player, 'startingCoins')),
       });
@@ -825,6 +880,11 @@ export class MockWorld {
     }),
   };
 
+  /**
+   * Claims are checked against server state only: the tick must map to fresh server time and
+   * move forward, the coin must have had time to reach the edge since it spawned, and falls and
+   * fusions stay inside a sliding window of plausible throughput (01-ARCHITECTURE.md Layer 2).
+   */
   #claim(player: MockPlayer, claim: Claim, now: number): ClaimResult {
     const reject = (
       reason: Extract<ClaimResult, { status: 'rejected' }>['reason'],
@@ -832,7 +892,12 @@ export class MockWorld {
       status: 'rejected',
       reason,
     });
-    if (this.#tickAhead(player, claim.tick, now)) return reject('over_envelope');
+    const verdict = this.#tickClock(player, claim.tick, now);
+    if (verdict === 'ahead') return reject('over_envelope');
+    if (verdict === 'expired') return reject('expired');
+    if (player.lastClaimTick !== null && claim.tick < player.lastClaimTick) {
+      return reject('over_envelope');
+    }
     switch (claim.kind) {
       case 'fall': {
         const record = player.coins.get(claim.coinId);
@@ -840,17 +905,31 @@ export class MockWorld {
           return reject(player.gone.has(claim.coinId) ? 'already_claimed' : 'unknown_entity');
         if (
           record.place !== 'table' ||
-          (record.spawnTick !== null && claim.tick < record.spawnTick)
+          record.spawnTick === null ||
+          claim.tick < record.spawnTick
         ) {
           return reject('not_on_table');
         }
+        if (claim.tick < record.spawnTick + MIN_FALL_TICKS[record.origin]) {
+          return reject('over_envelope');
+        }
+        const { max, maxPerTick } = MOCK_RULES.fallEnvelope;
+        const sameTick = player.recentFalls.filter((tick) => tick === claim.tick).length;
+        if (
+          sameTick >= maxPerTick ||
+          !admitToWindow(player.recentFalls, claim.tick, FALL_WINDOW_TICKS, max)
+        ) {
+          return reject('over_envelope');
+        }
+        player.recentFalls.push(claim.tick);
+        player.lastClaimTick = claim.tick;
         player.coins.delete(claim.coinId);
         player.gone.add(claim.coinId);
         if (claim.edge !== 'front')
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
         const chain = player.cascadeChain;
         const count =
-          chain !== null && Math.abs(claim.tick - chain.lastTick) <= CASCADE_WINDOW_TICKS
+          chain !== null && claim.tick - chain.lastTick <= CASCADE_WINDOW_TICKS
             ? chain.count + 1
             : 1;
         player.cascadeChain = { lastTick: claim.tick, count };
@@ -861,16 +940,19 @@ export class MockWorld {
       }
       case 'fusion': {
         const records: CoinRecord[] = [];
+        let unsettled = false;
         for (const id of claim.coinIds) {
           const record = player.coins.get(id);
           if (record === undefined)
             return reject(player.gone.has(id) ? 'already_claimed' : 'unknown_entity');
           if (
             record.place !== 'table' ||
-            (record.spawnTick !== null && claim.tick < record.spawnTick)
+            record.spawnTick === null ||
+            claim.tick < record.spawnTick
           ) {
             return reject('not_on_table');
           }
+          if (claim.tick < record.spawnTick + MIN_FUSION_TICKS) unsettled = true;
           records.push(record);
         }
         const tier = records[0]?.coin.tier;
@@ -878,6 +960,19 @@ export class MockWorld {
         if (records.some((record) => record.coin.tier !== tier)) return reject('tier_mismatch');
         const next = nextCoinTier(tier);
         if (next === null) return reject('max_tier');
+        if (
+          unsettled ||
+          !admitToWindow(
+            player.recentFusions,
+            claim.tick,
+            FUSION_WINDOW_TICKS,
+            MOCK_RULES.fusionEnvelope.max,
+          )
+        ) {
+          return reject('over_envelope');
+        }
+        player.recentFusions.push(claim.tick);
+        player.lastClaimTick = claim.tick;
         for (const id of claim.coinIds) {
           player.coins.delete(id);
           player.gone.add(id);
@@ -888,7 +983,7 @@ export class MockWorld {
             fusion,
           ),
         );
-        const minted = this.#mint(player, next, value, 'table', claim.tick);
+        const minted = this.#mint(player, next, value, 'table', claim.tick, 'fusion');
         return { status: 'accepted', credited: 0, cascade: null, minted };
       }
       case 'crate': {
@@ -899,6 +994,7 @@ export class MockWorld {
           );
         }
         if (record.state !== 'table') return reject('already_claimed');
+        player.lastClaimTick = claim.tick;
         if (claim.edge === 'front') {
           record.state = 'openable';
           this.#credit(player, now, 'season.crate', { stars: season.starsPerCrate }, claim.crateId);

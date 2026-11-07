@@ -17,7 +17,7 @@ import { indexedDbStore, memoryStore, type KeyValueStore } from './store.ts';
 import { TableSync } from './tableSync.ts';
 import { fetchTransport, type Transport } from './wire.ts';
 
-export { mountDemoBanner, type Translate } from './demoBanner.ts';
+export { mountDemoBanner, type DemoBannerColors, type Translate } from './demoBanner.ts';
 export { NET_I18N_KEYS, NET_I18N_SOURCE, type NetI18nKey } from './i18nKeys.ts';
 export { resolveNetMode, currentNetMode, type NetMode } from './env.ts';
 export { ApiRequestError, NetworkError } from './errors.ts';

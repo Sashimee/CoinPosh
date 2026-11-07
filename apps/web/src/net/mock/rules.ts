@@ -1,8 +1,5 @@
-/**
- * Demo Mode tuning that `packages/economy` does not define yet. These only shape the in-browser
- * mock; the real server (T-1.07) owns its own values, and each one should move into the
- * economy config once it exists there (requested as a follow-up of T-1.09).
- */
+// TODO(economy): every number here except the transport limits belongs in packages/economy,
+// and ticksPerSecond in packages/sim (TICK_RATE_HZ); tracked in #15 and #9.
 export const MOCK_RULES = {
   /** Pre-minted, pre-paid coins kept ready for instant and offline drops. */
   bufferSize: 12,
@@ -13,17 +10,26 @@ export const MOCK_RULES = {
   conciergeFreezeMs: 6_000,
   ticketsPerPull: 1,
   keysPerSafe: 1,
-  /** Ticks per second of the fixed-step sim (`packages/sim` runs at 60 Hz). */
   ticksPerSecond: 60,
   /** How far a client's tick clock may run ahead of server time before it counts as sped up. */
   tickSlackMs: 1_500,
   /**
-   * Paused sim time (offline, backgrounded tab) that may be replayed faster than real time.
-   * Matches the 10-minute claim expiry, so a queued offline session still settles.
+   * A drop, claim or nudge whose tick maps to a server time older than this has expired
+   * (01-ARCHITECTURE.md: claims expire after 10 minutes). The tick clock never re-anchors, so
+   * a queue held back for longer cannot be passed off as fresh.
    */
-  maxBankedMs: 10 * 60_000,
+  claimExpiryMs: 10 * 60_000,
   /** Two drops closer together than this, in sim ticks, exceed the server-side drop rate cap. */
   minTicksBetweenDrops: 4,
+  /** A dropped coin cannot cross the table to an edge faster than this. */
+  minFallMsAfterDrop: 1_500,
+  /** A fused coin spawns mid-table, so it needs less time to reach an edge. */
+  minFallMsAfterFusion: 250,
+  /** A coin has to land and settle before it can touch two others. */
+  minFusionMsAfterSpawn: 250,
+  /** Sliding window, in sim time, of coins off any edge. */
+  fallEnvelope: { windowMs: 1_000, max: 15, maxPerTick: 3 },
+  fusionEnvelope: { windowMs: 60_000, max: 40 },
   maxBodyBytes: 64 * 1024,
   /** Per-player request envelope; a legitimate client peaks near 25 requests a second. */
   maxRequestsPerSecond: 40,

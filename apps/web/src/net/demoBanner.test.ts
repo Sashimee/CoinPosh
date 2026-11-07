@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEMO_BANNER_ID, mountDemoBanner } from './demoBanner.ts';
+import { DEMO_BANNER_ID, mountDemoBanner, type DemoBannerColors } from './demoBanner.ts';
 import { NET_I18N_KEYS, NET_I18N_SOURCE, type NetI18nKey } from './i18nKeys.ts';
 
 /** Just enough of the DOM for the banner; the web app's unit tests run in node without a DOM library. */
@@ -52,11 +52,17 @@ function fakeDocument() {
 }
 
 const english = (key: NetI18nKey) => NET_I18N_SOURCE.en[key];
+const colors: DemoBannerColors = {
+  border: '#c9a227',
+  surface: '#0b1d3a',
+  text: '#fffaf0',
+  accent: '#f7e7ce',
+};
 
 describe('mountDemoBanner', () => {
   it('announces Demo Mode through the i18n keys as a polite status region', () => {
     const { doc, head, body } = fakeDocument();
-    mountDemoBanner(doc, english);
+    mountDemoBanner(doc, english, colors);
     const banner = body.find(DEMO_BANNER_ID);
     expect(banner?.tagName).toBe('aside');
     expect(banner?.attributes.get('role')).toBe('status');
@@ -71,14 +77,24 @@ describe('mountDemoBanner', () => {
 
   it('renders whatever the translator returns, so FR and DE come from the catalog', () => {
     const { doc, body } = fakeDocument();
-    mountDemoBanner(doc, (key) => NET_I18N_SOURCE.de[key]);
+    mountDemoBanner(doc, (key) => NET_I18N_SOURCE.de[key], colors);
     expect(body.find(DEMO_BANNER_ID)?.children[0]?.textContent).toBe('Demo-Modus');
+  });
+
+  it('styles itself from the colours the shell passes, so each venue tints it', () => {
+    const { doc, head } = fakeDocument();
+    mountDemoBanner(doc, english, colors);
+    const style = head.children[0]?.textContent ?? '';
+    for (const colour of Object.values(colors)) expect(style).toContain(colour);
+    mountDemoBanner(doc, english, { ...colors, accent: '#123456' });
+    expect(head.children[0]?.textContent).toContain('#123456');
+    expect(head.children[0]?.textContent).not.toContain(colors.accent);
   });
 
   it('replaces an earlier banner and unmounts cleanly', () => {
     const { doc, head, body } = fakeDocument();
-    mountDemoBanner(doc, english);
-    const unmount = mountDemoBanner(doc, english);
+    mountDemoBanner(doc, english, colors);
+    const unmount = mountDemoBanner(doc, english, colors);
     expect(body.children).toHaveLength(1);
     expect(head.children).toHaveLength(1);
     unmount();
