@@ -115,6 +115,11 @@ export interface VfxStats {
   readonly dropped: number;
   readonly flashes: number;
   readonly shockwaves: number;
+  /**
+   * The largest visible flash's scale over its rest size: above 1 only while one pops
+   * with overshoot, which reduced motion removes. 0 with no flash on screen.
+   */
+  readonly flashStretch: number;
   /** Fusion centres currently leased by an implosion. */
   readonly attractors: number;
   readonly pops: number;
@@ -257,6 +262,7 @@ export class Vfx {
       dropped: this.sparks.stats.dropped + this.foil.stats.dropped,
       flashes: this.flashes.active,
       shockwaves: this.shockwaves.active,
+      flashStretch: this.flashes.stretch,
       attractors: this.attractors.held,
       pops: this.pops?.active ?? 0,
       timeScale: this.warp.scale,
@@ -567,8 +573,31 @@ export class Vfx {
     this.rebuildParticles();
   }
 
+  /**
+   * Puts a zero-strength flash, ring and both particle meshes on screen while `drawFrame`
+   * renders, so their programs compile now instead of on the first fusion or OBSCENE.
+   * Pass the frame the game really draws (e.g. `() => post.render(now)`): a precompile
+   * outside the post pass would build for the wrong target. Call after `renderer.init()`,
+   * and again after `setQuality` or `setRenderer`, which rebuild the particle meshes.
+   */
+  async warmup(drawFrame: () => void | Promise<void>): Promise<void> {
+    this.assertLive();
+    const meshes = [this.sparks.mesh, this.foil.mesh];
+    for (const mesh of meshes) mesh.visible = true;
+    try {
+      await this.flashes.warm(() =>
+        this.shockwaves.warm(async () => {
+          await drawFrame();
+        }),
+      );
+    } finally {
+      for (const mesh of meshes) mesh.visible = mesh.geometry.instanceCount > 0;
+    }
+  }
+
   /** Cancels every running effect and restores time and the camera. */
   clear(): void {
+    this.assertLive();
     this.timeline.clear();
     for (const trail of this.trails) this.closeTrail(trail);
     this.attractors.clear();
@@ -579,7 +608,8 @@ export class Vfx {
     this.kick.reset();
     this.pops?.clear();
     this.writePost(0);
-    this.rebuildParticles();
+    this.sparks.clear();
+    this.foil.clear();
   }
 
   dispose(): void {

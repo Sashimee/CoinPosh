@@ -27,6 +27,16 @@ import { tierMetal } from './palette.ts';
 const EFFECTS = ['drop', 'fusion', 'cascade', 'obscene'] as const;
 type PreviewEffect = (typeof EFFECTS)[number];
 
+/** The most of each effect counter seen since the last `__vfxPlay`, plus the worst frame gap. */
+interface PeakStats {
+  particles: number;
+  confetti: number;
+  flashes: number;
+  shockwaves: number;
+  flashStretch: number;
+  frameGapMs: number;
+}
+
 interface PreviewState {
   ready: boolean;
   backend: string;
@@ -35,6 +45,7 @@ interface PreviewState {
   played: string[];
   arrivals: number;
   stats: VfxStats | null;
+  peak: PeakStats;
   error?: string;
 }
 
@@ -57,8 +68,22 @@ const state: PreviewState = {
   played: [],
   arrivals: 0,
   stats: null,
+  peak: emptyPeak(),
 };
 window.__vfx = state;
+
+function emptyPeak(): PeakStats {
+  return { particles: 0, confetti: 0, flashes: 0, shockwaves: 0, flashStretch: 0, frameGapMs: 0 };
+}
+
+function recordPeak(stats: VfxStats): void {
+  const { peak } = state;
+  peak.particles = Math.max(peak.particles, stats.particles);
+  peak.confetti = Math.max(peak.confetti, stats.confetti);
+  peak.flashes = Math.max(peak.flashes, stats.flashes);
+  peak.shockwaves = Math.max(peak.shockwaves, stats.shockwaves);
+  peak.flashStretch = Math.max(peak.flashStretch, stats.flashStretch);
+}
 
 function coinMesh(tier: CoinTier): Mesh {
   const material = new MeshPhysicalNodeMaterial({
@@ -126,6 +151,9 @@ async function boot(): Promise<void> {
     reducedMotion: reduced,
     post,
     seed: 42,
+  });
+  await vfx.warmup(() => {
+    post.render(performance.now());
   });
 
   let balance = 0;
@@ -257,7 +285,9 @@ async function boot(): Promise<void> {
 
   const play = (effect: PreviewEffect): void => {
     state.played.push(effect);
+    state.peak = emptyPeak();
     ({ drop, fusion, cascade, obscene })[effect]();
+    recordPeak(vfx.stats);
   };
   window.__vfxPlay = play;
 
@@ -277,7 +307,12 @@ async function boot(): Promise<void> {
   let cursor = 0;
 
   const timer = new Timer();
+  let lastFrame = Number.NaN;
   await renderer.setAnimationLoop((now: number) => {
+    if (!Number.isNaN(lastFrame)) {
+      state.peak.frameGapMs = Math.max(state.peak.frameGapMs, now - lastFrame);
+    }
+    lastFrame = now;
     timer.update(now);
     const realDt = Math.min(timer.getDelta(), 0.1);
     if (!params.has('manual')) {
@@ -298,6 +333,7 @@ async function boot(): Promise<void> {
     post.render(now);
     state.frames++;
     state.stats = vfx.stats;
+    recordPeak(state.stats);
     state.ready = true;
   });
 }

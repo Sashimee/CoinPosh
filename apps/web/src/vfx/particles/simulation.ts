@@ -16,5 +16,7 @@ export interface ParticleSimulation {
   /** Queues one particle; false when this frame's spawn budget is spent. */
   emit(spawn: ParticleSpawn): boolean;
   step(dt: number, env: ParticleEnvironment, renderer: WebGPURenderer): void;
+  /** Frees every slot in place, keeping buffers, materials and kernels. */
+  clear(): void;
   dispose(): void;
 }

@@ -42,7 +42,7 @@ const CSS = `
 .cp-burst{position:absolute;left:0;top:0;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;
   border:2px solid var(--pop);box-shadow:0 0 14px var(--pop),inset 0 0 10px var(--pop);will-change:transform,opacity}
 @keyframes cp-prism{to{background-position:300% 0}}
-@media (prefers-reduced-motion:reduce){.cp-pop[data-prism]{animation:none;background-position:30% 0}}
+.cp-pops[data-reduced] .cp-pop[data-prism]{animation:none;background-position:30% 0}
 `;
 
 /**
@@ -56,7 +56,7 @@ const CSS = `
  */
 export class NumberPopLayer {
   readonly root: HTMLDivElement;
-  reducedMotion = false;
+  private reduced = false;
   private readonly slots: PopSlot[] = [];
   private readonly bursts: Burst[] = [];
 
@@ -79,6 +79,20 @@ export class NumberPopLayer {
       this.root.append(el);
       this.slots.push({ el, path: null, age: 0, onArrive: undefined });
     }
+  }
+
+  /**
+   * The facade's preference, not the OS media query, drives the prism too, so an in-app
+   * toggle (or a forced option) holds it still and a forced `false` keeps it moving.
+   */
+  get reducedMotion(): boolean {
+    return this.reduced;
+  }
+
+  set reducedMotion(reduced: boolean) {
+    this.reduced = reduced;
+    if (reduced) this.root.dataset.reduced = '';
+    else delete this.root.dataset.reduced;
   }
 
   get active(): number {

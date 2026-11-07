@@ -78,6 +78,13 @@ export class ParticleSystem {
     this.emittedThisFrame = 0;
   }
 
+  clear(): void {
+    this.simulation.clear();
+    this.mesh.geometry.instanceCount = 0;
+    this.mesh.visible = false;
+    this.emittedThisFrame = 0;
+  }
+
   dispose(): void {
     this.mesh.removeFromParent();
     this.mesh.geometry.dispose();

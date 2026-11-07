@@ -26,7 +26,15 @@ import {
   type StorageBufferNode,
   type WebGPURenderer,
 } from 'three/webgpu';
-import { ATTRACTOR_SLOTS, isValidSpawn, ParticleKind, type ParticleSpawn } from './layout.ts';
+import {
+  ATTRACTOR_SLOTS,
+  createParticleBuffers,
+  isValidSpawn,
+  ParticleKind,
+  writeParticle,
+  type ParticleBuffers,
+  type ParticleSpawn,
+} from './layout.ts';
 import type { ParticleNodes } from './material.ts';
 import { PARTICLE_PHYSICS, type ParticleEnvironment } from './physics.ts';
 import type { ParticleSimulation } from './simulation.ts';
@@ -46,6 +54,13 @@ type Row = (typeof ROWS)[number];
 export class GpuParticles implements ParticleSimulation {
   readonly mode = 'gpu';
   readonly nodes: ParticleNodes;
+  /**
+   * Spawns accepted per frame. Never above the capacity: two spawns of one batch would
+   * otherwise wrap onto the same slot and race in the spawn kernel.
+   */
+  readonly spawnBatch: number;
+  /** This frame's spawns, in the CPU layout; the staging storage buffers wrap these arrays. */
+  readonly staged: ParticleBuffers;
   private readonly staging: Record<Row, StorageBufferAttribute>;
   private readonly spawnCount = uniform(0, 'uint');
   private readonly spawnBase = uniform(0, 'uint');
@@ -55,6 +70,9 @@ export class GpuParticles implements ParticleSimulation {
   private readonly attractorValues = Array.from({ length: ATTRACTOR_SLOTS }, () => new Vector4());
   readonly spawnKernel: ComputeNode;
   readonly updateKernel: ComputeNode;
+  /** Frees every slot; queued by `clear()` and run ahead of the next spawns. */
+  readonly clearKernel: ComputeNode;
+  private clearQueued = false;
   private pending = 0;
   private head = 0;
   /** Seconds until every particle spawned so far has certainly expired. */
@@ -65,6 +83,9 @@ export class GpuParticles implements ParticleSimulation {
     if (!Number.isInteger(capacity) || capacity <= 0) {
       throw new RangeError(`GpuParticles capacity must be a positive integer, got ${capacity}`);
     }
+    const batch = Math.min(GPU_SPAWN_BATCH, capacity);
+    this.spawnBatch = batch;
+    this.staged = createParticleBuffers(batch);
     const state = {} as Record<Row, StorageBufferNode<'vec4'>>;
     const staged = {} as Record<Row, StorageBufferNode<'vec4'>>;
     const staging = {} as Record<Row, StorageBufferAttribute>;
@@ -74,8 +95,8 @@ export class GpuParticles implements ParticleSimulation {
         'vec4',
         capacity,
       );
-      staging[row] = new StorageBufferAttribute(new Float32Array(GPU_SPAWN_BATCH * 4), 4);
-      staged[row] = storage(staging[row], 'vec4', GPU_SPAWN_BATCH).toReadOnly();
+      staging[row] = new StorageBufferAttribute(this.staged[row], 4);
+      staged[row] = storage(staging[row], 'vec4', batch).toReadOnly();
     }
     this.staging = staging;
     this.nodes = {
@@ -91,7 +112,11 @@ export class GpuParticles implements ParticleSimulation {
         const slot = spawnBase.add(instanceIndex).mod(capacity);
         for (const row of ROWS) state[row].element(slot).assign(staged[row].element(instanceIndex));
       });
-    })().compute(GPU_SPAWN_BATCH);
+    })().compute(batch);
+
+    this.clearKernel = Fn(() => {
+      state.velLife.element(instanceIndex).w.assign(0);
+    })().compute(capacity);
 
     const attractors = uniformArray<'vec4'>(this.attractorValues, 'vec4');
     const { dt, floorRect, floorY } = this;
@@ -203,16 +228,8 @@ export class GpuParticles implements ParticleSimulation {
   }
 
   emit(spawn: ParticleSpawn): boolean {
-    if (this.pending >= GPU_SPAWN_BATCH || !isValidSpawn(spawn)) return false;
-    const o = this.pending * 4;
-    const { staging } = this;
-    const rows: Record<Row, readonly number[]> = {
-      posAge: [spawn.x, spawn.y, spawn.z, 0],
-      velLife: [spawn.vx, spawn.vy, spawn.vz, spawn.life],
-      color: [spawn.r, spawn.g, spawn.b, spawn.size],
-      params: [spawn.drag, spawn.gravity, spawn.kind, spawn.seed],
-    };
-    for (const row of ROWS) (staging[row].array as Float32Array).set(rows[row], o);
+    if (this.pending >= this.spawnBatch || !isValidSpawn(spawn)) return false;
+    writeParticle(this.staged, this.pending, spawn);
     this.pending++;
     this.quietIn = Math.max(this.quietIn, spawn.life);
     return true;
@@ -226,6 +243,10 @@ export class GpuParticles implements ParticleSimulation {
       );
     }
     const kernels: ComputeNode[] = [];
+    if (this.clearQueued) {
+      kernels.push(this.clearKernel);
+      this.clearQueued = false;
+    }
     if (this.pending > 0) {
       for (const row of ROWS) {
         const attribute = this.staging[row];
@@ -253,8 +274,21 @@ export class GpuParticles implements ParticleSimulation {
     if (this.quietIn <= 0) this.live = 0;
   }
 
+  /**
+   * Drops every particle without rebuilding buffers or kernels. Nothing is drawn until
+   * the next spawn, and the clear kernel runs just ahead of that spawn's upload.
+   */
+  clear(): void {
+    this.pending = 0;
+    this.head = 0;
+    this.quietIn = 0;
+    this.live = 0;
+    this.clearQueued = true;
+  }
+
   dispose(): void {
     this.spawnKernel.dispose();
     this.updateKernel.dispose();
+    this.clearKernel.dispose();
   }
 }

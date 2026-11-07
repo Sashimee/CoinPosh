@@ -1,7 +1,7 @@
 import { CASCADE_TIERS } from '@coinposh/shared';
 import i18next, { type i18n as I18n } from 'i18next';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { PerspectiveCamera, Scene, Vector3, type WebGPURenderer } from 'three/webgpu';
+import { PerspectiveCamera, Scene, Vector3, type Mesh, type WebGPURenderer } from 'three/webgpu';
 import { HAPTIC_PATTERNS } from './haptics.ts';
 import {
   CONTACT_ACCENT,
@@ -162,7 +162,7 @@ function observe(r: Rig, fire: (vfx: Vfx) => void, seconds = 2): Trace {
     frame(r);
     const s = r.vfx.stats;
     if (s.particles + s.confetti > 0) items.add('particles');
-    if (s.flashes + s.shockwaves > 0) items.add('squashOvershoot');
+    if (s.flashStretch > 1) items.add('squashOvershoot');
     if (s.glow > 0) items.add('lightResponse');
     if (s.pops > 0) items.add('numberPop');
     if (s.timeScale < 1) items.add('timeManipulation');
@@ -350,13 +350,48 @@ describe('reduced motion', () => {
     expect(observe(rig({ reducedMotion: true }), EFFECTS.obscene).slowSeconds).toBeLessThan(0.07);
   });
 
-  it('turns a hard contact into a haptic tick, keeping the flash', () => {
-    const trace = observe(rig({ reducedMotion: true }), (vfx) => {
+  it('turns a hard contact into a haptic tick, keeping the flash but not its pop', () => {
+    const r = rig({ reducedMotion: true });
+    const trace = observe(r, (vfx) => {
       vfx.contactSparks(at, { strength: 1, surface: 'metal' });
+      vfx.update(FRAME);
+      expect(vfx.stats.flashes).toBe(1);
+      expect(vfx.stats.flashStretch).toBe(1);
     });
     expect(trace.vibrations).toEqual([[...HAPTIC_PATTERNS.tick]]);
-    expect(trace.items.has('squashOvershoot')).toBe(true);
+    expect(trace.items.has('lightResponse')).toBe(true);
+    expect(trace.items.has('squashOvershoot')).toBe(false);
     expect(trace.cameraMoved).toBe(false);
+  });
+
+  it.each(Object.keys(EFFECTS) as VfxEffect[])(
+    '%s keeps every flash at its rest size (the full-motion run overshoots)',
+    (effect) => {
+      expect(observe(rig(), EFFECTS[effect]).items.has('squashOvershoot')).toBe(true);
+      expect(
+        observe(rig({ reducedMotion: true }), EFFECTS[effect]).items.has('squashOvershoot'),
+      ).toBe(false);
+    },
+  );
+
+  it('holds the heirloom prism still from the facade setting, not the OS media query', () => {
+    const layer = (r: Rig): FakeElement => {
+      const [root] = r.overlay.find((el) => el.className === 'cp-pops');
+      if (!root) throw new Error('no pop layer');
+      return root;
+    };
+    const css = (r: Rig): string =>
+      r.overlay.ownerDocument.getElementById('coinposh-vfx-pops')?.textContent ?? '';
+    const r = rig();
+    r.vfx.numberPop(40, at, { x: 300, y: 40 }, { rarity: 'heirloom' });
+    expect('reduced' in layer(r).dataset).toBe(false);
+    expect(css(r)).toMatch(/\.cp-pops\[data-reduced\] \.cp-pop\[data-prism\]\{animation:none[;}]/);
+    expect(css(r)).not.toMatch(/prefers-reduced-motion/);
+    r.vfx.setReducedMotion(true);
+    expect('reduced' in layer(r).dataset).toBe(true);
+    r.vfx.setReducedMotion(false);
+    expect('reduced' in layer(r).dataset).toBe(false);
+    expect('reduced' in layer(rig({ reducedMotion: true })).dataset).toBe(true);
   });
 
   it('fades a number pop in place instead of flying it to the HUD', () => {
@@ -497,6 +532,22 @@ describe('clear and dispose', () => {
     expect(r.vfx.stats.attractors).toBe(0);
   });
 
+  it('clear() resets particles in place, keeping their meshes and materials', () => {
+    const r = rig();
+    const meshes = r.vfx.root.children.filter((c) => c.name.startsWith('vfx-particles'));
+    expect(meshes).toHaveLength(2);
+    r.vfx.obscene();
+    run(r, 0.1);
+    r.vfx.clear();
+    expect(r.vfx.root.children.filter((c) => c.name.startsWith('vfx-particles'))).toEqual(meshes);
+    expect(meshes.every((m) => !m.visible)).toBe(true);
+    frame(r);
+    expect(r.vfx.stats).toMatchObject({ particles: 0, confetti: 0 });
+    expect(r.vfx.confetti()).toBeGreaterThan(0);
+    frame(r);
+    expect(r.vfx.stats.confetti).toBeGreaterThan(0);
+  });
+
   it('dispose() restores the post uniforms, detaches, and refuses further calls', () => {
     const r = rig();
     const parent = r.vfx.root.parent;
@@ -514,6 +565,52 @@ describe('clear and dispose', () => {
     expect(() => {
       r.vfx.confetti();
     }).toThrow(/disposed/);
+    expect(() => {
+      r.vfx.clear();
+    }).toThrow(/disposed/);
+    expect(r.vfx.root.children.some((c) => c.name.startsWith('vfx-particles'))).toBe(false);
     r.vfx.dispose();
+  });
+});
+
+describe('warmup', () => {
+  const poolObjects = (r: Rig, name: string): Mesh[] =>
+    (r.vfx.root.getObjectByName(name)?.children ?? []) as Mesh[];
+
+  it('draws each pool through one shared material', () => {
+    const r = rig();
+    for (const name of ['vfx-flashes', 'vfx-shockwaves']) {
+      const objects = poolObjects(r, name);
+      expect(objects.length).toBeGreaterThan(1);
+      expect(new Set(objects.map((o) => o.material)).size).toBe(1);
+    }
+  });
+
+  it('shows one dark flash, one dark ring and both particle meshes while the frame draws', async () => {
+    const r = rig();
+    const particles = r.vfx.root.children.filter((c) => c.name.startsWith('vfx-particles'));
+    let seen: { flashes: number; rings: number; particles: number } | null = null;
+    await r.vfx.warmup(() => {
+      seen = {
+        flashes: poolObjects(r, 'vfx-flashes').filter((o) => o.visible).length,
+        rings: poolObjects(r, 'vfx-shockwaves').filter((o) => o.visible).length,
+        particles: particles.filter((o) => o.visible).length,
+      };
+    });
+    expect(seen).toEqual({ flashes: 1, rings: 1, particles: 2 });
+    const visible = r.vfx.root.children.flatMap((c) => [c, ...c.children]).filter((o) => o.visible);
+    expect(visible.map((o) => o.name).sort()).toEqual(['vfx-flashes', 'vfx-shockwaves']);
+    expect(r.vfx.stats).toMatchObject({ flashes: 0, shockwaves: 0, flashStretch: 0 });
+  });
+
+  it('hides the probes again when the frame throws', async () => {
+    const r = rig();
+    await expect(
+      r.vfx.warmup(() => {
+        throw new Error('device lost');
+      }),
+    ).rejects.toThrow('device lost');
+    expect(poolObjects(r, 'vfx-flashes').some((o) => o.visible)).toBe(false);
+    expect(poolObjects(r, 'vfx-shockwaves').some((o) => o.visible)).toBe(false);
   });
 });

@@ -87,6 +87,14 @@ export class CpuParticles implements ParticleSimulation {
     }
   }
 
+  clear(): void {
+    for (const row of ROWS) this.state[row].fill(0);
+    this.head = 0;
+    this.live = 0;
+    this.uploaded = 0;
+    this.dirty = false;
+  }
+
   dispose(): void {
     this.live = 0;
     this.uploaded = 0;

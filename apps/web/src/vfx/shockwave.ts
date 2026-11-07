@@ -6,6 +6,7 @@ import {
   Mesh,
   MeshBasicNodeMaterial,
   PlaneGeometry,
+  type Object3D,
   type Vector3,
 } from 'three/webgpu';
 import { easeOutCubic, easeOutExpo, lerp, pulse } from './easing.ts';
@@ -21,10 +22,10 @@ export interface ShockwaveOptions {
 
 interface RingSlot {
   readonly mesh: Mesh<PlaneGeometry, MeshBasicNodeMaterial>;
-  readonly tint: { value: Color };
-  readonly front: { value: number };
-  readonly width: { value: number };
-  readonly strength: { value: number };
+  readonly tint: Color;
+  front: number;
+  width: number;
+  strength: number;
   age: number;
   delay: number;
   duration: number;
@@ -42,16 +43,21 @@ const LIFT = 0.0025;
  * wake, expanding on an exponential ease so the first frames carry the punch.
  *
  * Reduced motion: the ring does not travel; it blooms in place at 60 % radius and fades.
+ *
+ * All rings share one material with per-object uniforms: one program for the whole pool.
  */
 export class ShockwavePool {
   readonly group = new Group();
+  readonly material: MeshBasicNodeMaterial;
   reducedMotion = false;
   private readonly slots: RingSlot[] = [];
+  private readonly byMesh = new Map<Object3D, RingSlot>();
   private readonly geometry = new PlaneGeometry(2, 2);
 
   constructor() {
     this.group.name = 'vfx-shockwaves';
     this.geometry.rotateX(-Math.PI / 2);
+    this.material = this.createMaterial();
     for (let i = 0; i < POOL; i++) this.slots.push(this.createSlot());
   }
 
@@ -68,7 +74,7 @@ export class ShockwavePool {
     slot.duration = options.duration;
     slot.radius = options.radius;
     slot.intensity = this.reducedMotion ? options.intensity * 0.5 : options.intensity;
-    slot.tint.value.set(options.color);
+    slot.tint.set(options.color);
     slot.mesh.position.set(position.x, position.y + LIFT, position.z);
     slot.mesh.scale.setScalar(options.radius);
     slot.mesh.updateMatrix();
@@ -90,13 +96,13 @@ export class ShockwavePool {
         continue;
       }
       if (this.reducedMotion) {
-        slot.front.value = 0.6;
-        slot.width.value = 0.12;
-        slot.strength.value = slot.intensity * pulse(t, 0.3);
+        slot.front = 0.6;
+        slot.width = 0.12;
+        slot.strength = slot.intensity * pulse(t, 0.3);
       } else {
-        slot.front.value = lerp(0.04, 0.96, easeOutExpo(t));
-        slot.width.value = lerp(0.025, 0.11, easeOutCubic(t));
-        slot.strength.value = slot.intensity * (1 - t) ** 1.8;
+        slot.front = lerp(0.04, 0.96, easeOutExpo(t));
+        slot.width = lerp(0.025, 0.11, easeOutCubic(t));
+        slot.strength = slot.intensity * (1 - t) ** 1.8;
       }
       slot.mesh.visible = true;
     }
@@ -112,14 +118,34 @@ export class ShockwavePool {
   dispose(): void {
     this.group.removeFromParent();
     this.geometry.dispose();
-    for (const slot of this.slots) slot.mesh.material.dispose();
+    this.material.dispose();
   }
 
-  private createSlot(): RingSlot {
-    const tint = uniform(new Color());
-    const front = uniform(0);
-    const width = uniform(0.05);
-    const strength = uniform(0);
+  /** Shows one ring at zero strength while `compile` runs, as `FlashPool.warm` does. */
+  async warm(compile: () => Promise<void>): Promise<void> {
+    const probe = this.slots.find((s) => !s.busy);
+    if (!probe) return;
+    probe.strength = 0;
+    probe.mesh.visible = true;
+    try {
+      await compile();
+    } finally {
+      if (!probe.busy) probe.mesh.visible = false;
+    }
+  }
+
+  private slotOf(object: Object3D | null): RingSlot {
+    const slot = object ? this.byMesh.get(object) : undefined;
+    if (!slot)
+      throw new Error('ShockwavePool material drawn on an object that is not one of its rings');
+    return slot;
+  }
+
+  private createMaterial(): MeshBasicNodeMaterial {
+    const tint = uniform(new Color()).onObjectUpdate(({ object }) => this.slotOf(object).tint);
+    const front = uniform(0).onObjectUpdate(({ object }) => this.slotOf(object).front);
+    const width = uniform(0.05).onObjectUpdate(({ object }) => this.slotOf(object).width);
+    const strength = uniform(0).onObjectUpdate(({ object }) => this.slotOf(object).strength);
     const r = length(uv().mul(2).sub(1));
     const offset = r.sub(front).div(width);
     const edge = exp(offset.mul(offset).mul(-1)).mul(1.2);
@@ -133,18 +159,22 @@ export class ShockwavePool {
     material.depthWrite = false;
     material.blending = AdditiveBlending;
     material.fog = false;
-    const mesh = new Mesh(this.geometry, material);
+    return material;
+  }
+
+  private createSlot(): RingSlot {
+    const mesh = new Mesh(this.geometry, this.material);
     mesh.visible = false;
     mesh.renderOrder = 25;
     mesh.matrixAutoUpdate = false;
     mesh.frustumCulled = false;
     this.group.add(mesh);
-    return {
+    const slot: RingSlot = {
       mesh,
-      tint,
-      front,
-      width,
-      strength,
+      tint: new Color(),
+      front: 0,
+      width: 0.05,
+      strength: 0,
       age: 0,
       delay: 0,
       duration: 1,
@@ -152,5 +182,7 @@ export class ShockwavePool {
       intensity: 0,
       busy: false,
     };
+    this.byMesh.set(mesh, slot);
+    return slot;
   }
 }

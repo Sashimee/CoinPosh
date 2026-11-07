@@ -1,7 +1,9 @@
 // Headless timing review for the juice effects: boots the vfx preview in Chromium on the
 // WebGL2 fallback (CPU particles) and on WebGPU (TSL compute), plays each effect, takes
 // screenshots at the beats that matter, records a video per run and fails on any console
-// error or on an effect that leaves no trace in the stats.
+// error or on an effect that leaves no trace in the stats. Traces are read from the
+// preview's peak-since-play record, not from timed samples: SwiftShader can stall for over
+// a second after an effect fires, which would leave a sample showing the pre-play zeros.
 //
 //   PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node apps/web/src/vfx/verify.mjs [outDir]
 //
@@ -27,12 +29,16 @@ const BEATS = [
   { effect: 'obscene', shots: [250, 900, 2000], settle: 3200, expect: (s) => s.stats.confetti > 0 },
 ];
 
+const TRACE_TIMEOUT_MS = 20_000;
+
 const runs = [
-  { name: 'webgl', query: 'webgl&manual', mode: 'cpu' },
-  { name: 'webgl-reduced', query: 'webgl&manual&reduced', mode: 'cpu' },
-  { name: 'webgl-fr-low', query: 'webgl&manual&lang=fr&quality=low', mode: 'cpu' },
-  { name: 'webgpu', query: 'manual', mode: 'gpu', optional: true },
+  { name: 'webgl', query: 'webgl&manual', mode: 'cpu', reduced: false },
+  { name: 'webgl-reduced', query: 'webgl&manual&reduced', mode: 'cpu', reduced: true },
+  { name: 'webgl-fr-low', query: 'webgl&manual&lang=fr&quality=low', mode: 'cpu', reduced: false },
+  { name: 'webgpu', query: 'manual', mode: 'gpu', reduced: false, optional: true },
 ];
+
+const traced = (p) => p.particles + p.confetti + p.flashes + p.shockwaves;
 
 /**
  * Headless Chromium on SwiftShader can hand out a GPUDevice that Dawn drops within a second
@@ -133,23 +139,45 @@ try {
         }
         const rest = beat.settle - (Date.now() - t0);
         if (rest > 0) await page.waitForTimeout(rest);
+        const left = await page
+          .waitForFunction(
+            ({ effect }) => {
+              const { peak, played } = globalThis.__vfx;
+              const trace = peak.particles + peak.confetti + peak.flashes + peak.shockwaves;
+              return played.at(-1) === effect && trace > 0;
+            },
+            { effect: beat.effect },
+            { timeout: TRACE_TIMEOUT_MS },
+          )
+          .then(() => true)
+          .catch(() => false);
         state = await page.evaluate(() => globalThis.__vfx);
-        entry.beats.push({ effect: beat.effect, samples });
+        entry.beats.push({ effect: beat.effect, peak: state.peak, samples });
         if (state.stats.mode !== run.mode)
           throw new Error(`particles ran on ${state.stats.mode}, expected ${run.mode}`);
-        const peak = Math.max(
-          ...samples.map((s) => s.particles + s.confetti + s.flashes + s.shockwaves),
-        );
-        if (peak === 0) throw new Error(`${beat.effect} left no particles, flashes or rings`);
+        if (!left || traced(state.peak) === 0)
+          throw new Error(`${beat.effect} left no particles, flashes or rings`);
         if (beat.expect && !beat.expect(state))
           throw new Error(`${beat.effect} expectation failed: ${JSON.stringify(state)}`);
+        if (run.reduced && state.peak.flashStretch > 1)
+          throw new Error(`${beat.effect} popped a flash's scale under reduced motion`);
+        if (!run.reduced && state.peak.flashStretch <= 1)
+          throw new Error(`${beat.effect} flash never overshot its rest size`);
       }
+      const prism = await page.evaluate(() => {
+        const el = globalThis.document.querySelector('.cp-pop[data-prism]');
+        return el ? globalThis.getComputedStyle(el).animationName : null;
+      });
+      entry.prismAnimation = prism;
+      if (prism !== (run.reduced ? 'none' : 'cp-prism'))
+        throw new Error(`heirloom prism animation is "${prism}" with reduced=${run.reduced}`);
       const errors = logs.filter((l) => l.type === 'error' || l.type === 'pageerror');
       if (errors.length > 0) throw new Error(`console errors: ${JSON.stringify(errors)}`);
       entry.ok = true;
       entry.frames = state.frames;
+      const gaps = entry.beats.map((b) => `${b.effect}=${Math.round(b.peak.frameGapMs)}ms`);
       console.info(
-        `ok   ${run.name.padEnd(14)} ${state.backend} frames=${state.frames} arrivals=${state.arrivals}`,
+        `ok   ${run.name.padEnd(14)} ${state.backend} frames=${state.frames} arrivals=${state.arrivals} worst gaps ${gaps.join(' ')}`,
       );
     } catch (error) {
       failures++;

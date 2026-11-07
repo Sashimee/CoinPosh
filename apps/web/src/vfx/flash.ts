@@ -5,6 +5,7 @@ import {
   Group,
   Sprite,
   SpriteNodeMaterial,
+  type Object3D,
   type Vector3,
 } from 'three/webgpu';
 import { easeOutBack, easeOutCubic, lerp, pulse } from './easing.ts';
@@ -22,9 +23,10 @@ export interface FlashOptions {
 
 interface FlashSlot {
   readonly sprite: Sprite;
-  readonly material: SpriteNodeMaterial;
-  readonly tint: { value: Color };
-  readonly strength: { value: number };
+  readonly tint: Color;
+  strength: number;
+  /** Current sprite scale over its rest size; 1 at rest, above 1 while it pops. */
+  stretch: number;
   age: number;
   delay: number;
   duration: number;
@@ -43,19 +45,32 @@ const popScale = easeOutBack(2.4);
  *
  * Reduced motion keeps the light but drops the scale pop and spreads the strike over a
  * longer, softer curve.
+ *
+ * Every sprite shares one material whose tint and strength are per-object uniforms, so
+ * the pool builds a single program instead of one per slot on first use.
  */
 export class FlashPool {
   readonly group = new Group();
+  readonly material: SpriteNodeMaterial;
   reducedMotion = false;
   private readonly slots: FlashSlot[] = [];
+  private readonly bySprite = new Map<Object3D, FlashSlot>();
 
   constructor() {
     this.group.name = 'vfx-flashes';
+    this.material = this.createMaterial();
     for (let i = 0; i < POOL; i++) this.slots.push(this.createSlot());
   }
 
   get active(): number {
     return this.slots.filter((s) => s.busy).length;
+  }
+
+  /** The largest visible flash's scale over its rest size: above 1 only while one pops. */
+  get stretch(): number {
+    let max = 0;
+    for (const slot of this.slots) if (slot.sprite.visible) max = Math.max(max, slot.stretch);
+    return max;
   }
 
   spawn(position: Vector3, options: FlashOptions): void {
@@ -70,7 +85,7 @@ export class FlashPool {
     slot.duration = this.reducedMotion ? Math.max(options.duration * 1.6, 0.3) : options.duration;
     slot.size = options.size;
     slot.intensity = this.reducedMotion ? options.intensity * 0.55 : options.intensity;
-    slot.tint.value.set(options.color);
+    slot.tint.set(options.color);
     slot.sprite.position.copy(position);
     slot.sprite.visible = false;
   }
@@ -92,8 +107,9 @@ export class FlashPool {
       const scale = this.reducedMotion
         ? 1
         : lerp(0.25, 1, popScale(Math.min(t / 0.32, 1))) * lerp(1, 1.18, easeOutCubic(t));
+      slot.stretch = scale;
       slot.sprite.scale.setScalar(slot.size * scale);
-      slot.strength.value = slot.intensity * pulse(t, this.reducedMotion ? 0.35 : 0.1);
+      slot.strength = slot.intensity * pulse(t, this.reducedMotion ? 0.35 : 0.1);
       slot.sprite.visible = true;
     }
   }
@@ -107,12 +123,36 @@ export class FlashPool {
 
   dispose(): void {
     this.group.removeFromParent();
-    for (const slot of this.slots) slot.material.dispose();
+    this.material.dispose();
   }
 
-  private createSlot(): FlashSlot {
-    const tint = uniform(new Color());
-    const strength = uniform(0);
+  /**
+   * Hidden sprites are skipped by the renderer, so their program would compile on the
+   * frame the first flash shows. `warm` puts one on screen at zero strength while a
+   * precompile runs, then hides it again.
+   */
+  async warm(compile: () => Promise<void>): Promise<void> {
+    const probe = this.slots.find((s) => !s.busy);
+    if (!probe) return;
+    probe.strength = 0;
+    probe.sprite.visible = true;
+    try {
+      await compile();
+    } finally {
+      if (!probe.busy) probe.sprite.visible = false;
+    }
+  }
+
+  private slotOf(object: Object3D | null): FlashSlot {
+    const slot = object ? this.bySprite.get(object) : undefined;
+    if (!slot)
+      throw new Error('FlashPool material drawn on an object that is not one of its sprites');
+    return slot;
+  }
+
+  private createMaterial(): SpriteNodeMaterial {
+    const tint = uniform(new Color()).onObjectUpdate(({ object }) => this.slotOf(object).tint);
+    const strength = uniform(0).onObjectUpdate(({ object }) => this.slotOf(object).strength);
     const d = uv().mul(2).sub(1);
     const core = exp(dot(d, d).mul(-9));
     const streak = exp(abs(d.y).mul(-42)).mul(clamp(float(1).sub(abs(d.x)), 0, 1).pow(2));
@@ -125,16 +165,20 @@ export class FlashPool {
     material.depthTest = false;
     material.blending = AdditiveBlending;
     material.fog = false;
-    const sprite = new Sprite(material);
+    return material;
+  }
+
+  private createSlot(): FlashSlot {
+    const sprite = new Sprite(this.material);
     sprite.visible = false;
     sprite.renderOrder = 40;
     sprite.frustumCulled = false;
     this.group.add(sprite);
-    return {
+    const slot: FlashSlot = {
       sprite,
-      material,
-      tint,
-      strength,
+      tint: new Color(),
+      strength: 0,
+      stretch: 1,
       age: 0,
       delay: 0,
       duration: 1,
@@ -142,5 +186,7 @@ export class FlashPool {
       intensity: 0,
       busy: false,
     };
+    this.bySprite.set(sprite, slot);
+    return slot;
   }
 }
