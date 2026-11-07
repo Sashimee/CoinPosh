@@ -23,6 +23,11 @@ export const CURRENCIES = [
 export const CurrencySchema = z.enum(CURRENCIES);
 export type Currency = z.infer<typeof CurrencySchema>;
 
+/** The names `packages/economy` keys its config by; the same values as {@link CURRENCIES}. */
+export const CURRENCY_IDS = CURRENCIES;
+export const CurrencyIdSchema = CurrencySchema;
+export type CurrencyId = Currency;
+
 export const WalletSchema = z.object({
   coins: AmountSchema,
   bullion: AmountSchema,
@@ -39,6 +44,10 @@ export const COIN_TIERS = ['copper', 'silver', 'gold', 'platinum', 'diamond', 'h
 export const CoinTierSchema = z.enum(COIN_TIERS);
 export type CoinTier = z.infer<typeof CoinTierSchema>;
 
+export const COIN_TIER_IDS = COIN_TIERS;
+export const CoinTierIdSchema = CoinTierSchema;
+export type CoinTierId = CoinTier;
+
 export function nextCoinTier(tier: CoinTier): CoinTier | null {
   return COIN_TIERS[COIN_TIERS.indexOf(tier) + 1] ?? null;
 }
@@ -47,6 +56,10 @@ export function nextCoinTier(tier: CoinTier): CoinTier | null {
 export const RARITIES = ['common', 'fine', 'rare', 'exquisite', 'legendary', 'heirloom'] as const;
 export const RaritySchema = z.enum(RARITIES);
 export type Rarity = z.infer<typeof RaritySchema>;
+
+export const RARITY_IDS = RARITIES;
+export const RarityIdSchema = RaritySchema;
+export type RarityId = Rarity;
 
 /** Lowest to highest. */
 export const CASCADE_TIERS = ['chic', 'lavish', 'opulent', 'decadent', 'obscene'] as const;
@@ -62,9 +75,17 @@ export const NUDGE_DIRECTIONS = ['left', 'right', 'forward'] as const;
 export const NudgeDirectionSchema = z.enum(NUDGE_DIRECTIONS);
 export type NudgeDirection = z.infer<typeof NudgeDirectionSchema>;
 
-export const LOOT_SOURCES = ['crate', 'safe', 'gacha', 'scratch'] as const;
-export const LootSourceSchema = z.enum(LOOT_SOURCES);
-export type LootSource = z.infer<typeof LootSourceSchema>;
+/** Everything that rolls a rarity on a drop table, named as `packages/economy` config keys them. */
+export const DROP_SOURCE_IDS = ['vaultCrate', 'goldSafe', 'gacha', 'scratch'] as const;
+export const DropSourceIdSchema = z.enum(DROP_SOURCE_IDS);
+export type DropSourceId = z.infer<typeof DropSourceIdSchema>;
+
+/** @deprecated Use {@link DROP_SOURCE_IDS}; kept so existing imports compile. */
+export const LOOT_SOURCES = DROP_SOURCE_IDS;
+/** @deprecated Use {@link DropSourceIdSchema}. */
+export const LootSourceSchema = DropSourceIdSchema;
+/** @deprecated Use {@link DropSourceId}. */
+export type LootSource = DropSourceId;
 
 export const CRATE_KINDS = ['vault'] as const;
 export const CrateKindSchema = z.enum(CRATE_KINDS);
