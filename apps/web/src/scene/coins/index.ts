@@ -12,6 +12,19 @@ export {
   NEAR_COIN_TRIANGLE_BUDGET,
   type CoinGeometryOptions,
 } from './geometry.ts';
+export {
+  acquireWebGL2Context,
+  COIN_WEBGL2_ATTRIBUTES,
+  coinBackend,
+  describeGpuLoss,
+  watchGpuLoss,
+  type CoinBackend,
+  type CoinGpuLoss,
+  type GpuLossWatch,
+  type GpuLossWatchOptions,
+  type WatchableRenderer,
+  type WebGL2ContextOptions,
+} from './gpu-health.ts';
 export { DEFAULT_LOD_SETTINGS, type LodSettings } from './lod.ts';
 export {
   COIN_LOOKS,
