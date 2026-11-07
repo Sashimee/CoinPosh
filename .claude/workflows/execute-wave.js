@@ -14,6 +14,10 @@ export const meta = {
 const A = args || {}
 const MAX = A.maxTasks || 8
 const FIX_ROUNDS = 2
+const GIT_IDENTITY = `Before committing, make sure this worktree has a git identity (never use git -c flags or --global config).
+Run each as its own plain command: git config user.email. If it prints nothing, run git log -1 --format=%an%n%ae
+to read the last author's name and email, then git config extensions.worktreeConfig true,
+git config --worktree user.name "<that name>", and git config --worktree user.email "<that email>".`
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -110,7 +114,9 @@ run git switch --detach task/${t.id} && git merge --no-edit ${plan.base}; otherw
 Never switch to or create a task/* branch: other worktrees may hold it. Install deps if needed (pnpm i).
 Write ONLY within the owns paths: ${t.owns.join(', ')}.
 Meet every acceptance criterion at the highest polish level — this game must feel premium and addictive.
-Run pnpm check (or filtered equivalents) until green. Commit with message "${t.id}: <summary>".
+Run pnpm check (or filtered equivalents) until green.
+${GIT_IDENTITY}
+Commit with message "${t.id}: <summary>".
 Do NOT push and do NOT merge. Return branch "task/${t.id}", the full sha from git rev-parse HEAD as commit, whether checks passed, and a summary.`
 
 const reviewPrompt = (t, impl, tip) => `Review commit ${tip} (task ${t.id}, base ${plan.base}) for roadmap task ${t.id} · ${t.title}.
@@ -127,7 +133,9 @@ const fixPrompt = (t, issues, tip) => `Fix review findings for task ${t.id} (${t
 In your isolated worktree: git switch --detach ${tip}. Never switch to or create a task/* branch. Stay within owns paths: ${t.owns.join(', ')}.
 Findings:
 - ${issues.join('\n- ')}
-Fix all of them, run pnpm check until green, commit "${t.id}: address review" on the detached HEAD. Do not push.
+Fix all of them, run pnpm check until green.
+${GIT_IDENTITY}
+Commit "${t.id}: address review" on the detached HEAD. Do not push.
 Return the full sha from git rev-parse HEAD as commit, whether checks passed, and a summary.`
 
 // ---------- Build → Review (→ Fix)* pipelined per task ----------
@@ -164,6 +172,7 @@ Rejected (do NOT merge; mark "blocked(review: <short reason>)" in STATUS.md, kee
 ${rejected.map(r => `- ${r.id}: ${r.issues.slice(0, 3).join(' | ')}`).join('\n') || '- none'}
 Out-of-scope requests raised by implementers (append to docs/plan/POLISH.md as "ready" items naming the owning agent):
 ${done.flatMap(r => r.requests.map(q => `- [${r.id}] ${q}`)).join('\n') || '- none'}
+${GIT_IDENTITY}
 Then update docs/plan/STATUS.md (merged → done with merge sha), append a line to its Wave log (use \`date -u +%F\`),
 commit "wave: <ids>", and git push -u origin ${plan.base} (retry up to 4 times with backoff on network errors).
 Delete merged task/* branches locally. Return a short markdown summary.`,
@@ -179,6 +188,7 @@ if (A.playtest !== false && approved.length) {
 If apps/web exists and builds: pnpm --filter web build && serve the dist, drive it with Playwright (chromium preinstalled; --trace off),
 portrait 390x844, take screenshots at key moments (boot, first drop, cascade, crate unbox, menus), and judge against
 docs/plan/00-VISION.md and 03-ART-AUDIO-JUICE.md: beauty, juice, readability, FTUE timings, fps.
+${GIT_IDENTITY}
 Append up to 8 concrete, high-impact polish items to docs/plan/POLISH.md (status "ready", owning agent, owns paths, acceptance),
 commit "playtest: polish items" and push to ${plan.base}. If nothing playable exists yet, say so and change nothing.
 Return the top 3 findings.`,
