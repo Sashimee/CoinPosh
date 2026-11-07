@@ -90,3 +90,23 @@ describe('shipped economy config', () => {
     }
   });
 });
+
+describe('shipped config keys', () => {
+  const KEY = /^[a-z][a-zA-Z0-9]*([-_.:][a-zA-Z0-9]+)*$/;
+
+  const keys = [
+    ...economyConfig.currencies.flatMap((c) => [c.id, ...c.sources, ...c.sinks]),
+    ...economyConfig.coinTiers.map((t) => t.id),
+    ...economyConfig.cascade.tiers.map((t) => t.id),
+    ...economyConfig.upgradeLines.flatMap((l) => [l.id, l.effect.stat]),
+    ...economyConfig.dropTables.map((t) => t.source),
+    ...economyConfig.venues.map((v) => v.id),
+    ...economyConfig.album.flatMap((s) => [s.id, ...s.items.map((i) => i.id)]),
+    ...economyConfig.pacing.map((t) => t.id),
+  ];
+
+  it.each([...new Set(keys)])('%s matches the config key pattern within 64 characters', (key) => {
+    expect(key).toMatch(KEY);
+    expect(key.length).toBeLessThanOrEqual(64);
+  });
+});

@@ -243,3 +243,73 @@ describe('assertValidEconomyConfig', () => {
     expect(error.message).toContain('dropTables.goldSafe.odds: odds sum to 99.9 %');
   });
 });
+
+describe('validateEconomyConfig: config keys', () => {
+  const KEY = /^[a-z][a-zA-Z0-9]*([-_.:][a-zA-Z0-9]+)*$/;
+  const isKey = (key: string): boolean => key.length <= 64 && KEY.test(key);
+
+  function withLineId(id: string): EconomyConfig {
+    return {
+      ...economyConfig,
+      upgradeLines: economyConfig.upgradeLines.map((l, i) => (i === 0 ? { ...l, id } : l)),
+    };
+  }
+
+  const keyIssues = (config: EconomyConfig): string[] =>
+    validateEconomyConfig(config)
+      .filter((i) => i.message.includes('must match'))
+      .map((i) => i.path);
+
+  it('accepts every key that matches the pattern within 64 characters', () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(KEY).filter((k) => k.length <= 64),
+        (key) => {
+          expect(keyIssues(withLineId(key))).toEqual([]);
+        },
+      ),
+    );
+  });
+
+  it('rejects every key outside the pattern or over 64 characters', () => {
+    const offPattern = fc.string({ unit: 'binary-ascii', maxLength: 80 });
+    const tooLong = fc.stringMatching(KEY).filter((k) => k.length > 64);
+    fc.assert(
+      fc.property(fc.oneof(offPattern, tooLong), (key) => {
+        fc.pre(!isKey(key));
+        expect(keyIssues(withLineId(key))).toEqual(['upgradeLines[0].id']);
+      }),
+    );
+  });
+
+  it('pins the boundary cases', () => {
+    for (const key of ['a', 'pusher-speed', 'vault.crate:gold_2', 'a'.repeat(64)]) {
+      expect(keyIssues(withLineId(key))).toEqual([]);
+    }
+    for (const key of [
+      '',
+      'PusherSpeed',
+      '1coin',
+      'pusher--speed',
+      'pusher-',
+      '-pusher',
+      'pusher speed',
+      'a'.repeat(65),
+    ]) {
+      expect(keyIssues(withLineId(key))).toEqual(['upgradeLines[0].id']);
+    }
+  });
+
+  it('checks venue, album and source keys too', () => {
+    const [venue, ...venues] = economyConfig.venues;
+    const [set, ...sets] = economyConfig.album;
+    const [currency, ...currencies] = economyConfig.currencies;
+    const broken = {
+      ...economyConfig,
+      venues: [{ ...venue, id: 'Riviera Yacht' }, ...venues],
+      album: [{ ...set, id: 'deck essentials' }, ...sets],
+      currencies: [{ ...currency, sinks: ['Drop'] }, ...currencies],
+    } as unknown as EconomyConfig;
+    expect(keyIssues(broken)).toEqual(['currencies[0].sinks[0]', 'venues[0].id', 'album[0].id']);
+  });
+});

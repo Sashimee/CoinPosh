@@ -236,6 +236,10 @@ importers:
         version: 4.1.12(@types/node@24.19.2)(vite@8.3.6(@types/node@24.19.2))
 
   packages/economy:
+    dependencies:
+      '@coinposh/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: 24.19.2
