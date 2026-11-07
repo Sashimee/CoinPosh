@@ -37,6 +37,8 @@ export interface SessionDeps {
   readonly locale: () => Locale;
   /** Resolves a fresh Cloudflare Turnstile token for guest account creation. */
   readonly turnstileToken: () => Promise<string>;
+  /** Told when a stored session is unreadable, since falling back to guest sign-in starts a new account. */
+  readonly onError: (error: Error) => void;
 }
 
 const REVOKED: ReadonlySet<string> = new Set([
@@ -77,8 +79,16 @@ export class Session {
   }
 
   async #load(): Promise<PersistedSession> {
-    const parsed = PersistedSessionSchema.safeParse(await this.#deps.store.get(STORE_KEY));
-    return parsed.success ? parsed.data : { refreshToken: null, pendingKey: null };
+    const raw = await this.#deps.store.get(STORE_KEY);
+    if (raw === undefined) return { refreshToken: null, pendingKey: null };
+    const parsed = PersistedSessionSchema.safeParse(raw);
+    if (parsed.success) return parsed.data;
+    this.#deps.onError(
+      new Error(
+        `CoinPosh net: discarded an unreadable stored session, signing in as a new guest (${parsed.error.message}).`,
+      ),
+    );
+    return { refreshToken: null, pendingKey: null };
   }
 
   async #save(session: PersistedSession): Promise<void> {

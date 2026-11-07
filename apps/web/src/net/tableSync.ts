@@ -311,12 +311,12 @@ export class TableSync {
   }
 
   #applyClaims(op: ClaimsOp, response: { results: readonly ClaimResult[]; wallet: Wallet }): void {
-    this.#wallet = response.wallet;
     if (response.results.length !== op.claims.length) {
       throw new ContractViolationError(
         `tableClaims answered ${response.results.length} results for ${op.claims.length} claims.`,
       );
     }
+    this.#wallet = response.wallet;
     op.claims.forEach((claim, i) => {
       const result = response.results[i];
       if (result === undefined) return;

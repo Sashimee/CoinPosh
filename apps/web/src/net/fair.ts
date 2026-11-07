@@ -29,9 +29,13 @@ export async function fairDigest(
 /**
  * Checks, on the player's device, that a roll's proof belongs to a seed the server has since
  * revealed: the seed hashes to the commitment shown before the roll, the client seed matches,
- * and the nonce was spent before the reveal.
+ * and the nonce was spent before the reveal. It does not re-derive the roll's outcome, so it
+ * cannot show that the rarity and rewards displayed were the ones that digest produced.
  */
-export async function verifyFairRoll(revealed: RevealedSeed, proof: FairProof): Promise<boolean> {
+export async function verifyFairProofMembership(
+  revealed: RevealedSeed,
+  proof: FairProof,
+): Promise<boolean> {
   return (
     (await sha256Hex(revealed.serverSeed)) === revealed.serverSeedHash &&
     proof.serverSeedHash === revealed.serverSeedHash &&

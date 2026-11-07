@@ -127,6 +127,41 @@ describe('TableSync online', () => {
     expect(sync.pending).toBe(0);
     expectConserved();
   });
+
+  it('keeps the last trusted wallet when a claims answer breaks the results contract', async () => {
+    const tampered: MockServer = {
+      ...server,
+      transport: async (request) => {
+        const response = await server.transport(request);
+        if (request.path !== '/v1/table/claims' || response.status !== 200) return response;
+        const body = response.body as { wallet: { coins: number } };
+        return {
+          status: response.status,
+          body: { ...body, results: [], wallet: { ...body.wallet, coins: 9_999_999 } },
+        };
+      },
+    };
+    const player = await connectPlayer(tampered, time);
+    const outbox = await Outbox.open(player.store, rethrow);
+    const errors: unknown[] = [];
+    const sync = new TableSync({
+      client: player.client,
+      outbox,
+      connectivity: manualConnectivity(),
+      scheduler: manualScheduler,
+      jitter: () => 0,
+      onError: (error) => errors.push(error),
+    });
+    sync.hydrate(await player.client.call('state'));
+    const coin = dropNow(sync);
+    await sync.flush();
+    const trusted = sync.balance?.wallet;
+    fallNow(sync, coin.id);
+    await sync.flush();
+    expect(errors).toContainEqual(expect.objectContaining({ name: 'ContractViolationError' }));
+    expect(sync.balance?.wallet).toEqual(trusted);
+    expect(sync.balance?.wallet.coins).not.toBe(9_999_999);
+  });
 });
 
 describe('TableSync offline queue', () => {

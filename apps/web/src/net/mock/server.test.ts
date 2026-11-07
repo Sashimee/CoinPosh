@@ -11,7 +11,7 @@ import {
 } from '@coinposh/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { loadOrCreateDeviceKey } from '../device.ts';
-import { verifyFairRoll } from '../fair.ts';
+import { verifyFairProofMembership } from '../fair.ts';
 import { ApiRequestError } from '../errors.ts';
 import { newIdempotencyKey } from '../request.ts';
 import { memoryStore } from '../store.ts';
@@ -724,7 +724,9 @@ describe('mock server: crates and provable fairness', () => {
     });
     const rotated = await alice.client.call('fairRotate', { body: {} });
     expect(rotated.revealed.serverSeedHash).toBe(opened.roll.proof.serverSeedHash);
-    await expect(verifyFairRoll(rotated.revealed, opened.roll.proof)).resolves.toBe(true);
+    await expect(verifyFairProofMembership(rotated.revealed, opened.roll.proof)).resolves.toBe(
+      true,
+    );
     expectConserved();
   });
 });

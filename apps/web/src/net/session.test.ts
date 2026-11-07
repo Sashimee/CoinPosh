@@ -84,6 +84,29 @@ describe('Session', () => {
     await reloaded.client.call('state');
     expect(paths(reloaded.requests, '/v1/auth/guest')).toHaveLength(0);
     expect(requirePlayerId(reloaded)).toBe(requirePlayerId(first));
+    expect(reloaded.errors).toEqual([]);
+  });
+
+  it('reports a corrupt stored session before falling back to a new guest account', async () => {
+    const first = await connectPlayer(server, time);
+    await first.client.call('state');
+    await first.store.set('session', { refreshToken: 42, pendingKey: 'not-a-key' });
+    const reloaded = await connectPlayer(server, time, {
+      store: first.store,
+      device: first.device,
+    });
+    await reloaded.client.call('state');
+    expect(reloaded.errors).toHaveLength(1);
+    expect(reloaded.errors[0]?.message).toMatch(/unreadable stored session/);
+    expect(paths(reloaded.requests, '/v1/auth/guest')).toHaveLength(1);
+    expect(paths(reloaded.requests, '/v1/auth/refresh')).toHaveLength(0);
+  });
+
+  it('starts a first visit as a guest without reporting anything', async () => {
+    const player = await connectPlayer(server, time);
+    await player.client.call('state');
+    expect(player.errors).toEqual([]);
+    expect(paths(player.requests, '/v1/auth/guest')).toHaveLength(1);
   });
 });
 

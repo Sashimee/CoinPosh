@@ -42,6 +42,8 @@ export interface Player {
   readonly client: ApiClient;
   readonly clock: ServerClock;
   readonly requests: WireRequest[];
+  /** Everything the session reported through `onError`. */
+  readonly errors: Error[];
 }
 
 export interface PlayerOptions {
@@ -61,6 +63,7 @@ export async function connectPlayer(
   const store = options.store ?? memoryStore();
   const device = options.device ?? (await loadOrCreateDeviceKey(store));
   const requests: WireRequest[] = [];
+  const errors: Error[] = [];
   const transport: Transport = (request) => {
     requests.push(request);
     return server.transport(request);
@@ -73,6 +76,7 @@ export async function connectPlayer(
     monotonic,
     locale: () => 'en',
     turnstileToken: () => Promise.resolve(`test-turnstile-${String(++turnstileCounter)}`),
+    onError: (error) => errors.push(error),
   });
   const clock = new ServerClock(monotonic);
   const client = new ApiClient({
@@ -83,7 +87,7 @@ export async function connectPlayer(
     sleep: () => Promise.resolve(),
     jitter: () => 0,
   });
-  return { device, store, session, client, clock, requests };
+  return { device, store, session, client, clock, requests, errors };
 }
 
 export function requirePlayerId(player: Player): PlayerId {

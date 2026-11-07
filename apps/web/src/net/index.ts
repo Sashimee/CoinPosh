@@ -75,6 +75,7 @@ export async function createNet(options: NetOptions): Promise<Net> {
       mode.kind === 'demo'
         ? () => Promise.resolve(`demo-${crypto.randomUUID()}`)
         : options.turnstileToken,
+    onError: options.onError,
   });
   const client = new ApiClient({ transport, device, session, clock });
   const outbox = await Outbox.open(store, options.onError);

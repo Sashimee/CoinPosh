@@ -12,10 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@coinposh/economy": "workspace:*",
-    "@coinposh/shared": "workspace:*",
-    "three": "0.187.0",
-    "zod": "4.6.7"
+    "three": "0.187.0"
   },
   "devDependencies": {
     "@types/three": "0.187.0",
