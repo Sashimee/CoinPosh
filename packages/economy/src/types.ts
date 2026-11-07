@@ -1,13 +1,16 @@
-export const CURRENCY_IDS = [
-  'coins',
-  'bullion',
-  'goldBars',
-  'pearls',
-  'keys',
-  'tickets',
-  'stars',
-] as const;
-export type CurrencyId = (typeof CURRENCY_IDS)[number];
+import {
+  CASCADE_TIERS,
+  COIN_TIERS,
+  CURRENCIES,
+  RARITIES,
+  type CascadeTier,
+  type CoinTier,
+  type Currency,
+  type Rarity,
+} from '@coinposh/shared';
+
+export const CURRENCY_IDS = CURRENCIES;
+export type CurrencyId = Currency;
 
 export type CurrencyKind = 'soft' | 'progress' | 'prestige' | 'premium' | 'utility' | 'seasonXp';
 
@@ -19,15 +22,8 @@ export interface CurrencyDef {
   readonly sinks: readonly string[];
 }
 
-export const COIN_TIER_IDS = [
-  'copper',
-  'silver',
-  'gold',
-  'platinum',
-  'diamond',
-  'heirloom',
-] as const;
-export type CoinTierId = (typeof COIN_TIER_IDS)[number];
+export const COIN_TIER_IDS = COIN_TIERS;
+export type CoinTierId = CoinTier;
 
 export interface CoinTierDef {
   readonly id: CoinTierId;
@@ -43,8 +39,8 @@ export interface FusionConfig {
   readonly bonusMultiplier: number;
 }
 
-export const CASCADE_TIER_IDS = ['chic', 'lavish', 'opulent', 'decadent', 'obscene'] as const;
-export type CascadeTierId = (typeof CASCADE_TIER_IDS)[number];
+export const CASCADE_TIER_IDS = CASCADE_TIERS;
+export type CascadeTierId = CascadeTier;
 
 export interface CascadeTierDef {
   readonly id: CascadeTierId;
@@ -58,8 +54,8 @@ export interface CascadeConfig {
   readonly tiers: readonly CascadeTierDef[];
 }
 
-export const RARITY_IDS = ['common', 'fine', 'rare', 'exquisite', 'legendary', 'heirloom'] as const;
-export type RarityId = (typeof RARITY_IDS)[number];
+export const RARITY_IDS = RARITIES;
+export type RarityId = Rarity;
 
 /** Weights in basis points of a percent: 10 000 = 100 %. Integers only, so sums are exact. */
 export type OddsTable = Readonly<Record<RarityId, number>>;

@@ -12,4 +12,8 @@
       "migrations_dir": "migrations",
     },
   ],
+  "durable_objects": {
+    "bindings": [{ "name": "PLAYER", "class_name": "PlayerDO" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PlayerDO"] }],
 }
