@@ -40,8 +40,13 @@ const STEP = 0.05;
 const MAX_DROP = 0.15;
 const EMA_HALF_LIFE_MS = 250;
 const SETTLE_MS = 400;
-/** Longer gaps are a paused tab or a debugger, not rendering cost. */
-const PAUSE_MS = 1000;
+/** Longer gaps are a paused tab, a suspended device or a debugger, not rendering cost. */
+export const PAUSE_MS = 1000;
+/**
+ * Frames right after a pause carry resume costs (texture re-uploads, compositor catch-up,
+ * a cold GPU clock), so this much active time is skipped before measuring again.
+ */
+export const RESUME_GRACE_MS = 500;
 /** One very slow frame (shader compile, GC) must not dominate the average on its own. */
 const FRAME_CAP_MS = 100;
 /** A dropped vsync frame lifts the average briefly; only sustained overload counts. */
@@ -109,6 +114,13 @@ interface Trial {
  * absolute timer, and only an overload verified within the current slow episode reports
  * `exhausted` at the floor scale.
  *
+ * All timers run on active time, the sum of measured intervals. A gap longer than
+ * `PAUSE_MS` (or an `interrupt()` from a hidden tab) is not a frame: it adds nothing to that
+ * clock, discards the measurements of the episode it cut, and the frames of the next
+ * `RESUME_GRACE_MS` are skipped. A running A/B test survives it: only the segment the pause
+ * cut is measured again, so tests still reach a verdict when pauses come more often than a
+ * test lasts.
+ *
  * GPU cost is roughly proportional to pixel count, so drops follow the square root of the
  * overshoot; growing back is a single-step probe that is reverted, and backs off
  * exponentially, each time it fails, which stops it see-sawing around the vsync boundary.
@@ -138,6 +150,7 @@ export class DynamicResolution {
   private segmentSeed = SEGMENT_SEED;
   private insensitiveUntilMs = 0;
   private insensitiveBackoffMs = INSENSITIVE_BASE_MS;
+  private resumeGraceMs = 0;
 
   constructor(options: DynamicResolutionOptions) {
     if (!(options.minScale > 0 && options.minScale <= options.maxScale)) {
@@ -183,14 +196,12 @@ export class DynamicResolution {
     const interval = frame.intervalMs;
     if (!Number.isFinite(interval) || interval <= 0) return null;
     if (interval > PAUSE_MS) {
-      this.frameEma = null;
-      this.gpuEma = null;
-      this.healthyMs = 0;
-      this.slowMs = 0;
-      this.episodeConfirmed = false;
-      const interrupted = this.trial;
-      this.trial = null;
-      return interrupted === null ? null : this.apply(interrupted.high);
+      this.interrupt();
+      return null;
+    }
+    if (this.resumeGraceMs > 0) {
+      this.resumeGraceMs -= interval;
+      return null;
     }
     this.clockMs += interval;
     this.sinceChangeMs += interval;
@@ -239,6 +250,25 @@ export class DynamicResolution {
       this.healthyMs = 0;
     }
     return null;
+  }
+
+  /**
+   * Marks a discontinuity in the frame stream, such as the tab being hidden or shown. The
+   * smoothed cost and slow or healthy streaks are dropped, a running A/B test restarts the
+   * segment it was in, and confirmations and back-offs keep their active-time timers.
+   */
+  interrupt(): void {
+    this.frameEma = null;
+    this.gpuEma = null;
+    this.healthyMs = 0;
+    this.slowMs = 0;
+    this.starvedAtFloorMs = 0;
+    this.resumeGraceMs = RESUME_GRACE_MS;
+    if (this.trial !== null) {
+      this.trial.samples = [];
+      this.trial.skipped = 0;
+      this.trial.ageMs = 0;
+    }
   }
 
   private attribute(frame: FrameTiming): FrameAttribution {

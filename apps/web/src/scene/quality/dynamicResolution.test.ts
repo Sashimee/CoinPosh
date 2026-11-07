@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DynamicResolution, type ResolutionEvent } from './dynamicResolution.ts';
+import {
+  DynamicResolution,
+  PAUSE_MS,
+  RESUME_GRACE_MS,
+  type ResolutionEvent,
+} from './dynamicResolution.ts';
 
 const VSYNC_MS = 1000 / 60;
 
@@ -17,6 +22,19 @@ interface Sensors {
   readonly cpu?: boolean;
   /** Report GPU timestamps, as with `trackTimestamp: true` on a supporting device. */
   readonly gpu?: boolean;
+}
+
+/**
+ * The tab goes away every `everyMs` of play for `awayMs`, and the first frames back each take
+ * `resumeHitchMs` (re-uploads, compositor catch-up) for `resumeHitchFrames` frames.
+ */
+interface Pauses {
+  readonly everyMs: number;
+  readonly awayMs: number;
+  readonly resumeHitchMs?: number;
+  readonly resumeHitchFrames?: number;
+  /** Play time after which the pauses stop. */
+  readonly untilMs?: number;
 }
 
 interface Frame {
@@ -37,24 +55,39 @@ function simulate(
   device: (elapsedMs: number) => Device,
   durationMs: number,
   sensors: Sensors = { cpu: true },
-): { frames: Frame[]; events: ResolutionEvent[] } {
+  pauses?: Pauses,
+): { frames: Frame[]; events: ResolutionEvent[]; pausedAt: number[] } {
   const frames: Frame[] = [];
   const events: ResolutionEvent[] = [];
+  const pausedAt: number[] = [];
   let elapsed = 0;
+  let nextPause = pauses?.everyMs ?? Number.POSITIVE_INFINITY;
+  let hitchFramesLeft = 0;
   while (elapsed < durationMs) {
     const now = device(elapsed);
     const scale = controller.scale;
-    const ms = presentedFrameMs(now, scale);
+    let ms = presentedFrameMs(now, scale);
+    let intervalMs = ms;
+    if (pauses !== undefined && elapsed >= nextPause && elapsed < (pauses.untilMs ?? Infinity)) {
+      nextPause += pauses.everyMs;
+      pausedAt.push(elapsed);
+      intervalMs += pauses.awayMs;
+      hitchFramesLeft = pauses.resumeHitchFrames ?? 0;
+    } else if (hitchFramesLeft > 0) {
+      hitchFramesLeft--;
+      ms = Math.max(ms, pauses?.resumeHitchMs ?? 0);
+      intervalMs = ms;
+    }
     elapsed += ms;
     frames.push({ at: elapsed, ms, scale });
     const event = controller.sample({
-      intervalMs: ms,
+      intervalMs,
       cpuMs: sensors.cpu === true ? now.cpuMs : null,
       gpuMs: sensors.gpu === true ? now.gpuFullMs * scale * scale : null,
     });
     if (event !== null) events.push(event);
   }
-  return { frames, events };
+  return { frames, events, pausedAt };
 }
 
 function fpsBetween(frames: readonly Frame[], from: number, to: number): number {
@@ -358,6 +391,153 @@ describe('DynamicResolution', () => {
     expect(controller.smoothedFrameMs).toBeNull();
     for (let i = 0; i < 100; i++) controller.sample(interval(VSYNC_MS));
     expect(controller.scale).toBe(1);
+  });
+
+  describe('across pauses longer than PAUSE_MS', () => {
+    const away: Pauses = {
+      everyMs: 7000,
+      awayMs: 1500,
+      resumeHitchMs: 250,
+      resumeHitchFrames: 2,
+    };
+
+    it('does not let a gap or the hitches after it count as load', () => {
+      const controller = controllerAt();
+      const { events, pausedAt } = simulate(
+        controller,
+        () => ({ cpuMs: 4, gpuFullMs: 8 }),
+        120_000,
+        { cpu: true },
+        { ...away, everyMs: 3000, awayMs: 60_000 },
+      );
+      expect(pausedAt.length).toBeGreaterThan(30);
+      expect(events).toEqual([]);
+    });
+
+    it.each([
+      ['frame intervals', { cpu: true }],
+      ['GPU timestamps', { cpu: true, gpu: true }],
+    ] as const)('still verifies a GPU-bound overload and holds 55 fps (%s)', (_name, sensors) => {
+      const controller = controllerAt();
+      const confirmed: boolean[] = [];
+      const { frames, pausedAt } = simulate(
+        controller,
+        () => {
+          confirmed.push(controller.gpuBoundConfirmed);
+          return { cpuMs: 4, gpuFullMs: 24 };
+        },
+        60_000,
+        sensors,
+        away,
+      );
+      expect(pausedAt.length).toBeGreaterThanOrEqual(8);
+      expect(confirmed).toContain(true);
+      expect(controller.scale).toBeLessThan(1);
+      const steady = frames.filter((frame) => frame.at > 10_000 && frame.ms < 100);
+      const fps = (steady.length * 1000) / steady.reduce((sum, frame) => sum + frame.ms, 0);
+      expect(fps).toBeGreaterThanOrEqual(55);
+    });
+
+    it.each([
+      ['capped at 30 Hz', { cpuMs: 3, gpuFullMs: 6, refreshHz: 30 }],
+      ['CPU-bound', { cpuMs: 30, gpuFullMs: 5 }],
+    ] as const)('never confirms a %s device because of pauses', (_name, device) => {
+      const controller = controllerAt();
+      const confirmedAt: number[] = [];
+      const { frames, events } = simulate(
+        controller,
+        (at) => {
+          if (controller.gpuBoundConfirmed) confirmedAt.push(at);
+          return device;
+        },
+        5 * 60_000,
+        { cpu: true },
+        { ...away, everyMs: 2300 },
+      );
+      expect(events).not.toContainEqual({ kind: 'exhausted' });
+      expect(confirmedAt).toEqual([]);
+      expect(controller.scale).toBe(1);
+      expect(shareAtScale(frames, 1, 0)).toBeGreaterThan(0.95);
+    });
+
+    it('keeps an A/B test across a pause and re-measures only the segment it cut', () => {
+      const gpuBound = () => ({ cpuMs: 3, gpuFullMs: 25 });
+      const reference = controllerAt();
+      const uninterrupted = simulate(reference, gpuBound, 10_000);
+      expect(reference.gpuBoundConfirmed).toBe(true);
+
+      const controller = controllerAt();
+      let trialStart: ResolutionEvent | null = null;
+      for (let i = 0; i < 200 && trialStart === null; i++) {
+        trialStart = controller.sample({ intervalMs: 2 * VSYNC_MS, cpuMs: 3 });
+      }
+      const trialLow = controller.scale;
+      expect(trialLow).toBeLessThan(1);
+      expect(controller.sample({ intervalMs: PAUSE_MS + 1 })).toBeNull();
+      expect(controller.scale).toBe(trialLow);
+      expect(controller.gpuBoundConfirmed).toBe(false);
+
+      const resumed = simulate(controller, gpuBound, 10_000);
+      expect(controller.gpuBoundConfirmed).toBe(true);
+      expect(controller.scale).toBeLessThan(1);
+      expect(resumed.events.length).toBeLessThanOrEqual(uninterrupted.events.length);
+      expect(fpsBetween(resumed.frames, 5000, 10_000)).toBeGreaterThanOrEqual(55);
+    });
+
+    it('reaches a verdict when pauses come more often than an A/B test lasts', () => {
+      const controller = controllerAt();
+      let everConfirmed = false;
+      const { frames, pausedAt } = simulate(
+        controller,
+        () => {
+          everConfirmed ||= controller.gpuBoundConfirmed;
+          return { cpuMs: 3, gpuFullMs: 25 };
+        },
+        30_000,
+        { cpu: true },
+        { everyMs: 1500, awayMs: 2000, resumeHitchMs: 120, resumeHitchFrames: 2 },
+      );
+      expect(pausedAt.length).toBeGreaterThan(15);
+      expect(everConfirmed).toBe(true);
+      expect(controller.scale).toBeLessThan(1);
+      expect(frames.at(-1)?.ms).toBeCloseTo(VSYNC_MS);
+    });
+
+    it('skips the resume grace period, then measures again', () => {
+      const controller = controllerAt();
+      for (let i = 0; i < 60; i++) controller.sample(interval(VSYNC_MS));
+      expect(controller.sample(interval(PAUSE_MS * 4))).toBeNull();
+      let graceMs = 0;
+      while (graceMs < RESUME_GRACE_MS) {
+        expect(controller.sample(interval(90))).toBeNull();
+        graceMs += 90;
+        expect(controller.smoothedFrameMs).toBeNull();
+      }
+      controller.sample(interval(VSYNC_MS));
+      expect(controller.smoothedFrameMs).toBeCloseTo(VSYNC_MS);
+    });
+
+    it('treats a pause exactly at PAUSE_MS as a (slow) frame and anything longer as a gap', () => {
+      const atThreshold = controllerAt();
+      atThreshold.sample(interval(PAUSE_MS));
+      expect(atThreshold.lastAttribution).toBe('frame-interval');
+      const beyond = controllerAt();
+      beyond.sample(interval(PAUSE_MS + 0.5));
+      expect(beyond.lastAttribution).toBeNull();
+    });
+
+    it('does not carry starvation at the floor across a pause into exhaustion', () => {
+      const controller = controllerAt(0.5);
+      const overload = () => ({ cpuMs: 2, gpuFullMs: 200 });
+      const sensors = { cpu: true, gpu: true };
+      const paused = simulate(controller, overload, 60_000, sensors, {
+        everyMs: 2000,
+        awayMs: 5000,
+      });
+      expect(paused.events).not.toContainEqual({ kind: 'exhausted' });
+      const resumed = simulate(controller, overload, 10_000, sensors);
+      expect(resumed.events).toContainEqual({ kind: 'exhausted' });
+    });
   });
 
   it('ignores invalid timings', () => {

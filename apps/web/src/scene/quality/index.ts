@@ -15,6 +15,11 @@ import { runBenchmark } from './benchmark.ts';
 import { createGpuFrameTimer } from './gpuTimer.ts';
 import { browserStore, type KeyValueStore } from './storage.ts';
 import type { QualityProfile, QualityTier } from './tiers.ts';
+import {
+  documentVisibility,
+  suspendOnVisibilityChange,
+  type VisibilitySource,
+} from './visibility.ts';
 
 export {
   QUALITY_PROFILES,
@@ -24,6 +29,8 @@ export {
   qualityOverrideFrom,
 } from './tiers.ts';
 export type { EmbossResolution, QualityProfile, QualityTier, VenueDetail } from './tiers.ts';
+export { PAUSE_MS } from './dynamicResolution.ts';
+export type { VisibilitySource } from './visibility.ts';
 export { DEFAULT_RENDER_LOOK, type RenderLook } from '../post/look.ts';
 
 export interface AdaptiveRenderingOptions extends PostPipelineOptions {
@@ -36,6 +43,8 @@ export interface AdaptiveRenderingOptions extends PostPipelineOptions {
   readonly onTierChange?: (profile: QualityProfile) => void;
   /** Same timebase as the requestAnimationFrame timestamp; injectable for tests. */
   readonly now?: () => number;
+  /** Hidden/shown events that pause frame measurement; defaults to `document`. */
+  readonly visibility?: VisibilitySource | null;
 }
 
 export interface AdaptiveRendering {
@@ -71,6 +80,10 @@ const CLOCK_SKEW_LIMIT_MS = 1000;
  * (device loss, or a WebGPU -> WebGL2 fallback), call `dispose()` on the old instance and
  * create a new one with the new renderer and backend; a backend change re-benchmarks because
  * saved tiers are per backend.
+ *
+ * Frame measurement pauses on `visibilitychange`, and any gap over `PAUSE_MS` between two
+ * `render` calls counts as a pause rather than a slow frame, so a hidden tab, a suspended
+ * phone or a debugger break never lowers resolution or the tier.
  */
 export async function createAdaptiveRendering(
   options: AdaptiveRenderingOptions,
@@ -92,6 +105,12 @@ export async function createAdaptiveRendering(
     ...(options.onTierChange === undefined ? {} : { onTierChange: options.onTierChange }),
   });
   const gpuTimer = createGpuFrameTimer(renderer);
+  const stopWatchingVisibility = suspendOnVisibilityChange(
+    options.visibility === undefined ? documentVisibility() : options.visibility,
+    () => {
+      governor.suspend();
+    },
+  );
   let lastCpuMs: number | null = null;
   let clockChecked = false;
   let disposed = false;
@@ -127,6 +146,7 @@ export async function createAdaptiveRendering(
     dispose() {
       if (disposed) return;
       disposed = true;
+      stopWatchingVisibility();
       gpuTimer?.dispose();
       post.dispose();
     },

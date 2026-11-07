@@ -507,4 +507,87 @@ describe('createQualityGovernor', () => {
       expect(post.dynamicScale).toBe(1);
     });
   });
+
+  describe('when the tab is hidden or the device sleeps', () => {
+    const governedHigh = () => {
+      const post = fakePipeline(QUALITY_PROFILES.high);
+      const governor = createQualityGovernor(post, {
+        backend: 'webgpu',
+        store: null,
+        source: 'benchmark',
+        logger: quietLogger(),
+      });
+      return { post, governor };
+    };
+
+    const presentedMs = (load: Load, ratio: number) => {
+      const refreshMs = 1000 / (load.refreshHz ?? 60);
+      const gpuMs = load.gpuMsAtRatio1 * ratio * ratio;
+      return {
+        gpuMs,
+        frameMs: Math.max(1, Math.ceil(Math.max(load.cpuMs, gpuMs) / refreshMs - 1e-9)) * refreshMs,
+      };
+    };
+
+    it('never reads a hidden period shorter than PAUSE_MS as a slow frame once suspended', () => {
+      const { post, governor } = governedHigh();
+      let now = 1000;
+      for (let switches = 0; switches < 200; switches++) {
+        for (let i = 0; i < 60; i++) {
+          now += 1000 / 60;
+          governor.frame(now, { cpuMs: 4 });
+        }
+        governor.suspend();
+        now += 900;
+        governor.frame(now, { cpuMs: 4 });
+        governor.suspend();
+      }
+      expect(post.history).toEqual([]);
+    });
+
+    it.each([
+      ['GPU-light', { cpuMs: 3, gpuMsAtRatio1: 3 }],
+      ['capped at 30 Hz', { cpuMs: 3, gpuMsAtRatio1: 2, refreshHz: 30 }],
+    ] as const)(
+      'keeps the tier and full resolution through repeated multi-second gaps (%s)',
+      (_name, load: Load) => {
+        const { post, governor } = governedHigh();
+        let now = 1000;
+        let played = 0;
+        governor.frame(now);
+        while (played < 3 * 60_000) {
+          const { frameMs } = presentedMs(load, post.scenePixelRatio);
+          played += frameMs;
+          now += frameMs + (played % 4000 < frameMs ? 30_000 : 0);
+          governor.frame(now, { cpuMs: load.cpuMs });
+        }
+        expect(post.profile.tier).toBe('high');
+        expect(post.history.some((entry) => entry.startsWith('tier:'))).toBe(false);
+        expect(post.dynamicScale).toBe(1);
+      },
+    );
+
+    it.each([
+      ['frame intervals', { cpu: true }],
+      ['GPU timestamps', { cpu: true, gpu: true }],
+    ] as const)(
+      'still steps a GPU overload down when gaps keep interrupting it (%s)',
+      (_name, sensors: Sensors) => {
+        const { post, governor } = governedHigh();
+        let now = 1000;
+        let played = 0;
+        governor.frame(now);
+        while (played < 120_000 && post.profile.tier === 'high') {
+          const { frameMs, gpuMs } = presentedMs(GPU_OVERLOAD, post.scenePixelRatio);
+          played += frameMs;
+          now += frameMs + (played % 6000 < frameMs ? 5000 : 0);
+          governor.frame(now, {
+            cpuMs: GPU_OVERLOAD.cpuMs,
+            gpuMs: sensors.gpu === true ? gpuMs : null,
+          });
+        }
+        expect(post.profile.tier).toBe('medium');
+      },
+    );
+  });
 });

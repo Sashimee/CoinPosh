@@ -1,7 +1,7 @@
 import type { RenderBackend } from '../../backend.ts';
 import type { PostPipeline } from '../post/postPipeline.ts';
 import type { BenchmarkResult } from './benchmark.ts';
-import { DynamicResolution, type FrameTiming } from './dynamicResolution.ts';
+import { DynamicResolution, type FrameTiming, type ResolutionEvent } from './dynamicResolution.ts';
 import {
   DOWNGRADE_BOOTS,
   loadQuality,
@@ -144,6 +144,12 @@ export interface QualityGovernor {
    * whether lowering resolution helps before it counts.
    */
   frame(nowMs: number, measured?: FrameMeasurements): void;
+  /**
+   * Call when frames stop being continuous (the tab is hidden or shown, the app is
+   * backgrounded): the next `frame()` only sets a new baseline, so the time spent away is
+   * never read as a slow frame, however short it was.
+   */
+  suspend(): void;
 }
 
 /**
@@ -204,12 +210,19 @@ export function createQualityGovernor(
       const delta = last === null ? null : nowMs - last;
       last = nowMs;
       if (delta === null) return;
-      const event = controller.sample({ ...measured, intervalMs: delta });
-      if (event === null) return;
-      if (event.kind === 'scale') post.setDynamicScale(event.scale);
-      else stepDown();
+      handle(controller.sample({ ...measured, intervalMs: delta }));
+    },
+    suspend() {
+      last = null;
+      controller.interrupt();
     },
   };
+
+  function handle(event: ResolutionEvent | null): void {
+    if (event === null) return;
+    if (event.kind === 'scale') post.setDynamicScale(event.scale);
+    else stepDown();
+  }
 }
 
 function controllerFor(
