@@ -1018,6 +1018,42 @@ describe('mock server: crates and provable fairness', () => {
     );
     expectConserved();
   });
+  it('rejects a crate claim from before the crate spawned and accepts one at or after spawn', async () => {
+    let crate = null;
+    let spawnTick = 0;
+    let spawningCoin: CoinId | null = null;
+    for (let i = 0; i < crateSpawn.ftueScriptedDrop && crate === null; i++) {
+      const coin = await bufferedCoin();
+      time.advance(100);
+      spawnTick = time.tick();
+      const response = await alice.client.call('tableDrop', {
+        body: { x: 0, tick: spawnTick, coinId: coin.id },
+      });
+      crate = response.spawnedCrates[0] ?? null;
+      if (crate === null) await claimFall(coin.id);
+      else spawningCoin = coin.id;
+    }
+    if (crate === null || spawningCoin === null)
+      throw new Error('Expected the scripted FTUE crate.');
+    const entries = server.ledger().length;
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: spawnTick - 1, edge: 'front' }]),
+    ).toEqual([{ status: 'rejected', reason: 'not_on_table' }]);
+    expect(server.ledger()).toHaveLength(entries);
+    await expect(
+      alice.client.call('cratesOpen', { body: { crateId: crate.id } }),
+    ).rejects.toMatchObject({ code: 'not_ready' });
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: spawnTick, edge: 'front' }]),
+    ).toEqual([{ status: 'accepted', credited: 0, cascade: null, minted: null }]);
+    expect(server.ledger().length).toBeGreaterThan(entries);
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: spawnTick + 1, edge: 'front' }]),
+    ).toEqual([{ status: 'rejected', reason: 'already_claimed' }]);
+    await alice.client.call('cratesOpen', { body: { crateId: crate.id } });
+    await claimFall(spawningCoin);
+    expectConserved();
+  });
 });
 
 describe('mock server: every endpoint honours its shared contract', () => {

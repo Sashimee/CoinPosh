@@ -120,6 +120,7 @@ interface CrateRecord {
   crate: TableCrate;
   ftue: boolean;
   state: 'table' | 'openable';
+  spawnTick: number;
 }
 
 export interface MockPlayer {
@@ -704,7 +705,7 @@ export class MockWorld {
           id: CrateIdSchema.parse(entityId(ENTITY_ID_PREFIXES.crate)),
           kind: 'vault',
         };
-        player.crates.set(crate.id, { crate, ftue, state: 'table' });
+        player.crates.set(crate.id, { crate, ftue, state: 'table', spawnTick: body.tick });
         spawnedCrates.push(crate);
       }
       this.#refillBuffer(player, now);
@@ -1080,6 +1081,7 @@ export class MockWorld {
           );
         }
         if (record.state !== 'table') return reject('already_claimed');
+        if (claim.tick < record.spawnTick) return reject('not_on_table');
         player.lastClaimTick = claim.tick;
         if (claim.edge === 'front') {
           record.state = 'openable';
