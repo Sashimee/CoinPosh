@@ -428,6 +428,59 @@ describe('SimBridge on the render thread', () => {
     }
   });
 
+  it('keeps drop tiers in step with coin ids when a tier is set before its coin arrives', () => {
+    let now = 0;
+    const worker = new FakeWorker();
+    const bridge = new SimBridge(worker, { seed: 1, transport: 'transfer', now: () => now });
+    const pool = worker.takeBuffers();
+    let tick = 0;
+    const publish = (count: number): void => {
+      pool.push(...worker.takeBuffers());
+      const buffer = pool.pop();
+      if (!buffer) throw new Error(`the ring ran dry at tick ${tick}`);
+      new FrameView(buffer, 0, bridge.capacity).write(tick, 0, table(count, tick));
+      worker.emit('message', { type: 'frame', buffer });
+      tick += 1;
+    };
+    bridge.drop(-40, 'gold');
+    bridge.setTier(0, 'silver');
+    publish(1);
+    bridge.drop(0, 'copper');
+    bridge.drop(40, 'heirloom');
+    publish(3);
+    now = 1e6;
+    const target = new RecordingTarget();
+    bridge.sync(target);
+    expect(target.ids('silver')).toEqual([0]);
+    expect(target.ids('gold')).toEqual([]);
+    expect(target.ids('copper')).toEqual([1]);
+    expect(target.ids('heirloom')).toEqual([2]);
+  });
+
+  it('keeps tiers set for coins that have not arrived yet when it prunes departed coins', () => {
+    let now = 0;
+    const worker = new FakeWorker();
+    const bridge = new SimBridge(worker, { seed: 1, transport: 'transfer', now: () => now });
+    const pool = worker.takeBuffers();
+    let tick = 0;
+    const publish = (count: number): void => {
+      pool.push(...worker.takeBuffers());
+      const buffer = pool.pop();
+      if (!buffer) throw new Error(`the ring ran dry at tick ${tick}`);
+      new FrameView(buffer, 0, bridge.capacity).write(tick, 0, table(count, tick));
+      worker.emit('message', { type: 'frame', buffer });
+      tick += 1;
+    };
+    for (let id = 0; id < 100; id += 1) bridge.setTier(id, id < 50 ? 'gold' : 'platinum');
+    publish(1);
+    publish(100);
+    now = 1e6;
+    const target = new RecordingTarget();
+    bridge.sync(target);
+    expect(target.ids('platinum')).toEqual(Array.from({ length: 50 }, (_, i) => 50 + i));
+    expect(target.ids('copper')).toEqual([]);
+  });
+
   it('exposes the sim coin dimensions for sizing the coin field', () => {
     expect(SIM_COIN_DIMENSIONS).toEqual({ radius: COIN.radius, halfThickness: COIN.halfThickness });
     expect(new SimBridge(new FakeWorker(), { seed: 1 }).coin).toBe(SIM_COIN_DIMENSIONS);

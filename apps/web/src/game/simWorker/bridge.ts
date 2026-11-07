@@ -341,12 +341,13 @@ export class SimBridge {
       const id = ids[i] ?? 0;
       if (id <= this.#highestId) continue;
       this.#highestId = id;
-      if (!this.#tiers.has(id))
-        this.#tiers.set(id, this.#pendingTiers.shift() ?? this.#defaultTier);
+      const queued = this.#pendingTiers.shift();
+      if (!this.#tiers.has(id)) this.#tiers.set(id, queued ?? this.#defaultTier);
     }
     if (this.#tiers.size > count * 2 + 64) {
       const live = new Set(ids.subarray(0, count));
-      for (const id of this.#tiers.keys()) if (!live.has(id)) this.#tiers.delete(id);
+      for (const id of this.#tiers.keys())
+        if (id <= this.#highestId && !live.has(id)) this.#tiers.delete(id);
     }
   }
 
