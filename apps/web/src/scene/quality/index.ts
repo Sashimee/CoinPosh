@@ -34,9 +34,19 @@ export interface AdaptiveRendering {
   readonly resolved: ResolvedQuality;
   /** Replaces `renderer.render(scene, camera)` in the animation loop. */
   render(nowMs: number): void;
+  /** Releases the post graph; `render` throws afterwards. Call before rebuilding the renderer. */
   dispose(): void;
 }
 
+/**
+ * Binds post-processing and the quality governor to one renderer and backend.
+ *
+ * Await it before the first visible frame (behind the loading state): on first boot it runs
+ * the benchmark, which needs up to `TIME_BUDGET_MS`. When the stage rebuilds its renderer
+ * (device loss, or a WebGPU -> WebGL2 fallback), call `dispose()` on the old instance and
+ * create a new one with the new renderer and backend; a backend change re-benchmarks because
+ * saved tiers are per backend.
+ */
 export async function createAdaptiveRendering(
   options: AdaptiveRenderingOptions,
 ): Promise<AdaptiveRendering> {
@@ -54,15 +64,23 @@ export async function createAdaptiveRendering(
     store,
     ...(options.onTierChange === undefined ? {} : { onTierChange: options.onTierChange }),
   });
+  let disposed = false;
   return {
     post,
     governor,
     resolved,
     render(nowMs) {
+      if (disposed) {
+        throw new Error(
+          'AdaptiveRendering.render called after dispose(); create a new one for the rebuilt renderer',
+        );
+      }
       governor.frame(nowMs);
       post.render(nowMs);
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       post.dispose();
     },
   };

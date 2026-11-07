@@ -1,15 +1,28 @@
 import type { RenderBackend } from '../../backend.ts';
 import { isQualityTier, type QualityTier } from './tiers.ts';
 
-export const QUALITY_STORAGE_KEY = 'coinposh.quality.v1';
+export const QUALITY_STORAGE_KEY = 'coinposh.quality.v2';
+
+/**
+ * How many boots a runtime downgrade outlives its session. Throttling, battery saver or a
+ * busy GPU are usually temporary, so the benchmarked tier comes back after this many boots.
+ */
+export const DOWNGRADE_BOOTS = 3;
 
 export type KeyValueStore = Pick<Storage, 'getItem' | 'setItem'>;
 
-export interface StoredQuality {
+export interface QualityDowngrade {
   readonly tier: QualityTier;
+  /** Boots, including the next one, that still start at `tier` instead of the benchmark tier. */
+  readonly bootsLeft: number;
+}
+
+export interface StoredQuality {
   readonly backend: RenderBackend;
-  /** Median milliseconds per frame the first-boot benchmark measured, or null if a downgrade wrote it. */
-  readonly benchmarkMs: number | null;
+  readonly benchTier: QualityTier;
+  /** Milliseconds per frame the first-boot benchmark measured. */
+  readonly benchmarkMs: number;
+  readonly downgrade: QualityDowngrade | null;
 }
 
 export interface QualityStorageLogger {
@@ -78,11 +91,20 @@ function parseStoredQuality(raw: string): StoredQuality | null {
   }
   if (typeof value !== 'object' || value === null) return null;
   const record = value as Record<string, unknown>;
-  const { tier, backend, benchmarkMs } = record;
-  if (!isQualityTier(tier)) return null;
+  const { benchTier, backend, benchmarkMs, downgrade } = record;
+  if (!isQualityTier(benchTier)) return null;
   if (backend !== 'webgpu' && backend !== 'webgl2') return null;
-  if (benchmarkMs !== null && (typeof benchmarkMs !== 'number' || !Number.isFinite(benchmarkMs))) {
-    return null;
-  }
-  return { tier, backend, benchmarkMs };
+  if (typeof benchmarkMs !== 'number' || !Number.isFinite(benchmarkMs)) return null;
+  if (downgrade === null) return { backend, benchTier, benchmarkMs, downgrade: null };
+  const parsedDowngrade = parseDowngrade(downgrade);
+  if (parsedDowngrade === null) return null;
+  return { backend, benchTier, benchmarkMs, downgrade: parsedDowngrade };
+}
+
+function parseDowngrade(value: unknown): QualityDowngrade | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { tier, bootsLeft } = value as Record<string, unknown>;
+  if (!isQualityTier(tier)) return null;
+  if (typeof bootsLeft !== 'number' || !Number.isInteger(bootsLeft) || bootsLeft < 1) return null;
+  return { tier, bootsLeft };
 }

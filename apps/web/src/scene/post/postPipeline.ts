@@ -5,6 +5,7 @@ import {
   SRGBColorSpace,
   type Camera,
   type ColorRepresentation,
+  type Node,
   type PassNode,
   type Scene,
   type WebGPURenderer,
@@ -108,8 +109,11 @@ export function createPostPipeline(
       tint: vignetteTint,
     });
     const display = renderOutput(vignetted, AgXToneMapping, SRGBColorSpace);
-    const grained = filmGrain(display, grainAmount, grainSeed);
-    pipeline.outputNode = next.antiAlias === 'fxaa' ? fxaa(grained) : grained;
+    // Grain goes last: FXAA would read per-pixel noise as edges and smear it into blotches.
+    // @types/three declares FXAANode as an untyped Node; at runtime it outputs vec4 colour.
+    const antiAliased =
+      next.antiAlias === 'fxaa' ? (fxaa(display) as unknown as Node<'vec4'>) : display;
+    pipeline.outputNode = filmGrain(antiAliased, grainAmount, grainSeed);
     pipeline.needsUpdate = true;
     appliedSceneScale = Number.NaN;
     return { scenePass, bloomPass };

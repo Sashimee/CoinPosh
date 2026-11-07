@@ -3,14 +3,16 @@ import type { PostPipeline } from '../post/postPipeline.ts';
 import type { BenchmarkResult } from './benchmark.ts';
 import { DynamicResolution } from './dynamicResolution.ts';
 import {
+  DOWNGRADE_BOOTS,
   loadQuality,
   saveQuality,
   type KeyValueStore,
   type QualityStorageLogger,
+  type StoredQuality,
 } from './storage.ts';
 import { lowerTier, QUALITY_PROFILES, type QualityProfile, type QualityTier } from './tiers.ts';
 
-export type QualitySource = 'stored' | 'benchmark' | 'override';
+export type QualitySource = 'stored' | 'downgrade' | 'benchmark' | 'override';
 
 export interface ResolvedQuality {
   readonly profile: QualityProfile;
@@ -26,27 +28,29 @@ export interface ResolveQualityOptions {
   readonly logger?: QualityStorageLogger & { info(message: string): void };
 }
 
-/** Returns the saved tier for this backend, or runs the first-boot benchmark and saves its pick. */
+/**
+ * Returns the saved tier for this backend, or runs the first-boot benchmark and saves its pick.
+ * A saved runtime downgrade wins over the benchmark tier until its boots run out.
+ */
 export async function resolveQuality(options: ResolveQualityOptions): Promise<ResolvedQuality> {
   const logger = options.logger ?? console;
   if (options.override !== undefined) {
     return { profile: QUALITY_PROFILES[options.override], source: 'override', benchmarkMs: null };
   }
   const stored = loadQuality(options.store, options.backend, logger);
-  if (stored !== null) {
-    return {
-      profile: QUALITY_PROFILES[stored.tier],
-      source: 'stored',
-      benchmarkMs: stored.benchmarkMs,
-    };
-  }
+  if (stored !== null) return resumeStored(stored, options.store, logger);
   const result = await options.benchmark();
   logger.info(
     `[CoinPosh] Quality benchmark: ${result.msPerFrame.toFixed(2)} ms/frame on ${options.backend}, tier ${result.tier}`,
   );
   saveQuality(
     options.store,
-    { tier: result.tier, backend: options.backend, benchmarkMs: result.msPerFrame },
+    {
+      backend: options.backend,
+      benchTier: result.tier,
+      benchmarkMs: result.msPerFrame,
+      downgrade: null,
+    },
     logger,
   );
   return {
@@ -56,9 +60,35 @@ export async function resolveQuality(options: ResolveQualityOptions): Promise<Re
   };
 }
 
+function resumeStored(
+  stored: StoredQuality,
+  store: KeyValueStore | null,
+  logger: QualityStorageLogger,
+): ResolvedQuality {
+  const { downgrade } = stored;
+  if (downgrade === null) {
+    return {
+      profile: QUALITY_PROFILES[stored.benchTier],
+      source: 'stored',
+      benchmarkMs: stored.benchmarkMs,
+    };
+  }
+  const remaining = downgrade.bootsLeft - 1;
+  saveQuality(
+    store,
+    { ...stored, downgrade: remaining > 0 ? { tier: downgrade.tier, bootsLeft: remaining } : null },
+    logger,
+  );
+  return {
+    profile: QUALITY_PROFILES[downgrade.tier],
+    source: 'downgrade',
+    benchmarkMs: stored.benchmarkMs,
+  };
+}
+
 export type ScalablePipeline = Pick<
   PostPipeline,
-  'profile' | 'dynamicScale' | 'setProfile' | 'setDynamicScale'
+  'profile' | 'dynamicScale' | 'sceneScale' | 'setProfile' | 'setDynamicScale'
 >;
 
 export interface QualityGovernorOptions {
@@ -78,8 +108,9 @@ export interface QualityGovernor {
 
 /**
  * Keeps the frame rate at or above 55 fps: dynamic resolution absorbs load spikes, and when
- * the scale has bottomed out for a few seconds the post tier steps down and is saved, so the
- * next boot starts where this one settled.
+ * the scale has bottomed out for a few seconds the post tier steps down. The step keeps the
+ * scene's effective pixel ratio, so it only ever sheds cost. The downgrade is saved next to
+ * the benchmark record and expires after `DOWNGRADE_BOOTS` boots.
  */
 export function createQualityGovernor(
   post: ScalablePipeline,
@@ -94,18 +125,22 @@ export function createQualityGovernor(
     if (next === null) return;
     const from = post.profile;
     const to = QUALITY_PROFILES[next];
-    const pixelRatio = from.maxPixelRatio * controller.scale;
+    const effectiveScale = post.sceneScale;
     post.setProfile(to);
-    controller = controllerFor(to, pixelRatio / to.maxPixelRatio);
+    const ratioCap = post.sceneScale / post.dynamicScale;
+    controller = controllerFor(to, effectiveScale / ratioCap);
     post.setDynamicScale(controller.scale);
     logger.warn(
       `[CoinPosh] Frame rate below target at minimum resolution, quality ${from.tier} -> ${to.tier}`,
     );
-    saveQuality(
-      options.store,
-      { tier: to.tier, backend: options.backend, benchmarkMs: null },
-      logger,
-    );
+    const stored = loadQuality(options.store, options.backend, logger);
+    if (stored !== null) {
+      saveQuality(
+        options.store,
+        { ...stored, downgrade: { tier: to.tier, bootsLeft: DOWNGRADE_BOOTS } },
+        logger,
+      );
+    }
     options.onTierChange?.(to);
   };
 
