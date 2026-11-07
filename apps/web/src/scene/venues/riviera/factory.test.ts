@@ -6,18 +6,23 @@ import {
   Material,
   Mesh,
   type MeshPhysicalNodeMaterial,
+  LinearSRGBColorSpace,
   NoToneMapping,
+  PCFShadowMap,
   Scene,
+  SRGBColorSpace,
   Texture,
   type Object3D,
 } from 'three/webgpu';
 import type { EnvironmentOptions } from '../../env/environment.ts';
-import { createRivieraVenue, type RivieraVenueOptions, type VenueRenderer } from './index.ts';
+import type { LookRenderer } from '../../post/look.ts';
+import { createRivieraVenue, RIVIERA_RENDER_LOOK, type RivieraVenueOptions } from './index.ts';
 
-function fakeRenderer(): VenueRenderer {
+function fakeRenderer(): LookRenderer {
   return {
     toneMapping: NoToneMapping,
     toneMappingExposure: 1,
+    outputColorSpace: LinearSRGBColorSpace,
     shadowMap: { enabled: false, type: null },
   };
 }
@@ -33,9 +38,8 @@ function fakeEnvironment() {
   return { texture, calls, load };
 }
 
-async function build(options: RivieraVenueOptions = {}) {
+async function build(options: RivieraVenueOptions = {}, renderer: LookRenderer | null = null) {
   const scene = new Scene();
-  const renderer = fakeRenderer();
   const environment = fakeEnvironment();
   const venue = await createRivieraVenue(scene, renderer, {
     reducedMotion: false,
@@ -62,16 +66,36 @@ afterEach(() => {
 });
 
 describe('createRivieraVenue', () => {
-  it('configures AgX and shadows, installs the injected environment and adds the root', async () => {
-    const { scene, renderer, environment, venue } = await build({ shadows: true });
-    expect(renderer.toneMapping).toBe(AgXToneMapping);
-    expect(renderer.toneMappingExposure).toBeGreaterThan(0);
-    expect(renderer.shadowMap.enabled).toBe(true);
+  it('installs the injected environment, adds the root and leaves the grade to the post pipeline', async () => {
+    const { scene, environment, venue } = await build({ shadows: true });
+    expect(venue.look).toEqual({ exposure: 0.85, environmentIntensity: 0.32, shadows: true });
+    expect(scene.environmentIntensity).toBe(1);
     expect(environment.load).toHaveBeenCalledTimes(1);
     expect(environment.calls[0]?.hdri.url).toMatch(/venice_sunset_512\.hdr/);
     expect(scene.environment).toBe(environment.texture);
     expect(scene.children).toContain(venue.root);
     expect(venue.quality).toBe('high');
+    venue.dispose();
+  });
+
+  it('applies its look to a renderer it is handed, for harnesses without the post pipeline', async () => {
+    const renderer = fakeRenderer();
+    const { scene, venue } = await build({}, renderer);
+    expect(renderer.toneMapping).toBe(AgXToneMapping);
+    expect(renderer.toneMappingExposure).toBe(RIVIERA_RENDER_LOOK.exposure);
+    expect(renderer.outputColorSpace).toBe(SRGBColorSpace);
+    expect(renderer.shadowMap.enabled).toBe(true);
+    expect(renderer.shadowMap.type).toBe(PCFShadowMap);
+    expect(scene.environmentIntensity).toBe(RIVIERA_RENDER_LOOK.environmentIntensity);
+    venue.dispose();
+  });
+
+  it('builds a shadowless look and venue when shadows are off', async () => {
+    const renderer = fakeRenderer();
+    const { venue } = await build({ shadows: false }, renderer);
+    expect(venue.look.shadows).toBe(false);
+    expect(renderer.shadowMap.enabled).toBe(false);
+    expect(venue.lighting.key.castShadow).toBe(false);
     venue.dispose();
   });
 
