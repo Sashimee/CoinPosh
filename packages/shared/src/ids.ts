@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
 const ENTITY_ID_BODY = '[0-9A-Za-z]{8,32}';
-const CATALOG_KEY = /^[a-z][a-zA-Z0-9]*(?:[-_.:][a-zA-Z0-9]+)*$/;
+/** Every config key in `packages/economy`: lower camel or kebab words, joined by `-_.:`. */
+export const CATALOG_KEY = /^[a-z][a-zA-Z0-9]*(?:[-_.:][a-zA-Z0-9]+)*$/;
+export const CATALOG_KEY_MAX_LENGTH = 64;
 
 /**
  * Server-minted entity IDs carry a kind prefix (`coin_…`, `crate_…`) so an ID of one
@@ -21,10 +23,26 @@ function entityId<const Brand extends string>(prefix: string, brand: Brand) {
 function catalogKey<const Brand extends string>(brand: Brand) {
   return z
     .string()
-    .max(64)
-    .regex(CATALOG_KEY, `Expected a ${brand}: a config key such as "riviera" or "pusher-speed".`)
+    .max(CATALOG_KEY_MAX_LENGTH)
+    .regex(
+      CATALOG_KEY,
+      `Expected a ${brand}: a config key such as "rivieraYacht" or "pusher-speed".`,
+    )
     .brand<Brand>();
 }
+
+/** Any config key, for keys that have no branded kind of their own (sources, sinks, stats). */
+export const CatalogKeySchema = catalogKey('CatalogKey');
+export type CatalogKey = z.infer<typeof CatalogKeySchema>;
+
+/** In unlock order: each Ascension opens the next venue. */
+export const VENUE_IDS = [
+  'rivieraYacht',
+  'salonDeParis',
+  'tokyoPenthouse',
+  'alpineChalet',
+  'orbitalCasino',
+] as const;
 
 export const ENTITY_ID_PREFIXES = {
   coin: 'coin',
@@ -65,7 +83,7 @@ export type SeasonId = z.infer<typeof SeasonIdSchema>;
 export const EventIdSchema = entityId(ENTITY_ID_PREFIXES.event, 'EventId');
 export type EventId = z.infer<typeof EventIdSchema>;
 
-export const VenueIdSchema = catalogKey('VenueId');
+export const VenueIdSchema = z.enum(VENUE_IDS);
 export type VenueId = z.infer<typeof VenueIdSchema>;
 
 export const UpgradeLineIdSchema = catalogKey('UpgradeLineId');
