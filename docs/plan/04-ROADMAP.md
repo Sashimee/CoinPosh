@@ -19,7 +19,7 @@ them using Demo Mode / mocks until the human completes them.
 ### T-0.01 · Monorepo scaffold
 - **agent:** lead-architect
 - **deps:** none
-- **owns:** `/package.json`, `/pnpm-workspace.yaml`, `/turbo.json`, `/tsconfig*.json`, `/.eslintrc*`, `/eslint.config.*`, `/.prettierrc*`, `/.gitignore`, `/.nvmrc`, `apps/web/` (skeleton only), `apps/server/` (skeleton only), `packages/*/package.json`, `docs/plan/STACK.lock.md`
+- **owns:** `/package.json`, `/pnpm-workspace.yaml`, `/pnpm-lock.yaml`, `/turbo.json`, `/tsconfig*.json`, `/.eslintrc*`, `/eslint.config.*`, `/.prettierrc*`, `/.gitignore`, `/.nvmrc`, `apps/web/` (skeleton only), `apps/server/` (skeleton only), `packages/*/package.json`, `docs/plan/STACK.lock.md`
 - **accept:** `pnpm i && pnpm check` (typecheck + lint + test, all green) works from clean; Vite app renders a black canvas with three WebGPURenderer (WebGL2 fallback logged); Worker `wrangler dev` answers `GET /health`; exact versions recorded in STACK.lock.md; root scripts `dev`, `build`, `check`, `test`, `e2e`.
 
 ### T-0.02 · Shared contracts v1

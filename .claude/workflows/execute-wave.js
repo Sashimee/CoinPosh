@@ -100,6 +100,7 @@ You are in an isolated git worktree. First run: git switch -c task/${t.id} ${pla
 Write ONLY within the owns paths: ${t.owns.join(', ')}.
 Meet every acceptance criterion at the highest polish level — this game must feel premium and addictive.
 Run pnpm check (or filtered equivalents) until green. Commit on task/${t.id} with message "${t.id}: <summary>".
+Then run git switch --detach so task/${t.id} is free for the review and fix worktrees.
 Do NOT push and do NOT merge. Return branch, commit sha, whether checks passed, and a summary.`
 
 const reviewPrompt = (t, impl) => `Review task branch task/${t.id} (base ${plan.base}) for roadmap task ${t.id} · ${t.title}.
@@ -107,7 +108,7 @@ const reviewPrompt = (t, impl) => `Review task branch task/${t.id} (base ${plan.
 ${t.brief}
 
 Implementer summary: ${impl.summary}
-You are in an isolated worktree: run git switch task/${t.id}, pnpm i, pnpm check. Diff with git diff ${plan.base}...task/${t.id}.
+You are in an isolated worktree: run git switch --detach task/${t.id}, pnpm i, pnpm check. Review the tip of task/${t.id}, not an older commit. Diff with git diff ${plan.base}...task/${t.id}.
 Verify each acceptance criterion with evidence. Reject on any ownership violation, client-trusted value,
 sim nondeterminism, disabled/skipped tests, missing i18n, perf budget risk, or anything that feels cheap.
 Do not edit code. Return approved + concrete issues (file:line — problem — fix).`
@@ -116,7 +117,8 @@ const fixPrompt = (t, issues) => `Fix review findings on task branch task/${t.id
 In your isolated worktree: git switch task/${t.id}. Stay within owns paths: ${t.owns.join(', ')}.
 Findings:
 - ${issues.join('\n- ')}
-Fix all of them, run pnpm check until green, commit "${t.id}: address review". Do not push.`
+Fix all of them, run pnpm check until green, commit "${t.id}: address review" on task/${t.id} (never on a new branch),
+then run git switch --detach so the branch is free. Do not push.`
 
 // ---------- Build → Review (→ Fix)* pipelined per task ----------
 const results = await pipeline(

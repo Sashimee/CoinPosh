@@ -6,7 +6,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 
 | Task | State | Branch / PR | Notes |
 |---|---|---|---|
-| T-0.01 | todo | | |
+| T-0.01 | done | task/T-0.01 (merge 37fcbe6) | Monorepo scaffold; pnpm check green after merge |
 | T-0.02 | todo | | |
 | T-0.03 | todo | | |
 | T-0.04 | todo | | |
@@ -18,3 +18,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
 ## Wave log
 <!-- integrator appends: wave N · date · tasks · result -->
+- wave 1 · 2026-11-07 · T-0.01 · merged T-0.01 (37fcbe6); 0 rejected

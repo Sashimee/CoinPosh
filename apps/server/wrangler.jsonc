@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "coinposh-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-31",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "coinposh",
+      "database_id": "d68b147d-653d-40a6-bca4-f07997f40fd3",
+      "migrations_dir": "migrations",
+    },
+  ],
+}
