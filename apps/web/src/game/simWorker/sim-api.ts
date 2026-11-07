@@ -1,6 +1,7 @@
-// apps/web does not list @coinposh/sim as a dependency yet (requested from lead-architect for
-// apps/web/package.json). Until it does, this is the only file that reaches into the package, and
-// only through its public index; swap the path for '@coinposh/sim' once the dependency lands.
+// TODO(lead-architect): add "@coinposh/sim": "workspace:*" to apps/web/package.json and import
+// '@coinposh/sim' here; must land before the bridge is wired into main.ts. Until then this
+// relative path is the only place apps/web reaches into packages/sim, and Turbo does not see the
+// edge, so sim changes do not rebuild or retest apps/web. Requested in T-1.03's review fix round.
 export {
   COIN,
   MAX_DROP_OFFSET_MM,

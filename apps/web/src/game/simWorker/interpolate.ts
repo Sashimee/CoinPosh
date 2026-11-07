@@ -126,17 +126,27 @@ export class FrameBlender {
     }
   }
 
-  /** Hands every tier, including empty ones, to `target`, so coins that left the table vanish. */
-  writeTo(target: CoinTransformTarget): void {
+  /**
+   * Hands every tier, including empty ones, to `target`, so coins that left the table vanish.
+   * A tier holding more coins than `target` has room for is drawn up to its capacity, oldest
+   * coins first, and `onOverflow` hears of it; returns how many coins went undrawn.
+   */
+  writeTo(
+    target: CoinTransformTarget,
+    onOverflow?: (tier: CoinTierId, count: number, capacity: number) => void,
+  ): number {
+    let dropped = 0;
     for (const output of this.#outputs) {
-      target.setTransforms(
-        output.tier,
-        output.positions,
-        output.quaternions,
-        output.count,
-        output.ids,
-      );
+      const capacity = Math.max(0, target.capacity(output.tier));
+      let count = output.count;
+      if (count > capacity) {
+        onOverflow?.(output.tier, count, capacity);
+        dropped += count - capacity;
+        count = capacity;
+      }
+      target.setTransforms(output.tier, output.positions, output.quaternions, count, output.ids);
     }
+    return dropped;
   }
 
   #reserve(tier: CoinTierId): TierOutput {

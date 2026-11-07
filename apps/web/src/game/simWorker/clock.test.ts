@@ -129,6 +129,33 @@ describe('RenderClock', () => {
     expect(clock.snaps).toBe(1);
   });
 
+  it('holds the render point through a pause and never steps back when a new epoch resumes', () => {
+    const clock = new RenderClock({ tickMs: TICK_MS });
+    const held = 60;
+    for (let tick = 0; tick <= held; tick += 1) {
+      clock.observe(tick, 0, tick * TICK_MS);
+      clock.renderTick(tick * TICK_MS);
+    }
+    let now = held * TICK_MS;
+    for (let frame = 0; frame < 120; frame += 1) {
+      now += 1000 / 120;
+      expect(clock.renderTick(now)).toBeLessThanOrEqual(held);
+    }
+    expect(clock.renderTick(now)).toBe(held);
+    let last = held;
+    now += 10_000;
+    for (let tick = held + 1; tick < held + 30; tick += 1) {
+      now += TICK_MS;
+      clock.observe(tick, 1, now);
+      for (const offset of [0, TICK_MS / 2]) {
+        const drawn = clock.renderTick(now + offset) ?? -Infinity;
+        expect(drawn).toBeGreaterThanOrEqual(last);
+        last = drawn;
+      }
+    }
+    expect(last).toBeGreaterThan(held + 25);
+  });
+
   it('restarts its estimate on a new epoch so a resumed sim is drawn at once', () => {
     const clock = new RenderClock({ tickMs: TICK_MS });
     for (let tick = 0; tick < 60; tick += 1) clock.observe(tick, 0, tick * TICK_MS);

@@ -391,6 +391,43 @@ describe('SimBridge on the render thread', () => {
     expect(errors).toHaveBeenCalledTimes(1);
   });
 
+  it('draws an over-full tier up to the coin field capacity and reports the overflow once', () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errors = vi.spyOn(console, 'error');
+    let now = 0;
+    const worker = new FakeWorker();
+    const bridge = new SimBridge(worker, { seed: 1, transport: 'transfer', now: () => now });
+    const field = new CoinField({
+      capacity: { copper: 4, silver: 4, gold: 4, platinum: 4, diamond: 4, heirloom: 4 },
+      radius: SIM_COIN_DIMENSIONS.radius,
+    });
+    bridge.setTier(9, 'gold');
+    const pool = worker.takeBuffers();
+    try {
+      for (let tick = 0; tick < 20; tick += 1) {
+        pool.push(...worker.takeBuffers());
+        const buffer = pool.pop();
+        if (!buffer) throw new Error(`the ring ran dry at tick ${tick}`);
+        new FrameView(buffer, 0, bridge.capacity).write(tick, 0, table(10, tick));
+        worker.emit('message', { type: 'frame', buffer });
+        now = tick * TICK_MS + 40;
+        expect(() => {
+          bridge.sync(field);
+        }).not.toThrow();
+      }
+      expect(field.count('copper')).toBe(4);
+      expect(field.count('gold')).toBe(1);
+      expect(bridge.stats.coins).toBe(10);
+      expect(bridge.stats.overflowCoins).toBe(5);
+      expect(bridge.failure).toBeNull();
+      expect(warnings).toHaveBeenCalledTimes(1);
+      expect(String(warnings.mock.calls[0]?.[0])).toMatch(/9 copper coins .* holds 4/);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      field.dispose();
+    }
+  });
+
   it('exposes the sim coin dimensions for sizing the coin field', () => {
     expect(SIM_COIN_DIMENSIONS).toEqual({ radius: COIN.radius, halfThickness: COIN.halfThickness });
     expect(new SimBridge(new FakeWorker(), { seed: 1 }).coin).toBe(SIM_COIN_DIMENSIONS);

@@ -72,9 +72,9 @@ export class RenderClock {
     if (epoch !== this.#epoch) {
       this.#epoch = epoch;
       this.#samples.length = 0;
-      this.#newestTick = Number.NaN;
+      // The worker's tick runs on across epochs, so #newestTick and #lastTick carry over and the
+      // render point held through a pause never steps back when frames resume.
       this.#lag = Number.NaN;
-      this.#lastTick = Number.NaN;
     }
     if (!(tick <= this.#newestTick)) this.#newestTick = tick;
     this.#samples.push(nowMs - tick * this.tickMs);
@@ -96,7 +96,7 @@ export class RenderClock {
 
   /**
    * The fractional sim tick to draw at `nowMs`, or null before the first frame. Never beyond the
-   * newest observed tick and never earlier than the previous call within one epoch.
+   * newest observed tick and never earlier than the previous call.
    */
   renderTick(nowMs: number): number | null {
     if (Number.isNaN(this.#targetLag)) return null;

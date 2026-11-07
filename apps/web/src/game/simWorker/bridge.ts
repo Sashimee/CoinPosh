@@ -59,6 +59,8 @@ export interface SimBridgeStats {
   /** Render-thread time the last `sync` took, in ms. */
   readonly syncMs: number;
   readonly snaps: number;
+  /** Coins the last `sync` left undrawn because their tier was over the target's capacity. */
+  readonly overflowCoins: number;
 }
 
 type MutableStats = { -readonly [K in keyof SimBridgeStats]: SimBridgeStats[K] };
@@ -95,6 +97,14 @@ export class SimBridge {
   readonly #defaultTier: CoinTierId;
   readonly #tiers = new Map<number, CoinTierId>();
   readonly #pendingTiers: CoinTierId[] = [];
+  readonly #overflowReported = new Set<CoinTierId>();
+  readonly #onOverflow = (tier: CoinTierId, count: number, capacity: number): void => {
+    if (this.#overflowReported.has(tier)) return;
+    this.#overflowReported.add(tier);
+    console.warn(
+      `CoinPosh sim: ${count} ${tier} coins are on the table but the coin field holds ${capacity}; the newest are not drawn. Raise CoinField's ${tier} capacity.`,
+    );
+  };
   readonly #stats: MutableStats;
   readonly #tierOf = (id: number): CoinTierId => this.#tiers.get(id) ?? this.#defaultTier;
   #highestId = -1;
@@ -130,6 +140,7 @@ export class SimBridge {
       coins: 0,
       syncMs: 0,
       snaps: 0,
+      overflowCoins: 0,
     };
     this.ready = new Promise<SimReadyInfo>((resolve, reject) => {
       this.#settleReady = resolve;
@@ -226,13 +237,14 @@ export class SimBridge {
     }
     const alpha = to === from ? 1 : (renderTick - from.tick) / (to.tick - from.tick);
     this.#blender.blend(from, to, alpha, this.#tierOf);
-    this.#blender.writeTo(target);
+    const overflow = this.#blender.writeTo(target, this.#onOverflow);
 
     const stats = this.#stats;
     stats.renderTick = renderTick;
     stats.delayTicks = this.#clock.delayTicks;
     stats.snaps = this.#clock.snaps;
     stats.coins = to.count;
+    stats.overflowCoins = overflow;
     stats.syncMs = this.#now() - start;
   }
 
