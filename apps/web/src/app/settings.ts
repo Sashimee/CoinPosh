@@ -149,3 +149,60 @@ export function sameSettings(a: Settings, b: Settings): boolean {
     MIXER_BUSES.every((bus) => a.volumes[bus] === b.volumes[bus])
   );
 }
+
+export type UiQuality = 'low' | 'high';
+
+export interface DeviceHints {
+  readonly cores?: number;
+  readonly memoryGb?: number;
+}
+
+const LOW_TIER_MAX_CORES = 4;
+const LOW_TIER_MAX_MEMORY_GB = 4;
+
+export function resolveUiQuality(setting: QualitySetting, device: DeviceHints): UiQuality {
+  if (setting !== 'auto') return setting;
+  const fewCores = device.cores !== undefined && device.cores <= LOW_TIER_MAX_CORES;
+  const littleMemory = device.memoryGb !== undefined && device.memoryGb <= LOW_TIER_MAX_MEMORY_GB;
+  return fewCores || littleMemory ? 'low' : 'high';
+}
+
+export function browserDeviceHints(): DeviceHints {
+  if (typeof navigator === 'undefined') return {};
+  // deviceMemory is Chromium-only and missing from lib.dom.
+  const { deviceMemory } = navigator as Navigator & { readonly deviceMemory?: number };
+  return deviceMemory === undefined
+    ? { cores: navigator.hardwareConcurrency }
+    : { cores: navigator.hardwareConcurrency, memoryGb: deviceMemory };
+}
+
+export interface SettingsSaver {
+  readonly schedule: (settings: Settings) => void;
+  /** Writes a pending save now; call before the page goes away. */
+  readonly flush: () => void;
+}
+
+/** Coalesces bursts (a dragged volume slider) into one storage write after `delayMs` of quiet. */
+export function createSettingsSaver(storage: SettingsStorage | null, delayMs = 250): SettingsSaver {
+  let pending: Settings | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clear = (): void => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+  const flush = (): void => {
+    clear();
+    if (pending === null) return;
+    const settings = pending;
+    pending = null;
+    saveSettings(storage, settings);
+  };
+  return {
+    schedule(settings) {
+      pending = settings;
+      clear();
+      timer = setTimeout(flush, delayMs);
+    },
+    flush,
+  };
+}

@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,600&family=Manrope:wght@400;500;600;700&display=swap');
-
 .cp-ui-host {
   --cp-font-display:
     'Cormorant Garamond', 'Playfair Display', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
@@ -380,6 +378,9 @@
 .cp-flute-bubble {
   fill: var(--cp-ivory);
   opacity: 0.7;
+}
+
+.cp-combo.is-active .cp-flute-bubble {
   animation: cp-bubble 2.6s ease-in infinite;
 }
 
@@ -424,7 +425,7 @@
   max-width: 70px;
 }
 
-.cp-combo[data-rank='5'] .cp-combo-tier {
+.cp-combo.is-active[data-rank='5'] .cp-combo-tier {
   background: linear-gradient(
     90deg,
     var(--cp-gold-brushed),
@@ -621,7 +622,7 @@
       1px no-repeat;
 }
 
-.cp-stamp[data-tier='obscene'] .cp-stamp-name {
+.cp-stamp.is-visible[data-tier='obscene'] .cp-stamp-name {
   background: linear-gradient(
     90deg,
     var(--cp-gold-brushed),
@@ -1222,6 +1223,23 @@
 .cp-ui-host[data-motion='reduced'] *::after {
   animation-duration: 1ms !important;
   animation-iteration-count: 1 !important;
+}
+
+/* Backdrop blur is recomputed every frame over the live canvas; only high quality pays for it. */
+.cp-ui-host:not([data-quality='high']) {
+  --cp-lacquer: rgb(var(--cp-navy-lacquer-rgb));
+  --cp-lacquer-deep: rgb(var(--cp-navy-lacquer-rgb));
+}
+
+.cp-ui-host:not([data-quality='high']) :is(.cp-panel, .cp-chip, .cp-side-meter) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.cp-ui-host:not([data-quality='high']) .cp-side-meter {
+  background:
+    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.06), transparent 42%),
+    rgb(var(--cp-navy-lacquer-rgb));
 }
 
 .cp-ui-host[data-motion='reduced'] .cp-flute-bubbles {

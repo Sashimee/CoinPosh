@@ -1,7 +1,7 @@
 import { cascade } from '../../app/economy.ts';
 import { comboView, type ComboView } from '../../app/model.ts';
 import { watch } from '../../app/store.ts';
-import { formatDecimal } from '../../i18n/index.ts';
+import { formatDecimal, formatInteger } from '../../i18n/index.ts';
 import { tr, type UiContext } from '../context.ts';
 import { fromMarkup, h } from '../dom.ts';
 import { SPRINGS } from '../motion/spring.ts';
@@ -112,7 +112,10 @@ export function createComboLadder(ctx: UiContext): HTMLElement {
     spoken.textContent = view.tier
       ? tr(ctx, 'combo.aria', {
           tier,
-          coins: tr(ctx, 'currency.coins', { count: view.count, value: view.count }),
+          coins: tr(ctx, 'currency.coins', {
+            count: view.count,
+            value: formatInteger(view.count, language),
+          }),
           multiplier: mult,
         })
       : '';

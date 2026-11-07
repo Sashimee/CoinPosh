@@ -15,11 +15,14 @@ import { createBus, type Bus } from './bus.ts';
 import { bindFeedback, browserVibrate, type FeedbackTargets } from './feedback.ts';
 import type { DecorumState, Wallet } from './model.ts';
 import {
+  browserDeviceHints,
   browserStorage,
+  createSettingsSaver,
   defaultSettings,
   loadSettings,
-  saveSettings,
+  resolveUiQuality,
   sameSettings,
+  type DeviceHints,
   type Settings,
   type SettingsStorage,
 } from './settings.ts';
@@ -38,6 +41,8 @@ export interface MountOptions {
   /** Browser language preferences used when nothing is saved yet. */
   readonly languages?: readonly string[];
   readonly vibrate?: FeedbackTargets['vibrate'];
+  /** Decides what `quality: 'auto'` means for the UI's frosted panels. */
+  readonly device?: DeviceHints;
 }
 
 export interface UpgradeRequest {
@@ -117,6 +122,20 @@ export function mountApp(options: MountOptions): UiApp {
   own(onReducedMotionChange(paintMotion));
   paintMotion();
 
+  const device = options.device ?? browserDeviceHints();
+  const paintQuality = (settings: Settings): void => {
+    root.dataset.quality = resolveUiQuality(settings.quality, device);
+  };
+  paintQuality(settings);
+
+  const saver = createSettingsSaver(storage);
+  own(saver.flush);
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', saver.flush);
+    own(() => {
+      window.removeEventListener('pagehide', saver.flush);
+    });
+  }
   own(
     watch(
       store,
@@ -125,7 +144,8 @@ export function mountApp(options: MountOptions): UiApp {
         if (!previous) return;
         if (next.language !== previous.language) i18n.changeLanguage(next.language);
         if (next.motion !== previous.motion) setMotionPreference(next.motion);
-        if (!sameSettings(next, previous)) saveSettings(storage, next);
+        if (next.quality !== previous.quality) paintQuality(next);
+        if (!sameSettings(next, previous)) saver.schedule(next);
       },
     ),
   );
@@ -190,6 +210,7 @@ export function mountApp(options: MountOptions): UiApp {
       loc.dispose();
       hud.root.remove();
       root.classList.remove('cp-ui-host');
+      delete root.dataset.quality;
     },
   };
 }

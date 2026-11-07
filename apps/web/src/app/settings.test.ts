@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  createSettingsSaver,
   defaultSettings,
+  resolveUiQuality,
   loadSettings,
   parseSettings,
   sameSettings,
@@ -101,5 +103,59 @@ describe('settings persistence', () => {
       false,
     );
     expect(sameSettings(custom, { ...custom, language: 'fr' })).toBe(false);
+  });
+});
+
+describe('createSettingsSaver', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('writes once, with the latest settings, after a burst goes quiet', () => {
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    const setItem = vi.spyOn(storage, 'setItem');
+    const saver = createSettingsSaver(storage, 250);
+    for (let i = 1; i <= 30; i += 1) {
+      saver.schedule({ ...custom, volumes: { ...custom.volumes, music: i / 30 } });
+      vi.advanceTimersByTime(16);
+    }
+    expect(setItem).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(250);
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(loadSettings(storage, defaults).volumes.music).toBe(1);
+  });
+
+  it('flushes a pending save immediately and only once', () => {
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    const setItem = vi.spyOn(storage, 'setItem');
+    const saver = createSettingsSaver(storage, 250);
+    saver.flush();
+    expect(setItem).not.toHaveBeenCalled();
+    saver.schedule(custom);
+    saver.flush();
+    expect(loadSettings(storage, defaults)).toEqual(custom);
+    vi.advanceTimersByTime(1000);
+    saver.flush();
+    expect(setItem).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resolveUiQuality', () => {
+  it('honours an explicit choice whatever the device', () => {
+    expect(resolveUiQuality('low', { cores: 16, memoryGb: 8 })).toBe('low');
+    expect(resolveUiQuality('high', { cores: 2, memoryGb: 1 })).toBe('high');
+  });
+
+  it('drops to low on auto for low-tier devices', () => {
+    expect(resolveUiQuality('auto', { cores: 4, memoryGb: 8 })).toBe('low');
+    expect(resolveUiQuality('auto', { cores: 8, memoryGb: 4 })).toBe('low');
+    expect(resolveUiQuality('auto', { cores: 8, memoryGb: 8 })).toBe('high');
+  });
+
+  it('stays high on auto when the browser reports nothing', () => {
+    expect(resolveUiQuality('auto', {})).toBe('high');
+    expect(resolveUiQuality('auto', { cores: 6 })).toBe('high');
   });
 });

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { cascade, upgradeLines } from '../app/economy.ts';
+import { MIXER_BUSES, MOTION_OPTIONS, QUALITY_OPTIONS } from '../app/settings.ts';
 import { createI18n, detectLanguage, LANGUAGES, type ResourceTree } from './core.ts';
 import { BUNDLED_RESOURCES } from './index.ts';
 
@@ -65,6 +67,31 @@ describe('bundled locales', () => {
     const missing = [...used].filter((key) => !i18n.exists(key));
     expect(missing).toEqual([]);
   });
+
+  it.each(LANGUAGES)(
+    '%s covers every key the UI builds from economy and settings data',
+    (language) => {
+      const tree = BUNDLED_RESOURCES[language].ui;
+      if (!tree) throw new Error(`${language} ui bundle is missing`);
+      const leaves = new Set(leafKeys(tree));
+      const has = (key: string): boolean => leaves.has(key) || leaves.has(`${key}_other`);
+      const templated = [
+        ...upgradeLines.flatMap((line) => [
+          `upgrades.line.${line.id}.name`,
+          `upgrades.line.${line.id}.description`,
+          `currency.${line.currency}`,
+        ]),
+        ...cascade.tiers.map((tier) => `combo.tier.${tier.id}`),
+        ...QUALITY_OPTIONS.map((value) => `settings.qualityOption.${value}`),
+        ...MOTION_OPTIONS.map((value) => `settings.motion.${value}`),
+        ...MIXER_BUSES.map((bus) => `settings.${bus}`),
+        ...LANGUAGES.map((value) => `settings.languageName.${value}`),
+      ];
+      expect(upgradeLines.length).toBeGreaterThan(0);
+      expect(cascade.tiers.length).toBeGreaterThan(0);
+      expect(templated.filter((key) => !has(key))).toEqual([]);
+    },
+  );
 });
 
 const resources = {
