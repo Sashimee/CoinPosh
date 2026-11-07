@@ -142,17 +142,12 @@ export function errorCode(response: WireResponse): string | null {
   return typeof code === 'string' ? code : null;
 }
 
-/** Replays a player's ledger from zero; conservation means it lands exactly on the wallet. */
+/**
+ * Replays a player's ledger from its last checkpoint (zero until entries are evicted);
+ * conservation means it lands exactly on the wallet.
+ */
 export function ledgerWallet(server: MockServer, playerId: PlayerId): Wallet {
-  const wallet: Wallet = {
-    coins: 0,
-    bullion: 0,
-    goldBars: 0,
-    pearls: 0,
-    keys: 0,
-    tickets: 0,
-    stars: 0,
-  };
+  const wallet = server.world.ledgerCheckpoint(playerId);
   for (const entry of server.ledger()) {
     if (entry.playerId !== playerId) continue;
     for (const [currency, amount] of Object.entries(entry.delta) as [Currency, number][]) {

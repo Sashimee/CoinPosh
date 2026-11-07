@@ -15,8 +15,9 @@ export const MOCK_RULES = {
   tickSlackMs: 1_500,
   /**
    * A drop, claim or nudge whose tick maps to a server time older than this has expired
-   * (01-ARCHITECTURE.md: claims expire after 10 minutes). The tick clock never re-anchors, so
-   * a queue held back for longer cannot be passed off as fresh.
+   * (01-ARCHITECTURE.md: claims expire after 10 minutes). The tick clock only re-anchors when the
+   * player resumes after `minOfflineMs` away, and never for ticks it had already seen, so a queue
+   * held back for longer cannot be passed off as fresh.
    */
   claimExpiryMs: 10 * 60_000,
   /** Two drops closer together than this, in sim ticks, exceed the server-side drop rate cap. */
@@ -35,4 +36,13 @@ export const MOCK_RULES = {
   maxRequestsPerSecond: 40,
   /** Away time shorter than this is a tab switch, not an offline session. */
   minOfflineMs: 60_000,
+  /**
+   * How long a non-table response is kept for replay. Table responses are dropped after
+   * `claimExpiryMs`, when their ticks have expired and a replay is refused anyway.
+   */
+  idempotencyTtlMs: 24 * 60 * 60_000,
+  /** At most this many non-table responses are kept, newest first, whatever their age. */
+  idempotencyRetained: 1_000,
+  /** Ledger entries held in memory; older ones fold into a per-player checkpoint. */
+  ledgerRetained: 2_000,
 } as const;

@@ -106,6 +106,16 @@ interface CoinRecord {
   origin: 'drop' | 'fusion';
 }
 
+interface TickAnchor {
+  tick: number;
+  at: number;
+  earliestAt: number;
+  /** Highest tick this anchor has admitted. */
+  maxTick: number;
+  /** Set on a re-anchor: lower ticks belong to the anchor this one replaced. */
+  floorTick: number | null;
+}
+
 interface CrateRecord {
   crate: TableCrate;
   ftue: boolean;
@@ -129,7 +139,8 @@ export interface MockPlayer {
   scratchCards: ScratchCardId[];
   album: Map<string, number>;
   coins: Map<CoinId, CoinRecord>;
-  gone: Set<CoinId>;
+  /** Coins that left play, with the server time they left, for `claimExpiryMs`. */
+  gone: Map<CoinId, number>;
   crates: Map<CrateId, CrateRecord>;
   openedCrates: Set<CrateId>;
   decorumPoints: number;
@@ -137,7 +148,16 @@ export interface MockPlayer {
   frozenUntil: number | null;
   drops: number;
   lastDropTick: number | null;
-  tickAnchor: { tick: number; at: number; earliestAt: number } | null;
+  tickAnchor: TickAnchor | null;
+  /** The anchor a resume replaced, which still judges the ticks seen before it. */
+  previousAnchor: TickAnchor | null;
+  /** Server time of a resume whose new anchor waits for the first tick past the old maximum. */
+  resumedAt: number | null;
+  /**
+   * The last silence of at least `minOfflineMs`, kept until `state` settles it: a resuming client
+   * sends its queued play first, which must not erase the absence before the snapshot.
+   */
+  absence: { since: number; until: number } | null;
   /** Highest tick of an accepted claim: claim ticks only move forward. */
   lastClaimTick: number | null;
   /** Ticks of recently accepted falls (any edge) and fusions, oldest first. */
@@ -170,6 +190,19 @@ const FALL_WINDOW_TICKS = ticksFor(MOCK_RULES.fallEnvelope.windowMs);
 const FUSION_WINDOW_TICKS = ticksFor(MOCK_RULES.fusionEnvelope.windowMs);
 
 type TickVerdict = 'ok' | 'ahead' | 'expired';
+
+function judgeTick(anchor: TickAnchor, tick: number, now: number): TickVerdict {
+  const implied = anchor.at + (tick - anchor.tick) * MS_PER_TICK;
+  if (implied > now + MOCK_RULES.tickSlackMs) {
+    const at = anchor.at - (implied - now - MOCK_RULES.tickSlackMs);
+    if (at < anchor.earliestAt) return 'ahead';
+    anchor.at = at;
+  } else if (implied < now - MOCK_RULES.claimExpiryMs) {
+    return 'expired';
+  }
+  anchor.maxTick = Math.max(anchor.maxTick, tick);
+  return 'ok';
+}
 
 /**
  * Drops ticks that slid out of the window ending at `tick`, then says whether one more event
@@ -236,11 +269,20 @@ function emptyWallet(): Wallet {
 
 export class MockWorld {
   readonly #ledger: LedgerEntry[] = [];
+  /** Per player, the sum of every ledger entry evicted from memory. */
+  readonly #checkpoints = new Map<PlayerId, Wallet>();
+  #nextSeq = 0;
   readonly #players = new Map<PlayerId, MockPlayer>();
   readonly #byDevice = new Map<string, PlayerId>();
 
+  /** The most recent `ledgerRetained` entries; older ones live on in {@link ledgerCheckpoint}. */
   get ledger(): readonly LedgerEntry[] {
     return this.#ledger;
+  }
+
+  /** What a player's evicted ledger entries add up to: replaying the ledger starts here. */
+  ledgerCheckpoint(id: PlayerId): Wallet {
+    return { ...(this.#checkpoints.get(id) ?? emptyWallet()) };
   }
 
   player(id: PlayerId): MockPlayer | undefined {
@@ -277,7 +319,7 @@ export class MockWorld {
       scratchCards: [],
       album: new Map(),
       coins: new Map(),
-      gone: new Set(),
+      gone: new Map(),
       crates: new Map(),
       openedCrates: new Set(),
       decorumPoints: 0,
@@ -286,6 +328,9 @@ export class MockWorld {
       drops: 0,
       lastDropTick: null,
       tickAnchor: null,
+      previousAnchor: null,
+      resumedAt: null,
+      absence: null,
       lastClaimTick: null,
       recentFalls: [],
       recentFusions: [],
@@ -334,13 +379,23 @@ export class MockWorld {
     if (Object.keys(moved).length === 0) return;
     player.wallet = next;
     this.#ledger.push({
-      seq: this.#ledger.length,
+      seq: this.#nextSeq++,
       at: now,
       playerId: player.id,
       reason,
       delta: moved,
       ref,
     });
+    const excess = this.#ledger.length - MOCK_RULES.ledgerRetained;
+    if (excess > 0) for (const entry of this.#ledger.splice(0, excess)) this.#checkpoint(entry);
+  }
+
+  #checkpoint(entry: LedgerEntry): void {
+    const totals = this.#checkpoints.get(entry.playerId) ?? emptyWallet();
+    for (const [currency, amount] of Object.entries(entry.delta) as [Currency, number][]) {
+      totals[currency] += amount;
+    }
+    this.#checkpoints.set(entry.playerId, totals);
   }
 
   #coinValue(player: MockPlayer, tier: CoinTier): number {
@@ -405,6 +460,10 @@ export class MockWorld {
    * starts at its arrival and may only move earlier, within that bound, as later ticks of the
    * same backlog show how long it waited. It never moves later, so a stale queue cannot re-anchor
    * itself as fresh, and a sped-up client is caught as soon as the bound is used up.
+   *
+   * The sim stops while the tab is hidden, so after a resume (see `state`) the first tick past
+   * everything seen before starts a new anchor no earlier than the resume. Ticks the old anchor
+   * could have seen are still judged by it, so a held-back queue stays expired.
    */
   #tickClock(player: MockPlayer, tick: number, now: number): TickVerdict {
     const anchor = player.tickAnchor;
@@ -413,18 +472,31 @@ export class MockWorld {
         tick,
         at: now,
         earliestAt: Math.max(player.createdAt, now - MOCK_RULES.claimExpiryMs),
+        maxTick: tick,
+        floorTick: null,
       };
       return 'ok';
     }
-    const implied = anchor.at + (tick - anchor.tick) * MS_PER_TICK;
-    if (implied > now + MOCK_RULES.tickSlackMs) {
-      const at = anchor.at - (implied - now - MOCK_RULES.tickSlackMs);
-      if (at < anchor.earliestAt) return 'ahead';
-      anchor.at = at;
+    if (player.resumedAt !== null && tick > anchor.maxTick) {
+      player.previousAnchor = anchor;
+      player.tickAnchor = {
+        tick,
+        at: now,
+        earliestAt: player.resumedAt,
+        maxTick: tick,
+        floorTick: tick,
+      };
+      player.resumedAt = null;
       return 'ok';
     }
-    if (implied < now - MOCK_RULES.claimExpiryMs) return 'expired';
-    return 'ok';
+    if (anchor.floorTick !== null && tick < anchor.floorTick) {
+      const previous = player.previousAnchor;
+      if (previous === null || (previous.floorTick !== null && tick < previous.floorTick)) {
+        return 'expired';
+      }
+      return judgeTick(previous, tick, now);
+    }
+    return judgeTick(anchor, tick, now);
   }
 
   #checkActionTick(player: MockPlayer, action: string, tick: number, now: number): void {
@@ -477,9 +549,7 @@ export class MockWorld {
     return Math.max(DROP_TIER.value, player.creditedTotal / seconds);
   }
 
-  #settleOffline(player: MockPlayer, now: number) {
-    const awayMs = Math.max(0, now - player.lastActiveAt);
-    if (awayMs < MOCK_RULES.minOfflineMs) return null;
+  #settleOffline(player: MockPlayer, awayMs: number, now: number) {
     const capHours = stat(player, 'offlineHours');
     const ratePerHour = this.#activeRatePerSecond(player, now) * 3600;
     const coins = Math.floor(offlineEarnings(awayMs / 3_600_000, capHours, ratePerHour, offline));
@@ -506,6 +576,19 @@ export class MockWorld {
     player.lastActiveAt = now;
   }
 
+  #forget(player: MockPlayer, id: CoinId, now: number): void {
+    player.coins.delete(id);
+    player.gone.set(id, now);
+  }
+
+  /** A claim or drop naming a coin gone longer than the expiry is refused as unknown instead. */
+  #pruneGone(player: MockPlayer, now: number): void {
+    for (const [id, at] of player.gone) {
+      if (at > now - MOCK_RULES.claimExpiryMs) return;
+      player.gone.delete(id);
+    }
+  }
+
   async handle<N extends WorldEndpoint>(
     player: MockPlayer,
     name: N,
@@ -513,13 +596,21 @@ export class MockWorld {
     params: EndpointParams<N>,
     now: number,
   ): Promise<EndpointResponseInput<N>> {
+    this.#pruneGone(player, now);
+    if (now - player.lastActiveAt >= MOCK_RULES.minOfflineMs) {
+      player.absence = { since: player.lastActiveAt, until: now };
+    }
     const handler: Handler<N> = this.#handlers[name];
     return handler(player, body, params, now);
   }
 
   readonly #handlers: { [N in WorldEndpoint]: Handler<N> } = {
     state: (player, _body, _params, now) => {
-      const settlement = this.#settleOffline(player, now);
+      const absence = player.absence;
+      player.absence = null;
+      if (absence !== null && player.tickAnchor !== null) player.resumedAt = now;
+      const settlement =
+        absence === null ? null : this.#settleOffline(player, absence.until - absence.since, now);
       this.#refillBuffer(player, now);
       return {
         serverTime: now,
@@ -778,8 +869,7 @@ export class MockWorld {
           reset[currency.id] = (reset[currency.id] ?? 0) - player.wallet[currency.id];
       }
       this.#credit(player, now, 'ascend', reset, venue.id);
-      for (const id of player.coins.keys()) player.gone.add(id);
-      player.coins.clear();
+      for (const id of player.coins.keys()) this.#forget(player, id, now);
       player.crates.clear();
       for (const def of upgradeLines)
         if (def.scope === 'venue') player.levels.delete(`${venue.id}:${def.id}`);
@@ -923,8 +1013,7 @@ export class MockWorld {
         }
         player.recentFalls.push(claim.tick);
         player.lastClaimTick = claim.tick;
-        player.coins.delete(claim.coinId);
-        player.gone.add(claim.coinId);
+        this.#forget(player, claim.coinId, now);
         if (claim.edge !== 'front')
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
         const chain = player.cascadeChain;
@@ -973,10 +1062,7 @@ export class MockWorld {
         }
         player.recentFusions.push(claim.tick);
         player.lastClaimTick = claim.tick;
-        for (const id of claim.coinIds) {
-          player.coins.delete(id);
-          player.gone.add(id);
-        }
+        for (const id of claim.coinIds) this.#forget(player, id, now);
         const value = Math.floor(
           fusionValue(
             records.map((record) => record.coin.value),

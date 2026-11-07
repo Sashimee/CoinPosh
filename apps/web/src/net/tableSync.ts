@@ -95,6 +95,8 @@ export class TableSync {
   #timer: unknown = null;
   #failures = 0;
   #closed = false;
+  /** A pending resume: re-hydrate once the op queued last before it (if any) has been sent. */
+  #resync: { readonly after: OutboxOp | undefined } | null = null;
 
   constructor(deps: TableSyncDeps) {
     this.#deps = deps;
@@ -143,13 +145,28 @@ export class TableSync {
 
   /** Adopts a server snapshot (boot, resume, or after a long offline spell), then drains the outbox. */
   hydrate(state: StateResponse): void {
+    this.#adopt(state);
+    this.#kick(0);
+  }
+
+  /**
+   * Call when the tab comes back after being hidden. What was queued before is sent first and
+   * judged by the server's old tick anchor; then a fresh snapshot lets it re-anchor the tick
+   * clock, which stood still while the sim was paused. Resolves once both are done, or once the
+   * server proves unreachable, in which case the snapshot follows when the queue drains.
+   */
+  resume(): Promise<void> {
+    this.#resync = { after: this.#deps.outbox.ops.at(-1) };
+    return this.flush();
+  }
+
+  #adopt(state: StateResponse): void {
     this.#wallet = state.wallet;
     this.#onTable.clear();
     for (const coin of state.table.coins) this.#onTable.set(coin.id, coin);
     for (const coin of this.#buffer.spending) this.#onTable.set(coin.id, coin);
     this.#buffer.replace(state.table.buffer);
     this.#emitBalance();
-    this.#kick(0);
   }
 
   /**
@@ -184,13 +201,19 @@ export class TableSync {
     this.#claim({ kind: 'crate', crateId, tick, edge }, 0);
   }
 
-  nudge(tick: Tick, direction: NudgeDirection): void {
+  /**
+   * Nudges the table, or returns `false` offline: a nudge only matters while the table is live,
+   * and one replayed after reconnecting would land on a table that has moved on.
+   */
+  nudge(tick: Tick, direction: NudgeDirection): boolean {
+    if (this.#status === 'offline') return false;
     this.#enqueue({
       kind: 'nudge',
       key: newIdempotencyKey(),
       sent: false,
       body: { tick, direction },
     });
+    return true;
   }
 
   /** Sends everything queued now; resolves once the outbox is empty or the server is unreachable. */
@@ -244,22 +267,30 @@ export class TableSync {
 
   async #drain(): Promise<void> {
     const { outbox } = this.#deps;
-    for (let op = outbox.head(); op !== undefined && !this.#closed; op = outbox.head()) {
+    while (!this.#closed) {
+      const resync = this.#resync;
+      if (resync !== null && (resync.after === undefined || !outbox.ops.includes(resync.after))) {
+        try {
+          this.#adopt(await this.#deps.client.call('state', undefined, { retries: 0 }));
+        } catch (error) {
+          if (isRetryable(error)) {
+            this.#retryLater(error);
+            return;
+          }
+          this.#deps.onError?.(error);
+        }
+        this.#failures = 0;
+        this.#resync = null;
+        continue;
+      }
+      const op = outbox.head();
+      if (op === undefined) break;
       if (!op.sent) await outbox.seal(op);
       try {
         await this.#send(op);
       } catch (error) {
         if (isRetryable(error)) {
-          this.#failures++;
-          this.#setStatus(error instanceof NetworkError ? 'offline' : 'syncing');
-          this.#kick(
-            backoffDelay(
-              this.#failures - 1,
-              this.#deps.retry ?? OUTBOX_RETRY,
-              (this.#deps.jitter ?? Math.random)(),
-              null,
-            ),
-          );
+          this.#retryLater(error);
           return;
         }
         await outbox.shift();
@@ -270,7 +301,20 @@ export class TableSync {
       await outbox.shift();
       this.#emitBalance();
     }
-    if (outbox.size === 0) this.#setStatus('synced');
+    if (outbox.size === 0 && this.#resync === null) this.#setStatus('synced');
+  }
+
+  #retryLater(error: unknown): void {
+    this.#failures++;
+    this.#setStatus(error instanceof NetworkError ? 'offline' : 'syncing');
+    this.#kick(
+      backoffDelay(
+        this.#failures - 1,
+        this.#deps.retry ?? OUTBOX_RETRY,
+        (this.#deps.jitter ?? Math.random)(),
+        null,
+      ),
+    );
   }
 
   async #send(op: OutboxOp): Promise<void> {

@@ -45,12 +45,61 @@ export interface MockServer {
   readonly transport: Transport;
   readonly world: MockWorld;
   ledger(): readonly LedgerEntry[];
+  /** Responses currently held for replay, to show the store stays bounded. */
+  retainedReplays(): number;
   setNetwork(network: MockNetwork): void;
 }
 
 interface StoredResponse {
   readonly fingerprint: string;
   readonly response: WireResponse;
+  readonly at: number;
+}
+
+/** Endpoints whose bodies carry sim ticks, so any replay past `claimExpiryMs` is refused anyway. */
+const TICK_GATED: ReadonlySet<EndpointName> = new Set([
+  'tableDrop',
+  'tableClaims',
+  'tableNudge',
+  'tableInputs',
+]);
+
+/**
+ * Responses kept for replay, oldest first. Server time only moves forward, so the front of the
+ * map is always the next to expire.
+ */
+class ReplayStore {
+  readonly #entries = new Map<string, StoredResponse>();
+  readonly #ttlMs: number;
+  readonly #cap: number;
+
+  constructor(ttlMs: number, cap: number) {
+    this.#ttlMs = ttlMs;
+    this.#cap = cap;
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  get(key: string): StoredResponse | undefined {
+    return this.#entries.get(key);
+  }
+
+  set(key: string, stored: StoredResponse): void {
+    this.#entries.set(key, stored);
+    for (const oldest of this.#entries.keys()) {
+      if (this.#entries.size <= this.#cap) break;
+      this.#entries.delete(oldest);
+    }
+  }
+
+  prune(now: number): void {
+    for (const [key, stored] of this.#entries) {
+      if (stored.at > now - this.#ttlMs) return;
+      this.#entries.delete(key);
+    }
+  }
 }
 
 interface RefreshRecord {
@@ -147,7 +196,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const world = new MockWorld();
   const accessTokens = new Map<string, { playerId: PlayerId; expiresAt: number }>();
   const refreshTokens = new Map<string, RefreshRecord>();
-  const idempotency = new Map<string, StoredResponse>();
+  const tableReplays = new ReplayStore(MOCK_RULES.claimExpiryMs, Infinity);
+  const otherReplays = new ReplayStore(MOCK_RULES.idempotencyTtlMs, MOCK_RULES.idempotencyRetained);
   const usedTurnstile = new Set<string>();
   const recentRequests = new Map<string, number[]>();
   let network: MockNetwork = 'up';
@@ -350,9 +400,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const auth = await authenticate(found, request, body, idempotencyKey, bodySha256, at);
     enforceEnvelope(auth.scope, at);
 
+    tableReplays.prune(at);
+    otherReplays.prune(at);
+    const replays = TICK_GATED.has(found.name) ? tableReplays : otherReplays;
     const fingerprint = `${request.method} ${request.path} ${bodySha256}`;
     const storeKey = idempotencyKey === null ? null : `${auth.scope}:${idempotencyKey}`;
-    const stored = storeKey === null ? undefined : idempotency.get(storeKey);
+    const stored =
+      storeKey === null ? undefined : (tableReplays.get(storeKey) ?? otherReplays.get(storeKey));
     if (stored !== undefined) {
       if (stored.fingerprint !== fingerprint) {
         return fail(
@@ -397,7 +451,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       if (!(error instanceof MockFailure)) throw error;
       response = fail(error.code, error.message);
     }
-    if (storeKey !== null) idempotency.set(storeKey, { fingerprint, response });
+    if (storeKey !== null) replays.set(storeKey, { fingerprint, response, at });
     return response;
   }
 
@@ -430,6 +484,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     transport,
     world,
     ledger: () => world.ledger,
+    retainedReplays: () => tableReplays.size + otherReplays.size,
     setNetwork(next) {
       network = next;
     },

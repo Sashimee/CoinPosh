@@ -166,6 +166,80 @@ describe('TableSync online', () => {
   });
 });
 
+describe('TableSync resume after a hidden tab', () => {
+  it('drains the pre-pause queue as expired, re-anchors, and accepts a buffered drop and its fall', async () => {
+    const { sync, events } = await openTable();
+    const held = dropNow(sync);
+    await sync.flush();
+    server.setNetwork('down');
+    fallNow(sync, held.id);
+    await sync.flush();
+    expect(sync.pending).toBe(1);
+
+    let sim = time.tick();
+    time.advance(11 * 60_000);
+    server.setNetwork('up');
+    await sync.resume();
+    expect(sync.pending).toBe(0);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'claimSettled',
+        claim: expect.objectContaining({ coinId: held.id }) as unknown,
+        result: { status: 'rejected', reason: 'expired' },
+      }),
+    );
+
+    sim += 6;
+    const coin = sync.drop(0, sim)?.coin ?? null;
+    if (coin === null) throw new Error('Expected a buffered coin after the resume.');
+    await sync.flush();
+    expect(events).toContainEqual(expect.objectContaining({ type: 'dropSettled', coin }));
+    time.advance(MOCK_RULES.minFallMsAfterDrop);
+    sim += Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond);
+    sync.claimFall(coin.id, sim, 'front');
+    await sync.flush();
+    expect(events).toContainEqual({
+      type: 'claimSettled',
+      claim: expect.objectContaining({ coinId: coin.id }) as unknown,
+      result: expect.objectContaining({ status: 'accepted', credited: coin.value }) as unknown,
+    });
+    expect(credits(held.id)).toBe(0);
+    expect(credits(coin.id)).toBe(1);
+    expect(sync.status).toBe('synced');
+    expectConserved();
+  });
+
+  it('resuming offline sends the old queue first and the snapshot before anything played after', async () => {
+    const { sync } = await openTable();
+    const held = dropNow(sync);
+    await sync.flush();
+    server.setNetwork('down');
+    fallNow(sync, held.id);
+    let sim = time.tick();
+    time.advance(11 * 60_000);
+    await sync.resume();
+    expect(sync.status).toBe('offline');
+
+    sim += 6;
+    const coin = sync.drop(0, sim)?.coin ?? null;
+    if (coin === null) throw new Error('Expected a buffered coin while offline.');
+    await sync.flush();
+    alice.requests.length = 0;
+    server.setNetwork('up');
+    await sync.flush();
+    expect(alice.requests.map((request) => request.path)).toEqual([
+      '/v1/table/claims',
+      '/v1/state',
+      '/v1/table/drop',
+    ]);
+    expect(sync.pending).toBe(0);
+    expect(sync.status).toBe('synced');
+    expect(credits(held.id)).toBe(0);
+    expect(sync.coinOnTable(coin.id)).toEqual(coin);
+    expectConserved();
+  });
+});
+
 describe('TableSync offline queue', () => {
   it('plays offline on the pre-minted buffer and reconciles on reconnect', async () => {
     const { sync, events } = await openTable();
@@ -210,8 +284,7 @@ describe('TableSync offline queue', () => {
 
     time.advance(MOCK_RULES.claimExpiryMs + 1_000);
     server.setNetwork('up');
-    sync.hydrate(await alice.client.call('state'));
-    await sync.flush();
+    await sync.resume();
     expect(sync.pending).toBe(0);
     expect(sync.status).toBe('synced');
     const claimResults = events.flatMap((event) =>
@@ -235,6 +308,28 @@ describe('TableSync offline queue', () => {
     expect(table.coins.map((coin) => coin.id)).toContain(settled.id);
     expect(table.buffer.map((coin) => coin.id)).toContain(offlineDrop.id);
     expectConserved();
+  });
+
+  it('refuses a nudge while offline instead of queueing it', async () => {
+    const { sync } = await openTable();
+    time.advance(100);
+    expect(sync.nudge(time.tick(), 'left')).toBe(true);
+    await sync.flush();
+    expect(sync.pending).toBe(0);
+
+    server.setNetwork('down');
+    dropNow(sync);
+    await sync.flush();
+    expect(sync.status).toBe('offline');
+    const queued = sync.pending;
+    time.advance(100);
+    expect(sync.nudge(time.tick(), 'right')).toBe(false);
+    expect(sync.pending).toBe(queued);
+    await expect(alice.store.get('outbox')).resolves.toHaveLength(queued);
+
+    server.setNetwork('up');
+    await sync.flush();
+    expect(alice.requests.filter((request) => request.path === '/v1/table/nudge')).toHaveLength(1);
   });
 
   it('returns null for a drop with a dry buffer while offline', async () => {

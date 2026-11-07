@@ -599,13 +599,111 @@ describe('mock server: attacks from a compromised client', () => {
   it('refuses a buffered-coin drop older than the expiry and keeps the coin in the buffer', async () => {
     await dropBuffered();
     const stale = time.tick() + MOCK_RULES.minTicksBetweenDrops;
-    time.advance(MOCK_RULES.claimExpiryMs + 1_000);
     const coin = await bufferedCoin();
+    time.advance(MOCK_RULES.claimExpiryMs + 1_000);
     await expect(
       alice.client.call('tableDrop', { body: { x: 0, tick: stale, coinId: coin.id } }),
     ).rejects.toMatchObject({ code: 'conflict' });
     expect((await state()).table.buffer.map((buffered) => buffered.id)).toContain(coin.id);
     expect(await claimFall(coin.id)).toEqual({ status: 'rejected', reason: 'not_on_table' });
+    expectConserved();
+  });
+
+  it('re-anchors the paused tick clock on resume, but keeps a held-back pre-pause claim expired', async () => {
+    const held = await dropBuffered();
+    travel();
+    const heldTick = time.tick();
+    await dropBuffered();
+    let sim = time.tick();
+    time.advance(11 * 60_000);
+    const coin = await bufferedCoin();
+
+    sim += MOCK_RULES.minTicksBetweenDrops;
+    const dropped = await alice.client.call('tableDrop', {
+      body: { x: 0, tick: sim, coinId: coin.id },
+    });
+    expect(dropped.coin).toEqual(coin);
+    time.advance(MOCK_RULES.minFallMsAfterDrop);
+    sim += Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond);
+    expect(await claimAt([fallAt(coin, sim)])).toEqual([
+      { status: 'accepted', credited: coin.value, cascade: null, minted: null },
+    ]);
+    expect(await claimAt([fallAt(held, heldTick)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    expect(
+      server.ledger().filter((entry) => entry.reason === 'claim.fall' && entry.ref === held.id),
+    ).toHaveLength(0);
+    expectConserved();
+  });
+
+  it('settles the offline vault on the resume snapshot even when queued play arrived first', async () => {
+    await dropBuffered();
+    const awayMs = 2 * 3_600_000;
+    time.advance(awayMs);
+    const { results } = await alice.client.call('tableClaims', {
+      body: {
+        claims: [{ kind: 'fall', coinId: 'coin_ZZZZZZZZZZZZZZZZ', tick: 0, edge: 'front' }],
+      },
+    });
+    expect(results).toEqual([{ status: 'rejected', reason: 'expired' }]);
+    const resumed = await state();
+    expect(resumed.offline).toMatchObject({ awayMs });
+    expect(resumed.offline?.coins).toBeGreaterThan(0);
+    expect((await state()).offline).toBeNull();
+    expectConserved();
+  });
+
+  it('never lets a held-back claim sent first after a resume become the new anchor', async () => {
+    const held = await dropBuffered();
+    travel();
+    const heldTick = time.tick();
+    await dropBuffered();
+    const sim = time.tick();
+    time.advance(11 * 60_000);
+    await state();
+    expect(await claimAt([fallAt(held, heldTick)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    const coin = await bufferedCoin();
+    await expect(
+      alice.client.call('tableDrop', {
+        body: { x: 0, tick: sim + MOCK_RULES.minTicksBetweenDrops, coinId: coin.id },
+      }),
+    ).resolves.toMatchObject({ coin });
+    expectConserved();
+  });
+
+  it('only re-anchors after a real absence, not on state polled through the pause', async () => {
+    await dropBuffered();
+    const sim = time.tick();
+    for (let waited = 0; waited <= MOCK_RULES.claimExpiryMs; waited += 30_000) {
+      time.advance(30_000);
+      await state();
+    }
+    const coin = await bufferedCoin();
+    await expect(
+      alice.client.call('tableDrop', {
+        body: { x: 0, tick: sim + MOCK_RULES.minTicksBetweenDrops, coinId: coin.id },
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expectConserved();
+  });
+
+  it('still stops a sped-up client after a resume re-anchored its clock', async () => {
+    await dropBuffered();
+    let tick = time.tick();
+    time.advance(11 * 60_000);
+    await state();
+    let refused: unknown = null;
+    for (let i = 0; i < 40 && refused === null; i++) {
+      time.advance(10);
+      tick += 30;
+      await alice.client.call('tableDrop', { body: { x: 0, tick } }).catch((error: unknown) => {
+        refused = error;
+      });
+    }
+    expect(refused).toMatchObject({ code: 'bad_request' });
     expectConserved();
   });
 
@@ -819,6 +917,65 @@ describe('mock server: attacks from a compromised client', () => {
     await expect(
       alice.client.call('tableNudge', { body: { tick: time.tick(), direction: 'right' } }),
     ).resolves.toMatchObject({ frozenUntil: null });
+  });
+});
+
+describe('mock server: memory stays bounded in a long session', () => {
+  it('keeps replays, the ledger and spent coin IDs bounded over thousands of drops and falls', async () => {
+    const stepMs = 500;
+    const cycles = 1_400;
+    const fallTicks = Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond);
+    let buffer = (await state()).table.buffer;
+    const inFlight: { coin: MintedCoin; tick: number }[] = [];
+    let accepted = 0;
+    for (let i = 0; i < cycles; i++) {
+      time.advance(stepMs);
+      const tick = time.tick();
+      const coin = buffer[0];
+      if (coin === undefined) throw new Error(`The buffer ran dry at cycle ${String(i)}.`);
+      const dropped = await alice.client.call('tableDrop', {
+        body: { x: 0, tick, coinId: coin.id },
+      });
+      buffer = dropped.buffer;
+      inFlight.push({ coin: dropped.coin, tick });
+      const due = inFlight.filter((entry) => entry.tick + fallTicks <= tick);
+      if (due.length === 0) continue;
+      inFlight.splice(0, due.length);
+      const results = await claimAt(due.map((entry) => fallAt(entry.coin, tick)));
+      accepted += results.filter((result) => result.status === 'accepted').length;
+    }
+    expect(accepted).toBeGreaterThan(cycles - 10);
+
+    const requestsPerExpiry = (2 * MOCK_RULES.claimExpiryMs) / stepMs;
+    expect(server.retainedReplays()).toBeLessThanOrEqual(requestsPerExpiry + 2);
+    expect(server.retainedReplays()).toBeLessThan(2 * cycles);
+    const ledger = server.ledger();
+    expect(ledger).toHaveLength(MOCK_RULES.ledgerRetained);
+    expect(ledger.at(-1)?.seq).toBeGreaterThan(MOCK_RULES.ledgerRetained);
+    const seqs = ledger.map((entry) => entry.seq);
+    expect(seqs).toEqual(seqs.map((_, i) => (seqs[0] ?? 0) + i));
+    const gone = server.world.player(requirePlayerId(alice))?.gone.size ?? Infinity;
+    expect(gone).toBeLessThanOrEqual(MOCK_RULES.claimExpiryMs / stepMs + 1);
+    expectConserved();
+  });
+
+  it('answers a replay inside the expiry from the store and refuses one after it', async () => {
+    const coin = await bufferedCoin();
+    time.advance(100);
+    const key = newIdempotencyKey();
+    const body = { x: 0, tick: time.tick(), coinId: coin.id };
+    const first = await alice.client.call('tableDrop', { body }, { idempotencyKey: key });
+    const entries = server.ledger().length;
+    time.advance(MOCK_RULES.claimExpiryMs - 1_000);
+    await expect(
+      alice.client.call('tableDrop', { body }, { idempotencyKey: key }),
+    ).resolves.toEqual(first);
+    time.advance(2_000);
+    await expect(
+      alice.client.call('tableDrop', { body }, { idempotencyKey: key }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect(server.ledger()).toHaveLength(entries);
+    expectConserved();
   });
 });
 
