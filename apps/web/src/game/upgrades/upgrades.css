@@ -1,0 +1,42 @@
+.cp-upgrade-notice {
+  margin: 8px auto 0;
+  max-width: 100%;
+  padding: 8px 14px;
+  border-radius: var(--cp-radius-sm);
+  border: 1px solid rgb(var(--cp-coral-sunset-rgb) / 0.55);
+  background: rgb(var(--cp-navy-lacquer-rgb) / 0.92);
+  color: var(--cp-ivory);
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: var(--cp-shadow);
+  pointer-events: none;
+}
+
+.cp-upgrade-notice.is-shown {
+  animation: cp-upgrade-notice-in 2600ms ease both;
+}
+
+@keyframes cp-upgrade-notice-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  8% {
+    opacity: 1;
+    transform: translateY(0) scale(1.02);
+  }
+  14% {
+    transform: scale(1);
+  }
+  86% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-upgrade-notice.is-shown {
+  animation: none;
+}
