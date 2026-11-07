@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Plan', detail: 'pick unblocked, non-overlapping tasks from ROADMAP + STATUS' },
     { title: 'Build', detail: 'one owning agent per task, isolated git worktree, task/<id> branch' },
-    { title: 'Review', detail: 'reviewer gate, up to 2 fix rounds per task' },
+    { title: 'Review', detail: 'reviewer gate, 1 fix round per task; a task that still fails retries next wave' },
     { title: 'Integrate', detail: 'merge each approved task as soon as it passes review, run checks, update STATUS, push' },
     { title: 'Ship', detail: 'PR base into dev and dev into main after each merge, so Pages redeploys' },
     { title: 'Playtest', detail: 'screenshot + feel critique, files polish tasks' },
@@ -13,8 +13,8 @@ export const meta = {
 }
 
 const A = args || {}
-const MAX = A.maxTasks || 8
-const FIX_ROUNDS = 2
+const MAX = A.maxTasks || 4
+const FIX_ROUNDS = 1
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -32,8 +32,9 @@ const PLAN_SCHEMA = {
           agent: { type: 'string' },
           owns: { type: 'array', items: { type: 'string' } },
           brief: { type: 'string', description: 'full task block from the roadmap plus any notes from STATUS/POLISH' },
+          simple: { type: 'boolean', description: 'true for mechanical work (deps, docs, CI/config tweaks, small fixes); false for gameplay, physics, rendering, server logic or anything with design judgement' },
         },
-        required: ['id', 'title', 'agent', 'owns', 'brief'],
+        required: ['id', 'title', 'agent', 'owns', 'brief', 'simple'],
       },
     },
   },
@@ -91,9 +92,12 @@ Read docs/plan/04-ROADMAP.md, docs/plan/STATUS.md, docs/plan/POLISH.md (if prese
 Determine the current branch with \`git rev-parse --abbrev-ref HEAD\` and return it as "base".
 Select up to ${MAX} tasks (never H-* human tasks) whose deps are all "done" in STATUS.md, whose state is todo
 (or blocked with a reason that is now resolved), and whose "owns" paths do NOT overlap each other.
-A task whose owns is "any" must be alone in its wave. Prefer tasks on the critical path to the current milestone.
+A task whose owns is "any" must be alone in its wave.
+Priority order: first, tasks that make the game playable on Pages (coins dropping on the table and pushed off by the pusher,
+the coin physics T-1.01, wiring coins into the scene P-19, the HUD P-28, and whatever directly unblocks those);
+then tasks on the critical path to the current milestone; then everything else.
 POLISH.md items marked "ready" can be scheduled as tasks with id "P-<n>" using the agent named in the item.
-For each task put the COMPLETE task block (and relevant notes) into "brief".
+For each task put the COMPLETE task block (and relevant notes) into "brief", and set "simple" honestly.
 List human tasks that currently block progress in humanBlocked. Set allDone=true only if every T-* task is done.
 Do not modify any files.`,
   { label: 'planner', phase: 'Plan', schema: PLAN_SCHEMA, agentType: 'lead-architect', effort: 'medium' },
@@ -110,7 +114,10 @@ const wave = plan.wave.filter(t => {
   seen.push(...t.owns)
   return true
 })
-log(`Wave on ${plan.base}: ${wave.map(t => t.id).join(', ')}`)
+log(`Wave on ${plan.base}: ${wave.map(t => t.id + (t.simple ? ' (simple)' : '')).join(', ')}`)
+
+// Mechanical tasks run at lower effort; gameplay, physics, rendering and server work keep the agents' usual effort.
+const effortFor = t => (t.simple ? { effort: 'low' } : {})
 
 const implPrompt = t => `Implement roadmap task ${t.id} · ${t.title} for CoinPosh.
 
@@ -187,17 +194,17 @@ const shipReports = []
 // ---------- Build → Review (→ Fix)* → Integrate pipelined per task ----------
 const results = await pipeline(
   wave,
-  t => agent(implPrompt(t), { label: `build:${t.id}`, phase: 'Build', agentType: t.agent, isolation: 'worktree', schema: IMPL_SCHEMA }),
+  t => agent(implPrompt(t), { label: `build:${t.id}`, phase: 'Build', agentType: t.agent, isolation: 'worktree', schema: IMPL_SCHEMA, ...effortFor(t) }),
   async (impl, t) => {
     if (!impl) return { id: t.id, approved: false, issues: ['implementation agent failed'], requests: [] }
     let tip = impl.commit
-    let verdict = await agent(reviewPrompt(t, impl, tip), { label: `review:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA })
+    let verdict = await agent(reviewPrompt(t, impl, tip), { label: `review:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA, ...effortFor(t) })
     for (let round = 1; verdict && !verdict.approved && round <= FIX_ROUNDS; round++) {
       log(`${t.id}: fix round ${round} (${verdict.issues.length} issues)`)
-      const fix = await agent(fixPrompt(t, verdict.issues, tip), { label: `fix${round}:${t.id}`, phase: 'Review', agentType: t.agent, isolation: 'worktree', schema: FIX_SCHEMA })
+      const fix = await agent(fixPrompt(t, verdict.issues, tip), { label: `fix${round}:${t.id}`, phase: 'Review', agentType: t.agent, isolation: 'worktree', schema: FIX_SCHEMA, ...effortFor(t) })
       if (!fix || !fix.commit) { log(`${t.id}: fix round ${round} returned no commit`); break }
       tip = fix.commit
-      verdict = await agent(reviewPrompt(t, impl, tip), { label: `re-review${round}:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA })
+      verdict = await agent(reviewPrompt(t, impl, tip), { label: `re-review${round}:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA, ...effortFor(t) })
     }
     const r = { id: t.id, title: t.title, branch: `task/${t.id}`, tip, approved: !!(verdict && verdict.approved), issues: verdict ? verdict.issues : ['review failed'], requests: impl.outOfScopeRequests || [] }
     if (r.approved) {
