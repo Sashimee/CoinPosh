@@ -7,6 +7,25 @@ import type { EpochMs } from '@coinposh/shared';
 export const ENVELOPE_METRICS = ['drops', 'falls', 'fallValue', 'fusions', 'crates'] as const;
 export type EnvelopeMetric = (typeof ENVELOPE_METRICS)[number];
 
+/**
+ * What happens past the limit. `cap` refuses the charge with a retry time and nothing
+ * else, for metrics that cost the player balance anyway; `flag` also records evidence
+ * and moves the player to the unranked shadow pool (01-ARCHITECTURE.md, Layer 2).
+ */
+export type EnvelopePolicy = 'cap' | 'flag';
+
+/**
+ * Fixed here, not in the economy config: the numbers are tunable, the anti-cheat meaning
+ * of each metric is not. A queued or offline drop flush must never unrank an honest player.
+ */
+export const ENVELOPE_POLICY: Readonly<Record<EnvelopeMetric, EnvelopePolicy>> = {
+  drops: 'cap',
+  falls: 'flag',
+  fallValue: 'flag',
+  fusions: 'flag',
+  crates: 'flag',
+};
+
 /** At most `max` units of a metric inside any `windowMs` span of server time. */
 export interface EnvelopeLimit {
   readonly windowMs: number;
@@ -29,10 +48,16 @@ export type EnvelopeVerdict =
       /** Units of `metric` already admitted inside the window. */
       readonly used: number;
       readonly limit: EnvelopeLimit;
-      /** Server ms until the charge would fit, or null when it exceeds the limit on its own. */
+      /** Server ms from `now` until the charge would fit, or null when it exceeds the limit on its own. */
       readonly retryAfterMs: number | null;
+      /** True when the metric's policy is `flag`, so this refusal counts against ranking. */
+      readonly flagged: boolean;
     };
 
+/**
+ * One row per metric per window: the first refusal is kept as evidence, every repeat
+ * inside the same window only bumps `count`, `lastAt` and `maxExcess`.
+ */
 export interface EnvelopeFlag {
   readonly at: EpochMs;
   readonly metric: EnvelopeMetric;
@@ -41,13 +66,17 @@ export interface EnvelopeFlag {
   readonly max: number;
   readonly windowMs: number;
   readonly ref: string | null;
+  readonly lastAt: EpochMs;
+  readonly count: number;
+  /** The largest `used + amount - max` seen inside the window. */
+  readonly maxExcess: number;
 }
 
 /**
  * Events age out of the window, so `envelope_events` is pruned. Flags are evidence for
- * the shadow pool and audits, so `envelope_flags` is append-only like the ledger. Since a
- * flag can never be deleted, only the first refusal of a metric inside each window is
- * written: a bot hammering the limit adds at most one row per metric per window.
+ * the shadow pool and audits, so `envelope_flags` rows can never be deleted and their
+ * evidence never rewritten; only the repeat counters may grow. A bot held at the limit
+ * therefore adds at most one row per metric per window, however fast it sends.
  */
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS envelope_events (
@@ -59,18 +88,32 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS envelope_events_metric_at ON envelope_events (metric, at);
 
   CREATE TABLE IF NOT EXISTS envelope_flags (
-    id        INTEGER PRIMARY KEY,
-    at        INTEGER NOT NULL,
-    metric    TEXT NOT NULL,
-    amount    INTEGER NOT NULL,
-    used      INTEGER NOT NULL,
-    max       REAL NOT NULL,
-    window_ms INTEGER NOT NULL,
-    ref       TEXT
+    id           INTEGER PRIMARY KEY,
+    metric       TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    amount       INTEGER NOT NULL,
+    used         INTEGER NOT NULL,
+    max          REAL NOT NULL,
+    window_ms    INTEGER NOT NULL,
+    ref          TEXT,
+    last_at      INTEGER NOT NULL,
+    count        INTEGER NOT NULL CHECK (count >= 1),
+    max_excess   REAL NOT NULL,
+    UNIQUE (metric, window_start)
   );
-  CREATE INDEX IF NOT EXISTS envelope_flags_metric_at ON envelope_flags (metric, at);
 
   CREATE TRIGGER IF NOT EXISTS envelope_flags_no_update BEFORE UPDATE ON envelope_flags
+  WHEN NEW.id IS NOT OLD.id
+    OR NEW.metric IS NOT OLD.metric
+    OR NEW.window_start IS NOT OLD.window_start
+    OR NEW.amount IS NOT OLD.amount
+    OR NEW.used IS NOT OLD.used
+    OR NEW.max IS NOT OLD.max
+    OR NEW.window_ms IS NOT OLD.window_ms
+    OR NEW.ref IS NOT OLD.ref
+    OR NEW.count <= OLD.count
+    OR NEW.last_at < OLD.last_at
+    OR NEW.max_excess < OLD.max_excess
   BEGIN
     SELECT RAISE(ABORT, 'envelope_flags is append-only');
   END;
@@ -127,9 +170,11 @@ export class RateEnvelope {
   }
 
   /**
-   * Admits every charge or none. On rejection nothing is admitted, the first charge
-   * that does not fit is flagged (unless its metric was already flagged inside the
-   * window), and the player drops into the unranked shadow pool.
+   * Admits every charge or none. On rejection nothing is admitted and the first charge
+   * that does not fit decides the verdict: a `cap` metric is only refused, a `flag`
+   * metric is also recorded and drops the player into the unranked shadow pool.
+   * A caller that throws inside the same storage transaction rolls the flag back too, so
+   * a refusal must be returned from the transaction, not thrown.
    */
   admit(charges: readonly EnvelopeCharge[], now: EpochMs, ref: string | null): EnvelopeVerdict {
     for (const charge of charges) assertCharge(charge);
@@ -143,21 +188,15 @@ export class RateEnvelope {
       const limit = this.limits[metric];
       const used = this.used(metric, clock);
       if (used + amount > limit.max) {
-        this.flag({
-          at: clock,
-          metric,
-          amount,
-          used,
-          max: limit.max,
-          windowMs: limit.windowMs,
-          ref,
-        });
+        const flagged = ENVELOPE_POLICY[metric] === 'flag';
+        if (flagged) this.flag(metric, amount, used, clock, ref);
         return {
           admitted: false,
           metric,
           used,
           limit,
-          retryAfterMs: this.retryAfter(metric, amount, clock),
+          retryAfterMs: this.retryAfter(metric, amount, clock, now),
+          flagged,
         };
       }
     }
@@ -182,9 +221,21 @@ export class RateEnvelope {
         max: number;
         window_ms: number;
         ref: string | null;
-      }>('SELECT at, metric, amount, used, max, window_ms, ref FROM envelope_flags ORDER BY id')
+        last_at: number;
+        count: number;
+        max_excess: number;
+      }>(
+        `SELECT window_start AS at, metric, amount, used, max, window_ms, ref, last_at, count,
+                max_excess
+         FROM envelope_flags ORDER BY id`,
+      )
       .toArray()
-      .map(({ window_ms, ...flag }) => ({ ...flag, windowMs: window_ms }));
+      .map(({ window_ms, last_at, max_excess, ...flag }) => ({
+        ...flag,
+        windowMs: window_ms,
+        lastAt: last_at,
+        maxExcess: max_excess,
+      }));
   }
 
   /** A flagged player is silently kept off ranked leaderboards. */
@@ -194,7 +245,8 @@ export class RateEnvelope {
 
   /**
    * Never lets the window run backwards: if the server clock steps back (NTP, a host
-   * move), usage is measured from the latest event already admitted.
+   * move), usage is measured from the latest event already admitted. Retry times are
+   * still reported from the real `now`, since that is the clock the next request carries.
    */
   private clock(now: EpochMs): EpochMs {
     if (!Number.isSafeInteger(now) || now < 0) {
@@ -226,7 +278,12 @@ export class RateEnvelope {
   }
 
   /** Walks the window oldest first until enough units age out for `amount` to fit. */
-  private retryAfter(metric: EnvelopeMetric, amount: number, clock: EpochMs): number | null {
+  private retryAfter(
+    metric: EnvelopeMetric,
+    amount: number,
+    clock: EpochMs,
+    now: EpochMs,
+  ): number | null {
     const { windowMs, max } = this.limits[metric];
     if (amount > max) return null;
     let used = this.used(metric, clock);
@@ -241,31 +298,52 @@ export class RateEnvelope {
       .toArray();
     for (const event of events) {
       used -= event.amount;
-      if (used + amount <= max) return event.at + windowMs - clock;
+      if (used + amount <= max) return event.at + windowMs - now;
     }
-    return windowMs;
+    return clock + windowMs - now;
   }
 
-  private flag(flag: EnvelopeFlag): void {
-    const alreadyFlagged =
-      this.sql
-        .exec(
-          'SELECT 1 FROM envelope_flags WHERE metric = ? AND at > ? LIMIT 1',
-          flag.metric,
-          flag.at - flag.windowMs,
-        )
-        .toArray().length > 0;
-    if (alreadyFlagged) return;
+  private flag(
+    metric: EnvelopeMetric,
+    amount: number,
+    used: number,
+    clock: EpochMs,
+    ref: string | null,
+  ): void {
+    const { windowMs, max } = this.limits[metric];
+    const excess = used + amount - max;
+    const open = this.sql
+      .exec<{ id: number }>(
+        `SELECT id FROM envelope_flags WHERE metric = ? AND window_start > ?
+         ORDER BY window_start DESC LIMIT 1`,
+        metric,
+        clock - windowMs,
+      )
+      .toArray()[0];
+    if (open !== undefined) {
+      this.sql.exec(
+        `UPDATE envelope_flags
+         SET count = count + 1, last_at = MAX(last_at, ?), max_excess = MAX(max_excess, ?)
+         WHERE id = ?`,
+        clock,
+        excess,
+        open.id,
+      );
+      return;
+    }
     this.sql.exec(
-      `INSERT INTO envelope_flags (at, metric, amount, used, max, window_ms, ref)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      flag.at,
-      flag.metric,
-      flag.amount,
-      flag.used,
-      flag.max,
-      flag.windowMs,
-      flag.ref,
+      `INSERT INTO envelope_flags
+         (metric, window_start, amount, used, max, window_ms, ref, last_at, count, max_excess)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      metric,
+      clock,
+      amount,
+      used,
+      max,
+      windowMs,
+      ref,
+      clock,
+      excess,
     );
   }
 }

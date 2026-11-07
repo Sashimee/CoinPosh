@@ -56,6 +56,7 @@ describe('RateEnvelope sliding window', () => {
       used: 5,
       limit: LIMITS.drops,
       retryAfterMs: 500,
+      flagged: false,
     });
     expect(result.usage).toBe(5);
   });
@@ -94,7 +95,7 @@ describe('RateEnvelope sliding window', () => {
     expect(new Set(admittedAt)).toEqual(new Set([T0 + 990]));
   });
 
-  it('caps a perfect-play bot at the envelope over a long run while honest play never trips it', async () => {
+  it('caps a perfect-play drop bot at the envelope over a long run without flagging it', async () => {
     const result = await inFreshDo((sql) => {
       const bot = new RateEnvelope(sql, LIMITS);
       const botAdmits: number[] = [];
@@ -117,9 +118,39 @@ describe('RateEnvelope sliding window', () => {
       expect(inside.length).toBeLessThanOrEqual(LIMITS.drops.max);
     }
     expect(result.botAdmits).toHaveLength(LIMITS.drops.max * 20);
-    expect(result.botUnranked).toBe(true);
-    expect(result.flags).toBe(20);
+    expect(result).toMatchObject({ botUnranked: false, flags: 0 });
     expect(honest).toEqual({ rejected: 0, unranked: false });
+  });
+
+  it('rate-limits a burst of queued drops but never unranks the player for it', async () => {
+    const result = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      const flush = Array.from({ length: 12 }, (_, i) =>
+        envelope.admit(one('drops'), T0 + i, `queued_${i}`),
+      );
+      const jitter = [0, 3, 4, 6].map((offset) =>
+        envelope.admit(one('drops'), T0 + 1_000 + offset, null),
+      );
+      return {
+        admitted: flush.filter((verdict) => verdict.admitted).length,
+        refused: flush.find((verdict) => !verdict.admitted),
+        jitterAdmitted: jitter.every((verdict) => verdict.admitted),
+        unranked: envelope.unranked(),
+        flags: envelope.flags(),
+      };
+    });
+    expect(result.admitted).toBe(LIMITS.drops.max);
+    expect(result.refused).toEqual({
+      admitted: false,
+      metric: 'drops',
+      used: LIMITS.drops.max,
+      limit: LIMITS.drops,
+      retryAfterMs: 995,
+      flagged: false,
+    });
+    expect(result.jitterAdmitted).toBe(true);
+    expect(result.unranked).toBe(false);
+    expect(result.flags).toEqual([]);
   });
 
   it('keeps metrics independent: a drop flood does not spend the fusion budget', async () => {
@@ -148,7 +179,12 @@ describe('RateEnvelope multi-metric claims', () => {
       };
     });
     expect(result.first.admitted).toBe(true);
-    expect(result.tooRich).toMatchObject({ admitted: false, metric: 'fallValue', used: 90 });
+    expect(result.tooRich).toMatchObject({
+      admitted: false,
+      metric: 'fallValue',
+      used: 90,
+      flagged: true,
+    });
     expect(result.fits.admitted).toBe(true);
     expect(result.falls).toBe(2);
     expect(result.value).toBe(100);
@@ -220,34 +256,46 @@ describe('RateEnvelope flags and the shadow pool', () => {
         max: LIMITS.crates.max,
         windowMs: LIMITS.crates.windowMs,
         ref: 'crate_3',
+        lastAt: T0 + 2,
+        count: 1,
+        maxExcess: 1,
       },
     ]);
   });
 
-  it('writes at most one flag per metric per window under a 10,000-claim flood', async () => {
+  it('writes at most one flag row per metric per window under a 10,000-claim flood', async () => {
     const durationMs = 10_000;
     const result = await inFreshDo((sql) => {
       const envelope = new RateEnvelope(sql, LIMITS);
       let refused = 0;
       for (let i = 0; i < 10_000; i++) {
         const at = T0 + Math.floor((i * durationMs) / 10_000);
-        const metric: EnvelopeMetric = i % 2 === 0 ? 'drops' : 'fusions';
+        const metric: EnvelopeMetric = i % 2 === 0 ? 'crates' : 'fusions';
         if (!envelope.admit(one(metric), at, `claim_${i}`).admitted) refused++;
       }
-      const rows = sql
-        .exec<{ metric: EnvelopeMetric; n: number }>(
-          'SELECT metric, COUNT(*) AS n FROM envelope_flags GROUP BY metric',
-        )
-        .toArray();
-      return { refused, rows: Object.fromEntries(rows.map((row) => [row.metric, row.n])) };
+      return { refused, flags: envelope.flags() };
     });
-    expect(result.refused).toBeGreaterThan(9_000);
-    expect(result.rows.drops).toBeGreaterThan(0);
-    expect(result.rows.drops).toBeLessThanOrEqual(Math.ceil(durationMs / LIMITS.drops.windowMs));
-    expect(result.rows.fusions).toBe(1);
-    expect(result.rows.fusions).toBeLessThanOrEqual(
-      Math.ceil(durationMs / LIMITS.fusions.windowMs),
-    );
+    expect(result.refused).toBe(10_000 - LIMITS.crates.max - LIMITS.fusions.max);
+    expect(result.flags.map(({ metric }) => metric).sort()).toEqual(['crates', 'fusions']);
+    expect(result.flags.reduce((sum, flag) => sum + flag.count, 0)).toBe(result.refused);
+  });
+
+  it('keeps flag rows bounded while a fall bot is held at the cap for 60 s', async () => {
+    const durationMs = 60_000;
+    const result = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      let refused = 0;
+      for (let ms = 0; ms < durationMs; ms += 5) {
+        if (!envelope.admit(fall(1), T0 + ms, `fall_${ms}`).admitted) refused++;
+      }
+      const rows = sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM envelope_flags').one().n;
+      return { refused, rows, flags: envelope.flags(), unranked: envelope.unranked() };
+    });
+    expect(result.refused).toBeGreaterThan(10_000);
+    expect(result.rows).toBeLessThanOrEqual(Math.ceil(durationMs / LIMITS.falls.windowMs));
+    expect(result.flags.every(({ metric }) => metric === 'falls')).toBe(true);
+    expect(result.flags.reduce((sum, flag) => sum + flag.count, 0)).toBe(result.refused);
+    expect(result.unranked).toBe(true);
   });
 
   it('keeps the first refusal of each window as evidence and flags again in the next window', async () => {
@@ -255,15 +303,36 @@ describe('RateEnvelope flags and the shadow pool', () => {
       const envelope = new RateEnvelope(sql, LIMITS);
       envelope.admit(one('crates', 2), T0, 'crate_ok');
       envelope.admit(one('crates'), T0 + 1, 'crate_first');
-      envelope.admit(one('crates'), T0 + 2, 'crate_repeat');
-      envelope.admit(one('drops', 6), T0 + 3, 'drop_burst');
+      envelope.admit(one('crates', 2), T0 + 2, 'crate_repeat');
+      envelope.admit(one('fusions', 4), T0 + 3, 'fusion_burst');
       envelope.admit(one('crates', 3), T0 + 1 + LIMITS.crates.windowMs, 'crate_next_window');
-      return envelope.flags().map(({ metric, ref }) => ({ metric, ref }));
+      return envelope.flags().map(({ metric, ref, at, lastAt, count, maxExcess }) => ({
+        metric,
+        ref,
+        at,
+        lastAt,
+        count,
+        maxExcess,
+      }));
     });
     expect(flags).toEqual([
-      { metric: 'crates', ref: 'crate_first' },
-      { metric: 'drops', ref: 'drop_burst' },
-      { metric: 'crates', ref: 'crate_next_window' },
+      { metric: 'crates', ref: 'crate_first', at: T0 + 1, lastAt: T0 + 2, count: 2, maxExcess: 2 },
+      {
+        metric: 'fusions',
+        ref: 'fusion_burst',
+        at: T0 + 3,
+        lastAt: T0 + 3,
+        count: 1,
+        maxExcess: 1,
+      },
+      {
+        metric: 'crates',
+        ref: 'crate_next_window',
+        at: T0 + 1 + LIMITS.crates.windowMs,
+        lastAt: T0 + 1 + LIMITS.crates.windowMs,
+        count: 1,
+        maxExcess: 1,
+      },
     ]);
   });
 
@@ -272,10 +341,19 @@ describe('RateEnvelope flags and the shadow pool', () => {
       const envelope = new RateEnvelope(sql, LIMITS);
       envelope.admit(fall(500), T0, 'coin_forged');
       expect(() => sql.exec('DELETE FROM envelope_flags')).toThrow(/append-only/);
-      expect(() => sql.exec('UPDATE envelope_flags SET metric = ?', 'drops')).toThrow(
-        /append-only/,
-      );
+      for (const rewrite of [
+        "UPDATE envelope_flags SET metric = 'crates'",
+        'UPDATE envelope_flags SET ref = NULL',
+        'UPDATE envelope_flags SET amount = 0',
+        'UPDATE envelope_flags SET window_start = window_start + 1',
+        'UPDATE envelope_flags SET count = 1',
+        'UPDATE envelope_flags SET max_excess = 0',
+        'UPDATE envelope_flags SET last_at = last_at - 1',
+      ]) {
+        expect(() => sql.exec(rewrite)).toThrow(/append-only/);
+      }
       expect(envelope.unranked()).toBe(true);
+      expect(envelope.flags()).toMatchObject([{ ref: 'coin_forged', count: 1, amount: 500 }]);
     });
   });
 
@@ -283,17 +361,18 @@ describe('RateEnvelope flags and the shadow pool', () => {
     const stub = env.PLAYER.get(env.PLAYER.idFromName(`envelope-${crypto.randomUUID()}`));
     await runInDurableObject(stub, (_instance: PlayerDO, ctx) => {
       const envelope = new RateEnvelope(ctx.storage.sql, LIMITS);
-      for (let i = 0; i < 6; i++) envelope.admit(one('drops'), T0, null);
+      for (let i = 0; i < 3; i++) envelope.admit(one('crates'), T0, null);
     });
     const after = await runInDurableObject(stub, (_instance: PlayerDO, ctx) => {
       const envelope = new RateEnvelope(ctx.storage.sql, LIMITS);
       return {
-        usage: envelope.usage('drops', T0 + 10),
-        verdict: envelope.admit(one('drops'), T0 + 10, null).admitted,
+        usage: envelope.usage('crates', T0 + 10),
+        verdict: envelope.admit(one('crates'), T0 + 10, null).admitted,
         unranked: envelope.unranked(),
+        count: envelope.flags()[0]?.count,
       };
     });
-    expect(after).toEqual({ usage: 5, verdict: false, unranked: true });
+    expect(after).toEqual({ usage: 2, verdict: false, unranked: true, count: 2 });
   });
 
   it('rolls a flag back with the claim transaction it belonged to', async () => {
@@ -322,9 +401,23 @@ describe('RateEnvelope uses server time only', () => {
         later: envelope.admit(one('drops'), T0 + 11_000, null).admitted,
       };
     });
-    expect(result.rewound).toMatchObject({ admitted: false, used: 5, retryAfterMs: 1_000 });
+    expect(result.rewound).toMatchObject({ admitted: false, used: 5, retryAfterMs: 11_000 });
     expect(result.farRewound).toBe(false);
     expect(result.later).toBe(true);
+  });
+
+  it('reports a retry time from the real clock that is admitted when honoured after a step back', async () => {
+    const result = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      for (let i = 0; i < 5; i++) envelope.admit(one('drops'), T0 + 10_000, null);
+      const rewound = envelope.admit(one('drops'), T0, null);
+      if (rewound.admitted || rewound.retryAfterMs === null) throw new Error('expected a wait');
+      return {
+        early: envelope.admit(one('drops'), T0 + rewound.retryAfterMs - 1, null).admitted,
+        onTime: envelope.admit(one('drops'), T0 + rewound.retryAfterMs, null).admitted,
+      };
+    });
+    expect(result).toEqual({ early: false, onTime: true });
   });
 
   it('refuses non-integer, negative or non-finite times instead of guessing', async () => {
