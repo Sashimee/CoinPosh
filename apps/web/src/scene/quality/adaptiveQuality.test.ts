@@ -140,6 +140,32 @@ describe('resolveQuality', () => {
     expect(benchmark).not.toHaveBeenCalled();
   });
 
+  it.each(['low', 'medium'] as const)(
+    'drops a saved downgrade that is not below the benchmark tier (bench %s, downgrade medium)',
+    async (benchTier) => {
+      const store = memoryStore();
+      saveQuality(store, {
+        ...benchRecord(benchTier, 9),
+        downgrade: { tier: 'medium', bootsLeft: DOWNGRADE_BOOTS },
+      });
+      const logger = quietLogger();
+      const benchmark = benchmarkReturning({
+        tier: 'high',
+        msPerFrame: 3,
+        samples: [3],
+        complete: true,
+      });
+      const resolved = await resolveQuality({ backend: 'webgpu', store, benchmark, logger });
+      expect(resolved).toEqual({
+        profile: QUALITY_PROFILES[benchTier],
+        source: 'stored',
+        benchmarkMs: 9,
+      });
+      expect(loadQuality(store, 'webgpu')).toEqual(benchRecord(benchTier, 9));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not below'));
+    },
+  );
+
   it('still resolves a tier when storage is unavailable', async () => {
     const benchmark = benchmarkReturning({
       tier: 'high',
@@ -233,27 +259,43 @@ interface Sensors {
 function play(
   post: FakePipeline,
   governor: QualityGovernor,
-  load: Load,
+  loadAt: Load | ((elapsedMs: number) => Load),
   durationMs: number,
   sensors: Sensors = { cpu: true },
 ) {
   const steps: { before: number; after: number }[] = [];
-  const refreshMs = 1000 / (load.refreshHz ?? 60);
-  let now = 1000;
+  let fullScaleMs = 0;
+  const start = 1000;
+  let now = start;
   const end = now + durationMs;
   governor.frame(now);
   while (now < end) {
+    const load = typeof loadAt === 'function' ? loadAt(now - start) : loadAt;
+    const refreshMs = 1000 / (load.refreshHz ?? 60);
     const tier = post.profile.tier;
+    const fullScale = post.dynamicScale === post.profile.maxResolutionScale;
     const before = post.scenePixelRatio;
     const gpuMs = load.gpuMsAtRatio1 * before * before;
-    now += Math.max(1, Math.ceil(Math.max(load.cpuMs, gpuMs) / refreshMs - 1e-9)) * refreshMs;
+    const frameMs =
+      Math.max(1, Math.ceil(Math.max(load.cpuMs, gpuMs) / refreshMs - 1e-9)) * refreshMs;
+    now += frameMs;
+    if (fullScale) fullScaleMs += frameMs;
     governor.frame(now, {
       cpuMs: sensors.cpu === true ? load.cpuMs : null,
       gpuMs: sensors.gpu === true ? gpuMs : null,
     });
     if (post.profile.tier !== tier) steps.push({ before, after: post.scenePixelRatio });
   }
-  return steps;
+  return Object.assign(steps, { fullScaleShare: fullScaleMs / (now - start) });
+}
+
+/** A power or thermal cap that holds frames at 30 Hz for `onMs`, then lifts for `offMs`. */
+function intermittentCap(onMs: number, offMs: number) {
+  return (elapsedMs: number): Load => ({
+    cpuMs: 4,
+    gpuMsAtRatio1: 2,
+    refreshHz: elapsedMs % (onMs + offMs) < onMs ? 30 : 60,
+  });
 }
 
 /** Too slow for 55 fps even at the low tier's floor ratio of 0.5. */
@@ -273,6 +315,7 @@ describe('createQualityGovernor', () => {
       const governor = createQualityGovernor(post, {
         backend: 'webgpu',
         store,
+        source: 'stored',
         onTierChange,
         logger: quietLogger(),
       });
@@ -302,6 +345,7 @@ describe('createQualityGovernor', () => {
     const governor = createQualityGovernor(post, {
       backend: 'webgpu',
       store,
+      source: 'downgrade',
       logger: quietLogger(),
     });
     play(post, governor, GPU_OVERLOAD, 120_000);
@@ -312,12 +356,67 @@ describe('createQualityGovernor', () => {
     });
   });
 
+  it.each(['override', 'provisional'] as const)(
+    'steps down in memory only for a %s session',
+    (source) => {
+      const store = memoryStore();
+      saveQuality(store, benchRecord('low', 20));
+      const post = fakePipeline(QUALITY_PROFILES.high);
+      const governor = createQualityGovernor(post, {
+        backend: 'webgpu',
+        store,
+        source,
+        logger: quietLogger(),
+      });
+      play(post, governor, GPU_OVERLOAD, 120_000);
+      expect(post.profile.tier).not.toBe('high');
+      expect(loadQuality(store, 'webgpu')).toEqual(benchRecord('low', 20));
+    },
+  );
+
+  it('keeps an override session from raising the next normal boot above its benchmark', async () => {
+    const store = memoryStore();
+    saveQuality(store, benchRecord('low', 20));
+    const benchmark = benchmarkReturning({
+      tier: 'high',
+      msPerFrame: 3,
+      samples: [3],
+      complete: true,
+    });
+    const overridden = await resolveQuality({
+      backend: 'webgpu',
+      store,
+      benchmark,
+      override: 'high',
+      logger: quietLogger(),
+    });
+    const post = fakePipeline(overridden.profile);
+    const governor = createQualityGovernor(post, {
+      backend: 'webgpu',
+      store,
+      source: overridden.source,
+      logger: quietLogger(),
+    });
+    play(post, governor, GPU_OVERLOAD, 60_000);
+    expect(post.profile.tier).not.toBe('high');
+
+    const next = await resolveQuality({
+      backend: 'webgpu',
+      store,
+      benchmark,
+      logger: quietLogger(),
+    });
+    expect(next).toEqual({ profile: QUALITY_PROFILES.low, source: 'stored', benchmarkMs: 20 });
+    expect(benchmark).not.toHaveBeenCalled();
+  });
+
   it('does not write a record when no benchmark was saved', () => {
     const store = memoryStore();
     const post = fakePipeline(QUALITY_PROFILES.high);
     const governor = createQualityGovernor(post, {
       backend: 'webgpu',
       store,
+      source: 'benchmark',
       logger: quietLogger(),
     });
     play(post, governor, GPU_OVERLOAD, 180_000);
@@ -332,6 +431,7 @@ describe('createQualityGovernor', () => {
       const governor = createQualityGovernor(post, {
         backend: 'webgpu',
         store: null,
+        source: 'benchmark',
         logger: quietLogger(),
       });
       const steps = play(post, governor, GPU_OVERLOAD, 180_000);
@@ -348,6 +448,7 @@ describe('createQualityGovernor', () => {
     const governor = createQualityGovernor(post, {
       backend: 'webgl2',
       store: null,
+      source: 'benchmark',
       logger: quietLogger(),
     });
     play(post, governor, GPU_OVERLOAD, 120_000, { cpu: true, gpu: true });
@@ -357,7 +458,11 @@ describe('createQualityGovernor', () => {
 
   it('leaves a healthy 60 fps game untouched', () => {
     const post = fakePipeline(QUALITY_PROFILES.high);
-    const governor = createQualityGovernor(post, { backend: 'webgpu', store: null });
+    const governor = createQualityGovernor(post, {
+      backend: 'webgpu',
+      store: null,
+      source: 'benchmark',
+    });
     play(post, governor, { cpuMs: 4, gpuMsAtRatio1: 2 }, 60_000);
     expect(post.history).toEqual([]);
   });
@@ -370,6 +475,7 @@ describe('createQualityGovernor', () => {
       const governor = createQualityGovernor(post, {
         backend: 'webgpu',
         store,
+        source: 'stored',
         onTierChange,
         logger: quietLogger(),
       });
@@ -386,10 +492,14 @@ describe('createQualityGovernor', () => {
         { cpuMs: 3, gpuMsAtRatio1: 2, refreshHz: 30 },
         { cpu: true, gpu: true },
       ],
+      ['30 Hz cap 2 s on, 3 s off', intermittentCap(2000, 3000), { cpu: true }],
+      ['30 Hz cap 3 s on, 3 s off', intermittentCap(3000, 3000), { cpu: true }],
+      ['30 Hz cap 1.5 s on, 1.5 s off', intermittentCap(1500, 1500), { cpu: true }],
     ] as const)('keeps the tier and writes nothing (%s)', (_name, load, sensors) => {
       const store = memoryStore();
       const { post, governor, onTierChange } = governed(store);
-      play(post, governor, load, 5 * 60_000, sensors);
+      const { fullScaleShare } = play(post, governor, load, 5 * 60_000, sensors);
+      expect(fullScaleShare).toBeGreaterThanOrEqual(0.97);
       expect(post.profile.tier).toBe('high');
       expect(post.history.some((entry) => entry.startsWith('tier:'))).toBe(false);
       expect(onTierChange).not.toHaveBeenCalled();

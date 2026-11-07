@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isLowerTier,
   isQualityTier,
   lowerTier,
   pixelRatioFor,
@@ -77,5 +78,15 @@ describe('quality tiers', () => {
     expect(qualityOverrideFrom('?quality=ultra')).toBeUndefined();
     expect(qualityOverrideFrom('?quality=')).toBeUndefined();
     expect(qualityOverrideFrom('?quality=HIGH')).toBeUndefined();
+  });
+});
+
+describe('isLowerTier', () => {
+  it('orders tiers low < medium < high and is strict', () => {
+    expect(isLowerTier('low', 'medium')).toBe(true);
+    expect(isLowerTier('medium', 'high')).toBe(true);
+    expect(isLowerTier('low', 'high')).toBe(true);
+    expect(isLowerTier('medium', 'medium')).toBe(false);
+    expect(isLowerTier('high', 'low')).toBe(false);
   });
 });

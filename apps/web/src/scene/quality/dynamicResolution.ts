@@ -8,7 +8,7 @@ export interface DynamicResolutionOptions {
   readonly targetFps?: number;
   /**
    * Starts with the overload already shown to be GPU-bound, as when a tier step hands over
-   * from a controller that verified it; the confirmation lapses as usual without slow frames.
+   * from a controller that verified it; the confirmation expires on the usual timer.
    */
   readonly gpuBoundConfirmed?: boolean;
 }
@@ -55,28 +55,46 @@ const GPU_SLOW_SHARE = 0.88;
 const GPU_HEALTHY_SHARE = 0.72;
 /** Main-thread work at this share of the interval (or of the budget) owns the frame. */
 const CPU_BOUND_SHARE = 0.8;
-/** How long a lower scale is watched before deciding whether it moved the frame rate. */
-const VERIFY_MS = 600;
-/** A verification that never sees GPU-attributable frames gives up after this long. */
-const VERIFY_TIMEOUT_MS = 3000;
+/**
+ * An unverified drop is an A/B test: the controller switches between the lower and the
+ * higher scale for this many segments of pseudo-random length. GPU-bound frames follow every
+ * switch, while a cap that comes and goes on its own spans segments of both kinds, and the
+ * random lengths stop a cap with a steady period from lining up with them.
+ */
+const TRIAL_SEGMENTS = 8;
+const SEGMENT_MIN_MS = 150;
+const SEGMENT_SPAN_MS = 200;
+const SEGMENT_SEED = 0x9e3779b9;
+/** Frames just after a switch can still carry the previous scale's cost (GPU pipelining). */
+const SEGMENT_SKIP_FRAMES = 2;
+const SEGMENT_MIN_SAMPLES = 2;
+/** A segment that sees no GPU-attributable frames for this long fails the test. */
+const SEGMENT_TIMEOUT_MS = 3000;
 const IMPROVED_RATIO = 0.9;
-/** Verification compares medians of raw intervals over this window: a hitch cannot fake or
- * hide a win, and an overload far past `FRAME_CAP_MS` still shows its improvement. */
-const VERIFY_WINDOW_MS = 1000;
-/** Each failed verification waits this much longer before the interval is trusted again. */
+/** Each failed test waits this much longer before the interval is trusted again. */
 const INSENSITIVE_BASE_MS = 10_000;
 const INSENSITIVE_GROWTH = 3;
 const INSENSITIVE_MAX_MS = 10 * 60_000;
-/** A confirmed GPU-bound episode is trusted until this long passes without a slow frame. */
+/** A confirmation is trusted for this long after its A/B test, then has to be re-verified. */
 const CONFIRMED_FOR_MS = 15_000;
+/** How far above the floor the A/B test at the floor scale raises resolution. */
+const FLOOR_RETEST_RAISE = 0.3;
 /** Timer readings older than this mean the timer stalled; fall back to frame intervals. */
 const GPU_STALE_MS = 500;
 
-interface Verification {
-  readonly fromScale: number;
-  readonly baselineMs: number;
-  floorTried: boolean;
+interface Trial {
+  readonly high: number;
+  readonly low: number;
+  readonly floorTried: boolean;
+  /** Where a failed test leaves the scale. */
+  readonly restoreTo: number;
+  /** Median interval of each finished segment at each scale, in order. */
+  readonly lowMs: number[];
+  readonly highMs: number[];
+  samples: number[];
+  skipped: number;
   ageMs: number;
+  segmentMs: number;
 }
 
 /**
@@ -85,9 +103,11 @@ interface Verification {
  * With GPU timestamps the measured GPU time drives it directly. Without them it works from
  * the frame interval: frames the main thread filled are ignored, and since a frame pinned
  * at a 30 Hz power cap or a slow display looks exactly like a GPU-bound one, a drop made on
- * the interval is verified: if neither that drop nor the floor scale speeds frames up, the
- * scale is restored and interval-based drops back off exponentially. Only a verified
- * GPU-bound overload at the floor scale reports `exhausted`.
+ * the interval is verified as an A/B test: frames have to speed up at the lower scale and slow
+ * down again at the higher one, segment after segment. A failed test keeps the higher scale
+ * and backs interval-based drops off exponentially. A confirmation expires on an
+ * absolute timer, and only an overload verified within the current slow episode reports
+ * `exhausted` at the floor scale.
  *
  * GPU cost is roughly proportional to pixel count, so drops follow the square root of the
  * overshoot; growing back is a single-step probe that is reverted, and backs off
@@ -112,9 +132,10 @@ export class DynamicResolution {
   private starvedAtFloorMs = 0;
   private probeAfterMs = PROBE_BASE_MS;
   private lastProbeAgeMs: number | null = null;
-  private verification: Verification | null = null;
-  private recentIntervals: number[] = [];
+  private trial: Trial | null = null;
   private confirmedAtMs: number | null = null;
+  private episodeConfirmed = false;
+  private segmentSeed = SEGMENT_SEED;
   private insensitiveUntilMs = 0;
   private insensitiveBackoffMs = INSENSITIVE_BASE_MS;
 
@@ -133,7 +154,10 @@ export class DynamicResolution {
     this.gpuSlowMs = this.frameSlowMs * GPU_SLOW_SHARE;
     this.gpuHealthyMs = this.frameHealthyMs * GPU_HEALTHY_SHARE;
     this.current = this.clamp(options.initialScale ?? options.maxScale);
-    if (options.gpuBoundConfirmed === true) this.confirmedAtMs = 0;
+    if (options.gpuBoundConfirmed === true) {
+      this.confirmedAtMs = 0;
+      this.episodeConfirmed = true;
+    }
   }
 
   get scale(): number {
@@ -163,9 +187,10 @@ export class DynamicResolution {
       this.gpuEma = null;
       this.healthyMs = 0;
       this.slowMs = 0;
-      this.verification = null;
-      this.recentIntervals = [];
-      return null;
+      this.episodeConfirmed = false;
+      const interrupted = this.trial;
+      this.trial = null;
+      return interrupted === null ? null : this.apply(interrupted.high);
     }
     this.clockMs += interval;
     this.sinceChangeMs += interval;
@@ -178,10 +203,12 @@ export class DynamicResolution {
       this.lastGpuAtMs = this.clockMs;
     } else if (attribution === 'frame-interval') {
       this.frameEma = smooth(this.frameEma, interval, interval);
-      this.remember(interval);
     }
+    if (this.trial !== null) return this.runTrial(this.trial, attribution, interval);
     if (this.sinceChangeMs < SETTLE_MS) return null;
-    if (this.verification !== null) return this.verify(this.verification, attribution, interval);
+    if (!this.usingGpuTimer() && this.frameEma !== null && this.frameEma <= this.frameSlowMs) {
+      this.episodeConfirmed = false;
+    }
 
     const gpuMode = this.usingGpuTimer();
     if (!gpuMode && attribution === 'cpu-bound') return null;
@@ -197,6 +224,7 @@ export class DynamicResolution {
 
     this.slowMs = 0;
     this.starvedAtFloorMs = 0;
+    this.episodeConfirmed = false;
     if (ema <= (gpuMode ? this.gpuHealthyMs : this.frameHealthyMs)) {
       this.healthyMs += interval;
       if (this.lastProbeAgeMs !== null && this.lastProbeAgeMs > FAILED_PROBE_WINDOW_MS) {
@@ -242,9 +270,8 @@ export class DynamicResolution {
       return this.apply(this.current - STEP);
     }
     const confirmed = gpuMode || this.isConfirmed();
-    if (confirmed && !gpuMode) this.confirmedAtMs = this.clockMs;
     if (this.current <= this.minScale) {
-      if (!confirmed) return null;
+      if (!confirmed || !(gpuMode || this.episodeConfirmed)) return this.retestAtFloor();
       this.starvedAtFloorMs += frameMs;
       if (this.starvedAtFloorMs >= EXHAUSTED_AFTER_MS) {
         this.starvedAtFloorMs = 0;
@@ -260,53 +287,117 @@ export class DynamicResolution {
     }
     // Unverified: the interval is quantised to vsync, so the drop goes straight to the scale
     // the overshoot asks for; a small step could hide a real GPU win behind the same vsync.
-    const from = this.current;
-    const baselineMs = median(this.recentIntervals) ?? ema;
-    const event = this.apply(Math.min(ideal, this.current - STEP));
-    this.verification = {
-      fromScale: from,
-      baselineMs,
-      floorTried: this.current <= this.minScale,
-      ageMs: 0,
-    };
-    return event;
+    const low = this.clamp(Math.round(Math.min(ideal, this.current - STEP) / STEP) * STEP);
+    return this.startTrial(this.current, low, low <= this.minScale, this.current);
   }
 
-  private verify(
-    verification: Verification,
+  /**
+   * At the floor there is nothing lower to try, so the test raises resolution instead; if
+   * that makes no difference the floor buys nothing, and a failed test returns to full scale.
+   */
+  private retestAtFloor(): ResolutionEvent | null {
+    if (this.clockMs < this.insensitiveUntilMs) return null;
+    const high = this.clamp(this.current + FLOOR_RETEST_RAISE);
+    if (high === this.current) return null;
+    return this.startTrial(high, this.current, true, this.maxScale);
+  }
+
+  private startTrial(
+    high: number,
+    low: number,
+    floorTried: boolean,
+    restoreTo: number,
+  ): ResolutionEvent | null {
+    this.trial = {
+      high,
+      low,
+      floorTried,
+      restoreTo,
+      lowMs: [],
+      highMs: [],
+      samples: [],
+      skipped: 0,
+      ageMs: 0,
+      segmentMs: this.nextSegmentMs(),
+    };
+    return this.apply(low);
+  }
+
+  private runTrial(
+    trial: Trial,
     attribution: FrameAttribution,
     frameMs: number,
   ): ResolutionEvent | null {
     if (this.usingGpuTimer()) {
-      this.verification = null;
-      return null;
+      this.trial = null;
+      return this.apply(trial.high);
     }
-    verification.ageMs += frameMs;
-    const measured = median(this.recentIntervals);
-    const decided = attribution !== 'cpu-bound' && verification.ageMs >= VERIFY_MS;
-    if (!decided && verification.ageMs < VERIFY_TIMEOUT_MS) return null;
-    const improved =
-      decided &&
-      measured !== null &&
-      (measured <= this.frameSlowMs || measured <= verification.baselineMs * IMPROVED_RATIO);
-    if (improved) {
-      this.verification = null;
+    trial.ageMs += frameMs;
+    if (attribution === 'frame-interval') {
+      if (trial.skipped < SEGMENT_SKIP_FRAMES) trial.skipped += 1;
+      else trial.samples.push(frameMs);
+    }
+    const segmentMs = median(trial.samples);
+    if (
+      segmentMs === null ||
+      trial.samples.length < SEGMENT_MIN_SAMPLES ||
+      trial.ageMs < trial.segmentMs
+    ) {
+      return trial.ageMs >= SEGMENT_TIMEOUT_MS ? this.rejectTrial(trial) : null;
+    }
+    const atLow = trial.lowMs.length === trial.highMs.length;
+    (atLow ? trial.lowMs : trial.highMs).push(segmentMs);
+    trial.samples = [];
+    trial.skipped = 0;
+    trial.ageMs = 0;
+    trial.segmentMs = this.nextSegmentMs();
+    if (atLow || trial.highMs.length < TRIAL_SEGMENTS / 2) {
+      return this.apply(atLow ? trial.high : trial.low);
+    }
+    this.trial = null;
+    if (this.followsResolution(trial)) {
       this.confirmedAtMs = this.clockMs;
+      this.episodeConfirmed = true;
       this.insensitiveBackoffMs = INSENSITIVE_BASE_MS;
-      return null;
+      return this.apply(trial.low);
     }
-    if (decided && !verification.floorTried && this.current > this.minScale) {
-      verification.floorTried = true;
-      verification.ageMs = 0;
-      return this.apply(this.minScale);
+    const lowNeverFast = trial.lowMs.every((ms) => ms > this.frameSlowMs);
+    if (!trial.floorTried && lowNeverFast && trial.low > this.minScale) {
+      return this.startTrial(trial.high, this.minScale, true, trial.restoreTo);
     }
-    this.verification = null;
+    return this.rejectTrial(trial);
+  }
+
+  /** Every higher-scale segment is slow and slower than the lower-scale segments around it. */
+  private followsResolution(trial: Trial): boolean {
+    return trial.highMs.every((highMs, i) => {
+      const neighbours = [trial.lowMs[i], trial.lowMs[i + 1]];
+      return (
+        highMs > this.frameSlowMs &&
+        neighbours.every((lowMs) => lowMs === undefined || lowMs <= highMs * IMPROVED_RATIO)
+      );
+    });
+  }
+
+  /** Resolution did not explain the slow frames: keep the higher scale and back off. */
+  private rejectTrial(trial: Trial): ResolutionEvent | null {
+    this.trial = null;
     this.insensitiveUntilMs = this.clockMs + this.insensitiveBackoffMs;
     this.insensitiveBackoffMs = Math.min(
       INSENSITIVE_MAX_MS,
       this.insensitiveBackoffMs * INSENSITIVE_GROWTH,
     );
-    return this.apply(verification.fromScale);
+    return this.apply(trial.restoreTo);
+  }
+
+  /** xorshift32: deterministic, so the same frame timings always make the same decisions. */
+  private nextSegmentMs(): number {
+    let x = this.segmentSeed;
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    this.segmentSeed = x >>> 0;
+    return SEGMENT_MIN_MS + (this.segmentSeed / 0x1_0000_0000) * SEGMENT_SPAN_MS;
   }
 
   private apply(scale: number): ResolutionEvent | null {
@@ -315,19 +406,10 @@ export class DynamicResolution {
     this.current = next;
     this.frameEma = null;
     this.gpuEma = null;
-    this.recentIntervals = [];
     this.sinceChangeMs = 0;
     this.healthyMs = 0;
     this.slowMs = 0;
     return { kind: 'scale', scale: next };
-  }
-
-  private remember(intervalMs: number): void {
-    this.recentIntervals.push(intervalMs);
-    let total = this.recentIntervals.reduce((sum, ms) => sum + ms, 0);
-    while (this.recentIntervals.length > 1 && total > VERIFY_WINDOW_MS) {
-      total -= this.recentIntervals.shift() ?? 0;
-    }
   }
 
   private clamp(scale: number): number {

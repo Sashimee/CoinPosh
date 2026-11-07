@@ -88,6 +88,7 @@ export async function createAdaptiveRendering(
   const governor = createQualityGovernor(post, {
     backend,
     store,
+    source: resolved.source,
     ...(options.onTierChange === undefined ? {} : { onTierChange: options.onTierChange }),
   });
   const gpuTimer = createGpuFrameTimer(renderer);

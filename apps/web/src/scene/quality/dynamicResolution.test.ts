@@ -70,6 +70,18 @@ function shareAtScale(frames: readonly Frame[], scale: number, from: number): nu
   return at.reduce((sum, frame) => sum + frame.ms, 0) / time;
 }
 
+/** Bursts of scale changes, counting changes less than `gapMs` apart as one burst. */
+function changeBursts(frames: readonly Frame[], gapMs = 5000): number {
+  let bursts = 0;
+  let lastChangeAt = Number.NEGATIVE_INFINITY;
+  frames.forEach((frame, i) => {
+    if (i === 0 || frame.scale === frames[i - 1]?.scale) return;
+    if (frame.at - lastChangeAt > gapMs) bursts++;
+    lastChangeAt = frame.at;
+  });
+  return bursts;
+}
+
 const controllerAt = (initialScale?: number) =>
   new DynamicResolution({
     minScale: 0.5,
@@ -238,6 +250,63 @@ describe('DynamicResolution', () => {
       expect(controller.gpuBoundConfirmed).toBe(false);
     });
 
+    describe('with a cap that comes and goes (power or thermal throttling)', () => {
+      const intermittent =
+        (onMs: number, offMs: number) =>
+        (at: number): Device => ({
+          cpuMs: 4,
+          gpuFullMs: 6,
+          refreshHz: at % (onMs + offMs) < onMs ? 30 : 60,
+        });
+
+      it.each([
+        [2000, 3000],
+        [3000, 3000],
+        [1500, 1500],
+        [1000, 1000],
+        [1200, 1000],
+      ])(
+        'keeps full resolution and never confirms or exhausts (%s ms on, %s ms off)',
+        (onMs, offMs) => {
+          const controller = controllerAt();
+          const confirmedAt: number[] = [];
+          const { frames, events } = simulate(
+            controller,
+            (at) => {
+              if (controller.gpuBoundConfirmed) confirmedAt.push(at);
+              return intermittent(onMs, offMs)(at);
+            },
+            5 * 60_000,
+          );
+          expect(events).not.toContainEqual({ kind: 'exhausted' });
+          expect(confirmedAt).toEqual([]);
+          expect(shareAtScale(frames, 1, 0)).toBeGreaterThanOrEqual(0.97);
+          expect(controller.scale).toBe(1);
+        },
+      );
+
+      it('lets a handed-over confirmation expire instead of renewing it on capped frames', () => {
+        const controller = new DynamicResolution({
+          minScale: 0.5,
+          maxScale: 1,
+          initialScale: 0.5,
+          gpuBoundConfirmed: true,
+        });
+        const capped: Device = { cpuMs: 4, gpuFullMs: 6, refreshHz: 30 };
+        const exhaustedAt: number[] = [];
+        let at = 0;
+        while (at < 60_000) {
+          const ms = presentedFrameMs(capped, controller.scale);
+          at += ms;
+          const event = controller.sample({ intervalMs: ms, cpuMs: capped.cpuMs });
+          if (event?.kind === 'exhausted') exhaustedAt.push(at);
+        }
+        expect(controller.gpuBoundConfirmed).toBe(false);
+        expect(exhaustedAt.filter((time) => time > 16_000)).toEqual([]);
+        expect(controller.scale).toBe(1);
+      });
+    });
+
     it('never touches a capped device when the GPU timer shows headroom', () => {
       const controller = controllerAt();
       const { events } = simulate(
@@ -257,10 +326,10 @@ describe('DynamicResolution', () => {
         5 * 60_000,
         {},
       );
-      const restores = events.filter((event) => event.kind === 'scale' && event.scale === 1);
+      const tests = changeBursts(frames);
       expect(events).not.toContainEqual({ kind: 'exhausted' });
-      expect(restores.length).toBeGreaterThan(0);
-      expect(restores.length).toBeLessThanOrEqual(8);
+      expect(tests).toBeGreaterThan(0);
+      expect(tests).toBeLessThanOrEqual(8);
       expect(controller.scale).toBe(1);
       expect(shareAtScale(frames, 1, 0)).toBeGreaterThan(0.95);
     });

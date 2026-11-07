@@ -102,3 +102,7 @@ export function lowerTier(tier: QualityTier): QualityTier | null {
   const index = QUALITY_TIERS.indexOf(tier);
   return index > 0 ? (QUALITY_TIERS[index - 1] ?? null) : null;
 }
+
+export function isLowerTier(tier: QualityTier, than: QualityTier): boolean {
+  return QUALITY_TIERS.indexOf(tier) < QUALITY_TIERS.indexOf(than);
+}

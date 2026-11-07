@@ -10,7 +10,13 @@ import {
   type QualityStorageLogger,
   type StoredQuality,
 } from './storage.ts';
-import { lowerTier, QUALITY_PROFILES, type QualityProfile, type QualityTier } from './tiers.ts';
+import {
+  lowerTier,
+  isLowerTier,
+  QUALITY_PROFILES,
+  type QualityProfile,
+  type QualityTier,
+} from './tiers.ts';
 
 /** `provisional`: the benchmark stopped early; its pick is used this boot but not saved. */
 export type QualitySource = 'stored' | 'downgrade' | 'benchmark' | 'provisional' | 'override';
@@ -32,7 +38,8 @@ export interface ResolveQualityOptions {
 /**
  * Returns the saved tier for this backend, or runs the first-boot benchmark. Only a complete
  * benchmark is saved; a provisional pick is used for this boot and re-measured on the next.
- * A saved runtime downgrade wins over the benchmark tier until its boots run out.
+ * A saved runtime downgrade wins over the benchmark tier until its boots run out; one that is
+ * not below the benchmark tier is dropped, so a downgrade can never raise quality.
  */
 export async function resolveQuality(options: ResolveQualityOptions): Promise<ResolvedQuality> {
   const logger = options.logger ?? console;
@@ -75,6 +82,17 @@ function resumeStored(
   logger: QualityStorageLogger,
 ): ResolvedQuality {
   const { downgrade } = stored;
+  if (downgrade !== null && !isLowerTier(downgrade.tier, stored.benchTier)) {
+    logger.warn(
+      `[CoinPosh] Dropping a saved quality downgrade to ${downgrade.tier}, which is not below the benchmarked ${stored.benchTier}`,
+    );
+    saveQuality(store, { ...stored, downgrade: null }, logger);
+    return {
+      profile: QUALITY_PROFILES[stored.benchTier],
+      source: 'stored',
+      benchmarkMs: stored.benchmarkMs,
+    };
+  }
   if (downgrade === null) {
     return {
       profile: QUALITY_PROFILES[stored.benchTier],
@@ -106,6 +124,11 @@ export type FrameMeasurements = Omit<FrameTiming, 'intervalMs'>;
 export interface QualityGovernorOptions {
   readonly backend: RenderBackend;
   readonly store: KeyValueStore | null;
+  /**
+   * Where this session's tier came from. `override` and `provisional` sessions never write
+   * their downgrades: a forced tier says nothing about the device's benchmarked one.
+   */
+  readonly source: QualitySource;
   readonly onTierChange?: (profile: QualityProfile) => void;
   readonly logger?: QualityStorageLogger;
 }
@@ -129,13 +152,14 @@ export interface QualityGovernor {
  * and vsync- or power-capped frames never count (see `DynamicResolution`), so those devices
  * keep their tier. The step keeps the scene's effective pixel ratio, so it only ever sheds
  * cost. The downgrade is saved next to the benchmark record and expires after
- * `DOWNGRADE_BOOTS` boots.
+ * `DOWNGRADE_BOOTS` boots; `override` and `provisional` sessions only step down in memory.
  */
 export function createQualityGovernor(
   post: ScalablePipeline,
   options: QualityGovernorOptions,
 ): QualityGovernor {
   const logger = options.logger ?? console;
+  const persists = options.source !== 'override' && options.source !== 'provisional';
   let controller = controllerFor(post.profile, post.dynamicScale);
   let last: number | null = null;
 
@@ -152,7 +176,7 @@ export function createQualityGovernor(
     logger.warn(
       `[CoinPosh] Frame rate below target at minimum resolution, quality ${from.tier} -> ${to.tier}`,
     );
-    const stored = loadQuality(options.store, options.backend, logger);
+    const stored = persists ? loadQuality(options.store, options.backend, logger) : null;
     if (stored !== null) {
       saveQuality(
         options.store,
