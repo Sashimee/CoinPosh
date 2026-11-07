@@ -1,3 +1,4 @@
+import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported } from './audio/index.ts';
 import type { CoinField, CoinTierId } from './scene/coins/index.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
@@ -24,7 +25,11 @@ if (!canvas) {
   throw new Error('CoinPosh boot failed: <canvas id="stage"> is missing from index.html');
 }
 
-bootAudio().catch((error: unknown) => {
+const uiRoot = document.createElement('div');
+document.body.append(uiRoot);
+const ui = mountUi(uiRoot);
+
+bootAudio(ui).catch((error: unknown) => {
   console.error('CoinPosh audio failed to start; the game continues without sound.', error);
 });
 
@@ -32,12 +37,15 @@ void bootScene(canvas);
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
 // unlock the context and the track starts without a render hitch.
-async function bootAudio(): Promise<void> {
+// The saved mixer is attached before the music starts, so the first note plays at the volume
+// the player chose rather than the engine defaults.
+async function bootAudio(app: UiApp): Promise<void> {
   if (!isAudioSupported()) {
     console.warn('[CoinPosh] Web Audio is unavailable in this browser; playing without sound.');
     return;
   }
   const audio = createAudioEngine();
+  app.attachAudio(audio);
   await audio.startMusic();
 }
 
