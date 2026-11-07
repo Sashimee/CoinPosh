@@ -38,6 +38,10 @@ export interface OceanOptions {
   /** Sea level in the backdrop's local frame (below the deck). */
   readonly level: number;
   readonly radius?: number;
+  /** Swells summed per pixel, longest first; defaults to all {@link SWELL_COUNT}. */
+  readonly swells?: number;
+  /** Fine noise ripples near the hull. Defaults to on. */
+  readonly ripples?: boolean;
 }
 
 export interface Ocean {
@@ -48,23 +52,29 @@ export interface Ocean {
 }
 
 interface Swell {
-  readonly direction: Vector2;
   readonly wavelength: number;
+  /** Heading in degrees from +Z towards +X. */
+  readonly heading: number;
   readonly steepness: number;
+  readonly phase: number;
 }
 
 const GRAVITY = 9.81;
 
+// Irregular headings and phases, with steepness falling off for the short waves, so no two
+// swells line up into the regular corrugation an evenly spaced set reads as.
 const SWELLS: readonly Swell[] = [
-  { direction: new Vector2(0.2, 1).normalize(), wavelength: 11, steepness: 0.018 },
-  { direction: new Vector2(-0.45, 1).normalize(), wavelength: 6.3, steepness: 0.024 },
-  { direction: new Vector2(0.8, 0.6).normalize(), wavelength: 3.7, steepness: 0.032 },
-  { direction: new Vector2(-0.9, 0.35).normalize(), wavelength: 2.1, steepness: 0.045 },
-  { direction: new Vector2(0.35, -0.9).normalize(), wavelength: 1.25, steepness: 0.05 },
-  { direction: new Vector2(-0.15, 0.95).normalize(), wavelength: 0.7, steepness: 0.05 },
-  { direction: new Vector2(0.6, 0.8).normalize(), wavelength: 0.43, steepness: 0.045 },
-  { direction: new Vector2(-0.7, 0.7).normalize(), wavelength: 0.27, steepness: 0.04 },
+  { wavelength: 11, heading: 33, steepness: 0.017, phase: 3.43 },
+  { wavelength: 6.7, heading: 6.8, steepness: 0.02, phase: 1.1 },
+  { wavelength: 3.9, heading: -71, steepness: 0.022, phase: 5.2 },
+  { wavelength: 2.35, heading: 18.3, steepness: 0.02, phase: 0.45 },
+  { wavelength: 1.42, heading: 118, steepness: 0.017, phase: 1.74 },
+  { wavelength: 0.86, heading: -45.2, steepness: 0.014, phase: 3.87 },
+  { wavelength: 0.53, heading: 22.7, steepness: 0.011, phase: 2.6 },
+  { wavelength: 0.31, heading: -47.5, steepness: 0.008, phase: 5.69 },
 ];
+
+export const SWELL_COUNT = SWELLS.length;
 
 function linear(hex: string): Node<'vec3'> {
   const c = new Color(hex);
@@ -74,12 +84,17 @@ function linear(hex: string): Node<'vec3'> {
 /**
  * Backdrop sea: a flat disc shaded per pixel. Slopes come from analytic sums of deep-water
  * swells (dispersion ω = √(g·k)), each faded out once it falls below a pixel to avoid shimmer,
- * plus fine noise ripples near the hull. Reflections sample the same sky function as the dome,
- * so the sun glitter path and the far haze match the sky exactly and the horizon has no seam.
+ * plus fine noise ripples near the hull. Reflections sample the same sky function as the dome
+ * (without clouds), so the sun glitter path matches the sky; the far haze uses the sky's cheap
+ * horizon approximation, which converges on the dome's colour at the horizon.
  */
 export function createOcean(options: OceanOptions): Ocean {
   const time = uniform(0);
   const { sky } = options;
+  const swellCount = options.swells ?? SWELL_COUNT;
+  if (!Number.isInteger(swellCount) || swellCount < 0 || swellCount > SWELL_COUNT) {
+    throw new RangeError(`Ocean swells must be an integer 0..${SWELL_COUNT}, got ${swellCount}`);
+  }
   const glintColor = linear(options.glintColor);
 
   const eye = modelWorldMatrixInverse.mul(vec4(cameraPosition, 1)).xyz;
@@ -89,23 +104,32 @@ export function createOcean(options: OceanOptions): Ocean {
 
   let slopeX: Node<'float'> = float(0);
   let slopeZ: Node<'float'> = float(0);
-  for (const swell of SWELLS) {
+  for (const swell of SWELLS.slice(0, swellCount)) {
+    const heading = (swell.heading * Math.PI) / 180;
+    const direction = new Vector2(Math.sin(heading), Math.cos(heading));
     const k = (Math.PI * 2) / swell.wavelength;
     const omega = Math.sqrt(GRAVITY * k);
     const amplitude = swell.steepness / k;
     const fade = float(1).sub(smoothstep(swell.wavelength * 14, swell.wavelength * 45, distance));
-    const phase = dot(p, vec2(swell.direction.x, swell.direction.y)).mul(k).sub(time.mul(omega));
+    const phase = dot(p, vec2(direction.x, direction.y))
+      .mul(k)
+      .sub(time.mul(omega))
+      .add(swell.phase);
     const slope = cos(phase)
       .mul(amplitude * k)
       .mul(fade);
-    slopeX = slopeX.add(slope.mul(swell.direction.x));
-    slopeZ = slopeZ.add(slope.mul(swell.direction.y));
+    slopeX = slopeX.add(slope.mul(direction.x));
+    slopeZ = slopeZ.add(slope.mul(direction.y));
   }
-  const rippleFade = float(1).sub(smoothstep(4, 14, distance));
-  const ripple = mx_noise_vec3(vec3(p.x.mul(2.2), p.y.mul(2.2), time.mul(0.45))).mul(
-    rippleFade.mul(0.05),
-  );
-  const normal = normalize(vec3(slopeX.negate().add(ripple.x), 1, slopeZ.negate().add(ripple.z)));
+  if (options.ripples ?? true) {
+    const rippleFade = float(1).sub(smoothstep(4, 14, distance));
+    const ripple = mx_noise_vec3(vec3(p.x.mul(2.2), p.y.mul(2.2), time.mul(0.45))).mul(
+      rippleFade.mul(0.05),
+    );
+    slopeX = slopeX.sub(ripple.x);
+    slopeZ = slopeZ.sub(ripple.z);
+  }
+  const normal = normalize(vec3(slopeX.negate(), 1, slopeZ.negate()));
 
   const view = normalize(toEye);
   const facing = saturate(dot(normal, view));
@@ -114,16 +138,15 @@ export function createOcean(options: OceanOptions): Ocean {
   const reflected = vec3(mirrored.x, max(mirrored.y, 0.002), mirrored.z);
   const reflection = sky.radiance(reflected).mul(0.5);
   const sunDirection = uniform(sky.sunDirection);
-  const glint = pow(saturate(dot(mirrored, sunDirection)), 900)
-    .mul(40)
-    .add(pow(saturate(dot(mirrored, sunDirection)), 60).mul(0.6));
+  const sunAlignment = saturate(dot(mirrored, sunDirection));
+  const glint = pow(sunAlignment, 380).mul(9).add(pow(sunAlignment, 50).mul(0.35));
 
   const crest = saturate(dot(normal.xz, sunDirection.xz.normalize()).mul(4)).mul(
     float(1).sub(smoothstep(10, 60, distance)),
   );
   const body = mix(linear(options.deepColor), linear(options.shallowColor), crest.mul(0.35));
   const surface = mix(body, reflection, fresnel).add(glintColor.mul(glint.mul(fresnel)));
-  const haze = sky.radiance(view.negate());
+  const haze = sky.horizonRadiance(view.negate());
   const colour = mix(surface, haze, pow(smoothstep(30, 89, distance), 2));
 
   const material = new MeshBasicNodeMaterial({ fog: false });

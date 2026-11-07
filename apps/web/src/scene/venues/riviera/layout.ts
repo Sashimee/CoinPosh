@@ -36,6 +36,9 @@ export const RIVIERA_DECK = {
   seaLevel: -4.1,
 } as const;
 
+/** Bearing of the low sunset, behind the table and a little to port, in the backdrop's frame. */
+export const RIVIERA_SUN_DIRECTION: Readonly<Vector3> = new Vector3(-0.42, 0.022, -0.9).normalize();
+
 export interface CameraPreset {
   readonly position: Vector3;
   readonly target: Vector3;
@@ -44,28 +47,32 @@ export interface CameraPreset {
 
 const TABLE_CENTRE = new Vector3(0, 0.04, -0.08);
 const ELEVATION = (25 * Math.PI) / 180;
-const LOOK_PITCH_WIDE = (20.5 * Math.PI) / 180;
-const LOOK_PITCH_TALL = (24 * Math.PI) / 180;
+const LOOK_PITCH_WIDE = (19.2 * Math.PI) / 180;
+const LOOK_PITCH_TALL = (22 * Math.PI) / 180;
 const VERTICAL_FOV = 44;
-const FIT_HALF_WIDTH = 0.5;
-const MIN_DISTANCE = 1.7;
+/** Landscape fits the whole cabinet; portrait fits the glass walls and crops the front panel. */
+const FIT_HALF_WIDTH_WIDE = 0.5;
+const FIT_HALF_WIDTH_TALL = 0.38;
+const MIN_DISTANCE = 1.8;
 
 /**
  * Frames the table for any aspect ratio. The camera sits on a fixed elevation above the table
  * centre and backs off until the cabinet's full width fits, but looks a little shallower than
- * its elevation so the table sits low in frame and the sunset horizon stays visible above it.
- * Tall (portrait) frames have sky to spare, so they look further down to keep the tray in shot.
+ * its elevation so the table sits low in frame and the sunset, sun disc included, stays in frame
+ * above it. Tall (portrait) frames fit the playfield rather than the cabinet and look further
+ * down, so the coins fill the screen and the cabinet's front panel falls below the frame.
  */
 export function rivieraCameraPreset(aspect: number): CameraPreset {
   const halfV = (VERTICAL_FOV * Math.PI) / 360;
   const halfH = Math.atan(Math.tan(halfV) * Math.max(aspect, 0.1));
-  const distance = Math.max(FIT_HALF_WIDTH / Math.tan(halfH), MIN_DISTANCE);
+  const tall = Math.min(Math.max((1.3 - aspect) / (1.3 - 0.45), 0), 1);
+  const fitHalfWidth = FIT_HALF_WIDTH_WIDE + (FIT_HALF_WIDTH_TALL - FIT_HALF_WIDTH_WIDE) * tall;
+  const distance = Math.max(fitHalfWidth / Math.tan(halfH), MIN_DISTANCE);
   const position = new Vector3(
     0,
     TABLE_CENTRE.y + Math.sin(ELEVATION) * distance,
     TABLE_CENTRE.z + Math.cos(ELEVATION) * distance,
   );
-  const tall = Math.min(Math.max((1.3 - aspect) / (1.3 - 0.45), 0), 1);
   const pitch = LOOK_PITCH_WIDE + (LOOK_PITCH_TALL - LOOK_PITCH_WIDE) * tall;
   const target = position
     .clone()

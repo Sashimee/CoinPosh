@@ -10,7 +10,12 @@ import {
   WebGPURenderer,
   type Object3D,
 } from 'three/webgpu';
-import { applyCameraPreset, createRivieraVenue } from './index.ts';
+import {
+  applyCameraPreset,
+  applyRivieraRendererSettings,
+  createRivieraVenue,
+  type RivieraQualityTier,
+} from './index.ts';
 import { RIVIERA_TABLE } from './layout.ts';
 import { rivieraTokens } from './palette.ts';
 
@@ -20,7 +25,10 @@ import { rivieraTokens } from './palette.ts';
  * `t=<s>` freezes time there, `stroke=<0..1>` sets the pusher, `coins` drops stand-in coins
  * for scale, `probe` adds a chrome sphere to check environment alignment, and
  * `cam=x,y,z&look=x,y,z&fov=n` overrides the preset camera, and `env=<n>` / `lights=<n>`
- * override the environment intensity and scale the venue lights for look-dev.
+ * override the environment intensity and scale the venue lights for look-dev, and
+ * `quality=high|medium|low` picks a render tier. `gpu` enables GPU timestamp queries where the
+ * backend supports them; `frameMs` is CPU submit time and `intervalMs` the smoothed time
+ * between frames, which includes GPU time once the GPU is the bottleneck.
  */
 interface PreviewStats {
   ready: boolean;
@@ -28,6 +36,9 @@ interface PreviewStats {
   drawCalls: number;
   triangles: number;
   frameMs: number;
+  intervalMs: number;
+  gpuMs: number | null;
+  quality: string;
   error?: string;
 }
 
@@ -38,7 +49,24 @@ declare global {
 }
 
 const params = new URLSearchParams(location.search);
-const stats: PreviewStats = { ready: false, backend: '', drawCalls: 0, triangles: 0, frameMs: 0 };
+const stats: PreviewStats = {
+  ready: false,
+  backend: '',
+  drawCalls: 0,
+  triangles: 0,
+  frameMs: 0,
+  intervalMs: 0,
+  gpuMs: null,
+  quality: '',
+};
+
+function qualityParam(): RivieraQualityTier {
+  const raw = params.get('quality') ?? 'high';
+  if (raw !== 'high' && raw !== 'medium' && raw !== 'low') {
+    throw new Error(`Preview flag quality must be high, medium or low, got "${raw}"`);
+  }
+  return raw;
+}
 window.__preview = stats;
 
 function vectorParam(name: string): Vector3 | null {
@@ -82,15 +110,25 @@ function standInCoins(): Object3D[] {
 async function boot(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#preview');
   if (!canvas) throw new Error('Preview canvas #preview is missing');
-  const renderer = new WebGPURenderer({ canvas, antialias: true, forceWebGL: params.has('webgl') });
+  const trackTimestamp = params.has('gpu');
+  const renderer = new WebGPURenderer({
+    canvas,
+    antialias: true,
+    forceWebGL: params.has('webgl'),
+    trackTimestamp,
+  });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   await renderer.init();
   stats.backend = 'isWebGPUBackend' in renderer.backend ? 'webgpu' : 'webgl2';
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(42, 1, 0.05, 120);
+  const quality = qualityParam();
+  stats.quality = quality;
+  applyRivieraRendererSettings(renderer);
   const venue = await createRivieraVenue(scene, renderer, {
     reducedMotion: params.has('reduced'),
+    quality,
   });
 
   if (params.has('coins')) scene.add(...standInCoins());
@@ -107,7 +145,8 @@ async function boot(): Promise<void> {
   if (envIntensity !== null) scene.environmentIntensity = Number(envIntensity);
   const lightScale = params.get('lights');
   if (lightScale !== null) {
-    for (const light of [venue.lighting.key, venue.lighting.rimWarm, venue.lighting.rimCool]) {
+    const { key, rimWarm, rimCool, fill } = venue.lighting;
+    for (const light of [key, rimWarm, rimCool, fill]) {
       light.intensity *= Number(lightScale);
     }
   }
@@ -136,7 +175,13 @@ async function boot(): Promise<void> {
 
   const timer = new Timer();
   let smoothed = 0;
+  let interval = 0;
+  let last = 0;
+  let resolving = false;
   await renderer.setAnimationLoop((now: number) => {
+    if (last !== 0) interval = interval === 0 ? now - last : interval * 0.9 + (now - last) * 0.1;
+    last = now;
+    stats.intervalMs = interval;
     timer.update(now);
     const dt = timer.getDelta();
     if (frozen === null) venue.update(dt);
@@ -148,6 +193,18 @@ async function boot(): Promise<void> {
     stats.drawCalls = renderer.info.render.drawCalls;
     stats.triangles = renderer.info.render.triangles;
     stats.ready = true;
+    if (trackTimestamp && !resolving) {
+      resolving = true;
+      void renderer
+        .resolveTimestampsAsync()
+        .then(() => {
+          const gpu = renderer.info.render.timestamp;
+          if (gpu > 0) stats.gpuMs = gpu;
+        })
+        .finally(() => {
+          resolving = false;
+        });
+    }
   });
 }
 

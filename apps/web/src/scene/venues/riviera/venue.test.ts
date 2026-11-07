@@ -1,12 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { Box3, Mesh, PerspectiveCamera, Vector3, type BufferGeometry } from 'three/webgpu';
+import {
+  Box3,
+  DataTexture,
+  Euler,
+  Mesh,
+  PerspectiveCamera,
+  Vector3,
+  type BufferGeometry,
+} from 'three/webgpu';
+import { CALM_SEA } from '../../env/sway.ts';
 import { createRivieraDeck } from './deck.ts';
 import { halfRoundProfile, line, mergeAll, roundedBox, sweepProfile } from './geometry.ts';
-import { applyCameraPreset, RIVIERA_TABLE, rivieraCameraPreset } from './layout.ts';
+import {
+  applyCameraPreset,
+  RIVIERA_SUN_DIRECTION,
+  RIVIERA_TABLE,
+  rivieraCameraPreset,
+} from './layout.ts';
 import { createRivieraMaterials } from './materials.ts';
+import { RIVIERA_QUALITY } from './quality.ts';
 import { createRivieraTable, TABLE_BOUNDS } from './table.ts';
 
-const materials = createRivieraMaterials();
+const tile = (): DataTexture => new DataTexture(new Uint8Array([200, 160, 120, 128]), 1, 1);
+const materials = createRivieraMaterials({ sole: tile(), deck: tile() }, RIVIERA_QUALITY.high);
 
 function meshCount(root: { traverse(cb: (o: unknown) => void): void }): number {
   let count = 0;
@@ -62,10 +78,10 @@ describe('createRivieraTable', () => {
 });
 
 describe('createRivieraDeck', () => {
-  it('builds the deck, bulwark, rails and stanchions in five merged meshes', () => {
+  it('builds the deck, bulwark, trim, rails and stanchions in six merged meshes', () => {
     const deck = createRivieraDeck(materials, true);
-    expect(deck.meshes).toHaveLength(5);
-    expect(meshCount(deck.group)).toBe(5);
+    expect(deck.meshes).toHaveLength(6);
+    expect(meshCount(deck.group)).toBe(6);
     const box = new Box3().setFromObject(deck.group);
     expect(box.min.y).toBeGreaterThanOrEqual(RIVIERA_TABLE.deckY - 0.1);
     deck.dispose();
@@ -113,12 +129,35 @@ describe('geometry helpers', () => {
   });
 });
 
+function presetCamera(aspect: number): PerspectiveCamera {
+  const camera = new PerspectiveCamera(50, aspect, 0.05, 120);
+  applyCameraPreset(camera, rivieraCameraPreset(aspect));
+  camera.updateMatrixWorld();
+  return camera;
+}
+
+function expectInFrame(camera: PerspectiveCamera, points: readonly Vector3[], limit = 1): void {
+  for (const point of points) {
+    const ndc = point.clone().project(camera);
+    const at = point
+      .toArray()
+      .map((v) => v.toFixed(3))
+      .join(',');
+    expect(Math.abs(ndc.x), `x of ${at}`).toBeLessThanOrEqual(limit);
+    expect(Math.abs(ndc.y), `y of ${at}`).toBeLessThanOrEqual(limit);
+  }
+}
+
 describe('rivieraCameraPreset', () => {
-  const corners = [
-    new Vector3(-TABLE_BOUNDS.halfWidth, 0.1, TABLE_BOUNDS.frontZ),
-    new Vector3(TABLE_BOUNDS.halfWidth, 0.1, TABLE_BOUNDS.frontZ),
+  const field = [
     new Vector3(-TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.top, TABLE_BOUNDS.backZ),
     new Vector3(TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.top, TABLE_BOUNDS.backZ),
+    new Vector3(-RIVIERA_TABLE.fieldHalfWidth, 0, RIVIERA_TABLE.fieldFrontZ),
+    new Vector3(RIVIERA_TABLE.fieldHalfWidth, 0, RIVIERA_TABLE.fieldFrontZ),
+  ];
+  const cabinetFront = [
+    new Vector3(-TABLE_BOUNDS.halfWidth, 0.1, TABLE_BOUNDS.frontZ),
+    new Vector3(TABLE_BOUNDS.halfWidth, 0.1, TABLE_BOUNDS.frontZ),
     new Vector3(0, -0.04, TABLE_BOUNDS.frontZ),
   ];
 
@@ -126,24 +165,55 @@ describe('rivieraCameraPreset', () => {
     ['desktop 16:10', 1.6],
     ['desktop 16:9', 16 / 9],
     ['tablet 4:3', 4 / 3],
-    ['phone portrait', 390 / 844],
   ] as const) {
     it(`keeps the playfield, tray lip and backboard in frame on ${label}`, () => {
-      const camera = new PerspectiveCamera(50, aspect, 0.05, 120);
-      applyCameraPreset(camera, rivieraCameraPreset(aspect));
-      camera.updateMatrixWorld();
-      for (const corner of corners) {
-        const ndc = corner.clone().project(camera);
-        expect(Math.abs(ndc.x), `x of ${corner.toArray().join(',')}`).toBeLessThanOrEqual(1);
-        expect(Math.abs(ndc.y), `y of ${corner.toArray().join(',')}`).toBeLessThanOrEqual(1);
+      expectInFrame(presetCamera(aspect), [...field, ...cabinetFront]);
+    });
+  }
+
+  it('frames portrait tight on the playfield and crops the front panel', () => {
+    const camera = presetCamera(390 / 844);
+    expectInFrame(camera, field);
+    const frontPanel = new Vector3(0, -0.45, TABLE_BOUNDS.frontZ).project(camera);
+    expect(frontPanel.y).toBeLessThan(-1);
+    const fieldCorner = new Vector3(RIVIERA_TABLE.fieldHalfWidth, 0, RIVIERA_TABLE.fieldFrontZ);
+    fieldCorner.project(camera);
+    expect(Math.abs(fieldCorner.x)).toBeGreaterThan(0.8);
+  });
+
+  for (const [label, aspect] of [
+    ['16:10', 1.6],
+    ['16:9', 16 / 9],
+  ] as const) {
+    it(`keeps the whole sun disc in frame on ${label} through the sway extremes`, () => {
+      const camera = presetCamera(aspect);
+      const centre = RIVIERA_SUN_DIRECTION.clone().multiplyScalar(90);
+      const discRadius = Math.tan((0.62 * Math.PI) / 180) * 90;
+      const tangent = new Vector3(0, 1, 0).cross(RIVIERA_SUN_DIRECTION).normalize();
+      const bitangent = RIVIERA_SUN_DIRECTION.clone().cross(tangent).normalize();
+      const rim = [tangent, tangent.clone().negate(), bitangent, bitangent.clone().negate()].map(
+        (axis) => centre.clone().addScaledVector(axis, discRadius),
+      );
+      const { rollAmplitude: roll, pitchAmplitude: pitch, heaveAmplitude: heave } = CALM_SEA;
+      for (const r of [-roll, roll]) {
+        for (const p of [-pitch, pitch]) {
+          for (const h of [-heave, heave]) {
+            const sway = new Euler(-p, 0, -r);
+            const swayed = rim.map((v) =>
+              v
+                .clone()
+                .applyEuler(sway)
+                .add(new Vector3(0, -h, 0)),
+            );
+            expectInFrame(camera, swayed, 0.97);
+          }
+        }
       }
     });
   }
 
   it('keeps the horizon in the upper part of a landscape frame', () => {
-    const camera = new PerspectiveCamera(50, 1.6, 0.05, 120);
-    applyCameraPreset(camera, rivieraCameraPreset(1.6));
-    camera.updateMatrixWorld();
+    const camera = presetCamera(1.6);
     const farAhead = camera.position.clone().add(new Vector3(0, 0, -1000));
     const ndc = farAhead.project(camera);
     expect(ndc.y).toBeGreaterThan(0.6);

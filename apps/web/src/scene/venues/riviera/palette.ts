@@ -34,6 +34,7 @@ export const rivieraTones = {
   keyLight: '#FFF1E0',
   rimWarm: '#FFC48E',
   rimCool: '#9FE3DA',
+  fillLight: '#FFE9CC',
 } as const;
 
 export type RivieraTone = keyof typeof rivieraTones;
