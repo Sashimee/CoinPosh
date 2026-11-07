@@ -35,6 +35,11 @@ for (let i = 0; i < WARMUP_TICKS; i++) {
   step();
 }
 
+const warm = table.coins();
+console.info(
+  `after warmup: ${table.coinCount} coins, ${warm.filter((c) => c.sleeping).length} sleeping`,
+);
+
 describe(`PusherTable, ${TARGET_COINS} coins`, () => {
   bench('one 60 Hz tick', step, { time: 5000, warmupTime: 500 });
 });

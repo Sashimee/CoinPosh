@@ -125,7 +125,7 @@ describe('PusherTable layout', () => {
     }
     const coin = onlyCoin(rig.table);
     expect(lowest).toBeGreaterThan(restY - 0.0006);
-    expect(peakAfterLanding - restY).toBeLessThan(0.002);
+    expect(peakAfterLanding - restY).toBeLessThan(0.0017);
     expect(coin.translation.y).toBeCloseTo(restY, 3);
     expect(faceUp(coin.rotation)).toBeGreaterThan(0.9999);
   });
@@ -265,71 +265,152 @@ function rotate(q: Quat, v: Vec): Vec {
   };
 }
 
-/** Signed depth of a point, in a coin's own frame, inside it: positive inside, negative outside. */
-function depthInCoin(p: Vec): number {
-  const dr = Math.sqrt(p.x * p.x + p.z * p.z) - COIN.radius;
-  const dy = Math.abs(p.y) - COIN.halfThickness;
-  if (dr <= 0 && dy <= 0) {
-    return Math.min(-dr, -dy);
-  }
-  const outR = Math.max(dr, 0);
-  const outY = Math.max(dy, 0);
-  return -Math.sqrt(outR * outR + outY * outY);
+const UP = { x: 0, y: 1, z: 0 } as const;
+
+function dot(a: Vec, b: Vec): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-const GRID_ACROSS = 24;
-const GRID_THROUGH = 4;
-/** Grid points on the faces and rim must count as part of the coin despite rounding. */
-const SURFACE_TOLERANCE = 1e-9;
+function unit(v: Vec): Vec | undefined {
+  const length = Math.sqrt(dot(v, v));
+  return length < 1e-12 ? undefined : { x: v.x / length, y: v.y / length, z: v.z / length };
+}
 
+function rejectFrom(v: Vec, axis: Vec): Vec {
+  const along = dot(v, axis);
+  return { x: v.x - along * axis.x, y: v.y - along * axis.y, z: v.z - along * axis.z };
+}
+
+function cross(a: Vec, b: Vec): Vec {
+  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+
+/** Half the width of a coin whose face normal is `axis`, measured along the unit direction `n`. */
+function halfExtent(axis: Vec, n: Vec): number {
+  const along = Math.min(1, Math.abs(dot(axis, n)));
+  return COIN.halfThickness * along + COIN.radius * Math.sqrt(1 - along * along);
+}
+
+const CUBE_STEPS = 6;
 /**
- * How deep any of a grid of points filling coin `a` sits inside coin `b`. Every point
- * of `a` has to leave `b` to separate them, so this is a lower bound on the
- * penetration depth, measured from the poses alone and independent of Rapier's own
- * contact depths (which misreport for thin cylinders).
+ * Directions through the grid points on the upper half of a cube's surface. Overlap
+ * is the same along n and -n, so a hemisphere covers them all.
  */
-function sampledDepth(a: TableCoin, b: TableCoin): number {
-  const inverse = { x: -b.rotation.x, y: -b.rotation.y, z: -b.rotation.z, w: b.rotation.w };
-  let deepest = 0;
-  for (let i = 0; i <= GRID_ACROSS; i++) {
-    for (let j = 0; j <= GRID_ACROSS; j++) {
-      for (let k = 0; k <= GRID_THROUGH; k++) {
-        const local = {
-          x: COIN.radius * ((2 * i) / GRID_ACROSS - 1),
-          y: COIN.halfThickness * ((2 * k) / GRID_THROUGH - 1),
-          z: COIN.radius * ((2 * j) / GRID_ACROSS - 1),
-        };
-        if (depthInCoin(local) < -SURFACE_TOLERANCE) {
-          continue;
+const HEMISPHERE_DIRECTIONS: readonly Vec[] = (() => {
+  const directions: Vec[] = [];
+  for (let y = 0; y <= CUBE_STEPS; y++) {
+    for (let x = -CUBE_STEPS; x <= CUBE_STEPS; x++) {
+      for (let z = -CUBE_STEPS; z <= CUBE_STEPS; z++) {
+        const onSurface =
+          y === CUBE_STEPS || Math.abs(x) === CUBE_STEPS || Math.abs(z) === CUBE_STEPS;
+        const n = onSurface ? unit({ x, y, z }) : undefined;
+        if (n) {
+          directions.push(n);
         }
-        const w = rotate(a.rotation, local);
-        const inB = rotate(inverse, {
-          x: a.translation.x + w.x - b.translation.x,
-          y: a.translation.y + w.y - b.translation.y,
-          z: a.translation.z + w.z - b.translation.z,
-        });
-        deepest = Math.max(deepest, depthInCoin(inB));
       }
     }
   }
-  return deepest;
-}
+  return directions;
+})();
+const NUDGES: readonly Vec[] = [
+  { x: 1, y: 0, z: 0 },
+  { x: -1, y: 0, z: 0 },
+  { x: 0, y: 1, z: 0 },
+  { x: 0, y: -1, z: 0 },
+  { x: 0, y: 0, z: 1 },
+  { x: 0, y: 0, z: -1 },
+];
 
+/**
+ * Penetration depth of two coins: the shortest distance one has to move to separate
+ * them. For two convex bodies that is the smallest overlap of their projections over
+ * all directions (separating axis theorem), searched here over the face normals, the
+ * centre line, the edge directions and a dense sphere of directions, then refined
+ * locally. It is measured from the poses alone, independent of Rapier's own contact
+ * depths (which misreport for thin cylinders), and is not capped by the coin's
+ * thickness the way a point-inside test is.
+ */
 function penetrationDepth(a: TableCoin, b: TableCoin): number {
-  return Math.max(sampledDepth(a, b), sampledDepth(b, a));
+  const axisA = rotate(a.rotation, UP);
+  const axisB = rotate(b.rotation, UP);
+  const between = {
+    x: b.translation.x - a.translation.x,
+    y: b.translation.y - a.translation.y,
+    z: b.translation.z - a.translation.z,
+  };
+  const overlap = (n: Vec): number =>
+    halfExtent(axisA, n) + halfExtent(axisB, n) - Math.abs(dot(between, n));
+  const candidates = [
+    axisA,
+    axisB,
+    unit(between),
+    unit(rejectFrom(between, axisA)),
+    unit(rejectFrom(between, axisB)),
+    unit(cross(axisA, axisB)),
+    ...HEMISPHERE_DIRECTIONS,
+  ];
+  let best = Number.POSITIVE_INFINITY;
+  let bestDirection: Vec = UP;
+  for (const n of candidates) {
+    if (!n) {
+      continue;
+    }
+    const o = overlap(n);
+    if (o <= 0) {
+      return 0;
+    }
+    if (o < best) {
+      best = o;
+      bestDirection = n;
+    }
+  }
+  let step = 0.05;
+  while (step > 1e-6) {
+    let improved = false;
+    for (const nudge of NUDGES) {
+      const n = unit({
+        x: bestDirection.x + step * nudge.x,
+        y: bestDirection.y + step * nudge.y,
+        z: bestDirection.z + step * nudge.z,
+      });
+      if (!n) {
+        continue;
+      }
+      const o = overlap(n);
+      if (o <= 0) {
+        return 0;
+      }
+      if (o < best) {
+        best = o;
+        bestDirection = n;
+        improved = true;
+      }
+    }
+    if (!improved) {
+      step /= 2;
+    }
+  }
+  return best;
 }
 
 interface OverlapSample {
   /** Pairs whose bounding spheres touch. */
   readonly near: number;
-  readonly deeperThan02mm: number;
-  readonly deeperThan05mm: number;
-  readonly deeperThan1mm: number;
+  readonly deepest: number;
+  /** Pairs past OVERLAP_TOLERANCE, as "lowId-highId". */
+  readonly pastTolerance: string[];
+  readonly pastOneMm: string[];
 }
+
+/**
+ * The overlap the pile is held to. Rapier lets a contact rest 0.15 mm deep at the
+ * table's length unit (see TABLE_SOLVER), so a settled pair sits well inside this.
+ */
+const OVERLAP_TOLERANCE = 0.0005;
 
 function sampleOverlaps(coins: readonly TableCoin[]): OverlapSample {
   const reach = 2 * Math.sqrt(COIN.radius * COIN.radius + COIN.halfThickness * COIN.halfThickness);
-  const sample = { near: 0, deeperThan02mm: 0, deeperThan05mm: 0, deeperThan1mm: 0 };
+  const sample = { near: 0, deepest: 0, pastTolerance: [] as string[], pastOneMm: [] as string[] };
   for (let i = 0; i < coins.length; i++) {
     for (let j = i + 1; j < coins.length; j++) {
       const a = coins[i];
@@ -345,9 +426,14 @@ function sampleOverlaps(coins: readonly TableCoin[]): OverlapSample {
       }
       sample.near += 1;
       const depth = penetrationDepth(a, b);
-      sample.deeperThan02mm += depth > 0.0002 ? 1 : 0;
-      sample.deeperThan05mm += depth > 0.0005 ? 1 : 0;
-      sample.deeperThan1mm += depth > 0.001 ? 1 : 0;
+      sample.deepest = Math.max(sample.deepest, depth);
+      const pair = `${Math.min(a.id, b.id)}-${Math.max(a.id, b.id)}`;
+      if (depth > OVERLAP_TOLERANCE) {
+        sample.pastTolerance.push(pair);
+      }
+      if (depth > 0.001) {
+        sample.pastOneMm.push(pair);
+      }
     }
   }
   return sample;
@@ -366,7 +452,7 @@ interface Session {
   readonly upperTierPeak: number;
   readonly coins: ReturnType<PusherTable['coins']>;
   readonly nextCoinId: number;
-  /** Overlap samples, every HASH_INTERVAL once the table is full. */
+  /** Overlap samples, once a second from FULL_TABLE_TICKS on. */
   readonly overlaps: OverlapSample[];
 }
 
@@ -388,12 +474,12 @@ async function recordSession(seed = SEED, ticks = SESSION_TICKS): Promise<Sessio
     }
     if (rig.tick % TICK_RATE_HZ === 0) {
       upperTierPeak = Math.max(upperTierPeak, rig.table.coins().filter(onUpperTier).length);
-    }
-    if (rig.tick % HASH_INTERVAL === 0) {
-      hashes.push(tableHash(rig));
       if (rig.tick >= FULL_TABLE_TICKS) {
         overlaps.push(sampleOverlaps(rig.table.coins()));
       }
+    }
+    if (rig.tick % HASH_INTERVAL === 0) {
+      hashes.push(tableHash(rig));
     }
   });
   return {
@@ -438,10 +524,60 @@ describe('gameplay', () => {
   });
 });
 
-/** Rapier's allowed linear error at the table's length unit (see SOLVER). */
-const ALLOWED_PENETRATION = 0.0001;
+/** Rapier's allowed linear error, 0.005 length units, at the table's length unit. */
+const ALLOWED_PENETRATION = 0.005 * TABLE_SOLVER.lengthUnit;
+
+function flatCoinAt(id: number, x: number): TableCoin {
+  return { id, translation: { x, y: COIN.halfThickness, z: 0 }, rotation: FLAT, sleeping: false };
+}
+
+/** Pairs still in `pick` of a sample one second after they were in it. */
+function persistentPairs(
+  overlaps: readonly OverlapSample[],
+  pick: (sample: OverlapSample) => readonly string[],
+): string[] {
+  const persistent: string[] = [];
+  for (const [i, sample] of overlaps.entries()) {
+    const previous = overlaps[i - 1];
+    if (previous) {
+      const before = new Set(pick(previous));
+      persistent.push(...pick(sample).filter((pair) => before.has(pair)));
+    }
+  }
+  return persistent;
+}
+
+/** Most consecutive samples any one pair stays past OVERLAP_TOLERANCE. */
+function longestPersistence(overlaps: readonly OverlapSample[]): number {
+  let longest = 0;
+  let runs = new Map<string, number>();
+  for (const sample of overlaps) {
+    const next = new Map<string, number>();
+    for (const pair of sample.pastTolerance) {
+      const run = (runs.get(pair) ?? 0) + 1;
+      next.set(pair, run);
+      longest = Math.max(longest, run);
+    }
+    runs = next;
+  }
+  return longest;
+}
 
 describe('contacts', () => {
+  it('measures the full depth of two flat coins planted rim into rim', () => {
+    const a = flatCoinAt(0, 0);
+    const touching = 2 * COIN.radius;
+    expect(penetrationDepth(a, flatCoinAt(1, touching + 0.0001))).toBe(0);
+    expect(penetrationDepth(a, flatCoinAt(1, touching - 0.001))).toBeCloseTo(0.001, 6);
+    expect(penetrationDepth(a, flatCoinAt(1, touching - 0.002))).toBeCloseTo(0.002, 6);
+    // 3 mm into each other side by side, lifting one coin over the other (one
+    // thickness, 2.6 mm) is the shorter way apart, so that is the true depth.
+    expect(penetrationDepth(a, flatCoinAt(1, touching - 0.003))).toBeCloseTo(
+      2 * COIN.halfThickness,
+      6,
+    );
+  });
+
   it('measures no overlap for two coins resting face to face, and a planted one exactly', async () => {
     const rig = await createRig();
     const z = PLAYFIELD.fieldFrontZ - 0.04;
@@ -463,35 +599,37 @@ describe('contacts', () => {
 
   it('keeps coins in the full, moving pile from sinking into each other', async () => {
     const { overlaps } = await referenceSession();
-    expect(overlaps).toHaveLength((SESSION_TICKS - FULL_TABLE_TICKS) / HASH_INTERVAL + 1);
+    expect(overlaps).toHaveLength((SESSION_TICKS - FULL_TABLE_TICKS) / TICK_RATE_HZ + 1);
+    // Measured on this session (31 samples, 600 to 760 touching pairs each): 3 to 20
+    // pairs past 0.5 mm and at most 5 past 1 mm per sample; 60 pair-samples still
+    // past 0.5 mm a second later, 8 still past 1 mm, and no pair past 0.5 mm for more
+    // than 6 samples in a row. Rapier's default length unit left about 40 past 0.5 mm
+    // per sample and some locked together for 19 s.
     for (const sample of overlaps) {
       expect(sample.near).toBeGreaterThan(500);
-      // Measured on this session: 4 to 5% of 650 to 950 touching pairs past 0.5 mm
-      // and at most 10 past 1 mm, against about 414 past 0.5 mm (half of all
-      // touching pairs) at true scale with soft contacts. The bounds leave room for a
-      // reseeded or retuned table, not for a return to that.
-      expect(sample.deeperThan05mm / sample.near).toBeLessThan(0.08);
-      expect(sample.deeperThan1mm).toBeLessThanOrEqual(20);
-      expect(sample.deeperThan02mm / sample.near).toBeLessThan(0.2);
+      expect(sample.pastTolerance.length / sample.near).toBeLessThan(0.04);
+      expect(sample.pastOneMm.length).toBeLessThanOrEqual(8);
     }
+    expect(persistentPairs(overlaps, (s) => s.pastTolerance).length).toBeLessThanOrEqual(90);
+    expect(persistentPairs(overlaps, (s) => s.pastOneMm).length).toBeLessThanOrEqual(12);
+    expect(longestPersistence(overlaps)).toBeLessThanOrEqual(8);
   });
 });
 
 describe('determinism', () => {
   it('produces identical hashes for the same seed and drops', async () => {
-    const first = (await referenceSession()).hashes;
-    const second = (await recordSession(SEED, FULL_TABLE_TICKS)).hashes;
-    expect(first).toHaveLength(SESSION_TICKS / HASH_INTERVAL);
-    expect(second).toHaveLength(FULL_TABLE_TICKS / HASH_INTERVAL);
-    expect(second).toEqual(first.slice(0, second.length));
-    expect(new Set(first).size).toBe(first.length);
+    const first = await referenceSession();
+    const second = await recordSession();
+    expect(first.hashes).toHaveLength(SESSION_TICKS / HASH_INTERVAL);
+    expect(second).toEqual(first);
+    expect(new Set(first.hashes).size).toBe(first.hashes.length);
   });
 
   it('pins the final table hash so geometry, tuning or pusher changes are caught', async () => {
     const { hashes } = await referenceSession();
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"a6b699fde99f393b"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"0b42195f90e56e0f"`);
   });
 
   it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
