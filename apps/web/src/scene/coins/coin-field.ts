@@ -15,6 +15,7 @@ import {
 import { bakeCoinEmboss, DEFAULT_EMBOSS_RESOLUTION, type CoinEmbossBake } from './emboss.ts';
 import { createCoinGeometry, FAR_COIN_GEOMETRY, NEAR_COIN_GEOMETRY } from './geometry.ts';
 import {
+  CoinLod,
   DEFAULT_LOD_SETTINGS,
   partitionByLod,
   pixelsPerUnit,
@@ -53,6 +54,7 @@ interface TierBatch {
   readonly capacity: number;
   readonly positions: Float32Array;
   readonly quaternions: Float32Array;
+  readonly ids: Float64Array;
   readonly lodState: Uint8Array;
   readonly seeds: Float32Array;
   readonly lists: LodOutput;
@@ -66,6 +68,8 @@ interface TierBatch {
 const SEED_STRIDE = 7919;
 // Keeps seeds exact in the float32 instance attribute however large the caller's ids get.
 const SEED_RANGE = 1 << 20;
+const MIN_EMBOSS_RESOLUTION = 64;
+const MAX_EMBOSS_RESOLUTION = 4096;
 const projection = new Matrix4();
 const worldToLocal = new Matrix4();
 const cameraLocal = new Vector3();
@@ -136,8 +140,11 @@ type MutableStats = { -readonly [K in keyof CoinFieldStats]: CoinFieldStats[K] }
  * 01-ARCHITECTURE; the second call is what the LOD buys. Shadows come from one far-LOD caster
  * holding every coin of every tier, so the shadow pass is a single draw call that is
  * independent of main-camera culling.
- * Transforms arrive per tier as flat arrays indexed by a stable slot, so the sim worker can
- * hand over its typed arrays directly; `update` then culls, picks a LOD per coin and uploads.
+ * Transforms arrive per tier as flat arrays plus one coin id per slot, so the sim worker can
+ * hand over its typed arrays directly in whatever order it keeps them. Everything that must
+ * stick to a coin (its tint seed and its LOD level) follows the id, never the slot, so
+ * compacting or reusing slots changes nothing on screen. `update` then culls, picks a LOD per
+ * coin and uploads.
  */
 export class CoinField {
   readonly object = new Group();
@@ -148,6 +155,8 @@ export class CoinField {
   private readonly frustum = new Frustum();
   private readonly shadowCaster: InstancedMesh | null;
   private shadowsEnabled = false;
+  private readonly carriedLod = new Map<number, number>();
+  private readonly incomingIds = new Set<number>();
   private readonly view: MutableLodView = {
     cameraX: 0,
     cameraY: 0,
@@ -198,7 +207,8 @@ export class CoinField {
         capacity,
         positions: new Float32Array(slots * 3),
         quaternions: new Float32Array(slots * 4).map((_, i) => (i % 4 === 3 ? 1 : 0)),
-        lodState: new Uint8Array(slots),
+        ids: new Float64Array(slots),
+        lodState: new Uint8Array(slots).fill(CoinLod.unset),
         seeds: new Float32Array(slots).map((_, i) => i),
         lists: {
           near: new Uint32Array(slots),
@@ -241,74 +251,63 @@ export class CoinField {
     return this.batch(tier).count;
   }
 
-  setCount(tier: CoinTierId, count: number): void {
-    const batch = this.batch(tier);
-    if (!Number.isInteger(count) || count < 0 || count > batch.capacity) {
-      throw new Error(
-        `CoinField.setCount(${tier}, ${count}) is outside capacity 0..${batch.capacity}`,
-      );
-    }
-    batch.count = count;
-  }
-
-  setTransform(
-    tier: CoinTierId,
-    index: number,
-    x: number,
-    y: number,
-    z: number,
-    qx: number,
-    qy: number,
-    qz: number,
-    qw: number,
-  ): void {
-    const batch = this.batch(tier);
-    if (!Number.isInteger(index) || index < 0 || index >= batch.capacity) {
-      throw new Error(
-        `CoinField.setTransform(${tier}, ${index}) is outside capacity 0..${batch.capacity - 1}`,
-      );
-    }
-    batch.positions[index * 3] = x;
-    batch.positions[index * 3 + 1] = y;
-    batch.positions[index * 3 + 2] = z;
-    batch.quaternions[index * 4] = qx;
-    batch.quaternions[index * 4 + 1] = qy;
-    batch.quaternions[index * 4 + 2] = qz;
-    batch.quaternions[index * 4 + 3] = qw;
-  }
-
   /**
-   * Copies `count` coins from xyz positions and xyzw quaternions, replacing the tier's set.
-   * Each coin's tint variation is seeded from `ids[i]` when given, otherwise from its slot
-   * index; without ids the caller must keep a coin in the same slot for its whole life, or it
-   * changes colour whenever the slots are compacted or reordered.
+   * Replaces the tier's coins with `count` coins: xyz positions, xyzw quaternions and one
+   * integer id per coin, unique within the tier (the sim's coin id). A coin keeps its tint
+   * and its LOD level for as long as its id stays in the set, whatever slot it arrives in.
+   * Throws without changing anything if the input is short, over capacity or has bad ids.
    */
   setTransforms(
     tier: CoinTierId,
     positions: ArrayLike<number>,
     quaternions: ArrayLike<number>,
     count: number,
-    ids?: ArrayLike<number>,
+    ids: ArrayLike<number>,
   ): void {
     const batch = this.batch(tier);
-    if (positions.length < count * 3 || quaternions.length < count * 4) {
+    const where = `CoinField.setTransforms(${tier})`;
+    if (!Number.isInteger(count) || count < 0 || count > batch.capacity) {
+      throw new Error(`${where}: count ${count} is outside capacity 0..${batch.capacity}`);
+    }
+    if (positions.length < count * 3 || quaternions.length < count * 4 || ids.length < count) {
       throw new Error(
-        `CoinField.setTransforms(${tier}): ${count} coins need ${count * 3} position and ${count * 4} quaternion values`,
+        `${where}: ${count} coins need ${count * 3} position, ${count * 4} quaternion and ${count} id values`,
       );
     }
-    if (ids && ids.length < count) {
-      throw new Error(`CoinField.setTransforms(${tier}): ${count} coins need ${count} ids`);
+    const incoming = this.incomingIds;
+    incoming.clear();
+    for (let i = 0; i < count; i += 1) {
+      const id = ids[i];
+      if (id === undefined || !Number.isSafeInteger(id)) {
+        throw new Error(`${where}: id at ${i} is ${id}, expected a safe integer coin id`);
+      }
+      if (incoming.has(id)) {
+        throw new Error(`${where}: coin id ${id} appears twice; ids must be unique per tier`);
+      }
+      incoming.add(id);
     }
-    this.setCount(tier, count);
+    incoming.clear();
+
+    const carried = this.carriedLod;
+    for (let i = 0; i < batch.count; i += 1) {
+      carried.set(batch.ids[i] ?? 0, batch.lodState[i] ?? CoinLod.unset);
+    }
+    for (let i = 0; i < count; i += 1) {
+      const id = ids[i] ?? 0;
+      batch.ids[i] = id;
+      batch.lodState[i] = carried.get(id) ?? CoinLod.unset;
+      batch.seeds[i] = ((id % SEED_RANGE) + SEED_RANGE) % SEED_RANGE;
+    }
+    carried.clear();
     for (let i = 0; i < count * 3; i += 1) batch.positions[i] = positions[i] ?? 0;
     for (let i = 0; i < count * 4; i += 1) batch.quaternions[i] = quaternions[i] ?? 0;
-    for (let i = 0; i < count; i += 1) {
-      const id = ids ? (ids[i] ?? i) : i;
-      if (!Number.isFinite(id)) {
-        throw new Error(`CoinField.setTransforms(${tier}): id ${i} is ${id}, expected a number`);
-      }
-      batch.seeds[i] = ((Math.trunc(id) % SEED_RANGE) + SEED_RANGE) % SEED_RANGE;
-    }
+    batch.count = count;
+  }
+
+  /** The id of the coin in `slot` from the last `setTransforms`, or undefined past the count. */
+  idAt(tier: CoinTierId, slot: number): number | undefined {
+    const batch = this.batch(tier);
+    return Number.isInteger(slot) && slot >= 0 && slot < batch.count ? batch.ids[slot] : undefined;
   }
 
   /**
@@ -321,11 +320,42 @@ export class CoinField {
       throw new Error('CoinField.castShadowsFrom: this field was built with castShadow: false');
     }
     light.shadow.camera.layers.enable(COIN_SHADOW_LAYER);
-    this.shadowsEnabled = true;
+    this.setCastShadows(true);
   }
 
-  /** Bakes every tier's embossed face. Call once after `renderer.init()`. */
+  /**
+   * Turns coin shadow casting on or off at runtime, for quality tiers. While off, the caster
+   * is hidden and skips its per-frame upload.
+   */
+  setCastShadows(enabled: boolean): void {
+    if (!this.shadowCaster) {
+      if (enabled) {
+        throw new Error('CoinField.setCastShadows: this field was built with castShadow: false');
+      }
+      return;
+    }
+    this.shadowsEnabled = enabled;
+    if (!enabled) {
+      this.shadowCaster.count = 0;
+      this.shadowCaster.visible = false;
+    }
+  }
+
+  /**
+   * Bakes every tier's embossed face at `resolution` (a power of two, 512 or 1024 in practice).
+   * Call once after `renderer.init()`; calling again rebakes, for a quality tier change.
+   */
   bake(renderer: WebGPURenderer, resolution = DEFAULT_EMBOSS_RESOLUTION): void {
+    if (
+      !Number.isInteger(resolution) ||
+      resolution < MIN_EMBOSS_RESOLUTION ||
+      resolution > MAX_EMBOSS_RESOLUTION ||
+      (resolution & (resolution - 1)) !== 0
+    ) {
+      throw new Error(
+        `CoinField.bake: resolution ${resolution} must be a power of two in ${MIN_EMBOSS_RESOLUTION}..${MAX_EMBOSS_RESOLUTION}`,
+      );
+    }
     for (const batch of this.batches.values()) {
       batch.bake?.dispose();
       batch.bake = bakeCoinEmboss(renderer, COIN_LOOKS[batch.tier].face, resolution);

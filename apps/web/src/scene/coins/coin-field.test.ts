@@ -50,25 +50,74 @@ describe('CoinField', () => {
     }
   });
 
-  it('rejects bad capacities, counts and slots', () => {
+  it('rejects bad capacities, counts and ids without touching the current set', () => {
     expect(() => new CoinField({ capacity: -1 })).toThrow(/capacity/);
     expect(() => new CoinField({ capacity: 1, radius: 0 })).toThrow(/radius/);
     const coins = field({
-      capacity: { copper: 2, silver: 0, gold: 1, platinum: 0, diamond: 0, heirloom: 0 },
+      capacity: { copper: 2, silver: 0, gold: 2, platinum: 0, diamond: 0, heirloom: 0 },
     });
     expect(coins.capacity('copper')).toBe(2);
-    expect(() => {
-      coins.setCount('copper', 3);
-    }).toThrow(/capacity/);
-    expect(() => {
-      coins.setCount('silver', 1);
-    }).toThrow(/capacity/);
-    expect(() => {
-      coins.setTransform('gold', 1, 0, 0, 0, 0, 0, 0, 1);
-    }).toThrow(/capacity/);
-    expect(() => {
-      coins.setTransforms('copper', [0, 0, 0], [0, 0, 0, 1], 2);
-    }).toThrow(/need/);
+    const q = [0, 0, 0, 1];
+    const three = [0, 0, -3, 0, 0, -3, 0, 0, -3];
+    coins.setTransforms('gold', [0, 0, -3], q, 1, [7]);
+
+    const rejected: [string, () => void, RegExp][] = [
+      [
+        'over capacity',
+        () => {
+          coins.setTransforms('copper', three, [...q, ...q, ...q], 3, [1, 2, 3]);
+        },
+        /capacity/,
+      ],
+      [
+        'zero-capacity tier',
+        () => {
+          coins.setTransforms('silver', [0, 0, 0], q, 1, [1]);
+        },
+        /capacity/,
+      ],
+      [
+        'short positions',
+        () => {
+          coins.setTransforms('copper', [0, 0, 0], [...q, ...q], 2, [1, 2]);
+        },
+        /need/,
+      ],
+      [
+        'short ids',
+        () => {
+          coins.setTransforms('gold', [0, 0, 0], q, 1, []);
+        },
+        /need/,
+      ],
+      [
+        'NaN id',
+        () => {
+          coins.setTransforms('gold', [0, 0, 0], q, 1, [Number.NaN]);
+        },
+        /id at 0/,
+      ],
+      [
+        'fractional id',
+        () => {
+          coins.setTransforms('gold', [0, 0, 0], q, 1, [1.5]);
+        },
+        /id at 0/,
+      ],
+      [
+        'duplicate id',
+        () => {
+          coins.setTransforms('gold', [0, 0, 0, 1, 0, 0], [...q, ...q], 2, [4, 4]);
+        },
+        /twice/,
+      ],
+    ];
+    for (const [label, call, message] of rejected) {
+      expect(call, label).toThrow(message);
+    }
+    expect(coins.count('gold')).toBe(1);
+    expect(coins.idAt('gold', 0)).toBe(7);
+    expect(coins.idAt('gold', 1)).toBeUndefined();
   });
 
   it('draws nothing until coins are counted in', () => {
@@ -85,8 +134,8 @@ describe('CoinField', () => {
   it('partitions coins into near, far and culled with one draw call per populated mesh', () => {
     const coins = field({ capacity: 4, radius: 0.5 });
     const q = [0, 0, 0, 1];
-    coins.setTransforms('gold', [0, 0, -3, 0, 0, -400, 0, 0, 10], [...q, ...q, ...q], 3);
-    coins.setTransforms('copper', [0, 0, -400], q, 1);
+    coins.setTransforms('gold', [0, 0, -3, 0, 0, -400, 0, 0, 10], [...q, ...q, ...q], 3, [1, 2, 3]);
+    coins.setTransforms('copper', [0, 0, -400], q, 1, [1]);
     const stats = coins.update(lookingDownMinusZ(), 720);
     expect(stats).toEqual({ near: 1, far: 2, culled: 1, drawCalls: 3 });
     expect(coins.mesh('gold', 'near').count).toBe(1);
@@ -95,13 +144,13 @@ describe('CoinField', () => {
     expect(coins.mesh('silver', 'near').visible).toBe(false);
   });
 
-  it('writes the slot transform scaled by the coin radius and a stable per-slot seed', () => {
+  it('writes the coin transform scaled by the coin radius and keeps its seed across LODs', () => {
     const coins = field({ capacity: 3, radius: 0.4 });
     const rotation = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.7);
-    coins.setCount('silver', 3);
-    coins.setTransform('silver', 0, 0, 0, 500, 0, 0, 0, 1);
-    coins.setTransform('silver', 1, 0, 0, 20, 0, 0, 0, 1);
-    coins.setTransform('silver', 2, 1, 0.5, -4, rotation.x, rotation.y, rotation.z, rotation.w);
+    const r = [rotation.x, rotation.y, rotation.z, rotation.w];
+    const q = [0, 0, 0, 1];
+    const ids = [10, 11, 12];
+    coins.setTransforms('silver', [0, 0, 500, 0, 0, 20, 1, 0.5, -4], [...q, ...q, ...r], 3, ids);
     coins.update(lookingDownMinusZ(), 720);
 
     const mesh = coins.mesh('silver', 'near');
@@ -113,53 +162,101 @@ describe('CoinField', () => {
       rotation,
       new Vector3(0.4, 0.4, 0.4),
     );
-    actual.elements.forEach((v, i) => {
-      expect(v).toBeCloseTo(expected.elements[i] ?? Number.NaN, 5);
+    actual.elements.forEach((value, i) => {
+      expect(value).toBeCloseTo(expected.elements[i] ?? Number.NaN, 5);
     });
 
     const seed = mesh.geometry.getAttribute('coinSeed').getX(0);
-    coins.setTransform('silver', 2, 1, 0.5, -400, rotation.x, rotation.y, rotation.z, rotation.w);
+    coins.setTransforms('silver', [0, 0, 500, 0, 0, 20, 1, 0.5, -400], [...q, ...q, ...r], 3, ids);
     coins.update(lookingDownMinusZ(), 720);
     expect(coins.mesh('silver', 'far').geometry.getAttribute('coinSeed').getX(0)).toBe(seed);
   });
 
-  it('seeds tint from caller ids so compacting slots keeps each coin its colour', () => {
-    const coins = field({ capacity: 3, radius: 0.5 });
+  describe('keys per-coin state by coin id, not slot', () => {
     const q = [0, 0, 0, 1];
-    const seedOf = (slot: number): number =>
-      coins.mesh('gold', 'near').geometry.getAttribute('coinSeed').getX(slot);
+    const seedOf = (coins: CoinField, level: 'near' | 'far', k: number): number =>
+      coins.mesh('gold', level).geometry.getAttribute('coinSeed').getX(k);
 
-    coins.setTransforms(
-      'gold',
-      [0, 0, -3, 0.3, 0, -3, 0.6, 0, -3],
-      [...q, ...q, ...q],
-      3,
-      [41, 42, 43],
-    );
-    coins.update(lookingDownMinusZ(), 720);
-    const before = [seedOf(0), seedOf(1), seedOf(2)];
+    it('keeps each coin its seed when slots are compacted, reordered or reused', () => {
+      const coins = field({ capacity: 3, radius: 0.5 });
+      coins.setTransforms(
+        'gold',
+        [0, 0, -3, 0.3, 0, -3, 0.6, 0, -3],
+        [...q, ...q, ...q],
+        3,
+        [41, 42, 43],
+      );
+      coins.update(lookingDownMinusZ(), 720);
+      const byId = new Map([41, 42, 43].map((id, k) => [id, seedOf(coins, 'near', k)]));
+      expect(new Set(byId.values()).size).toBe(3);
 
-    coins.setTransforms('gold', [0.3, 0, -3, 0.6, 0, -3], [...q, ...q], 2, [42, 43]);
-    coins.update(lookingDownMinusZ(), 720);
-    expect([seedOf(0), seedOf(1)]).toEqual([before[1], before[2]]);
+      coins.setTransforms('gold', [0.6, 0, -3, 0.3, 0, -3], [...q, ...q], 2, [43, 42]);
+      coins.update(lookingDownMinusZ(), 720);
+      expect([seedOf(coins, 'near', 0), seedOf(coins, 'near', 1)]).toEqual([
+        byId.get(43),
+        byId.get(42),
+      ]);
 
-    coins.setTransforms('gold', [0.3, 0, -3, 0.6, 0, -3], [...q, ...q], 2);
-    coins.update(lookingDownMinusZ(), 720);
-    const slotSeed = (before[0] ?? 0) - 41;
-    expect([seedOf(0), seedOf(1)]).toEqual([slotSeed, slotSeed + 1]);
+      coins.setTransforms('gold', [0, 0, -3, 0.3, 0, -3], [...q, ...q], 2, [99, 42]);
+      coins.update(lookingDownMinusZ(), 720);
+      expect(seedOf(coins, 'near', 0)).not.toBe(byId.get(43));
+      expect(seedOf(coins, 'near', 1)).toBe(byId.get(42));
+    });
 
-    expect(() => {
-      coins.setTransforms('gold', [0, 0, 0], q, 1, []);
-    }).toThrow(/ids/);
-    expect(() => {
-      coins.setTransforms('gold', [0, 0, 0], q, 1, [Number.NaN]);
-    }).toThrow(/id 0/);
+    it('keeps each coin its LOD level inside the hysteresis band when slots shuffle', () => {
+      const lod = { nearPixelRadius: 40, hysteresis: 0.2 };
+      const coins = field({ capacity: 2, radius: 1, lod });
+      const camera = lookingDownMinusZ();
+      const height = 720;
+      const ppu = height / (2 * Math.tan((camera.fov * Math.PI) / 360));
+      const distanceFor = (px: number): number => (1.01 * ppu) / px;
+      const close = -distanceFor(lod.nearPixelRadius * 1.5);
+      const far = -distanceFor(lod.nearPixelRadius * 0.5);
+      const band = -distanceFor(lod.nearPixelRadius);
+
+      coins.setTransforms('gold', [0, 0, close, 0, 0, far], [...q, ...q], 2, [1, 2]);
+      expect(coins.update(camera, height)).toMatchObject({ near: 1, far: 1 });
+
+      // Both coins now sit inside the band: each must hold the level it already had, even
+      // though the sim handed them over in swapped slots.
+      coins.setTransforms('gold', [0.2, 0, band, -0.2, 0, band], [...q, ...q], 2, [2, 1]);
+      coins.update(camera, height);
+      const near = coins.mesh('gold', 'near');
+      const farMesh = coins.mesh('gold', 'far');
+      expect(near.count).toBe(1);
+      expect(farMesh.count).toBe(1);
+      const position = new Vector3();
+      const matrix = new Matrix4();
+      near.getMatrixAt(0, matrix);
+      expect(position.setFromMatrixPosition(matrix).x).toBeCloseTo(-0.2, 5);
+      farMesh.getMatrixAt(0, matrix);
+      expect(position.setFromMatrixPosition(matrix).x).toBeCloseTo(0.2, 5);
+    });
+
+    it("gives a new coin in a reused slot a fresh LOD decision, not the old occupant's", () => {
+      const lod = { nearPixelRadius: 40, hysteresis: 0.2 };
+      const coins = field({ capacity: 1, radius: 1, lod });
+      const camera = lookingDownMinusZ();
+      const height = 720;
+      const ppu = height / (2 * Math.tan((camera.fov * Math.PI) / 360));
+      const at = (px: number): number => -(1.01 * ppu) / px;
+
+      coins.setTransforms('gold', [0, 0, at(lod.nearPixelRadius * 2)], q, 1, [5]);
+      expect(coins.update(camera, height).near).toBe(1);
+
+      coins.setTransforms('gold', [0, 0, at(lod.nearPixelRadius * 0.9)], q, 1, [6]);
+      expect(coins.update(camera, height)).toMatchObject({ near: 0, far: 1 });
+
+      coins.setTransforms('gold', [0, 0, at(lod.nearPixelRadius * 0.9)], q, 1, [6]);
+      coins.setTransforms('gold', [0, 0, at(lod.nearPixelRadius * 1.1)], q, 1, [6]);
+      expect(coins.update(camera, height)).toMatchObject({ near: 0, far: 1 });
+    });
   });
 
   it('reuses its stats object instead of allocating one per frame', () => {
     const coins = field({ capacity: 2 });
     const first = coins.update(lookingDownMinusZ(), 720);
-    coins.setTransforms('gold', [0, 0, -3], [0, 0, 0, 1], 1);
+    coins.setTransforms('gold', [0, 0, -3], [0, 0, 0, 1], 1, [1]);
     const second = coins.update(lookingDownMinusZ(), 720);
     expect(second).toBe(first);
     expect(second.near + second.far).toBe(1);
@@ -177,8 +274,8 @@ describe('CoinField', () => {
     );
 
     const q = [0, 0, 0, 1];
-    coins.setTransforms('gold', [0, 0, -3, 0, 0, 10], [...q, ...q], 2);
-    coins.setTransforms('copper', [0, 0, -400], q, 1);
+    coins.setTransforms('gold', [0, 0, -3, 0, 0, 10], [...q, ...q], 2, [1, 2]);
+    coins.setTransforms('copper', [0, 0, -400], q, 1, [1]);
     coins.update(lookingDownMinusZ(), 720);
     expect(caster.count).toBe(0);
 
@@ -220,13 +317,15 @@ describe('CoinField', () => {
       const coins = field({ capacity: columns * rows, radius });
       const positions: number[] = [];
       const quaternions: number[] = [];
+      const ids: number[] = [];
       for (let row = 0; row < rows; row += 1) {
         for (let col = 0; col < columns; col += 1) {
           positions.push(-4.5 + (col + 0.5) * 0.5, 0.045, -9.2 + (row + 0.5) * 0.5);
           quaternions.push(0, 0, 0, 1);
+          ids.push(row * columns + col);
         }
       }
-      coins.setTransforms('copper', positions, quaternions, columns * rows);
+      coins.setTransforms('copper', positions, quaternions, columns * rows, ids);
       return coins;
     }
 

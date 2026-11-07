@@ -94,40 +94,64 @@ const random = (): number => {
   return seed / 2 ** 32;
 };
 
+interface Staged {
+  positions: number[];
+  quaternions: number[];
+  ids: number[];
+}
+const staged = new Map<CoinTierId, Staged>(
+  COIN_TIER_IDS.map((tier) => [tier, { positions: [], quaternions: [], ids: [] }]),
+);
+
+function stage(tier: CoinTierId, id: number, x: number, y: number, z: number): void {
+  const s = staged.get(tier);
+  if (!s) throw new Error(`lookdev has no staging for ${tier}`);
+  s.positions.push(x, y, z);
+  s.quaternions.push(q.x, q.y, q.z, q.w);
+  s.ids.push(id);
+}
+
+function commit(): void {
+  for (const [tier, s] of staged) {
+    coins.setTransforms(tier, s.positions, s.quaternions, s.ids.length, s.ids);
+    s.positions.length = 0;
+    s.quaternions.length = 0;
+    s.ids.length = 0;
+  }
+}
+
 function placeHero(time: number): void {
   floor.visible = false;
   COIN_TIER_IDS.forEach((tier, i) => {
-    coins.setCount(tier, 1);
     const col = i % 3;
     const row = Math.floor(i / 3);
     e.set(1.05, 0.25 * Math.sin(time * 0.6 + i) - 0.12 * (col - 1), 0.0, 'XYZ');
     q.setFromEuler(e);
-    coins.setTransform(tier, 0, (col - 1) * 2.45, 1.25 - row * 2.45, 0, q.x, q.y, q.z, q.w);
+    stage(tier, i, (col - 1) * 2.45, 1.25 - row * 2.45, 0);
   });
+  commit();
   camera.position.set(0, 0, 13.5);
   camera.lookAt(0, 0, 0);
 }
 
 function placeMacro(time: number): void {
   floor.visible = false;
-  for (const tier of COIN_TIER_IDS) coins.setCount(tier, 0);
-  coins.setCount(focusTier, 1);
   e.set(1.2 + 0.08 * Math.sin(time * 0.5), 0.35 * Math.sin(time * 0.4), 0, 'XYZ');
   q.setFromEuler(e);
-  coins.setTransform(focusTier, 0, 0, 0, 0, q.x, q.y, q.z, q.w);
+  stage(focusTier, 0, 0, 0, 0);
+  commit();
   camera.position.set(0, 0, 4.6);
   camera.lookAt(0, 0, 0);
 }
 
 function placeEdge(time: number): void {
   floor.visible = false;
-  for (const tier of COIN_TIER_IDS) coins.setCount(tier, 0);
-  coins.setCount(focusTier, 3);
   for (let i = 0; i < 3; i += 1) {
     e.set(0.25 + i * 0.12, time * 0.3 + i * 0.7, 0.1, 'XYZ');
     q.setFromEuler(e);
-    coins.setTransform(focusTier, i, (i - 1) * 2.15, 0, -i * 0.4, q.x, q.y, q.z, q.w);
+    stage(focusTier, i, (i - 1) * 2.15, 0, -i * 0.4);
   }
+  commit();
   camera.position.set(0, 0.6, 7.8);
   camera.lookAt(0, 0, 0);
 }
@@ -145,9 +169,8 @@ function placePile(): void {
     diamond: 0.06,
     heirloom: 0.02,
   };
-  const counts = new Map<CoinTierId, number>(COIN_TIER_IDS.map((t) => [t, 0]));
   const total = 520;
-  for (let i = 0; i < total; i += 1) {
+  for (let id = 0; id < total; id += 1) {
     let pick = random();
     let tier: CoinTierId = 'copper';
     for (const t of COIN_TIER_IDS) {
@@ -157,16 +180,14 @@ function placePile(): void {
         break;
       }
     }
-    const index = counts.get(tier) ?? 0;
-    counts.set(tier, index + 1);
-    coins.setCount(tier, index + 1);
     const layer = Math.floor(random() * 3);
     const x = (random() - 0.5) * 9;
     const z = (random() - 0.5) * 14 - 2;
     e.set((random() - 0.5) * 0.35, random() * Math.PI * 2, (random() - 0.5) * 0.35, 'YXZ');
     q.setFromEuler(e);
-    coins.setTransform(tier, index, x, 0.045 + layer * 0.085, z, q.x, q.y, q.z, q.w);
+    stage(tier, id, x, 0.045 + layer * 0.085, z);
   }
+  commit();
   const zoom = Number(params.get('zoom') ?? 1);
   camera.position.set(0, 3.6 * zoom, 7.2 * zoom - 2.2 * (zoom - 1));
   camera.lookAt(0, 0, -2.2);

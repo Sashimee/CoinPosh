@@ -94,6 +94,21 @@ describe('partitionByLod', () => {
     expect(state[0]).toBe(CoinLod.near);
   });
 
+  it('decides a coin with no level yet on the plain threshold, without hysteresis bias', () => {
+    const positions = new Float32Array([0, 0, -5, 0, 0, -5]);
+    const state = new Uint8Array([CoinLod.unset, CoinLod.near]);
+    const out = output(2);
+    partitionByLod({ positions, count: 2, radius: 1, state }, view(20 * 5 * 0.95), settings, out);
+    expect([...out.far.subarray(0, out.farCount)]).toEqual([0]);
+    expect([...out.near.subarray(0, out.nearCount)]).toEqual([1]);
+    expect([...state]).toEqual([CoinLod.far, CoinLod.near]);
+
+    state[0] = CoinLod.unset;
+    partitionByLod({ positions, count: 1, radius: 1, state }, view(20 * 5 * 1.02), settings, out);
+    expect(out.nearCount).toBe(1);
+    expect(state[0]).toBe(CoinLod.near);
+  });
+
   it('culls coins entirely outside the frustum but keeps ones straddling a plane', () => {
     const camera = new PerspectiveCamera(60, 1, 0.1, 100);
     camera.updateMatrixWorld();

@@ -1,6 +1,6 @@
 import type { Frustum } from 'three/webgpu';
 
-export const CoinLod = { near: 0, far: 1 } as const;
+export const CoinLod = { near: 0, far: 1, unset: 2 } as const;
 export type CoinLodLevel = (typeof CoinLod)[keyof typeof CoinLod];
 
 export interface LodSettings {
@@ -41,7 +41,8 @@ export function pixelsPerUnit(fovDegrees: number, viewportHeightCssPx: number): 
 
 // Coins switch on projected size rather than raw distance so the threshold holds across
 // FOV kicks and resolution changes. The band around the threshold keeps a coin from
-// flickering between levels while it sits right on the boundary.
+// flickering between levels while it sits right on the boundary. A coin with no level yet
+// (CoinLod.unset) takes the plain threshold, so it lands where it would settle anyway.
 export function partitionByLod(
   input: LodInput,
   view: LodView,
@@ -79,8 +80,14 @@ export function partitionByLod(
       1e-6,
     );
     const projected = (radius * view.pixelsPerUnitAtUnitDistance) / distance;
-    const wasNear = state[i] === CoinLod.near;
-    const isNear = wasNear ? projected >= leaveNear : projected >= enterNear;
+    const previous = state[i];
+    const threshold =
+      previous === CoinLod.near
+        ? leaveNear
+        : previous === CoinLod.far
+          ? enterNear
+          : settings.nearPixelRadius;
+    const isNear = projected >= threshold;
     state[i] = isNear ? CoinLod.near : CoinLod.far;
     if (isNear) {
       out.near[out.nearCount] = i;
