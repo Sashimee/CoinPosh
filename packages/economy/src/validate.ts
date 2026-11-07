@@ -1,3 +1,9 @@
+import {
+  AlbumSetIdSchema,
+  CollectibleIdSchema,
+  UpgradeLineIdSchema,
+  VenueIdSchema,
+} from '@coinposh/shared';
 import { ODDS_SCALE, oddsTotal, weightToPercent } from './odds.ts';
 import { rarityRank } from './pity.ts';
 import {
@@ -39,6 +45,46 @@ function checkIdsExactly(
   for (const id of seen) {
     if (!expected.includes(id)) report(path, `unknown id "${id}"`);
   }
+}
+
+interface KeySchema {
+  safeParse(key: string): { success: boolean };
+}
+
+// TODO(P-10): check generic keys with a CatalogKeySchema once @coinposh/shared exports one.
+// Every catalog-key schema there applies the same pattern and 64-char cap today, so the
+// upgrade-line schema stands in for keys that have no branded kind of their own.
+const GENERIC_KEY: KeySchema = UpgradeLineIdSchema;
+
+function checkKeys(config: EconomyConfig, report: Report): void {
+  const check = (path: string, key: string, schema: KeySchema = GENERIC_KEY): void => {
+    if (!schema.safeParse(key).success) {
+      report(
+        path,
+        `key "${key}" must match ^[a-z][a-zA-Z0-9]*([-_.:][a-zA-Z0-9]+)*$ and be ≤ 64 characters`,
+      );
+    }
+  };
+  for (const [i, c] of config.currencies.entries()) {
+    check(`currencies[${i}].id`, c.id);
+    for (const [j, key] of c.sources.entries()) check(`currencies[${i}].sources[${j}]`, key);
+    for (const [j, key] of c.sinks.entries()) check(`currencies[${i}].sinks[${j}]`, key);
+  }
+  for (const [i, t] of config.coinTiers.entries()) check(`coinTiers[${i}].id`, t.id);
+  for (const [i, t] of config.cascade.tiers.entries()) check(`cascade.tiers[${i}].id`, t.id);
+  for (const [i, line] of config.upgradeLines.entries()) {
+    check(`upgradeLines[${i}].id`, line.id, UpgradeLineIdSchema);
+    check(`upgradeLines[${i}].effect.stat`, line.effect.stat);
+  }
+  for (const [i, t] of config.dropTables.entries()) check(`dropTables[${i}].source`, t.source);
+  for (const [i, v] of config.venues.entries()) check(`venues[${i}].id`, v.id, VenueIdSchema);
+  for (const [i, set] of config.album.entries()) {
+    check(`album[${i}].id`, set.id, AlbumSetIdSchema);
+    for (const [j, item] of set.items.entries()) {
+      check(`album[${i}].items[${j}].id`, item.id, CollectibleIdSchema);
+    }
+  }
+  for (const [i, t] of config.pacing.entries()) check(`pacing[${i}].id`, t.id);
 }
 
 function checkCurrencies(config: EconomyConfig, report: Report): void {
@@ -290,6 +336,7 @@ function checkPacing(config: EconomyConfig, report: Report): void {
 export function validateEconomyConfig(config: EconomyConfig): readonly ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const report: Report = (path, message) => issues.push({ path, message });
+  checkKeys(config, report);
   checkCurrencies(config, report);
   checkCoins(config, report);
   checkUpgrades(config, report);
