@@ -1,7 +1,7 @@
 import type { RenderBackend } from '../../backend.ts';
 import type { PostPipeline } from '../post/postPipeline.ts';
 import type { BenchmarkResult } from './benchmark.ts';
-import { DynamicResolution } from './dynamicResolution.ts';
+import { DynamicResolution, type FrameTiming } from './dynamicResolution.ts';
 import {
   DOWNGRADE_BOOTS,
   loadQuality,
@@ -12,7 +12,8 @@ import {
 } from './storage.ts';
 import { lowerTier, QUALITY_PROFILES, type QualityProfile, type QualityTier } from './tiers.ts';
 
-export type QualitySource = 'stored' | 'downgrade' | 'benchmark' | 'override';
+/** `provisional`: the benchmark stopped early; its pick is used this boot but not saved. */
+export type QualitySource = 'stored' | 'downgrade' | 'benchmark' | 'provisional' | 'override';
 
 export interface ResolvedQuality {
   readonly profile: QualityProfile;
@@ -29,7 +30,8 @@ export interface ResolveQualityOptions {
 }
 
 /**
- * Returns the saved tier for this backend, or runs the first-boot benchmark and saves its pick.
+ * Returns the saved tier for this backend, or runs the first-boot benchmark. Only a complete
+ * benchmark is saved; a provisional pick is used for this boot and re-measured on the next.
  * A saved runtime downgrade wins over the benchmark tier until its boots run out.
  */
 export async function resolveQuality(options: ResolveQualityOptions): Promise<ResolvedQuality> {
@@ -41,8 +43,15 @@ export async function resolveQuality(options: ResolveQualityOptions): Promise<Re
   if (stored !== null) return resumeStored(stored, options.store, logger);
   const result = await options.benchmark();
   logger.info(
-    `[CoinPosh] Quality benchmark: ${result.msPerFrame.toFixed(2)} ms/frame on ${options.backend}, tier ${result.tier}`,
+    `[CoinPosh] Quality benchmark: ${result.msPerFrame.toFixed(2)} ms/frame on ${options.backend}, tier ${result.tier}${result.complete ? '' : ' (provisional, not saved)'}`,
   );
+  if (!result.complete) {
+    return {
+      profile: QUALITY_PROFILES[result.tier],
+      source: 'provisional',
+      benchmarkMs: result.msPerFrame,
+    };
+  }
   saveQuality(
     options.store,
     {
@@ -88,8 +97,11 @@ function resumeStored(
 
 export type ScalablePipeline = Pick<
   PostPipeline,
-  'profile' | 'dynamicScale' | 'sceneScale' | 'setProfile' | 'setDynamicScale'
+  'profile' | 'pixelRatio' | 'dynamicScale' | 'scenePixelRatio' | 'setProfile' | 'setDynamicScale'
 >;
+
+/** What the caller measured for the frame that ended at this `frame()` call. */
+export type FrameMeasurements = Omit<FrameTiming, 'intervalMs'>;
 
 export interface QualityGovernorOptions {
   readonly backend: RenderBackend;
@@ -102,15 +114,22 @@ export interface QualityGovernor {
   readonly profile: QualityProfile;
   readonly scale: number;
   readonly smoothedFrameMs: number | null;
-  /** Call once per rendered frame with the rAF timestamp. */
-  frame(nowMs: number): void;
+  readonly controller: DynamicResolution;
+  /**
+   * Call once per rendered frame with the rAF timestamp, plus the main-thread and GPU time
+   * measured for the previous frame. Without them every slow frame is a suspect, verified by
+   * whether lowering resolution helps before it counts.
+   */
+  frame(nowMs: number, measured?: FrameMeasurements): void;
 }
 
 /**
- * Keeps the frame rate at or above 55 fps: dynamic resolution absorbs load spikes, and when
- * the scale has bottomed out for a few seconds the post tier steps down. The step keeps the
- * scene's effective pixel ratio, so it only ever sheds cost. The downgrade is saved next to
- * the benchmark record and expires after `DOWNGRADE_BOOTS` boots.
+ * Keeps the frame rate at or above 55 fps: dynamic resolution absorbs GPU load spikes, and
+ * when a GPU-bound overload persists at the floor scale the post tier steps down. CPU-bound
+ * and vsync- or power-capped frames never count (see `DynamicResolution`), so those devices
+ * keep their tier. The step keeps the scene's effective pixel ratio, so it only ever sheds
+ * cost. The downgrade is saved next to the benchmark record and expires after
+ * `DOWNGRADE_BOOTS` boots.
  */
 export function createQualityGovernor(
   post: ScalablePipeline,
@@ -125,10 +144,10 @@ export function createQualityGovernor(
     if (next === null) return;
     const from = post.profile;
     const to = QUALITY_PROFILES[next];
-    const effectiveScale = post.sceneScale;
+    const effectiveRatio = post.scenePixelRatio;
+    const confirmed = controller.gpuBoundConfirmed;
     post.setProfile(to);
-    const ratioCap = post.sceneScale / post.dynamicScale;
-    controller = controllerFor(to, effectiveScale / ratioCap);
+    controller = controllerFor(to, effectiveRatio / post.pixelRatio, confirmed);
     post.setDynamicScale(controller.scale);
     logger.warn(
       `[CoinPosh] Frame rate below target at minimum resolution, quality ${from.tier} -> ${to.tier}`,
@@ -154,11 +173,14 @@ export function createQualityGovernor(
     get smoothedFrameMs() {
       return controller.smoothedFrameMs;
     },
-    frame(nowMs) {
+    get controller() {
+      return controller;
+    },
+    frame(nowMs, measured = {}) {
       const delta = last === null ? null : nowMs - last;
       last = nowMs;
       if (delta === null) return;
-      const event = controller.sample(delta);
+      const event = controller.sample({ ...measured, intervalMs: delta });
       if (event === null) return;
       if (event.kind === 'scale') post.setDynamicScale(event.scale);
       else stepDown();
@@ -166,10 +188,15 @@ export function createQualityGovernor(
   };
 }
 
-function controllerFor(profile: QualityProfile, initialScale: number): DynamicResolution {
+function controllerFor(
+  profile: QualityProfile,
+  initialScale: number,
+  gpuBoundConfirmed = false,
+): DynamicResolution {
   return new DynamicResolution({
     minScale: profile.minResolutionScale,
     maxScale: profile.maxResolutionScale,
     initialScale,
+    gpuBoundConfirmed,
   });
 }

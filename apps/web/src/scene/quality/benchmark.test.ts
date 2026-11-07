@@ -6,6 +6,7 @@ const postRender = vi.fn<(nowMs: number) => void>();
 const disposed: string[] = [];
 
 vi.mock('./benchScene.ts', () => ({
+  BENCH_LOOK: { exposure: 0.85, environmentIntensity: 0.9, shadows: true },
   createBenchScene: () => ({
     scene: {},
     camera: {},
@@ -55,13 +56,20 @@ describe('runBenchmark', () => {
     const result = await runBenchmark(gpu.renderer, gpu.now);
     expect(result.tier).toBe('high');
     expect(result.msPerFrame).toBeCloseTo(3, 5);
+    expect(result.complete).toBe(true);
+    expect(result.samples).toHaveLength(5);
     expect(gpu.now()).toBeLessThanOrEqual(TIME_BUDGET_MS);
   });
 
   it('returns low without rendering a frame when compiling alone blows the budget', async () => {
     const gpu = fakeGpu(TIME_BUDGET_MS + 1, 3);
     const result = await runBenchmark(gpu.renderer, gpu.now);
-    expect(result).toEqual({ tier: 'low', msPerFrame: TIME_BUDGET_MS + 1, samples: [] });
+    expect(result).toEqual({
+      tier: 'low',
+      complete: false,
+      msPerFrame: TIME_BUDGET_MS + 1,
+      samples: [],
+    });
     expect(postRender).not.toHaveBeenCalled();
     expect(disposed.sort()).toEqual(['bench', 'post']);
   });
@@ -70,6 +78,7 @@ describe('runBenchmark', () => {
     const gpu = fakeGpu(TIME_BUDGET_MS - 20, 3);
     const result = await runBenchmark(gpu.renderer, gpu.now);
     expect(result.tier).toBe('high');
+    expect(result.complete).toBe(false);
     expect(result.samples).toHaveLength(1);
     expect(postRender).toHaveBeenCalledTimes(1 + 4 * 2);
     expect(gpu.now()).toBeLessThan(TIME_BUDGET_MS + 50);
@@ -79,6 +88,16 @@ describe('runBenchmark', () => {
     const gpu = fakeGpu(1500, 12);
     const result = await runBenchmark(gpu.renderer, gpu.now);
     expect(result.tier).toBe('medium');
+    expect(result.complete).toBe(false);
     expect(gpu.now()).toBeLessThan(TIME_BUDGET_MS + 4 * 12 + 1);
+  });
+
+  it('gives up after one batch on a hopeless device without claiming a complete run', async () => {
+    const gpu = fakeGpu(100, 200);
+    const result = await runBenchmark(gpu.renderer, gpu.now);
+    expect(result).toMatchObject({ tier: 'low', complete: false });
+    expect(result.msPerFrame).toBeGreaterThanOrEqual(200);
+    expect(result.samples).toEqual([result.msPerFrame]);
+    expect(postRender).toHaveBeenCalledTimes(1 + 4);
   });
 });

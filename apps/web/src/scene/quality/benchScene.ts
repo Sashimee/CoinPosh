@@ -23,6 +23,7 @@ import {
   type Texture,
   type WebGPURenderer,
 } from 'three/webgpu';
+import { DEFAULT_RENDER_LOOK, type RenderLook } from '../post/look.ts';
 
 /** Matches the 300-body cap in the rendering budget, minus the crust that is frozen. */
 export const BENCH_COIN_COUNT = 260;
@@ -37,6 +38,9 @@ const TEAK = '#C9A27A';
 const CHAMPAGNE = '#F3E5C0';
 const CORAL_SUNSET = '#FF7A59';
 const SEA_GLASS = '#7FD1C7';
+
+/** The studio environment is dimmer than the venue HDRI, so the bench lights it harder. */
+export const BENCH_LOOK: RenderLook = { ...DEFAULT_RENDER_LOOK, environmentIntensity: 0.9 };
 
 export interface BenchScene {
   readonly scene: Scene;
@@ -57,7 +61,7 @@ export function createBenchScene(renderer: WebGPURenderer): BenchScene {
 
   const environment = createStudioEnvironment(renderer);
   scene.environment = environment;
-  scene.environmentIntensity = 0.9;
+  scene.environmentIntensity = BENCH_LOOK.environmentIntensity;
 
   const camera = new PerspectiveCamera(38, 1, 0.1, 40);
   camera.position.set(0, 2.15, 3.35);
