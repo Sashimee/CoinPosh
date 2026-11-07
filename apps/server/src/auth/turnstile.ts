@@ -5,15 +5,30 @@ const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverif
 
 const SiteverifyResponseSchema = z.object({ success: z.boolean() });
 
+const TurnstileModeSchema = z.enum(['enforce', 'off']).default('enforce');
+
+/** Fails closed: only an explicit `TURNSTILE_MODE: "off"` (dev and tests) skips the check. */
 export async function verifyTurnstile(
+  mode: string | undefined,
   secret: string | undefined,
   token: string,
   remoteIp: string | undefined,
   idempotencyKey: string,
 ): Promise<void> {
-  // Turnstile is a human provisioning step (site + secret); until the secret exists the
-  // device signature and single-use auth keys are the only sign-up gate.
-  if (secret === undefined || secret === '') return;
+  const parsedMode = TurnstileModeSchema.safeParse(mode);
+  if (!parsedMode.success) {
+    throw new ApiFailure(
+      'unavailable',
+      `TURNSTILE_MODE must be "enforce" or "off", got "${mode}". Fix the wrangler var.`,
+    );
+  }
+  if (parsedMode.data === 'off') return;
+  if (secret === undefined || secret === '') {
+    throw new ApiFailure(
+      'unavailable',
+      'TURNSTILE_SECRET_KEY is not configured: set it with `wrangler secret put TURNSTILE_SECRET_KEY`.',
+    );
+  }
 
   const form = new FormData();
   form.append('secret', secret);

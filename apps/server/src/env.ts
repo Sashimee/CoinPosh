@@ -5,6 +5,8 @@ export interface Env {
   readonly PLAYER: DurableObjectNamespace<PlayerDO>;
   /** HMAC key for access tokens, set with `wrangler secret put AUTH_SECRET` (≥ 32 chars). */
   readonly AUTH_SECRET?: string;
-  /** Cloudflare Turnstile secret. Until it is provisioned, guest sign-up skips the check. */
+  /** Cloudflare Turnstile secret, set with `wrangler secret put TURNSTILE_SECRET_KEY`. */
   readonly TURNSTILE_SECRET_KEY?: string;
+  /** `off` skips Turnstile (local dev and tests only); unset or `enforce` requires it. */
+  readonly TURNSTILE_MODE?: string;
 }

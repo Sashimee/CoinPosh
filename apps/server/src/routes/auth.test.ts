@@ -1,9 +1,10 @@
-import { upgradeLines, upgradeStat } from '@coinposh/economy';
+import { coinTiers, upgradeLines, upgradeStat } from '@coinposh/economy';
 import { endpoints, HEADERS, PlayerIdSchema } from '@coinposh/shared';
 import { env, exports } from 'cloudflare:workers';
 import { sign } from 'hono/jwt';
 import { describe, expect, it } from 'vitest';
 import { ACCESS_TOKEN_TTL_MS, authSecret, issueAccessToken } from '../auth/tokens.ts';
+import { verifyTurnstile } from '../auth/turnstile.ts';
 import { PREMINT_BUFFER_TARGET } from '../do/PlayerDO.ts';
 import {
   API_ORIGIN,
@@ -43,11 +44,12 @@ describe('POST /v1/auth/guest', () => {
     expect(session.tokens.refreshToken).toMatch(/^rt_[A-Za-z0-9_-]{43}$/);
 
     const snapshot = await state(session);
-    const bufferValue = snapshot.table.buffer.reduce((sum, coin) => sum + coin.value, 0);
-    expect(snapshot.table.buffer).toHaveLength(PREMINT_BUFFER_TARGET);
-    expect(snapshot.wallet.coins + bufferValue).toBe(startingCoins());
+    expect(snapshot.wallet.coins).toBe(startingCoins());
+    expect(snapshot.table.buffer).toHaveLength(
+      Math.min(PREMINT_BUFFER_TARGET, startingCoins() / coinTiers[0].value),
+    );
     expect(snapshot.table.coins).toEqual([]);
-    expect(snapshot.player.displayName).toMatch(/^Guest [0-9A-Z]{4}$/);
+    expect(snapshot.player.displayName).toMatch(/^[0-9A-Z]{4}$/);
     expect(snapshot.fair.serverSeedHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -61,8 +63,7 @@ describe('POST /v1/auth/guest', () => {
     expect(tokens.refreshToken).not.toBe(session.tokens.refreshToken);
 
     const snapshot = await state({ ...session, tokens });
-    const bufferValue = snapshot.table.buffer.reduce((sum, coin) => sum + coin.value, 0);
-    expect(snapshot.wallet.coins + bufferValue).toBe(startingCoins());
+    expect(snapshot.wallet.coins).toBe(startingCoins());
   });
 
   it('rejects a replay of a captured, validly signed sign-in request', async () => {
@@ -140,6 +141,26 @@ describe('POST /v1/auth/guest', () => {
       413,
       'payload_too_large',
     );
+  });
+
+  it('stops reading a chunked body with no Content-Length once it passes the limit', async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(16 * 1024).fill(0x78);
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(chunk);
+      },
+    });
+    const response = await exports.default.fetch(
+      new Request(`${API_ORIGIN}${endpoints.authGuest.path}`, {
+        method: 'POST',
+        headers: { [HEADERS.idempotencyKey]: newIdempotencyKey() },
+        body: endless,
+      }),
+    );
+    await expectError(response, 413, 'payload_too_large');
+    expect(pulled).toBeLessThan(16);
   });
 });
 
@@ -264,6 +285,28 @@ describe('POST /v1/auth/refresh', () => {
       422,
       'idempotency_key_reused',
     );
+  });
+});
+
+describe('Turnstile', () => {
+  const verify = (mode: string | undefined, secret: string | undefined) =>
+    verifyTurnstile(mode, secret, 'token', undefined, newIdempotencyKey());
+
+  it('fails closed when the secret is missing unless the mode is explicitly off', async () => {
+    for (const mode of [undefined, 'enforce']) {
+      for (const secret of [undefined, '']) {
+        const attempt = verify(mode, secret);
+        await expect(attempt).rejects.toMatchObject({ code: 'unavailable' });
+        await expect(attempt).rejects.toThrow(/wrangler secret put TURNSTILE_SECRET_KEY/);
+      }
+    }
+    await expect(verify('off', undefined)).resolves.toBeUndefined();
+  });
+
+  it('refuses an unknown mode instead of guessing', async () => {
+    for (const mode of ['', 'OFF', 'disabled']) {
+      await expect(verify(mode, 'secret')).rejects.toMatchObject({ code: 'unavailable' });
+    }
   });
 });
 

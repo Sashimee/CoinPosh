@@ -56,7 +56,7 @@ describe('POST /v1/table/drop', () => {
     expect(after.table).toEqual(before.table);
   });
 
-  it('spends a pre-minted buffer coin once, then refills the buffer from the wallet', async () => {
+  it('spends a reserved buffer coin once, debiting the wallet only when it is dropped', async () => {
     const session = await newSession();
     const before = await state(session);
     const buffered = before.table.buffer[0];
@@ -64,9 +64,12 @@ describe('POST /v1/table/drop', () => {
 
     const result = await drop(session, { coinId: buffered.id, tick: 1 });
     expect(result.coin).toEqual(buffered);
-    expect(result.buffer).toHaveLength(PREMINT_BUFFER_TARGET);
+    expect(result.buffer).toHaveLength(
+      Math.min(PREMINT_BUFFER_TARGET, result.wallet.coins / COPPER.value),
+    );
     expect(result.buffer.map((coin) => coin.id)).not.toContain(buffered.id);
     expect(result.wallet.coins).toBe(before.wallet.coins - COPPER.value);
+    expect((await state(session)).table.coins.map((coin) => coin.id)).toEqual([buffered.id]);
 
     await expectError(
       await session.call(endpoints.tableDrop.path, {
@@ -101,20 +104,51 @@ describe('POST /v1/table/drop', () => {
     expect((await state(other)).table.buffer.map((coin) => coin.id)).toContain(foreign.id);
   });
 
-  it('falls back to the prepaid buffer, then refuses a drop nothing can pay for', async () => {
+  it('keeps the whole starting grant spendable: reservations lock no wallet value', async () => {
+    const session = await newSession();
+    const { wallet, table } = await state(session);
+    expect(table.buffer).toHaveLength(Math.min(PREMINT_BUFFER_TARGET, wallet.coins / COPPER.value));
+    const report = await playerStub(session.tokens.playerId).conservation();
+    expect(report.walletCoins).toBe(wallet.coins);
+    expect(report.ledger.wallet).toBe(wallet.coins);
+  });
+
+  it('never spends a reserved coin for a drop without coinId, and refuses one nothing pays for', async () => {
     const session = await newSession();
     const { wallet, table } = await state(session);
     const fresh = await dropMany(session, wallet.coins / COPPER.value);
     expect(fresh.every((coin) => !table.buffer.some((b) => b.id === coin.id))).toBe(true);
-    const fallback = await dropMany(session, table.buffer.length);
-    expect(fallback.map((coin) => coin.id)).toEqual(table.buffer.map((coin) => coin.id));
-    expect((await state(session)).table.buffer).toEqual([]);
+    const after = await state(session);
+    expect(after.wallet.coins).toBe(0);
+    expect(after.table.buffer.map((coin) => coin.id)).toEqual(table.buffer.map((coin) => coin.id));
+
     await expectError(
       await session.call(endpoints.tableDrop.path, { body: { x: 0, tick: 0 } }),
       409,
       'insufficient_funds',
     );
-    expect((await state(session)).wallet.coins).toBe(0);
+    const reserved = after.table.buffer[0];
+    if (reserved === undefined) throw new Error('A new player should have a buffer.');
+    await expectError(
+      await session.call(endpoints.tableDrop.path, {
+        body: { x: 0, tick: 0, coinId: reserved.id },
+      }),
+      409,
+      'insufficient_funds',
+    );
+    const final = await state(session);
+    expect(final.wallet.coins).toBe(0);
+    expect(final.table.buffer.map((coin) => coin.id)).toContain(reserved.id);
+    expect(final.table.coins).toHaveLength(fresh.length);
+    await expectConserved(session);
+  });
+
+  it('reconciles an offline run of reserved drops in order, without refusing any', async () => {
+    const session = await newSession();
+    const { table } = await state(session);
+    for (const [i, coin] of table.buffer.entries()) {
+      expect((await drop(session, { coinId: coin.id, tick: i })).coin.id).toBe(coin.id);
+    }
     await expectConserved(session);
   });
 

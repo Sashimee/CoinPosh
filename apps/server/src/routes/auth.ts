@@ -30,6 +30,8 @@ import {
 
 export const authRoutes = new Hono<AppEnv>();
 
+const GUEST_TAG_LENGTH = 4;
+
 /** Burns the key; a captured, validly signed auth request can therefore be used only once. */
 async function consumeAuthKey(c: AppContext, key: IdempotencyKey, route: string): Promise<void> {
   const result = await c.env.DB.prepare(
@@ -70,7 +72,8 @@ async function findOrCreatePlayer(
   const jkt = await deviceKeyThumbprint(deviceKey);
   const candidate = {
     playerId: PlayerIdSchema.parse(crypto.randomUUID()),
-    displayName: `Guest ${randomBase62(4).toUpperCase()}`,
+    // A locale-neutral tag: the client renders it as t('player.guestName', { tag }).
+    displayName: randomBase62(GUEST_TAG_LENGTH).toUpperCase(),
     createdAt: now,
   };
   await c.env.DB.prepare(
@@ -107,6 +110,7 @@ authRoutes.post(endpoints.authGuest.path, async (c) => {
   const body = parseBody(endpoints.authGuest.body, request.rawBody);
   await verifySigned(c, request, body.devicePublicKey);
   await verifyTurnstile(
+    c.env.TURNSTILE_MODE,
     c.env.TURNSTILE_SECRET_KEY,
     body.turnstileToken,
     c.req.header('CF-Connecting-IP'),

@@ -12,7 +12,7 @@ import type { MiddlewareHandler } from 'hono';
 import type { z } from 'zod';
 import { verifyDeviceSignature } from '../auth/device.ts';
 import { authSecret, verifyAccessToken, type AccessGrant } from '../auth/tokens.ts';
-import { sha256Hex, utf8 } from '../crypto.ts';
+import { sha256Hex } from '../crypto.ts';
 import type { DoResult } from '../do/PlayerDO.ts';
 import type { AppContext, AppEnv } from './context.ts';
 import { IDEMPOTENT_REPLAYED_HEADER, isAllowedOrigin } from './cors.ts';
@@ -46,22 +46,37 @@ export interface SignedRequest {
   readonly parts: SignedRequestParts;
 }
 
+function payloadTooLarge(): ApiFailure {
+  return new ApiFailure(
+    'payload_too_large',
+    `Request bodies are limited to ${MAX_BODY_BYTES} bytes.`,
+  );
+}
+
+/** Reads at most MAX_BODY_BYTES, so a chunked upload without Content-Length cannot buffer more. */
 async function readRawBody(c: AppContext): Promise<string> {
   const declared = Number(c.req.header('Content-Length') ?? '0');
-  if (declared > MAX_BODY_BYTES) {
-    throw new ApiFailure(
-      'payload_too_large',
-      `Request bodies are limited to ${MAX_BODY_BYTES} bytes.`,
-    );
+  if (declared > MAX_BODY_BYTES) throw payloadTooLarge();
+  const stream = c.req.raw.body;
+  if (stream === null) return '';
+  const reader = stream.getReader();
+  const body = new Uint8Array(MAX_BODY_BYTES);
+  let length = 0;
+  for (;;) {
+    const result = await reader.read();
+    if (result.done) break;
+    const chunk: unknown = result.value;
+    if (!(chunk instanceof Uint8Array)) {
+      throw new ApiFailure('bad_request', 'The request body must be sent as bytes.');
+    }
+    if (length + chunk.byteLength > MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw payloadTooLarge();
+    }
+    body.set(chunk, length);
+    length += chunk.byteLength;
   }
-  const text = await c.req.text();
-  if (utf8(text).byteLength > MAX_BODY_BYTES) {
-    throw new ApiFailure(
-      'payload_too_large',
-      `Request bodies are limited to ${MAX_BODY_BYTES} bytes.`,
-    );
-  }
-  return text;
+  return new TextDecoder().decode(body.subarray(0, length));
 }
 
 function readIdempotencyKey(c: AppContext): IdempotencyKey | null {

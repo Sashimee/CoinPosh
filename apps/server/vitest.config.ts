@@ -12,6 +12,7 @@ export default defineConfig({
         bindings: {
           // A fixed, test-only signing key; production reads the AUTH_SECRET worker secret.
           AUTH_SECRET: 'test-only-auth-secret-0123456789abcdef',
+          TURNSTILE_MODE: 'off',
           TEST_MIGRATIONS: migrations,
         },
       },

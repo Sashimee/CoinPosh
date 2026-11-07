@@ -25,7 +25,6 @@ import {
   type StateResponse,
   type TableCrate,
   type TableSnapshot,
-  type Tick,
 } from '@coinposh/shared';
 import { DurableObject } from 'cloudflare:workers';
 import { randomBase62, randomBytes, sha256Hex } from '../crypto.ts';
@@ -40,17 +39,13 @@ import {
   tierDef,
   type StoredCoin,
 } from './entities.ts';
-import {
-  commit,
-  ledgerBalance,
-  LedgerTx,
-  openWallet,
-  readWallet,
-  type CommitContext,
-} from './ledger.ts';
+import { commit, ledgerBalance, LedgerTx, openWallet, readWallet } from './ledger.ts';
 import { migrate } from './schema.ts';
 
-/** Pre-minted, already-paid coins kept ready so play survives short network drops. */
+/**
+ * Coin IDs reserved ahead so play survives short network drops. A reservation holds no
+ * value: the wallet pays when the coin is dropped, so the buffer never locks coins away.
+ */
 export const PREMINT_BUFFER_TARGET = 16;
 export const FLUSH_INTERVAL_MS = 30_000;
 export const IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -78,8 +73,8 @@ export type DoResult<T> =
 
 export interface ConservationReport {
   readonly walletCoins: number;
-  readonly ledger: Readonly<Record<'wallet' | 'buffer' | 'table' | 'house' | 'mint', number>>;
-  readonly bufferValue: number;
+  readonly ledger: Readonly<Record<'wallet' | 'table' | 'house' | 'mint', number>>;
+  readonly bufferCoins: number;
   readonly tableValue: number;
   readonly tableCrates: number;
   readonly ledgerCratesOnTable: number;
@@ -139,7 +134,7 @@ export class PlayerDO extends DurableObject<Env> {
         new LedgerTx('grant.starting').move('mint', 'wallet', 'coins', startingCoins(), null),
         { at: now, idempotencyKey: null },
       );
-      this.refillBuffer(now, null);
+      this.reserveBuffer(now);
     });
     await this.flush();
   }
@@ -192,30 +187,27 @@ export class PlayerDO extends DurableObject<Env> {
 
   /** Double-entry totals next to the entity tables they must agree with. */
   conservation(): ConservationReport {
-    const sumValue = (state: 'buffer' | 'table') =>
-      this.entities.coinsIn(state).reduce((total, coin) => total + coin.value, 0);
     const ledger = {
       wallet: ledgerBalance(this.sql, 'wallet', 'coins'),
-      buffer: ledgerBalance(this.sql, 'buffer', 'coins'),
       table: ledgerBalance(this.sql, 'table', 'coins'),
       house: ledgerBalance(this.sql, 'house', 'coins'),
       mint: ledgerBalance(this.sql, 'mint', 'coins'),
     };
     const walletCoins = readWallet(this.sql).coins;
-    const bufferValue = sumValue('buffer');
-    const tableValue = sumValue('table');
+    const tableValue = this.entities
+      .coinsIn('table')
+      .reduce((total, coin) => total + coin.value, 0);
     const tableCrates = this.entities.cratesOnTable().length;
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
     const conserved =
       ledger.wallet === walletCoins &&
-      ledger.buffer === bufferValue &&
       ledger.table === tableValue &&
       ledgerCratesOnTable === tableCrates &&
-      ledger.wallet + ledger.buffer + ledger.table + ledger.house + ledger.mint === 0;
+      ledger.wallet + ledger.table + ledger.house + ledger.mint === 0;
     return {
       walletCoins,
       ledger,
-      bufferValue,
+      bufferCoins: this.entities.countCoinsIn('buffer'),
       tableValue,
       tableCrates,
       ledgerCratesOnTable,
@@ -353,29 +345,28 @@ export class PlayerDO extends DurableObject<Env> {
   private applyDrop(body: DropRequest, idempotencyKey: string, now: EpochMs): DropResponse {
     const context = { at: now, idempotencyKey };
     const cost = tierDef(DROP_TIER).value;
-    let coin: StoredCoin;
-    if (body.coinId !== undefined) {
-      coin = this.dropBuffered(this.bufferedCoin(body.coinId), body.tick, context);
-    } else if (readWallet(this.sql).coins >= cost) {
-      coin = this.entities.mintCoin(DROP_TIER, mintedValue(DROP_TIER), 'table', body.tick, now);
-      commit(
-        this.sql,
-        new LedgerTx('drop.mint')
-          .move('wallet', 'table', 'coins', cost, coin.id)
-          .move('mint', 'table', 'coins', coin.value - cost, coin.id),
-        context,
+    const reserved = body.coinId === undefined ? null : this.bufferedCoin(body.coinId);
+    const balance = readWallet(this.sql).coins;
+    if (balance < cost) {
+      throw new ApiFailure(
+        'insufficient_funds',
+        `A drop costs ${cost} coin and the wallet holds ${balance}. Collect coins before dropping again.`,
       );
-    } else {
-      // The buffer is already paid for, so an empty wallet falls back to it.
-      const oldest = this.entities.coinsIn('buffer')[0];
-      if (oldest === undefined) {
-        throw new ApiFailure(
-          'insufficient_funds',
-          `A drop costs ${cost} coin; the wallet cannot cover it and the pre-minted buffer is empty.`,
-        );
-      }
-      coin = this.dropBuffered(oldest, body.tick, context);
     }
+    let coin: StoredCoin;
+    if (reserved !== null) {
+      this.entities.placeOnTable(reserved.id, body.tick);
+      coin = { ...reserved, state: 'table', droppedTick: body.tick };
+    } else {
+      coin = this.entities.mintCoin(DROP_TIER, mintedValue(DROP_TIER), 'table', body.tick, now);
+    }
+    commit(
+      this.sql,
+      new LedgerTx(reserved !== null ? 'drop.buffer' : 'drop.mint')
+        .move('wallet', 'table', 'coins', cost, coin.id)
+        .move('mint', 'table', 'coins', coin.value - cost, coin.id),
+      context,
+    );
 
     const dropCount = Number(this.requireMeta('drop_count')) + 1;
     this.setMeta('drop_count', String(dropCount));
@@ -389,7 +380,7 @@ export class PlayerDO extends DurableObject<Env> {
       spawnedCrates.push(publicCrate(crate));
     }
 
-    this.refillBuffer(now, idempotencyKey);
+    this.reserveBuffer(now);
     return {
       coin: publicCoin(coin),
       buffer: this.entities.coinsIn('buffer').map(publicCoin),
@@ -407,16 +398,6 @@ export class PlayerDO extends DurableObject<Env> {
       throw new ApiFailure('conflict', 'That pre-minted coin was already dropped.');
     }
     return coin;
-  }
-
-  private dropBuffered(coin: StoredCoin, tick: Tick, context: CommitContext): StoredCoin {
-    this.entities.placeOnTable(coin.id, tick);
-    commit(
-      this.sql,
-      new LedgerTx('drop.buffer').move('buffer', 'table', 'coins', coin.value, coin.id),
-      context,
-    );
-    return { ...coin, state: 'table', droppedTick: tick };
   }
 
   private applyClaim(claim: Claim, idempotencyKey: string, now: EpochMs): ClaimResult {
@@ -493,19 +474,13 @@ export class PlayerDO extends DurableObject<Env> {
     }
   }
 
-  /** Tops the buffer up to target with coins the wallet pays for now. */
-  private refillBuffer(now: EpochMs, idempotencyKey: string | null): void {
-    const cost = tierDef(DROP_TIER).value;
-    const missing = PREMINT_BUFFER_TARGET - this.entities.countCoinsIn('buffer');
-    const affordable = Math.min(missing, Math.floor(readWallet(this.sql).coins / cost));
-    if (affordable <= 0) return;
-    const tx = new LedgerTx('buffer.purchase');
-    for (let i = 0; i < affordable; i++) {
-      const coin = this.entities.mintCoin(DROP_TIER, mintedValue(DROP_TIER), 'buffer', null, now);
-      tx.move('wallet', 'buffer', 'coins', cost, coin.id);
-      tx.move('mint', 'buffer', 'coins', coin.value - cost, coin.id);
+  /** Reserves IDs up to the target, but never more than the wallet could pay to drop. */
+  private reserveBuffer(now: EpochMs): void {
+    const affordable = Math.floor(readWallet(this.sql).coins / tierDef(DROP_TIER).value);
+    const target = Math.min(PREMINT_BUFFER_TARGET, affordable);
+    for (let held = this.entities.countCoinsIn('buffer'); held < target; held++) {
+      this.entities.mintCoin(DROP_TIER, mintedValue(DROP_TIER), 'buffer', null, now);
     }
-    commit(this.sql, tx, { at: now, idempotencyKey });
   }
 
   private snapshot(): TableSnapshot {

@@ -88,13 +88,7 @@ describe('PlayerDO ledger', () => {
       for (const sum of units.values()) expect(sum).toBe(0);
     }
     const kinds = new Set(rows.map((row) => row.kind));
-    for (const kind of [
-      'grant.starting',
-      'buffer.purchase',
-      'drop.mint',
-      'claim.fusion',
-      'claim.fall',
-    ]) {
+    for (const kind of ['grant.starting', 'drop.mint', 'claim.fusion', 'claim.fall']) {
       expect(kinds).toContain(kind);
     }
 
