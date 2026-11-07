@@ -1,11 +1,12 @@
+import {
+  RATE_ENVELOPE_METRIC_IDS,
+  rateEnvelopeFor,
+  type RateEnvelopeLimit,
+  type RateEnvelopeLimits,
+  type RateEnvelopeMetricId,
+  type RateEnvelopeTable,
+} from '@coinposh/economy';
 import type { EpochMs } from '@coinposh/shared';
-
-/**
- * What the envelope meters. `fallValue` is coins credited off the front edge, so one
- * fall claim charges both `falls` (count) and `fallValue` (stored server value).
- */
-export const ENVELOPE_METRICS = ['drops', 'falls', 'fallValue', 'fusions', 'crates'] as const;
-export type EnvelopeMetric = (typeof ENVELOPE_METRICS)[number];
 
 /**
  * What happens past the limit. `cap` refuses the charge with a retry time and nothing
@@ -17,8 +18,10 @@ export type EnvelopePolicy = 'cap' | 'flag';
 /**
  * Fixed here, not in the economy config: the numbers are tunable, the anti-cheat meaning
  * of each metric is not. A queued or offline drop flush must never unrank an honest player.
+ * `fallValue` is coins credited off the front edge, so one fall claim charges both
+ * `falls` (count) and `fallValue` (stored server value).
  */
-export const ENVELOPE_POLICY: Readonly<Record<EnvelopeMetric, EnvelopePolicy>> = {
+export const ENVELOPE_POLICY: Readonly<Record<RateEnvelopeMetricId, EnvelopePolicy>> = {
   drops: 'cap',
   falls: 'flag',
   fallValue: 'flag',
@@ -26,17 +29,8 @@ export const ENVELOPE_POLICY: Readonly<Record<EnvelopeMetric, EnvelopePolicy>> =
   crates: 'flag',
 };
 
-/** At most `max` units of a metric inside any `windowMs` span of server time. */
-export interface EnvelopeLimit {
-  readonly windowMs: number;
-  readonly max: number;
-}
-
-/** One table configuration's max plausible throughput, computed from the economy config. */
-export type EnvelopeLimits = Readonly<Record<EnvelopeMetric, EnvelopeLimit>>;
-
 export interface EnvelopeCharge {
-  readonly metric: EnvelopeMetric;
+  readonly metric: RateEnvelopeMetricId;
   readonly amount: number;
 }
 
@@ -44,10 +38,10 @@ export type EnvelopeVerdict =
   | { readonly admitted: true }
   | {
       readonly admitted: false;
-      readonly metric: EnvelopeMetric;
+      readonly metric: RateEnvelopeMetricId;
       /** Units of `metric` already admitted inside the window. */
       readonly used: number;
-      readonly limit: EnvelopeLimit;
+      readonly limit: RateEnvelopeLimit;
       /** Server ms from `now` until the charge would fit, or null when it exceeds the limit on its own. */
       readonly retryAfterMs: number | null;
       /** True when the metric's policy is `flag`, so this refusal counts against ranking. */
@@ -60,7 +54,7 @@ export type EnvelopeVerdict =
  */
 export interface EnvelopeFlag {
   readonly at: EpochMs;
-  readonly metric: EnvelopeMetric;
+  readonly metric: RateEnvelopeMetricId;
   readonly amount: number;
   readonly used: number;
   readonly max: number;
@@ -124,8 +118,8 @@ const SCHEMA = `
   END;
 `;
 
-function assertLimits(limits: EnvelopeLimits): void {
-  for (const metric of ENVELOPE_METRICS) {
+function assertLimits(limits: RateEnvelopeLimits): void {
+  for (const metric of RATE_ENVELOPE_METRIC_IDS) {
     const { windowMs, max } = limits[metric];
     if (!Number.isSafeInteger(windowMs) || windowMs <= 0) {
       throw new RangeError(
@@ -139,7 +133,7 @@ function assertLimits(limits: EnvelopeLimits): void {
 }
 
 function assertCharge(charge: EnvelopeCharge): void {
-  if (!(ENVELOPE_METRICS as readonly string[]).includes(charge.metric)) {
+  if (!(RATE_ENVELOPE_METRIC_IDS as readonly string[]).includes(charge.metric)) {
     throw new RangeError(`Unknown envelope metric "${charge.metric}".`);
   }
   if (!Number.isSafeInteger(charge.amount) || charge.amount < 0) {
@@ -149,24 +143,40 @@ function assertCharge(charge: EnvelopeCharge): void {
   }
 }
 
+function assertTime(now: EpochMs): void {
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new RangeError(`Envelope time must be a non-negative integer of ms, got ${now}.`);
+  }
+}
+
 /**
  * A sliding-log rate envelope over one player's Durable Object SQLite. Every timestamp
  * is server time passed in by the caller; nothing the client sends moves the window.
  * Calls must run inside the Durable Object's storage transaction for the request.
+ *
+ * Events are stamped with the real `now`. One stamped after `now` (the server clock
+ * stepped back, or was skewed forward and then corrected) still counts as inside the
+ * window, so a step back never reopens it, and `admit` re-stamps it to `now`, so it ages
+ * out one window later however large the skew was instead of freezing the window.
  */
 export class RateEnvelope {
+  /** The envelope for one table configuration, with limits from `rateEnvelopeFor`. */
+  static forTable(sql: SqlStorage, table: RateEnvelopeTable): RateEnvelope {
+    return new RateEnvelope(sql, rateEnvelopeFor(table));
+  }
+
   constructor(
     private readonly sql: SqlStorage,
-    private readonly limits: EnvelopeLimits,
+    private readonly limits: RateEnvelopeLimits,
   ) {
     assertLimits(limits);
     sql.exec(SCHEMA);
   }
 
   /** Units of `metric` admitted inside the window ending at `now`. */
-  usage(metric: EnvelopeMetric, now: EpochMs): number {
-    const clock = this.clock(now);
-    return this.used(metric, clock);
+  usage(metric: RateEnvelopeMetricId, now: EpochMs): number {
+    assertTime(now);
+    return this.used(metric, now);
   }
 
   /**
@@ -178,24 +188,24 @@ export class RateEnvelope {
    */
   admit(charges: readonly EnvelopeCharge[], now: EpochMs, ref: string | null): EnvelopeVerdict {
     for (const charge of charges) assertCharge(charge);
-    const clock = this.clock(now);
-    const totals = new Map<EnvelopeMetric, number>();
+    assertTime(now);
+    const totals = new Map<RateEnvelopeMetricId, number>();
     for (const { metric, amount } of charges) {
       if (amount > 0) totals.set(metric, (totals.get(metric) ?? 0) + amount);
     }
     for (const [metric, amount] of totals) {
-      this.prune(metric, clock);
+      this.settle(metric, now);
       const limit = this.limits[metric];
-      const used = this.used(metric, clock);
+      const used = this.used(metric, now);
       if (used + amount > limit.max) {
         const flagged = ENVELOPE_POLICY[metric] === 'flag';
-        if (flagged) this.flag(metric, amount, used, clock, ref);
+        if (flagged) this.flag(metric, amount, used, now, ref);
         return {
           admitted: false,
           metric,
           used,
           limit,
-          retryAfterMs: this.retryAfter(metric, amount, clock, now),
+          retryAfterMs: this.retryAfter(metric, amount, now),
           flagged,
         };
       }
@@ -204,7 +214,7 @@ export class RateEnvelope {
       this.sql.exec(
         'INSERT INTO envelope_events (metric, at, amount) VALUES (?, ?, ?)',
         metric,
-        clock,
+        now,
         amount,
       );
     }
@@ -215,7 +225,7 @@ export class RateEnvelope {
     return this.sql
       .exec<{
         at: number;
-        metric: EnvelopeMetric;
+        metric: RateEnvelopeMetricId;
         amount: number;
         used: number;
         max: number;
@@ -243,71 +253,58 @@ export class RateEnvelope {
     return this.sql.exec('SELECT 1 FROM envelope_flags LIMIT 1').toArray().length > 0;
   }
 
-  /**
-   * Never lets the window run backwards: if the server clock steps back (NTP, a host
-   * move), usage is measured from the latest event already admitted. Retry times are
-   * still reported from the real `now`, since that is the clock the next request carries.
-   */
-  private clock(now: EpochMs): EpochMs {
-    if (!Number.isSafeInteger(now) || now < 0) {
-      throw new RangeError(`Envelope time must be a non-negative integer of ms, got ${now}.`);
-    }
-    const row = this.sql
-      .exec<{ latest: number | null }>('SELECT MAX(at) AS latest FROM envelope_events')
-      .one();
-    return Math.max(now, row.latest ?? 0);
-  }
-
-  private used(metric: EnvelopeMetric, clock: EpochMs): number {
+  private used(metric: RateEnvelopeMetricId, now: EpochMs): number {
     const row = this.sql
       .exec<{ total: number | null }>(
         'SELECT SUM(amount) AS total FROM envelope_events WHERE metric = ? AND at > ?',
         metric,
-        clock - this.limits[metric].windowMs,
+        now - this.limits[metric].windowMs,
       )
       .one();
     return row.total ?? 0;
   }
 
-  private prune(metric: EnvelopeMetric, clock: EpochMs): void {
+  /** Drops events that left the window and pulls any stamped after `now` back to `now`. */
+  private settle(metric: RateEnvelopeMetricId, now: EpochMs): void {
     this.sql.exec(
       'DELETE FROM envelope_events WHERE metric = ? AND at <= ?',
       metric,
-      clock - this.limits[metric].windowMs,
+      now - this.limits[metric].windowMs,
+    );
+    this.sql.exec(
+      'UPDATE envelope_events SET at = ? WHERE metric = ? AND at > ?',
+      now,
+      metric,
+      now,
     );
   }
 
   /** Walks the window oldest first until enough units age out for `amount` to fit. */
-  private retryAfter(
-    metric: EnvelopeMetric,
-    amount: number,
-    clock: EpochMs,
-    now: EpochMs,
-  ): number | null {
+  private retryAfter(metric: RateEnvelopeMetricId, amount: number, now: EpochMs): number | null {
     const { windowMs, max } = this.limits[metric];
     if (amount > max) return null;
-    let used = this.used(metric, clock);
+    let used = this.used(metric, now);
     // Drained with toArray: cursors abandoned mid-iteration stay open in workerd and made
     // each later statement slower, so a 10,000-refusal flood went quadratic.
     const events = this.sql
       .exec<{ at: number; amount: number }>(
         'SELECT at, amount FROM envelope_events WHERE metric = ? AND at > ? ORDER BY at, id',
         metric,
-        clock - windowMs,
+        now - windowMs,
       )
       .toArray();
     for (const event of events) {
       used -= event.amount;
       if (used + amount <= max) return event.at + windowMs - now;
     }
-    return clock + windowMs - now;
+    return windowMs;
   }
 
   private flag(
-    metric: EnvelopeMetric,
+    metric: RateEnvelopeMetricId,
     amount: number,
     used: number,
-    clock: EpochMs,
+    now: EpochMs,
     ref: string | null,
   ): void {
     const { windowMs, max } = this.limits[metric];
@@ -317,7 +314,7 @@ export class RateEnvelope {
         `SELECT id FROM envelope_flags WHERE metric = ? AND window_start > ?
          ORDER BY window_start DESC LIMIT 1`,
         metric,
-        clock - windowMs,
+        now - windowMs,
       )
       .toArray()[0];
     if (open !== undefined) {
@@ -325,7 +322,7 @@ export class RateEnvelope {
         `UPDATE envelope_flags
          SET count = count + 1, last_at = MAX(last_at, ?), max_excess = MAX(max_excess, ?)
          WHERE id = ?`,
-        clock,
+        now,
         excess,
         open.id,
       );
@@ -336,13 +333,13 @@ export class RateEnvelope {
          (metric, window_start, amount, used, max, window_ms, ref, last_at, count, max_excess)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
       metric,
-      clock,
+      now,
       amount,
       used,
       max,
       windowMs,
       ref,
-      clock,
+      now,
       excess,
     );
   }

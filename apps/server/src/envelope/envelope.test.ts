@@ -1,13 +1,18 @@
+import {
+  RATE_ENVELOPE_METRIC_IDS,
+  rateEnvelope,
+  rateEnvelopeFor,
+  upgradeLines,
+  venues,
+  type RateEnvelopeLimits,
+  type RateEnvelopeMetricId,
+  type RateEnvelopeTable,
+} from '@coinposh/economy';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import type { PlayerDO } from '../do/PlayerDO.ts';
-import {
-  ENVELOPE_METRICS,
-  RateEnvelope,
-  type EnvelopeLimits,
-  type EnvelopeMetric,
-} from './envelope.ts';
+import { ENVELOPE_POLICY, RateEnvelope } from './envelope.ts';
 
 const T0 = 1_800_000_000_000;
 
@@ -15,7 +20,7 @@ const T0 = 1_800_000_000_000;
  * Test-only limits, chosen small so the window arithmetic is easy to read. Production
  * limits come from the economy config; these tests pin the mechanism, not the numbers.
  */
-const LIMITS: EnvelopeLimits = {
+const LIMITS: RateEnvelopeLimits = {
   drops: { windowMs: 1_000, max: 5 },
   falls: { windowMs: 10_000, max: 20 },
   fallValue: { windowMs: 10_000, max: 100 },
@@ -28,7 +33,7 @@ function inFreshDo<T>(run: (sql: SqlStorage, ctx: DurableObjectState) => T): Pro
   return runInDurableObject(stub, (_instance: PlayerDO, ctx) => run(ctx.storage.sql, ctx));
 }
 
-function one(metric: EnvelopeMetric, amount = 1) {
+function one(metric: RateEnvelopeMetricId, amount = 1) {
   return [{ metric, amount }];
 }
 
@@ -270,7 +275,7 @@ describe('RateEnvelope flags and the shadow pool', () => {
       let refused = 0;
       for (let i = 0; i < 10_000; i++) {
         const at = T0 + Math.floor((i * durationMs) / 10_000);
-        const metric: EnvelopeMetric = i % 2 === 0 ? 'crates' : 'fusions';
+        const metric: RateEnvelopeMetricId = i % 2 === 0 ? 'crates' : 'fusions';
         if (!envelope.admit(one(metric), at, `claim_${i}`).admitted) refused++;
       }
       return { refused, flags: envelope.flags() };
@@ -401,9 +406,80 @@ describe('RateEnvelope uses server time only', () => {
         later: envelope.admit(one('drops'), T0 + 11_000, null).admitted,
       };
     });
-    expect(result.rewound).toMatchObject({ admitted: false, used: 5, retryAfterMs: 11_000 });
+    expect(result.rewound).toMatchObject({
+      admitted: false,
+      used: 5,
+      retryAfterMs: LIMITS.drops.windowMs,
+    });
     expect(result.farRewound).toBe(false);
     expect(result.later).toBe(true);
+  });
+
+  it('recovers within one window after a forward skew is corrected, however large the skew', async () => {
+    const skewMs = 60 * 60 * 1_000;
+    const result = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      const skewed = Array.from(
+        { length: 7 },
+        (_, i) => envelope.admit(one('drops'), T0 + skewMs + i, null).admitted,
+      );
+      const corrected = envelope.admit(one('drops'), T0, null);
+      const honest: boolean[] = [];
+      for (let ms = LIMITS.drops.windowMs; ms < 20_000; ms += 250) {
+        honest.push(envelope.admit(one('drops'), T0 + ms, null).admitted);
+      }
+      const stamps = sql
+        .exec<{ at: number }>("SELECT at FROM envelope_events WHERE metric = 'drops'")
+        .toArray()
+        .map(({ at }) => at);
+      return { skewed, corrected, honest, stamps };
+    });
+    expect(result.skewed.filter(Boolean)).toHaveLength(LIMITS.drops.max);
+    expect(result.corrected).toMatchObject({
+      admitted: false,
+      used: LIMITS.drops.max,
+      retryAfterMs: LIMITS.drops.windowMs,
+    });
+    expect(result.honest.every(Boolean)).toBe(true);
+    expect(Math.max(...result.stamps)).toBeLessThanOrEqual(T0 + 20_000);
+  });
+
+  it('stamps every admitted event with the real server time', async () => {
+    const stamps = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      envelope.admit(one('drops'), T0 + 5_000, null);
+      envelope.admit(one('crates'), T0 + 5_000, null);
+      envelope.admit(one('drops'), T0 + 5_200, null);
+      envelope.admit(one('crates'), T0 + 5_300, null);
+      return sql
+        .exec<{ metric: string; at: number }>('SELECT metric, at FROM envelope_events ORDER BY id')
+        .toArray()
+        .map(({ metric, at }) => [metric, at - T0]);
+    });
+    expect(stamps).toEqual([
+      ['drops', 5_000],
+      ['crates', 5_000],
+      ['drops', 5_200],
+      ['crates', 5_300],
+    ]);
+  });
+
+  it('keeps flagging a claim bot through a forward skew without adding a row per refusal', async () => {
+    const skewMs = 60 * 60 * 1_000;
+    const result = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      let refused = 0;
+      for (let i = 0; i < 1_000; i++) {
+        if (!envelope.admit(one('crates'), T0 + skewMs + i, `skewed_${i}`).admitted) refused++;
+      }
+      for (let ms = 0; ms < 2 * LIMITS.crates.windowMs; ms += 100) {
+        if (!envelope.admit(one('crates'), T0 + ms, `corrected_${ms}`).admitted) refused++;
+      }
+      return { refused, flags: envelope.flags() };
+    });
+    expect(result.flags.length).toBeLessThanOrEqual(2);
+    expect(result.flags[0]).toMatchObject({ ref: 'skewed_2', at: T0 + skewMs + 2 });
+    expect(result.flags.reduce((sum, flag) => sum + flag.count, 0)).toBe(result.refused);
   });
 
   it('reports a retry time from the real clock that is admitted when honoured after a step back', async () => {
@@ -441,10 +517,73 @@ describe('RateEnvelope uses server time only', () => {
   });
 });
 
+describe('RateEnvelope limits from the economy config', () => {
+  const BASE_TABLE: RateEnvelopeTable = {
+    levels: {},
+    venue: venues[0].id,
+    charms: 0,
+    albumBonus: 0,
+  };
+
+  it('meters exactly the metrics the economy config defines, each with a policy', () => {
+    expect(Object.keys(ENVELOPE_POLICY).sort()).toEqual([...RATE_ENVELOPE_METRIC_IDS].sort());
+  });
+
+  it('enforces rateEnvelopeFor(table) on a base table, to the unit', async () => {
+    const result = await inFreshDo((sql) => {
+      const envelope = RateEnvelope.forTable(sql, BASE_TABLE);
+      const { max } = rateEnvelope.crates;
+      const admitted = Array.from(
+        { length: max + 1 },
+        (_, i) => envelope.admit(one('crates'), T0 + i, `crate_${i}`).admitted,
+      );
+      return { admitted, flags: envelope.flags() };
+    });
+    expect(result.admitted.filter(Boolean)).toHaveLength(rateEnvelope.crates.max);
+    expect(result.admitted.at(-1)).toBe(false);
+    expect(result.flags).toMatchObject([
+      {
+        metric: 'crates',
+        max: rateEnvelope.crates.max,
+        windowMs: rateEnvelope.crates.windowMs,
+      },
+    ]);
+  });
+
+  it('stretches with the table: a maxed upgrade line lifts the drop envelope', async () => {
+    const dropLine = upgradeLines.find((line) => line.effect.stat === 'dropRate');
+    if (dropLine === undefined) throw new Error('The economy config has no dropRate line.');
+    const upgraded: RateEnvelopeTable = {
+      ...BASE_TABLE,
+      levels: { [dropLine.id]: dropLine.maxLevel },
+    };
+    const expected = rateEnvelopeFor(upgraded).drops.max;
+    expect(expected).toBeGreaterThan(rateEnvelope.drops.max);
+    const admitted = await inFreshDo((sql) => {
+      const envelope = RateEnvelope.forTable(sql, upgraded);
+      let count = 0;
+      for (let i = 0; i < expected + 50; i++) {
+        if (envelope.admit(one('drops'), T0, null).admitted) count++;
+      }
+      return count;
+    });
+    expect(admitted).toBe(expected);
+  });
+
+  it('refuses a table the economy config does not know instead of guessing limits', async () => {
+    await inFreshDo((sql) => {
+      expect(() =>
+        RateEnvelope.forTable(sql, { ...BASE_TABLE, levels: { forged_line: 1 } }),
+      ).toThrow(RangeError);
+      expect(() => RateEnvelope.forTable(sql, { ...BASE_TABLE, charms: -1 })).toThrow(RangeError);
+    });
+  });
+});
+
 describe('RateEnvelope input validation', () => {
   it('rejects limits that would disable or invert the envelope', async () => {
     await inFreshDo((sql) => {
-      for (const metric of ENVELOPE_METRICS) {
+      for (const metric of RATE_ENVELOPE_METRIC_IDS) {
         for (const broken of [
           { windowMs: 0, max: 1 },
           { windowMs: -5, max: 1 },
@@ -466,7 +605,7 @@ describe('RateEnvelope input validation', () => {
         expect(() => envelope.admit([{ metric: 'drops', amount }], T0, null)).toThrow(RangeError);
       }
       expect(() =>
-        envelope.admit([{ metric: 'coins' as EnvelopeMetric, amount: 1 }], T0, null),
+        envelope.admit([{ metric: 'coins' as RateEnvelopeMetricId, amount: 1 }], T0, null),
       ).toThrow(/Unknown envelope metric/);
       expect(envelope.usage('drops', T0)).toBe(0);
     });

@@ -112,7 +112,12 @@ export interface FairContext {
   readonly idempotencyKey: string | null;
 }
 
-/** The commitment players are shown: `sha256` of the server seed's UTF-8 hex text. */
+/**
+ * The commitment players are shown: `sha256` of the server seed's UTF-8 hex text.
+ * This and `fairDigest` are synchronous twins of the `@coinposh/shared` verifiers: Web
+ * Crypto is async and cannot run inside a Durable Object's `transactionSync`, so rolls
+ * use this copy and `fair.test.ts` pins both to the same output.
+ */
 export function commitmentOf(serverSeed: string): Sha256Hex {
   return toHex(sha256(utf8(serverSeed)));
 }

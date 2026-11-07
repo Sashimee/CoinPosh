@@ -1,6 +1,8 @@
 import { createRng } from '@coinposh/economy';
 import {
   ActiveSeedSchema,
+  commitmentOf as sharedCommitmentOf,
+  fairDigest as sharedFairDigest,
   FairRotateResponseSchema,
   FairSeedsResponseSchema,
   IdempotencyKeySchema,
@@ -183,6 +185,74 @@ describe('FairSeeds rolls', () => {
     });
     expect(after.active.nonce).toBe(0);
     expect(after.rolls).toBe(0);
+  });
+});
+
+describe('FairSeeds agrees with the shared client verifier', () => {
+  const PRINTABLE = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) =>
+    String.fromCharCode(0x21 + i),
+  ).join('');
+
+  function randomHexSeed(): string {
+    return toHex(crypto.getRandomValues(new Uint8Array(32)));
+  }
+
+  function randomClientSeed(): string {
+    const length = 1 + ((crypto.getRandomValues(new Uint8Array(1))[0] ?? 0) % 64);
+    return Array.from(
+      crypto.getRandomValues(new Uint8Array(length)),
+      (byte) => PRINTABLE[byte % PRINTABLE.length],
+    ).join('');
+  }
+
+  it('matches shared fairDigest and commitmentOf on fixed edge cases', async () => {
+    const cases: [string, string, number][] = [
+      ['00'.repeat(32), '!', 0],
+      ['ff'.repeat(32), '~'.repeat(64), Number.MAX_SAFE_INTEGER],
+      ['ab'.repeat(32), 'client:seed:with:colons', 4],
+      ['0123456789abcdef'.repeat(4), PRINTABLE.slice(0, 64), 1_000_000],
+    ];
+    for (const [serverSeed, clientSeed, nonce] of cases) {
+      expect(fairDigest(serverSeed, clientSeed, nonce)).toBe(
+        await sharedFairDigest(serverSeed, clientSeed, nonce),
+      );
+      expect(commitmentOf(serverSeed)).toBe(await sharedCommitmentOf(serverSeed));
+    }
+  });
+
+  it('matches shared fairDigest and commitmentOf on 500 random seeds', async () => {
+    for (let i = 0; i < 500; i++) {
+      const serverSeed = randomHexSeed();
+      const clientSeed = randomClientSeed();
+      const nonce = (crypto.getRandomValues(new Uint32Array(1))[0] ?? 0) % 100_000;
+      expect(fairDigest(serverSeed, clientSeed, nonce)).toBe(
+        await sharedFairDigest(serverSeed, clientSeed, nonce),
+      );
+      expect(commitmentOf(serverSeed)).toBe(await sharedCommitmentOf(serverSeed));
+    }
+  });
+
+  it('lets a player re-derive every logged roll from the reveal with shared code only', async () => {
+    const result = await inFreshDo((sql) => {
+      const fair = new FairSeeds(sql);
+      fair.open(T0);
+      const committed = fair.active();
+      const digests = Array.from(
+        { length: 6 },
+        (_, i) => fair.roll('crate.vault', `crate_${i}`, T0 + i).digest,
+      );
+      const rotation = fair.rotate({}, { at: T1, idempotencyKey: key() });
+      return { committed, digests, revealed: rotation.revealed };
+    });
+    expect(await sharedCommitmentOf(result.revealed.serverSeed)).toBe(
+      result.committed.serverSeedHash,
+    );
+    const rederived = await Promise.all(
+      result.digests.map((_, nonce) =>
+        sharedFairDigest(result.revealed.serverSeed, result.revealed.clientSeed, nonce),
+      ),
+    );
+    expect(rederived).toEqual(result.digests);
   });
 });
 
