@@ -1,0 +1,160 @@
+{
+  "app": {
+    "name": "CoinPosh",
+    "hudLabel": "Commandes du jeu"
+  },
+  "venue": {
+    "rivieraYacht": "Yacht Riviera"
+  },
+  "currency": {
+    "coins_one": "{{value}} pièce",
+    "coins_many": "{{value}} pièces",
+    "coins_other": "{{value}} pièces",
+    "goldBars_one": "{{value}} lingot d'or",
+    "goldBars_many": "{{value}} lingots d'or",
+    "goldBars_other": "{{value}} lingots d'or"
+  },
+  "hud": {
+    "vault": "Coffre",
+    "balanceAria": "Solde du coffre : {{value}}",
+    "goldBarsAria": "Lingots d'or : {{value}}",
+    "provisional": "En attente de la maison"
+  },
+  "combo": {
+    "label": "Cascade",
+    "idle": "Poussez pour cascader",
+    "next": "{{count}} avant {{tier}}",
+    "peak": "Sommet",
+    "multiplier": "×{{value}}",
+    "aria": "Cascade {{tier}}, {{coins}}, multiplicateur {{multiplier}}",
+    "ariaIdle": "Aucune cascade en cours",
+    "tier": {
+      "chic": "Chic",
+      "lavish": "Fastueux",
+      "opulent": "Opulent",
+      "decadent": "Décadent",
+      "obscene": "OBSCÈNE"
+    }
+  },
+  "decorum": {
+    "label": "Décorum",
+    "aria": "Décorum utilisé : {{percent}}",
+    "calm": "Impeccable",
+    "warning": "Un peu de tenue",
+    "frozenTitle": "Le Concierge désapprouve",
+    "frozenCountdown_one": "La table reprend dans {{count}} seconde",
+    "frozenCountdown_many": "La table reprend dans {{count}} secondes",
+    "frozenCountdown_other": "La table reprend dans {{count}} secondes"
+  },
+  "dock": {
+    "upgrades": "Améliorations",
+    "settings": "Réglages",
+    "affordable_one": "{{count}} amélioration prête",
+    "affordable_many": "{{count}} améliorations prêtes",
+    "affordable_other": "{{count}} améliorations prêtes"
+  },
+  "upgrades": {
+    "title": "Améliorations",
+    "subtitle": "Raffinez la table, un caprice à la fois.",
+    "venueSection": "Le Yacht",
+    "globalSection": "Le Family Office",
+    "globalHint": "Payé en lingots d'or. Conservé à chaque Ascension.",
+    "level": "Niv. {{level}}",
+    "levelAria": "Niveau {{level}} sur {{max}}",
+    "maxed": "Max",
+    "buy": "Acheter",
+    "pending": "Confirmation…",
+    "buyAria": "Acheter {{name}} niveau {{level}} pour {{cost}}",
+    "cannotAfford": "Fonds insuffisants",
+    "effect": {
+      "multiplier": "×{{value}}",
+      "count": "{{value}}",
+      "hours": "{{value}} h",
+      "next": "{{current}} → {{next}}"
+    },
+    "line": {
+      "pusherSpeed": {
+        "name": "Tempo du poussoir",
+        "description": "Un balayage plus vif du poussoir en laiton."
+      },
+      "dropRate": {
+        "name": "Main du steward",
+        "description": "Les pièces quittent votre main plus souvent."
+      },
+      "coinValue": {
+        "name": "Lustre de la Monnaie",
+        "description": "Chaque pièce vaut davantage."
+      },
+      "crateChance": {
+        "name": "Manifeste de cargaison",
+        "description": "Les caisses du coffre apparaissent plus souvent."
+      },
+      "vaultCapacity": {
+        "name": "Chambre forte",
+        "description": "Plus de place dans le Coffre de velours."
+      },
+      "offlineHours": {
+        "name": "Personnel de nuit",
+        "description": "La maison pousse plus longtemps en votre absence."
+      },
+      "fusionWindow": {
+        "name": "Patience de l'alchimiste",
+        "description": "Les pièces ont plus de temps pour fusionner."
+      },
+      "decorumCapacity": {
+        "name": "Cuir épais",
+        "description": "Secouez davantage avant que le Concierge ne proteste."
+      },
+      "oldMoney": {
+        "name": "Vieille fortune",
+        "description": "Les pièces valent plus dans chaque lieu."
+      },
+      "privateCourier": {
+        "name": "Coursier privé",
+        "description": "Les caisses arrivent plus souvent dans chaque lieu."
+      },
+      "trustFund": {
+        "name": "Fonds fiduciaire",
+        "description": "Commencez chaque lieu avec des pièces en main."
+      }
+    }
+  },
+  "settings": {
+    "title": "Réglages",
+    "subtitle": "Selon vos goûts.",
+    "audio": "Son",
+    "master": "Général",
+    "music": "Musique",
+    "sfx": "Effets",
+    "mono": "Audio mono",
+    "monoHint": "Réunit la stéréo sur un seul canal.",
+    "feel": "Sensations",
+    "haptics": "Vibrations",
+    "hapticsHint": "Tapotements et vibrations sur les téléphones compatibles.",
+    "reduceMotion": "Réduire les animations",
+    "reduceMotionHint": "Transitions plus douces. Suit votre appareil par défaut.",
+    "motion": {
+      "system": "Appareil",
+      "reduced": "Oui",
+      "full": "Non"
+    },
+    "display": "Affichage",
+    "quality": "Graphismes",
+    "qualityOption": {
+      "auto": "Auto",
+      "low": "Léger",
+      "high": "Somptueux"
+    },
+    "language": "Langue",
+    "languageName": {
+      "en": "English",
+      "fr": "Français",
+      "de": "Deutsch"
+    },
+    "sliderValue": "{{value}} pour cent"
+  },
+  "common": {
+    "close": "Fermer",
+    "dragToClose": "Glissez vers le bas pour fermer"
+  }
+}

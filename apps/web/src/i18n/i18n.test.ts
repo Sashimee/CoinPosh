@@ -1,0 +1,264 @@
+import { describe, expect, it, vi } from 'vitest';
+import { cascade, upgradeLines } from '@coinposh/economy';
+import { MIXER_BUSES, MOTION_OPTIONS, QUALITY_OPTIONS } from '../app/settings.ts';
+import { createI18n, detectLanguage, LANGUAGES, type ResourceTree } from './core.ts';
+import { BUNDLED_RESOURCES } from './index.ts';
+
+function leafKeys(tree: ResourceTree, prefix = ''): string[] {
+  return Object.entries(tree).flatMap(([key, value]) =>
+    typeof value === 'string' ? [`${prefix}${key}`] : leafKeys(value, `${prefix}${key}.`),
+  );
+}
+
+function placeholders(text: string): string[] {
+  return [...text.matchAll(/\{\{(\w+)\}\}/g)].map((match) => match[1] ?? '').sort();
+}
+
+function stringAt(tree: ResourceTree, path: string): string {
+  let node: string | ResourceTree | undefined = tree;
+  for (const part of path.split('.')) {
+    if (node === undefined || typeof node === 'string') break;
+    node = node[part];
+  }
+  if (typeof node !== 'string') throw new Error(`${path} is not a string`);
+  return node;
+}
+
+const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
+
+function pluralBases(keys: string[]): string[] {
+  return [
+    ...new Set(
+      keys.filter((key) => PLURAL_SUFFIX.test(key)).map((key) => key.replace(PLURAL_SUFFIX, '')),
+    ),
+  ].sort();
+}
+
+function withoutPlurals(keys: string[]): string[] {
+  return keys.filter((key) => !PLURAL_SUFFIX.test(key)).sort();
+}
+
+const enUi = BUNDLED_RESOURCES.en.ui;
+if (!enUi) throw new Error('English ui bundle is missing');
+const englishKeys = leafKeys(enUi).sort();
+const englishPluralBases = pluralBases(englishKeys);
+
+describe('bundled locales', () => {
+  it.each(LANGUAGES.filter((language) => language !== 'en'))(
+    '%s has exactly the English keys with the same placeholders',
+    (language) => {
+      const tree = BUNDLED_RESOURCES[language].ui;
+      if (!tree) throw new Error(`${language} ui bundle is missing`);
+      const keys = leafKeys(tree);
+      expect(withoutPlurals(keys)).toEqual(withoutPlurals(englishKeys));
+      expect(pluralBases(keys)).toEqual(englishPluralBases);
+      for (const key of keys) {
+        const englishKey = PLURAL_SUFFIX.test(key) ? key.replace(PLURAL_SUFFIX, '_other') : key;
+        expect(placeholders(stringAt(tree, key)), `${language}:${key}`).toEqual(
+          placeholders(stringAt(enUi, englishKey)),
+        );
+      }
+    },
+  );
+
+  it.each(LANGUAGES)('%s defines every plural category its language uses', (language) => {
+    const tree = BUNDLED_RESOURCES[language].ui;
+    if (!tree) throw new Error(`${language} ui bundle is missing`);
+    const leaves = new Set(leafKeys(tree));
+    const categories = new Intl.PluralRules(language).resolvedOptions().pluralCategories;
+    expect(englishPluralBases.length).toBeGreaterThan(0);
+    const missing = englishPluralBases.flatMap((base) =>
+      categories.map((category) => `${base}_${category}`).filter((key) => !leaves.has(key)),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it('does not fall back to English for French counts in the millions', () => {
+    const i18n = createI18n({ language: 'fr', resources: BUNDLED_RESOURCES });
+    expect(new Intl.PluralRules('fr').select(1_000_000)).toBe('many');
+    for (const base of englishPluralBases) {
+      const options = { count: 1_000_000, value: '1 000 000' };
+      expect(i18n.t(base, options), base).not.toBe(i18n.t(base, { ...options, lng: 'en' }));
+    }
+  });
+
+  it('has no empty strings', () => {
+    for (const language of LANGUAGES) {
+      const tree = BUNDLED_RESOURCES[language].ui;
+      if (!tree) throw new Error(`${language} ui bundle is missing`);
+      for (const key of leafKeys(tree)) expect(stringAt(tree, key).trim(), key).not.toBe('');
+    }
+  });
+
+  it('covers every literal key the UI asks for', () => {
+    const sources = import.meta.glob<string>(
+      ['../ui/**/*.ts', '../app/**/*.ts', '!../**/*.test.ts'],
+      { query: '?raw', import: 'default', eager: true },
+    );
+    const i18n = createI18n({ language: 'en', resources: BUNDLED_RESOURCES });
+    const used = new Set<string>();
+    for (const source of Object.values(sources)) {
+      for (const match of source.matchAll(/\b(?:tr\(ctx, |\.t\()'([a-zA-Z.]+)'/g)) {
+        if (match[1]) used.add(match[1]);
+      }
+    }
+    expect(used.size).toBeGreaterThan(40);
+    const missing = [...used].filter((key) => !i18n.exists(key));
+    expect(missing).toEqual([]);
+  });
+
+  it.each(LANGUAGES)(
+    '%s covers every key the UI builds from economy and settings data',
+    (language) => {
+      const tree = BUNDLED_RESOURCES[language].ui;
+      if (!tree) throw new Error(`${language} ui bundle is missing`);
+      const leaves = new Set(leafKeys(tree));
+      const plural = upgradeLines.map((line) => `currency.${line.currency}`);
+      const templated = [
+        ...upgradeLines.flatMap((line) => [
+          `upgrades.line.${line.id}.name`,
+          `upgrades.line.${line.id}.description`,
+        ]),
+        ...cascade.tiers.map((tier) => `combo.tier.${tier.id}`),
+        ...QUALITY_OPTIONS.map((value) => `settings.qualityOption.${value}`),
+        ...MOTION_OPTIONS.map((value) => `settings.motion.${value}`),
+        ...MIXER_BUSES.map((bus) => `settings.${bus}`),
+        ...LANGUAGES.map((value) => `settings.languageName.${value}`),
+      ];
+      expect(upgradeLines.length).toBeGreaterThan(0);
+      expect(cascade.tiers.length).toBeGreaterThan(0);
+      expect(templated.filter((key) => !leaves.has(key))).toEqual([]);
+      expect(
+        plural.filter((key) => !leaves.has(`${key}_one`) || !leaves.has(`${key}_other`)),
+      ).toEqual([]);
+    },
+  );
+});
+
+const resources = {
+  en: {
+    ui: {
+      hello: 'Hello {{name}}',
+      coins_one: '{{count}} coin',
+      coins_other: '{{count}} coins',
+      onlyEnglish: 'Fallback',
+      nested: { deep: 'Deep' },
+    },
+  },
+  fr: {
+    ui: {
+      hello: 'Bonjour {{name}}',
+      coins_one: '{{count}} pièce',
+      coins_other: '{{count}} pièces',
+      nested: { deep: 'Profond' },
+    },
+  },
+  de: { ui: { hello: 'Hallo {{name}}' } },
+};
+
+describe('createI18n', () => {
+  it('is backed by an initialised i18next instance that resolves synchronously', () => {
+    const i18n = createI18n({ language: 'fr', resources });
+    expect(i18n.instance.isInitialized).toBe(true);
+    expect(i18n.instance.language).toBe('fr');
+    expect(i18n.instance.t('hello', { name: 'Zoé' })).toBe('Bonjour Zoé');
+    i18n.changeLanguage('de');
+    expect(i18n.language).toBe('de');
+    expect(i18n.t('hello', { name: 'Jo' })).toBe('Hallo Jo');
+  });
+
+  it('starts, translates and switches without writing to the console', () => {
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    try {
+      const i18n = createI18n({ language: 'en', resources: BUNDLED_RESOURCES });
+      i18n.t('app.name');
+      i18n.changeLanguage('fr');
+      i18n.t('app.name');
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it('does not HTML-escape interpolated values, since the UI writes textContent', () => {
+    const i18n = createI18n({ language: 'en', resources });
+    expect(i18n.t('hello', { name: 'A & B <C>' })).toBe('Hello A & B <C>');
+  });
+
+  it('rejects an unsupported starting language', () => {
+    expect(() => createI18n({ language: 'es' as never, resources })).toThrow(
+      /Unsupported language "es"/,
+    );
+  });
+
+  it('interpolates values and leaves unknown placeholders intact', () => {
+    const i18n = createI18n({ language: 'en', resources });
+    expect(i18n.t('hello', { name: 'Ada' })).toBe('Hello Ada');
+    expect(i18n.t('hello')).toBe('Hello {{name}}');
+  });
+
+  it('picks plural forms with each language’s rules', () => {
+    const i18n = createI18n({ language: 'en', resources });
+    expect(i18n.t('coins', { count: 1 })).toBe('1 coin');
+    expect(i18n.t('coins', { count: 0 })).toBe('0 coins');
+    i18n.changeLanguage('fr');
+    // French treats 0 and 1 as singular.
+    expect(i18n.t('coins', { count: 0 })).toBe('0 pièce');
+    expect(i18n.t('coins', { count: 2 })).toBe('2 pièces');
+  });
+
+  it('falls back to English, then to the key, reporting the miss', () => {
+    const onMissingKey = vi.fn();
+    const i18n = createI18n({ language: 'de', resources, onMissingKey });
+    expect(i18n.t('onlyEnglish')).toBe('Fallback');
+    expect(i18n.t('nested.deep')).toBe('Deep');
+    expect(i18n.t('nope.nothing')).toBe('nope.nothing');
+    expect(onMissingKey).toHaveBeenCalledWith('nope.nothing', 'de');
+    expect(onMissingKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads one string in another language with lng', () => {
+    const i18n = createI18n({ language: 'en', resources });
+    expect(i18n.t('hello', { name: 'A', lng: 'fr' })).toBe('Bonjour A');
+    expect(i18n.language).toBe('en');
+  });
+
+  it('notifies listeners on change and rejects unsupported languages', () => {
+    const i18n = createI18n({ language: 'en', resources });
+    const listener = vi.fn();
+    const off = i18n.onLanguageChanged(listener);
+    i18n.changeLanguage('de');
+    i18n.changeLanguage('de');
+    expect(listener).toHaveBeenCalledTimes(1);
+    off();
+    i18n.changeLanguage('fr');
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(() => {
+      i18n.changeLanguage('es' as never);
+    }).toThrow(/Unsupported language "es"/);
+  });
+
+  it('lets another layer add a namespace such as net', () => {
+    const i18n = createI18n({ language: 'fr', resources });
+    i18n.addResourceBundle('en', 'net', { offline: 'Offline' });
+    i18n.addResourceBundle('fr', 'net', { offline: 'Hors ligne' });
+    expect(i18n.t('net:offline')).toBe('Hors ligne');
+    i18n.addResourceBundle('fr', 'ui', { extra: 'En plus' });
+    expect(i18n.t('extra')).toBe('En plus');
+    expect(i18n.t('nested.deep')).toBe('Profond');
+  });
+});
+
+describe('detectLanguage', () => {
+  it('matches primary subtags in preference order', () => {
+    expect(detectLanguage(['es-ES', 'fr-CA', 'de'])).toBe('fr');
+    expect(detectLanguage(['DE-at'])).toBe('de');
+  });
+
+  it('falls back to English', () => {
+    expect(detectLanguage([])).toBe('en');
+    expect(detectLanguage(['ja', 'pt-BR'])).toBe('en');
+  });
+});

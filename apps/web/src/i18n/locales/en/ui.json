@@ -1,0 +1,156 @@
+{
+  "app": {
+    "name": "CoinPosh",
+    "hudLabel": "Game controls"
+  },
+  "venue": {
+    "rivieraYacht": "Riviera Yacht"
+  },
+  "currency": {
+    "coins_one": "{{value}} coin",
+    "coins_other": "{{value}} coins",
+    "goldBars_one": "{{value}} gold bar",
+    "goldBars_other": "{{value}} gold bars"
+  },
+  "hud": {
+    "vault": "Vault",
+    "balanceAria": "Vault balance: {{value}}",
+    "goldBarsAria": "Gold bars: {{value}}",
+    "provisional": "Awaiting the house"
+  },
+  "combo": {
+    "label": "Cascade",
+    "idle": "Push to cascade",
+    "next": "{{count}} to {{tier}}",
+    "peak": "Peak",
+    "multiplier": "×{{value}}",
+    "aria": "Cascade {{tier}}, {{coins}}, multiplier {{multiplier}}",
+    "ariaIdle": "No cascade running",
+    "tier": {
+      "chic": "Chic",
+      "lavish": "Lavish",
+      "opulent": "Opulent",
+      "decadent": "Decadent",
+      "obscene": "OBSCENE"
+    }
+  },
+  "decorum": {
+    "label": "Decorum",
+    "aria": "Decorum used: {{percent}}",
+    "calm": "Composed",
+    "warning": "Mind your manners",
+    "frozenTitle": "The Concierge disapproves",
+    "frozenCountdown_one": "The table resumes in {{count}} second",
+    "frozenCountdown_other": "The table resumes in {{count}} seconds"
+  },
+  "dock": {
+    "upgrades": "Upgrades",
+    "settings": "Settings",
+    "affordable_one": "{{count}} upgrade ready",
+    "affordable_other": "{{count}} upgrades ready"
+  },
+  "upgrades": {
+    "title": "Upgrades",
+    "subtitle": "Refine the table, one indulgence at a time.",
+    "venueSection": "The Yacht",
+    "globalSection": "The Family Office",
+    "globalHint": "Paid in gold bars. Kept through every Ascension.",
+    "level": "Lv {{level}}",
+    "levelAria": "Level {{level}} of {{max}}",
+    "maxed": "Maxed",
+    "buy": "Buy",
+    "pending": "Confirming…",
+    "buyAria": "Buy {{name}} level {{level}} for {{cost}}",
+    "cannotAfford": "Not enough funds",
+    "effect": {
+      "multiplier": "×{{value}}",
+      "count": "{{value}}",
+      "hours": "{{value}} h",
+      "next": "{{current}} → {{next}}"
+    },
+    "line": {
+      "pusherSpeed": {
+        "name": "Pusher Tempo",
+        "description": "A brisker sweep of the brass pusher."
+      },
+      "dropRate": {
+        "name": "Steward's Hand",
+        "description": "Coins leave your hand more often."
+      },
+      "coinValue": {
+        "name": "Mint Polish",
+        "description": "Every coin is worth more."
+      },
+      "crateChance": {
+        "name": "Cargo Manifest",
+        "description": "Vault Crates appear more often."
+      },
+      "vaultCapacity": {
+        "name": "Strongroom",
+        "description": "More room in the Velvet Vault."
+      },
+      "offlineHours": {
+        "name": "Night Staff",
+        "description": "The house keeps pushing longer while you are away."
+      },
+      "fusionWindow": {
+        "name": "Alchemist's Patience",
+        "description": "Coins have longer to fuse."
+      },
+      "decorumCapacity": {
+        "name": "Thick Skin",
+        "description": "Nudge more before the Concierge objects."
+      },
+      "oldMoney": {
+        "name": "Old Money",
+        "description": "Coins are worth more in every venue."
+      },
+      "privateCourier": {
+        "name": "Private Courier",
+        "description": "Crates arrive more often in every venue."
+      },
+      "trustFund": {
+        "name": "Trust Fund",
+        "description": "Start every venue with coins in hand."
+      }
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Tailored to your taste.",
+    "audio": "Sound",
+    "master": "Master",
+    "music": "Music",
+    "sfx": "Effects",
+    "mono": "Mono audio",
+    "monoHint": "Folds stereo into one channel.",
+    "feel": "Feel",
+    "haptics": "Haptics",
+    "hapticsHint": "Taps and rumbles on supported phones.",
+    "reduceMotion": "Reduce motion",
+    "reduceMotionHint": "Calmer transitions. Follows your device by default.",
+    "motion": {
+      "system": "Device",
+      "reduced": "On",
+      "full": "Off"
+    },
+    "display": "Display",
+    "quality": "Graphics",
+    "qualityOption": {
+      "auto": "Auto",
+      "low": "Light",
+      "high": "Lavish"
+    },
+    "language": "Language",
+    "languageName": {
+      "en": "English",
+      "fr": "Français",
+      "de": "Deutsch"
+    },
+    "sliderValue": "{{value}} percent"
+  },
+  "common": {
+    "close": "Close",
+    "dragToClose": "Drag down to close"
+  }
+}
