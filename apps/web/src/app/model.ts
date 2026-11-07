@@ -6,7 +6,7 @@ import {
   type CascadeTierDef,
   type UpgradeLineDef,
   type UpgradeStatId,
-} from './economy.ts';
+} from '@coinposh/economy';
 
 export interface ComboView {
   readonly count: number;

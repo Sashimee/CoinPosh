@@ -1,4 +1,4 @@
-import { cascade } from '../../app/economy.ts';
+import { cascade } from '@coinposh/economy';
 import { comboView, type ComboView } from '../../app/model.ts';
 import { watch } from '../../app/store.ts';
 import { formatDecimal, formatInteger } from '../../i18n/index.ts';

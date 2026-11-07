@@ -1,4 +1,4 @@
-import { upgradeLines, type UpgradeLineDef } from '../../app/economy.ts';
+import { upgradeLines, type UpgradeLineDef } from '@coinposh/economy';
 import { upgradeRow, type StatFormat, type UpgradeRow } from '../../app/model.ts';
 import { watch } from '../../app/store.ts';
 import { formatDecimal, formatInteger, formatPrice, type Language } from '../../i18n/index.ts';

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cascade, upgradeLines } from '../app/economy.ts';
+import { cascade, upgradeLines } from '@coinposh/economy';
 import { MIXER_BUSES, MOTION_OPTIONS, QUALITY_OPTIONS } from '../app/settings.ts';
 import { createI18n, detectLanguage, LANGUAGES, type ResourceTree } from './core.ts';
 import { BUNDLED_RESOURCES } from './index.ts';
@@ -24,9 +24,24 @@ function stringAt(tree: ResourceTree, path: string): string {
   return node;
 }
 
+const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
+
+function pluralBases(keys: string[]): string[] {
+  return [
+    ...new Set(
+      keys.filter((key) => PLURAL_SUFFIX.test(key)).map((key) => key.replace(PLURAL_SUFFIX, '')),
+    ),
+  ].sort();
+}
+
+function withoutPlurals(keys: string[]): string[] {
+  return keys.filter((key) => !PLURAL_SUFFIX.test(key)).sort();
+}
+
 const enUi = BUNDLED_RESOURCES.en.ui;
 if (!enUi) throw new Error('English ui bundle is missing');
 const englishKeys = leafKeys(enUi).sort();
+const englishPluralBases = pluralBases(englishKeys);
 
 describe('bundled locales', () => {
   it.each(LANGUAGES.filter((language) => language !== 'en'))(
@@ -34,14 +49,38 @@ describe('bundled locales', () => {
     (language) => {
       const tree = BUNDLED_RESOURCES[language].ui;
       if (!tree) throw new Error(`${language} ui bundle is missing`);
-      expect(leafKeys(tree).sort()).toEqual(englishKeys);
-      for (const key of englishKeys) {
+      const keys = leafKeys(tree);
+      expect(withoutPlurals(keys)).toEqual(withoutPlurals(englishKeys));
+      expect(pluralBases(keys)).toEqual(englishPluralBases);
+      for (const key of keys) {
+        const englishKey = PLURAL_SUFFIX.test(key) ? key.replace(PLURAL_SUFFIX, '_other') : key;
         expect(placeholders(stringAt(tree, key)), `${language}:${key}`).toEqual(
-          placeholders(stringAt(enUi, key)),
+          placeholders(stringAt(enUi, englishKey)),
         );
       }
     },
   );
+
+  it.each(LANGUAGES)('%s defines every plural category its language uses', (language) => {
+    const tree = BUNDLED_RESOURCES[language].ui;
+    if (!tree) throw new Error(`${language} ui bundle is missing`);
+    const leaves = new Set(leafKeys(tree));
+    const categories = new Intl.PluralRules(language).resolvedOptions().pluralCategories;
+    expect(englishPluralBases.length).toBeGreaterThan(0);
+    const missing = englishPluralBases.flatMap((base) =>
+      categories.map((category) => `${base}_${category}`).filter((key) => !leaves.has(key)),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it('does not fall back to English for French counts in the millions', () => {
+    const i18n = createI18n({ language: 'fr', resources: BUNDLED_RESOURCES });
+    expect(new Intl.PluralRules('fr').select(1_000_000)).toBe('many');
+    for (const base of englishPluralBases) {
+      const options = { count: 1_000_000, value: '1 000 000' };
+      expect(i18n.t(base, options), base).not.toBe(i18n.t(base, { ...options, lng: 'en' }));
+    }
+  });
 
   it('has no empty strings', () => {
     for (const language of LANGUAGES) {

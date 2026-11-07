@@ -1,4 +1,4 @@
-import { upgradeLines } from '../app/economy.ts';
+import { upgradeLines } from '@coinposh/economy';
 import { affordableCount, upgradeRows } from '../app/model.ts';
 import type { PanelId } from '../app/state.ts';
 import { watch } from '../app/store.ts';

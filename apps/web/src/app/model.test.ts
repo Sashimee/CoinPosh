@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cascade, upgradeCost, upgradeLines, type UpgradeLineDef } from './economy.ts';
+import { cascade, upgradeCost, upgradeLines, type UpgradeLineDef } from '@coinposh/economy';
 import { affordableCount, comboView, decorumView, upgradeRow, upgradeRows } from './model.ts';
 
 function line(id: string): UpgradeLineDef {

@@ -8,8 +8,10 @@
   },
   "currency": {
     "coins_one": "{{value}} pièce",
+    "coins_many": "{{value}} pièces",
     "coins_other": "{{value}} pièces",
     "goldBars_one": "{{value}} lingot d'or",
+    "goldBars_many": "{{value}} lingots d'or",
     "goldBars_other": "{{value}} lingots d'or"
   },
   "hud": {
@@ -41,12 +43,14 @@
     "warning": "Un peu de tenue",
     "frozenTitle": "Le Concierge désapprouve",
     "frozenCountdown_one": "La table reprend dans {{count}} seconde",
+    "frozenCountdown_many": "La table reprend dans {{count}} secondes",
     "frozenCountdown_other": "La table reprend dans {{count}} secondes"
   },
   "dock": {
     "upgrades": "Améliorations",
     "settings": "Réglages",
     "affordable_one": "{{count}} amélioration prête",
+    "affordable_many": "{{count}} améliorations prêtes",
     "affordable_other": "{{count}} améliorations prêtes"
   },
   "upgrades": {

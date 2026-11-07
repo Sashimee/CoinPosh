@@ -1,4 +1,4 @@
-import { upgradeLines } from './economy.ts';
+import { upgradeLines } from '@coinposh/economy';
 import type { DecorumState } from './model.ts';
 import type { Settings } from './settings.ts';
 
