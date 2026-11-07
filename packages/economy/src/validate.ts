@@ -11,9 +11,15 @@ import {
   UpgradeLineIdSchema,
   VENUE_IDS,
 } from '@coinposh/shared';
+import { validateRateEnvelope } from './config.ts';
 import { ODDS_SCALE, oddsTotal, weightToPercent } from './odds.ts';
 import { rarityRank } from './pity.ts';
-import { CASCADE_TIER_IDS, PACING_TARGET_IDS, type EconomyConfig } from './types.ts';
+import {
+  CASCADE_TIER_IDS,
+  PACING_TARGET_IDS,
+  RATE_ENVELOPE_METRIC_IDS,
+  type EconomyConfig,
+} from './types.ts';
 
 export interface ValidationIssue {
   readonly path: string;
@@ -327,6 +333,17 @@ function checkPacing(config: EconomyConfig, report: Report): void {
   }
 }
 
+function checkRateEnvelope(config: EconomyConfig, report: Report): void {
+  const metrics = Object.keys(config.rateEnvelope);
+  const complete = RATE_ENVELOPE_METRIC_IDS.every((id) => metrics.includes(id));
+  if (!complete) {
+    checkIdsExactly(report, 'rateEnvelope', metrics, RATE_ENVELOPE_METRIC_IDS);
+    return;
+  }
+  // validateRateEnvelope reads every metric, so it only runs once none is missing.
+  for (const issue of validateRateEnvelope(config.rateEnvelope)) report(issue.path, issue.message);
+}
+
 export function validateEconomyConfig(config: EconomyConfig): readonly ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const report: Report = (path, message) => issues.push({ path, message });
@@ -337,6 +354,7 @@ export function validateEconomyConfig(config: EconomyConfig): readonly Validatio
   checkDrops(config, report);
   checkProgression(config, report);
   checkPacing(config, report);
+  checkRateEnvelope(config, report);
   return issues;
 }
 
