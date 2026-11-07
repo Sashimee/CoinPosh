@@ -1,4 +1,4 @@
-import { mountApp, type UiApp } from '../app/index.ts';
+import { mountUi, type UiApp } from '../app/index.ts';
 import { isLanguage } from '../i18n/index.ts';
 
 /**
@@ -79,7 +79,7 @@ function boot(): void {
   const root = document.querySelector<HTMLElement>('#ui');
   if (!root) throw new Error('Preview root #ui is missing');
   const lang = params.get('lang');
-  const app = mountApp({ root, languages: isLanguage(lang) ? [lang] : navigator.languages });
+  const app = mountUi(root, { languages: isLanguage(lang) ? [lang] : navigator.languages });
   if (isLanguage(lang))
     app.store.setState((s) => ({ settings: { ...s.settings, language: lang } }));
   const motion = params.get('motion');

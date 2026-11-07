@@ -81,7 +81,21 @@ function requireCount(name: string, value: number): number {
   return value;
 }
 
+export type UiDeps = Omit<MountOptions, 'root'>;
+
+/**
+ * The boot entry point: fills `root` with the HUD, sheets and settings. Pass the audio engine
+ * here or later through `attachAudio`; its saved mixer volumes and mono flag are applied on
+ * attach and persisted on every change.
+ */
+export function mountUi(root: HTMLElement, deps: UiDeps = {}): UiApp {
+  return mountApp({ ...deps, root });
+}
+
 export function mountApp(options: MountOptions): UiApp {
+  if (options.root.classList.contains('cp-ui-host')) {
+    throw new Error('CoinPosh UI is already mounted on this root; dispose the first mount');
+  }
   const i18n = options.i18n ?? appI18n;
   const storage = options.storage === undefined ? browserStorage() : options.storage;
   const defaults = defaultSettings(detectLanguage(options.languages ?? browserLanguages()));

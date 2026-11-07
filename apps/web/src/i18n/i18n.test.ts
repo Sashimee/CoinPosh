@@ -118,6 +118,42 @@ const resources = {
 };
 
 describe('createI18n', () => {
+  it('is backed by an initialised i18next instance that resolves synchronously', () => {
+    const i18n = createI18n({ language: 'fr', resources });
+    expect(i18n.instance.isInitialized).toBe(true);
+    expect(i18n.instance.language).toBe('fr');
+    expect(i18n.instance.t('hello', { name: 'Zoé' })).toBe('Bonjour Zoé');
+    i18n.changeLanguage('de');
+    expect(i18n.language).toBe('de');
+    expect(i18n.t('hello', { name: 'Jo' })).toBe('Hallo Jo');
+  });
+
+  it('starts, translates and switches without writing to the console', () => {
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    try {
+      const i18n = createI18n({ language: 'en', resources: BUNDLED_RESOURCES });
+      i18n.t('app.name');
+      i18n.changeLanguage('fr');
+      i18n.t('app.name');
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it('does not HTML-escape interpolated values, since the UI writes textContent', () => {
+    const i18n = createI18n({ language: 'en', resources });
+    expect(i18n.t('hello', { name: 'A & B <C>' })).toBe('Hello A & B <C>');
+  });
+
+  it('rejects an unsupported starting language', () => {
+    expect(() => createI18n({ language: 'es' as never, resources })).toThrow(
+      /Unsupported language "es"/,
+    );
+  });
+
   it('interpolates values and leaves unknown placeholders intact', () => {
     const i18n = createI18n({ language: 'en', resources });
     expect(i18n.t('hello', { name: 'Ada' })).toBe('Hello Ada');
@@ -141,6 +177,7 @@ describe('createI18n', () => {
     expect(i18n.t('nested.deep')).toBe('Deep');
     expect(i18n.t('nope.nothing')).toBe('nope.nothing');
     expect(onMissingKey).toHaveBeenCalledWith('nope.nothing', 'de');
+    expect(onMissingKey).toHaveBeenCalledTimes(1);
   });
 
   it('reads one string in another language with lng', () => {

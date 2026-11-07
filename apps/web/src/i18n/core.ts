@@ -1,11 +1,10 @@
+import i18next, { type i18n as I18next } from 'i18next';
+
 export const LANGUAGES = ['en', 'fr', 'de'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
 export const FALLBACK_LANGUAGE: Language = 'en';
 export const DEFAULT_NAMESPACE = 'ui';
-const NAMESPACE_SEPARATOR = ':';
-const KEY_SEPARATOR = '.';
-const PLACEHOLDER = /\{\{\s*([\w.]+)\s*\}\}/g;
 
 export interface ResourceTree {
   readonly [key: string]: string | ResourceTree;
@@ -19,10 +18,12 @@ export type LanguageListener = (language: Language) => void;
 
 export interface I18n {
   readonly language: Language;
+  /** The underlying i18next instance, for layers that want its full API. */
+  readonly instance: I18next;
   /**
-   * i18next-style lookup: `ns:path.to.key` (namespace defaults to `ui`), `{{name}}`
-   * interpolation, `_one` / `_other` / … plural suffixes chosen by `count`, and an `lng`
-   * value to read one string in another language.
+   * i18next lookup: `ns:path.to.key` (namespace defaults to `ui`), `{{name}}` interpolation,
+   * `_one` / `_other` / … plural suffixes chosen by `count`, and `lng` to read one string in
+   * another language.
    */
   t(key: string, values?: InterpolationValues): string;
   exists(key: string): boolean;
@@ -51,111 +52,62 @@ export function detectLanguage(preferred: readonly string[]): Language {
   return FALLBACK_LANGUAGE;
 }
 
-function splitKey(key: string): { namespace: string; path: string[] } {
-  const at = key.indexOf(NAMESPACE_SEPARATOR);
-  const namespace = at === -1 ? DEFAULT_NAMESPACE : key.slice(0, at);
-  const path = (at === -1 ? key : key.slice(at + 1)).split(KEY_SEPARATOR);
-  return { namespace, path };
-}
-
-function walk(tree: ResourceTree | undefined, path: readonly string[]): string | undefined {
-  let node: string | ResourceTree | undefined = tree;
-  for (const part of path) {
-    if (node === undefined || typeof node === 'string') return undefined;
-    node = node[part];
+function requireLanguage(value: unknown): Language {
+  if (!isLanguage(value)) {
+    throw new RangeError(
+      `Unsupported language "${String(value)}"; use one of ${LANGUAGES.join(', ')}`,
+    );
   }
-  return typeof node === 'string' ? node : undefined;
-}
-
-function interpolate(template: string, values: InterpolationValues | undefined): string {
-  return template.replace(PLACEHOLDER, (match, name: string) => {
-    const value = values?.[name];
-    return value === undefined ? match : String(value);
-  });
-}
-
-function mergeTrees(base: ResourceTree | undefined, extra: ResourceTree): ResourceTree {
-  const merged: Record<string, string | ResourceTree> = { ...base };
-  for (const [key, value] of Object.entries(extra)) {
-    const existing = merged[key];
-    merged[key] =
-      typeof value === 'object' && typeof existing === 'object'
-        ? mergeTrees(existing, value)
-        : value;
-  }
-  return merged;
+  return value;
 }
 
 export function createI18n(options: I18nOptions): I18n {
-  const store = new Map<Language, Map<string, ResourceTree>>();
-  for (const language of LANGUAGES) {
-    store.set(language, new Map(Object.entries(options.resources[language])));
+  const instance = i18next.createInstance();
+  let language = requireLanguage(options.language);
+  // With inline resources and initAsync off, init and changeLanguage settle synchronously, so
+  // the UI can render translated text on its first paint.
+  void instance.init({
+    lng: language,
+    fallbackLng: FALLBACK_LANGUAGE,
+    supportedLngs: [...LANGUAGES],
+    ns: [DEFAULT_NAMESPACE],
+    defaultNS: DEFAULT_NAMESPACE,
+    resources: options.resources,
+    initAsync: false,
+    returnEmptyString: false,
+    interpolation: { escapeValue: false },
+  });
+  if (!instance.isInitialized) {
+    throw new Error('i18next did not initialise synchronously; check that resources are inline');
   }
+
   const listeners = new Set<LanguageListener>();
-  const pluralRules = new Map<Language, Intl.PluralRules>();
-  let language = options.language;
-
-  const rulesFor = (lng: Language): Intl.PluralRules => {
-    let rules = pluralRules.get(lng);
-    if (!rules) {
-      rules = new Intl.PluralRules(lng);
-      pluralRules.set(lng, rules);
-    }
-    return rules;
-  };
-
-  const lookup = (lng: Language, key: string, count: number | undefined): string | undefined => {
-    const { namespace, path } = splitKey(key);
-    const tree = store.get(lng)?.get(namespace);
-    if (count !== undefined) {
-      const last = path.length - 1;
-      const withSuffix = (suffix: string): string[] =>
-        path.map((part, i) => (i === last ? `${part}_${suffix}` : part));
-      const plural =
-        walk(tree, withSuffix(rulesFor(lng).select(count))) ?? walk(tree, withSuffix('other'));
-      if (plural !== undefined) return plural;
-    }
-    return walk(tree, path);
-  };
-
-  const resolve = (
-    key: string,
-    count: number | undefined,
-    lng: Language = language,
-  ): string | undefined => lookup(lng, key, count) ?? lookup(FALLBACK_LANGUAGE, key, count);
+  instance.on('languageChanged', (next: string) => {
+    if (!isLanguage(next) || next === language) return;
+    language = next;
+    for (const listener of [...listeners]) listener(next);
+  });
 
   return {
     get language() {
       return language;
     },
+    instance,
     t(key, values) {
-      const count = typeof values?.count === 'number' ? values.count : undefined;
       const lng = isLanguage(values?.lng) ? values.lng : language;
-      const template = resolve(key, count, lng);
-      if (template === undefined) {
-        options.onMissingKey?.(key, lng);
-        return key;
+      if (options.onMissingKey && !instance.exists(key, { ...values, lng })) {
+        options.onMissingKey(key, lng);
       }
-      return interpolate(template, values);
+      return instance.t(key, { ...values, lng });
     },
     exists(key) {
-      return resolve(key, undefined) !== undefined || resolve(key, 1) !== undefined;
+      return instance.exists(key) || instance.exists(key, { count: 1 });
     },
     changeLanguage(next) {
-      if (!isLanguage(next)) {
-        throw new RangeError(
-          `Unsupported language "${String(next)}"; use one of ${LANGUAGES.join(', ')}`,
-        );
-      }
-      if (next === language) return;
-      language = next;
-      for (const listener of listeners) listener(next);
+      void instance.changeLanguage(requireLanguage(next));
     },
     addResourceBundle(lng, namespace, resources) {
-      const bundles = store.get(lng);
-      if (!bundles)
-        throw new RangeError(`Unsupported language "${lng}" for namespace ${namespace}`);
-      bundles.set(namespace, mergeTrees(bundles.get(namespace), resources));
+      instance.addResourceBundle(requireLanguage(lng), namespace, resources, true, true);
     },
     onLanguageChanged(listener) {
       listeners.add(listener);
