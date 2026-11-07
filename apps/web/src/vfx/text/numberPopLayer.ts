@@ -1,11 +1,13 @@
-import type { Rarity } from '@coinposh/shared';
-import { HEIRLOOM_PRISM, RARITY_COLORS } from '../palette.ts';
+import { HEIRLOOM_PRISM } from '../palette.ts';
 import { createPopPath, popFontSize, popFrame, type PopPath, type ScreenPoint } from './arc.ts';
 
 export interface PopRequest {
   readonly text: string;
   readonly magnitude: number;
-  readonly rarity: Rarity;
+  /** Text colour, also used for the glow and the landing ring. */
+  readonly color: string;
+  /** Animates the heirloom prism gradient across the text instead of a flat colour. */
+  readonly prism: boolean;
   readonly from: ScreenPoint;
   readonly to: ScreenPoint;
   readonly onArrive?: () => void;
@@ -34,13 +36,13 @@ const CSS = `
   font-family:"Playfair Display","Cormorant Garamond",Georgia,serif;font-weight:700;
   font-variant-numeric:tabular-nums lining-nums;letter-spacing:.01em;color:var(--pop);
   text-shadow:0 0 .35em color-mix(in srgb,var(--pop) 70%,transparent),0 .06em 0 rgba(20,12,4,.55),0 .12em .4em rgba(0,0,0,.35)}
-.cp-pop[data-rarity=heirloom]{background:linear-gradient(100deg,${HEIRLOOM_PRISM.join(',')},${HEIRLOOM_PRISM[0]});
+.cp-pop[data-prism]{background:linear-gradient(100deg,${HEIRLOOM_PRISM.join(',')},${HEIRLOOM_PRISM[0]});
   background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
   animation:cp-prism 1.1s linear infinite;filter:drop-shadow(0 0 .3em rgba(245,185,66,.6))}
 .cp-burst{position:absolute;left:0;top:0;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;
   border:2px solid var(--pop);box-shadow:0 0 14px var(--pop),inset 0 0 10px var(--pop);will-change:transform,opacity}
 @keyframes cp-prism{to{background-position:300% 0}}
-@media (prefers-reduced-motion:reduce){.cp-pop[data-rarity=heirloom]{animation:none;background-position:30% 0}}
+@media (prefers-reduced-motion:reduce){.cp-pop[data-prism]{animation:none;background-position:30% 0}}
 `;
 
 /**
@@ -105,8 +107,9 @@ export class NumberPopLayer {
     slot.onArrive = request.onArrive;
     const { el } = slot;
     el.textContent = request.text;
-    el.dataset.rarity = request.rarity;
-    el.style.setProperty('--pop', RARITY_COLORS[request.rarity]);
+    if (request.prism) el.dataset.prism = '';
+    else delete el.dataset.prism;
+    el.style.setProperty('--pop', request.color);
     el.style.fontSize = `${popFontSize(request.magnitude)}px`;
     el.style.opacity = '0';
     el.hidden = false;

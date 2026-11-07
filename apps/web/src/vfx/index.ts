@@ -29,20 +29,10 @@ import {
 import { FlashPool } from './flash.ts';
 import { GlowEnvelope } from './glow.ts';
 import { Haptics, type HapticNavigator } from './haptics.ts';
-import {
-  CASCADE_COLORS,
-  HEIRLOOM_PRISM,
-  RARITY_COLORS,
-  VFX_COLORS,
-  rarityForTier,
-  tierMetal,
-} from './palette.ts';
-import { ATTRACTOR_SLOTS, ParticleKind } from './particles/layout.ts';
-import {
-  createAttractors,
-  type ParticleEnvironment,
-  type ParticleFloor,
-} from './particles/physics.ts';
+import { CASCADE_COLORS, HEIRLOOM_PRISM, RARITY_COLORS, VFX_COLORS, tierMetal } from './palette.ts';
+import { ParticleKind } from './particles/layout.ts';
+import { AttractorTable } from './particles/attractors.ts';
+import type { ParticleEnvironment, ParticleFloor } from './particles/physics.ts';
 import { ParticleSystem } from './particles/system.ts';
 import { ShockwavePool } from './shockwave.ts';
 import type { ScreenPoint } from './text/arc.ts';
@@ -108,9 +98,13 @@ export interface ContactOptions {
   readonly normal?: Vector3;
 }
 
+/**
+ * The pop's colour comes from what earned it: a loot `rarity` takes the rarity palette, a
+ * coin `tier` its own metal (heirloom the prism). Pass one or neither (ivory, like common).
+ */
 export interface NumberPopOptions {
-  readonly tier?: CoinTier;
   readonly rarity?: Rarity;
+  readonly tier?: CoinTier;
   readonly onArrive?: () => void;
 }
 
@@ -121,6 +115,8 @@ export interface VfxStats {
   readonly dropped: number;
   readonly flashes: number;
   readonly shockwaves: number;
+  /** Fusion centres currently leased by an implosion. */
+  readonly attractors: number;
   readonly pops: number;
   readonly timeScale: number;
   readonly glow: number;
@@ -148,6 +144,8 @@ const CONFETTI_CAPACITY = 1024;
 /** Contacts beyond this per frame are dropped: a 40-coin avalanche is a hiss, not a strobe. */
 const CONTACTS_PER_FRAME = 10;
 const MIN_CONTACT = 0.06;
+/** Above this strength a contact gets its own flash, glow and haptic. */
+export const CONTACT_ACCENT = 0.45;
 /** A trail nobody has moved for this long was abandoned (coin despawned) and is closed. */
 const TRAIL_TIMEOUT_S = 1;
 
@@ -202,7 +200,7 @@ export class Vfx {
   private readonly i18n: I18n | null;
   private readonly post: { readonly uniforms: VfxPostUniforms } | null;
   private readonly trails = new Set<ActiveTrail>();
-  private readonly leased = new Set<number>();
+  private readonly attractors = new AttractorTable();
   private contactsThisFrame = 0;
   private disposed = false;
 
@@ -217,7 +215,7 @@ export class Vfx {
       options.navigator ?? (typeof navigator === 'undefined' ? undefined : navigator),
       options.now ?? (() => performance.now()),
     );
-    this.env = { floor: options.arena ?? DEFAULT_ARENA, attractors: createAttractors() };
+    this.env = { floor: options.arena ?? DEFAULT_ARENA, attractors: this.attractors.positions };
     this.pops = options.overlay ? new NumberPopLayer(options.overlay) : null;
     this.i18n = options.i18n ?? null;
     this.post = options.post ?? null;
@@ -259,6 +257,7 @@ export class Vfx {
       dropped: this.sparks.stats.dropped + this.foil.stats.dropped,
       flashes: this.flashes.active,
       shockwaves: this.shockwaves.active,
+      attractors: this.attractors.held,
       pops: this.pops?.active ?? 0,
       timeScale: this.warp.scale,
       glow: this.glowEnvelope.value,
@@ -304,15 +303,16 @@ export class Vfx {
         trail.idle = 0;
       },
       end: () => {
-        trail.open = false;
-        this.trails.delete(trail);
+        this.closeTrail(trail);
       },
     };
   }
 
   /**
    * Sparks from a collision, scaled by strength². Strong hits add a flash pop, a bloom
-   * nudge, a haptic tap and, at the very top, a whisper of camera shake.
+   * nudge, a haptic tap and, at the very top, a whisper of camera shake. Contacts at or
+   * under `CONTACT_ACCENT` are particles only: they are the texture of the drop or push
+   * they belong to, not interactions of their own.
    */
   contactSparks(position: Vector3, options: ContactOptions): void {
     this.assertLive();
@@ -326,7 +326,7 @@ export class Vfx {
       options.surface,
       options.normal ? vec(options.normal) : undefined,
     );
-    if (s > 0.45) {
+    if (s > CONTACT_ACCENT) {
       this.flashes.spawn(position, {
         color: VFX_COLORS.whiteGold,
         size: 0.03 + 0.05 * s,
@@ -334,7 +334,7 @@ export class Vfx {
         duration: 0.12,
       });
       this.glowEnvelope.add({ peak: 0.18 * s * s, attack: 0.02, release: 0.16 });
-      this.haptics.pulse(s > 0.75 ? 'tap' : 'tick');
+      this.haptics.pulse(s > 0.75 && !this.reduced ? 'tap' : 'tick');
     }
     if (s > 0.85) this.kick.kick({ shake: 0.06 });
   }
@@ -347,17 +347,13 @@ export class Vfx {
   fusion(options: FusionOptions): void {
     this.assertLive();
     if (options.sources.length === 0) throw new RangeError('fusion needs at least one source coin');
-    const slot = this.leaseAttractor();
     const center = options.center.clone();
-    const a = slot * 4;
-    this.env.attractors[a] = center.x;
-    this.env.attractors[a + 1] = center.y;
-    this.env.attractors[a + 2] = center.z;
+    const lease = this.attractors.lease(center.x, center.y, center.z);
     fusionImplosion(
       this.context(this.sparks),
       options.sources.map(vec),
       vec(center),
-      slot,
+      lease.slot,
       options.tier,
     );
     this.kick.kick({ fov: -0.8, dolly: 0.004 });
@@ -398,7 +394,9 @@ export class Vfx {
       this.haptics.pulse('thud');
       options.onImpact?.();
     });
-    this.timeline.at(FUSION_TIMING.releaseSlot, () => this.leased.delete(slot));
+    this.timeline.at(FUSION_TIMING.releaseSlot, () => {
+      this.attractors.release(lease);
+    });
   }
 
   /**
@@ -454,7 +452,7 @@ export class Vfx {
 
   /**
    * Floating value text: springs in over `from`, hangs, then arcs into `hudTarget` and
-   * calls `onArrive` on contact. The source glints and flashes in the rarity colour.
+   * calls `onArrive` on contact. The source glints and flashes in the pop's colour.
    */
   numberPop(
     value: number,
@@ -469,18 +467,24 @@ export class Vfx {
       );
     }
     const text = formatPopValue(this.i18n, value);
-    const rarity = options.rarity ?? (options.tier ? rarityForTier(options.tier) : 'common');
-    const to = hudTarget instanceof Element ? this.pops.centerOf(hudTarget) : hudTarget;
+    const { color, prism } = popColor(options);
+    const to = 'getBoundingClientRect' in hudTarget ? this.pops.centerOf(hudTarget) : hudTarget;
     this.pops.spawn({
       text,
       magnitude: value,
-      rarity,
+      color,
+      prism,
       from: this.project(from),
       to,
       ...(options.onArrive ? { onArrive: options.onArrive } : {}),
     });
-    const color = RARITY_COLORS[rarity];
-    this.flashes.spawn(from, { color, size: 0.06, intensity: 1.8, duration: 0.2 });
+    this.flashes.spawn(from, {
+      color: prism ? HEIRLOOM_PRISM[0] : color,
+      size: 0.06,
+      intensity: 1.8,
+      duration: 0.2,
+    });
+    this.glowEnvelope.add({ peak: 0.08, attack: 0.03, release: 0.25 });
     const ctx = this.context(this.sparks);
     const glints = this.reduced ? 2 : 6;
     for (let i = 0; i < glints; i++) {
@@ -529,17 +533,13 @@ export class Vfx {
     this.timeline.update(dt);
     for (const trail of this.trails) {
       trail.idle += real;
-      if (trail.idle > TRAIL_TIMEOUT_S) this.trails.delete(trail);
+      if (trail.idle > TRAIL_TIMEOUT_S) this.closeTrail(trail);
     }
     this.sparks.update(dt, this.env, this.renderer);
     this.foil.update(dt, this.env, this.renderer);
     this.shockwaves.update(dt);
     this.flashes.update(real);
-    const glow = this.glowEnvelope.update(real);
-    if (this.post) {
-      this.post.uniforms.bloomBoost.value = 1 + glow;
-      this.post.uniforms.exposureBoost.value = 1 + glow * 0.06;
-    }
+    this.writePost(this.glowEnvelope.update(real));
     this.kick.update(real, this.camera);
     this.pops?.update(real);
     this.contactsThisFrame = 0;
@@ -570,14 +570,15 @@ export class Vfx {
   /** Cancels every running effect and restores time and the camera. */
   clear(): void {
     this.timeline.clear();
-    this.trails.clear();
-    this.leased.clear();
+    for (const trail of this.trails) this.closeTrail(trail);
+    this.attractors.clear();
     this.flashes.clear();
     this.shockwaves.clear();
     this.glowEnvelope.clear();
     this.warp.reset();
     this.kick.reset();
     this.pops?.clear();
+    this.writePost(0);
     this.rebuildParticles();
   }
 
@@ -591,10 +592,18 @@ export class Vfx {
     this.shockwaves.dispose();
     this.pops?.dispose();
     this.root.removeFromParent();
-    if (this.post) {
-      this.post.uniforms.bloomBoost.value = 1;
-      this.post.uniforms.exposureBoost.value = 1;
-    }
+    this.writePost(0);
+  }
+
+  private writePost(glow: number): void {
+    if (!this.post) return;
+    this.post.uniforms.bloomBoost.value = 1 + glow;
+    this.post.uniforms.exposureBoost.value = 1 + glow * 0.06;
+  }
+
+  private closeTrail(trail: ActiveTrail): void {
+    trail.open = false;
+    this.trails.delete(trail);
   }
 
   private applyReducedMotion(reduced: boolean): void {
@@ -643,17 +652,6 @@ export class Vfx {
     [this.sparks, this.foil] = this.createParticles();
   }
 
-  private leaseAttractor(): number {
-    for (let slot = 0; slot < ATTRACTOR_SLOTS; slot++) {
-      if (!this.leased.has(slot)) {
-        this.leased.add(slot);
-        return slot;
-      }
-    }
-    // All four in use means four fusions inside 0.75 s; the newest steals slot 0.
-    return 0;
-  }
-
   private project(world: Vector3): ScreenPoint {
     const size = this.pops?.size ?? { width: 0, height: 0 };
     this.camera.updateMatrixWorld();
@@ -677,6 +675,16 @@ export class Vfx {
   private assertLive(): void {
     if (this.disposed) throw new Error('This Vfx was disposed; create a new one with createVfx()');
   }
+}
+
+function popColor(options: NumberPopOptions): { readonly color: string; readonly prism: boolean } {
+  const { rarity, tier } = options;
+  if (rarity !== undefined && tier !== undefined) {
+    throw new RangeError('numberPop takes a rarity or a coin tier for its colour, not both');
+  }
+  if (tier !== undefined) return { color: tierMetal(tier), prism: tier === 'heirloom' };
+  const r = rarity ?? 'common';
+  return { color: RARITY_COLORS[r], prism: r === 'heirloom' };
 }
 
 export function createVfx(options: VfxOptions): Vfx {

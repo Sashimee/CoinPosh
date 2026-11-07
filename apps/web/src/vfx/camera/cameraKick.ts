@@ -48,6 +48,7 @@ export class CameraKick {
   private readonly base = { position: new Vector3(), quaternion: new Quaternion(), fov: 0 };
   private readonly written = { position: new Vector3(), quaternion: new Quaternion(), fov: 0 };
   private engaged = false;
+  private restorePending = false;
 
   constructor(rng: Rng) {
     const wobble = (): Wobble => ({
@@ -91,6 +92,7 @@ export class CameraKick {
 
   update(realDt: number, camera: PerspectiveCamera): void {
     const dt = Math.max(0, realDt);
+    if (this.restorePending) this.restoreBase(camera);
     if (!this.engaged && !this.active) return;
     this.rebaseIfMoved(camera);
     this.time += dt;
@@ -116,7 +118,8 @@ export class CameraKick {
       camera.fov = base.fov + this.fov.value;
       this.engaged = true;
     } else {
-      this.reset();
+      this.zero();
+      this.engaged = false;
     }
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
@@ -125,12 +128,34 @@ export class CameraKick {
 
   /** Drops every offset; the next `update` writes the base back untouched. */
   reset(): void {
+    this.zero();
+    if (this.engaged) this.restorePending = true;
+    this.engaged = false;
+  }
+
+  private zero(): void {
     this.trauma = 0;
     this.fov.value = 0;
     this.fov.velocity = 0;
     this.dolly.value = 0;
     this.dolly.velocity = 0;
-    this.engaged = false;
+  }
+
+  /** Puts the base back after a mid-kick reset, unless someone else moved the camera since. */
+  private restoreBase(camera: PerspectiveCamera): void {
+    this.restorePending = false;
+    const { written, base } = this;
+    const untouched =
+      camera.position.equals(written.position) &&
+      camera.quaternion.equals(written.quaternion) &&
+      camera.fov === written.fov;
+    if (!untouched) return;
+    camera.position.copy(base.position);
+    camera.quaternion.copy(base.quaternion);
+    camera.fov = base.fov;
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+    this.remember(camera);
   }
 
   private rebaseIfMoved(camera: PerspectiveCamera): void {

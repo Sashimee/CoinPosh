@@ -1,10 +1,4 @@
-import {
-  COIN_TIERS,
-  RARITIES,
-  type CascadeTier,
-  type CoinTier,
-  type Rarity,
-} from '@coinposh/shared';
+import type { CascadeTier, CoinTier, Rarity } from '@coinposh/shared';
 import { Color } from 'three/webgpu';
 import { COIN_LOOKS } from '../scene/coins/tiers.ts';
 import { rivieraTokens } from '../scene/venues/riviera/palette.ts';
@@ -54,13 +48,6 @@ export const CONFETTI_COLORS = [
   VFX_COLORS.coral,
   VFX_COLORS.seaGlass,
 ] as const;
-
-/** Coin tiers and rarities are both ordered lowest to highest and pair up one to one. */
-export function rarityForTier(tier: CoinTier): Rarity {
-  const rarity = RARITIES[COIN_TIERS.indexOf(tier)];
-  if (rarity === undefined) throw new RangeError(`No rarity pairs with coin tier "${tier}"`);
-  return rarity;
-}
 
 export function tierMetal(tier: CoinTier): string {
   return COIN_LOOKS[tier].metal;

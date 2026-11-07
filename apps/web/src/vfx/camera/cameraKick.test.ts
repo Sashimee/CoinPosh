@@ -62,6 +62,36 @@ describe('CameraKick', () => {
     expect(cam.fov).toBe(50);
   });
 
+  it('puts the base back on the next update after a mid-kick reset', () => {
+    const cam = camera();
+    const position = cam.position.clone();
+    const quaternion = cam.quaternion.clone();
+    const kick = new CameraKick(createRng(4));
+    kick.kick({ shake: 0.6, fov: 3, dolly: 0.02 });
+    simulate(kick, cam, 0.05);
+    expect(cam.quaternion.angleTo(quaternion)).toBeGreaterThan(0);
+    kick.reset();
+    kick.update(1 / 60, cam);
+    expect(cam.position.distanceTo(position)).toBeLessThan(1e-9);
+    expect(cam.quaternion.angleTo(quaternion)).toBeLessThan(1e-9);
+    expect(cam.fov).toBe(40);
+    simulate(kick, cam, 0.2);
+    expect(cam.fov).toBe(40);
+  });
+
+  it('keeps an outside move made between a reset and the next update', () => {
+    const cam = camera();
+    const kick = new CameraKick(createRng(4));
+    kick.kick({ shake: 0.6, fov: 3 });
+    simulate(kick, cam, 0.05);
+    kick.reset();
+    cam.position.set(0.2, 0.5, 0.8);
+    cam.fov = 45;
+    kick.update(1 / 60, cam);
+    expect(cam.position.toArray()).toEqual([0.2, 0.5, 0.8]);
+    expect(cam.fov).toBe(45);
+  });
+
   it('does nothing under reduced motion', () => {
     const cam = camera();
     const before = cam.position.clone();

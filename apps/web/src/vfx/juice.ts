@@ -18,13 +18,16 @@ export type VfxEffect =
 export interface EffectJuice {
   /** Items this module delivers on its own, before T-1.10 adds the sound. */
   readonly items: readonly JuiceItem[];
+  /** When the call delivers fewer items than `items`, and why that is still enough. */
+  readonly scope?: string;
   /** What survives `prefers-reduced-motion`. */
   readonly reduced: string;
 }
 
 /**
- * What each effect contributes to the checklist. A unit test holds every row to ≥ 4
- * items without counting sound, so an interaction stays juicy even with audio muted.
+ * What each effect contributes to the checklist. The facade test (index.test.ts) fires
+ * each effect and checks every listed item actually happens and that at least 4 do
+ * without counting sound, so an interaction stays juicy even with audio muted.
  */
 export const EFFECT_JUICE: Readonly<Record<VfxEffect, EffectJuice>> = {
   dropTrail: {
@@ -33,7 +36,10 @@ export const EFFECT_JUICE: Readonly<Record<VfxEffect, EffectJuice>> = {
   },
   contactSparks: {
     items: ['particles', 'lightResponse', 'hapticOrShake', 'squashOvershoot'],
-    reduced: 'A third of the sparks as slow glints, no flash pop, haptic tick only.',
+    scope:
+      'Strength above 0.45 only. Softer contacts are particles alone: the texture of the drop or push they belong to, which carries its own juice.',
+    reduced:
+      'A third of the sparks as slow glints, a flash that brightens without its scale pop, a haptic tick at most.',
   },
   fusion: {
     items: [
@@ -49,6 +55,7 @@ export const EFFECT_JUICE: Readonly<Record<VfxEffect, EffectJuice>> = {
   },
   cascade: {
     items: ['particles', 'lightResponse', 'squashOvershoot', 'hapticOrShake', 'camera'],
+    scope: 'The camera shiver starts at OPULENT; CHIC and LAVISH deliver the other four.',
     reduced: 'Fewer, slower fizz motes and a softer bloom; no camera shake.',
   },
   obscene: {

@@ -15,7 +15,6 @@ import {
   type EmitContext,
   type ViewFrame,
 } from './emitters.ts';
-import { EFFECT_JUICE, JUICE_ITEMS } from './juice.ts';
 import { isValidSpawn, ParticleKind, type ParticleSpawn } from './particles/layout.ts';
 
 function ctx(quality: QualityTier = 'high', reducedMotion = false, seed = 1) {
@@ -185,18 +184,4 @@ describe('emitters', () => {
     fusionImpact(b.context, [0, 0, 0], 'gold');
     expect(a.spawns).toEqual(b.spawns);
   });
-});
-
-describe('juice checklist', () => {
-  it.each(Object.entries(EFFECT_JUICE))(
-    '%s hits at least 4 items without counting sound',
-    (_effect, juice) => {
-      const items = new Set(juice.items);
-      items.delete('sound');
-      expect(items.size).toBeGreaterThanOrEqual(4);
-      expect(items.size).toBe(juice.items.length);
-      for (const item of items) expect(JUICE_ITEMS[item]).toBeGreaterThan(0);
-      expect(juice.reduced.length).toBeGreaterThan(10);
-    },
-  );
 });

@@ -53,8 +53,8 @@ export class GpuParticles implements ParticleSimulation {
   private readonly floorRect = uniform(new Vector4());
   private readonly floorY = uniform(0);
   private readonly attractorValues = Array.from({ length: ATTRACTOR_SLOTS }, () => new Vector4());
-  private readonly spawnKernel: ComputeNode;
-  private readonly updateKernel: ComputeNode;
+  readonly spawnKernel: ComputeNode;
+  readonly updateKernel: ComputeNode;
   private pending = 0;
   private head = 0;
   /** Seconds until every particle spawned so far has certainly expired. */
