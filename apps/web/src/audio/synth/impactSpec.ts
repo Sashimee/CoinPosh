@@ -21,7 +21,10 @@ export const MIN_PITCH_STEP = 0.012;
 export const MAX_IMPACT_PAN = 0.6;
 const MIN_BRIGHTNESS = 0.15;
 const MODE_TILT = 0.45;
-const CULL_BELOW = dbToGain(-66);
+const CULL_BELOW = dbToGain(-60);
+/** Share of each body's modes a barely audible hit keeps; full strength keeps them all. */
+const MIN_MODE_SHARE = 0.3;
+const MIN_MODES_PER_BODY = 2;
 
 /**
  * Maps closing speed to a 0..1 strike strength on a log scale: loudness perception is roughly
@@ -114,12 +117,24 @@ function variantDetune(modeIndex: number, variant: number): number {
   return 1 + (((modeIndex * 7 + variant * 3) % 5) - 2) * 0.004;
 }
 
-/** Returns null when the hit is too soft to hear. */
+/**
+ * Upper modes are the dimmest and shortest, and under a mid-strength hit they are masked by the
+ * fundamentals; dropping them keeps a sweep of medium hits inside the source budget.
+ */
+export function modesToKeep(modeCount: number, strength: number): number {
+  const share = lerp(MIN_MODE_SHARE, 1, clamp(strength, 0, 1) ** 1.5);
+  return Math.min(modeCount, Math.max(MIN_MODES_PER_BODY, Math.ceil(modeCount * share)));
+}
+
+/** Returns null when the hit is too soft to hear; throws on a non-finite pan. */
 export function buildImpactSpec(
   event: ImpactEvent,
   variator: ImpactVariator,
   rng: Rng,
 ): ImpactSpec | null {
+  if (event.pan !== undefined && !Number.isFinite(event.pan)) {
+    throw new RangeError(`Impact pan must be a finite number in -1..1, got ${event.pan}`);
+  }
   const strength = velocityToStrength(event.velocity);
   if (strength <= 0) return null;
   const profile = MATERIAL_PROFILES[event.material];
@@ -136,7 +151,8 @@ export function buildImpactSpec(
       (mode, k) => mode.amplitude * strikeWeight(k, position) * brightness ** (k * MODE_TILT),
     );
     const total = weighted.reduce((sum, a) => sum + a, 0);
-    body.modes.forEach((mode, k) => {
+    const keep = modesToKeep(body.modes.length, strength);
+    body.modes.slice(0, keep).forEach((mode, k) => {
       const amplitude = (elementAt(weighted, k) / total) * body.gain;
       if (amplitude * gain < CULL_BELOW) return;
       partials.push({

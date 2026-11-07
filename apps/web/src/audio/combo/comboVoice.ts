@@ -1,6 +1,6 @@
 import { scheduleDecayingSine, SourceVoice } from '../synth/voice.ts';
 import { VoicePriority } from '../voicePool.ts';
-import type { ComboNote } from './ladder.ts';
+import type { ComboNote, ComboTone } from './ladder.ts';
 
 const MODULATOR_RATIOS = [4, 2, 1];
 /** Keep FM carriers, modulators and partials well clear of Nyquist so nothing aliases or clamps. */
@@ -9,6 +9,28 @@ const MAX_INDEX = 1.8;
 const INDEX_T60 = 0.35;
 const COMBO_LEVEL = 0.32;
 const SHIMMER_RATIO = 2.76;
+
+interface PlannedTone {
+  readonly tone: ComboTone;
+  readonly ratio: number;
+  readonly shimmer: boolean;
+}
+
+function planTones(note: ComboNote, sampleRate: number): PlannedTone[] {
+  const ceiling = (sampleRate / 2) * NYQUIST_MARGIN;
+  return note.tones
+    .filter((tone) => tone.frequency < ceiling)
+    .map((tone) => ({
+      tone,
+      ratio: MODULATOR_RATIOS.find((r) => tone.frequency * r < ceiling) ?? 1,
+      shimmer: tone.frequency * SHIMMER_RATIO < ceiling,
+    }));
+}
+
+/** Carrier and modulator per tone, plus the shimmer partial where it fits under Nyquist. */
+export function comboVoiceCost(note: ComboNote, sampleRate: number): number {
+  return planTones(note, sampleRate).reduce((sum, t) => sum + (t.shimmer ? 3 : 2), 0);
+}
 
 /**
  * Two-operator FM bell: the 4:1 modulator gives a celesta-like strike that melts into a pure
@@ -22,10 +44,7 @@ export function startComboVoice(
   pan = 0,
 ): SourceVoice {
   const voice = new SourceVoice(ctx, VoicePriority.combo, when, COMBO_LEVEL, pan, destination);
-  const ceiling = (ctx.sampleRate / 2) * NYQUIST_MARGIN;
-  for (const tone of note.tones) {
-    if (tone.frequency >= ceiling) continue;
-    const ratio = MODULATOR_RATIOS.find((r) => tone.frequency * r < ceiling) ?? 1;
+  for (const { tone, ratio, shimmer: withShimmer } of planTones(note, ctx.sampleRate)) {
     const carrier = new OscillatorNode(ctx, { frequency: tone.frequency });
     const modulator = new OscillatorNode(ctx, { frequency: tone.frequency * ratio });
     const depth = new GainNode(ctx, { gain: 0 });
@@ -43,7 +62,7 @@ export function startComboVoice(
     carrier.start(when);
     voice.track(modulator, stopAt);
     voice.track(carrier, stopAt);
-    if (tone.frequency * SHIMMER_RATIO < ceiling) {
+    if (withShimmer) {
       const shimmer = tone.gain * 0.12 * note.brightness;
       scheduleDecayingSine(voice, tone.frequency * SHIMMER_RATIO, shimmer, 0.4, when);
     }

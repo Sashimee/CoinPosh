@@ -67,3 +67,76 @@ export function armUnlock(ctx: UnlockableContext, target: EventTarget): UnlockHa
 
   return { unlocked, disarm };
 }
+
+export interface LifecycleContext extends UnlockableContext, EventTarget {
+  suspend(): Promise<void>;
+}
+
+export interface VisibilitySource extends EventTarget {
+  readonly visibilityState: DocumentVisibilityState;
+}
+
+export interface AudioLifecycle {
+  /** Resolves on the first successful unlock, whichever gesture handle delivered it. */
+  readonly whenUnlocked: Promise<void>;
+  dispose(): void;
+}
+
+/**
+ * iOS Safari and Capacitor webviews can drop a context to 'suspended' or 'interrupted' at any
+ * time, before or after the first tap. Each drop arms a fresh gesture handle, and every handle
+ * feeds the same `whenUnlocked`, so nothing waiting on the first unlock is stranded by a re-arm.
+ */
+export function manageAudioLifecycle(
+  ctx: LifecycleContext,
+  gestureTarget: EventTarget,
+  visibility: VisibilitySource,
+): AudioLifecycle {
+  let resolveUnlocked: () => void = () => undefined;
+  const whenUnlocked = new Promise<void>((resolve) => {
+    resolveUnlocked = resolve;
+  });
+  let suspendedForVisibility = false;
+  let disposed = false;
+  const running = () => ctx.state === 'running';
+
+  const arm = (): UnlockHandle => {
+    const handle = armUnlock(ctx, gestureTarget);
+    void handle.unlocked.then(resolveUnlocked);
+    return handle;
+  };
+  let unlock = arm();
+
+  const rearmIfLocked = () => {
+    if (disposed || running() || suspendedForVisibility) return;
+    unlock.disarm();
+    if (ctx.state !== 'closed') unlock = arm();
+  };
+
+  const onVisibility = () => {
+    if (visibility.visibilityState === 'hidden') {
+      if (!running()) return;
+      suspendedForVisibility = true;
+      ctx.suspend().catch((error: unknown) => {
+        console.warn('Audio: suspend() on page hide failed; audio keeps running.', error);
+      });
+      return;
+    }
+    if (!suspendedForVisibility) return;
+    suspendedForVisibility = false;
+    ctx.resume().then(rearmIfLocked, rearmIfLocked);
+  };
+
+  ctx.addEventListener('statechange', rearmIfLocked);
+  visibility.addEventListener('visibilitychange', onVisibility);
+
+  return {
+    whenUnlocked,
+    dispose() {
+      disposed = true;
+      unlock.disarm();
+      ctx.removeEventListener('statechange', rearmIfLocked);
+      visibility.removeEventListener('visibilitychange', onVisibility);
+    },
+  };
+}

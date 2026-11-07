@@ -31,6 +31,10 @@ export class SourceVoice implements PooledVoice {
     this.endTime = startTime;
   }
 
+  get cost(): number {
+    return this.sources.length;
+  }
+
   get context(): BaseAudioContext {
     return this.output.context;
   }

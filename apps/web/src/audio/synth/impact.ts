@@ -1,6 +1,11 @@
 import type { ImpactSpec } from './impactSpec.ts';
 import { scheduleDecayingSine, scheduleNoiseBurst, SourceVoice } from './voice.ts';
 
+/** One oscillator per modal partial plus the noise click. */
+export function impactVoiceCost(spec: ImpactSpec): number {
+  return spec.partials.length + 1;
+}
+
 export function startImpactVoice(
   ctx: BaseAudioContext,
   spec: ImpactSpec,

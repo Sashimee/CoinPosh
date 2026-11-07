@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BurstLimiter,
   effectivePriority,
+  MAX_ACTIVE_SOURCES,
   MAX_VOICES,
   VoicePool,
   type PooledVoice,
@@ -13,6 +14,7 @@ class FakeVoice implements PooledVoice {
     readonly priority: number,
     readonly startTime: number,
     readonly endTime: number,
+    readonly cost = 1,
   ) {}
   release(now: number): void {
     this.releasedAt = now;
@@ -100,7 +102,7 @@ describe('VoicePool', () => {
     const b = new FakeVoice(100, 0, 1);
     pool.admit(a, 0);
     pool.admit(b, 0);
-    expect(pool.canAdmit(20, 0)).toBe(false);
+    expect(pool.canAdmit(20, 1, 0)).toBe(false);
     expect(pool.admit(new FakeVoice(20, 0, 1), 0)).toBe(false);
     expect(a.releasedAt).toBeNull();
     expect(b.releasedAt).toBeNull();
@@ -112,6 +114,68 @@ describe('VoicePool', () => {
     for (let i = 0; i < 500; i++) {
       const now = i * 0.001;
       pool.admit(new FakeVoice(10 + (i % 50), now, now + 0.4), now);
+      expect(pool.activeCount).toBeLessThanOrEqual(MAX_VOICES);
+    }
+  });
+
+  it('rejects a source budget that is not a positive integer', () => {
+    expect(() => new VoicePool(4, 0)).toThrow(RangeError);
+    expect(() => new VoicePool(4, 1.5)).toThrow(RangeError);
+  });
+
+  it('rejects a voice cost that is not a positive integer', () => {
+    const pool = new VoicePool<FakeVoice>(4, 10);
+    expect(() => pool.canAdmit(10, 0, 0)).toThrow(RangeError);
+    expect(() => pool.canAdmit(10, Number.NaN, 0)).toThrow(RangeError);
+    expect(() => pool.admit(new FakeVoice(10, 0, 1, 2.5), 0)).toThrow(RangeError);
+  });
+
+  it('budgets sources across voices, not just the voice count', () => {
+    const pool = new VoicePool<FakeVoice>(24, 20);
+    expect(pool.admit(new FakeVoice(100, 0, 1, 12), 0)).toBe(true);
+    expect(pool.canAdmit(10, 8, 0)).toBe(true);
+    expect(pool.canAdmit(10, 9, 0)).toBe(false);
+    expect(pool.activeCount).toBe(1);
+    expect(pool.activeCost).toBe(12);
+  });
+
+  it('steals as many low-priority voices as it takes to fit a costly one', () => {
+    const pool = new VoicePool<FakeVoice>(24, 12);
+    const quiet = [0, 1, 2].map((i) => new FakeVoice(10, i * 0.01, 1, 4));
+    for (const v of quiet) pool.admit(v, v.startTime);
+    const loud = new FakeVoice(60, 0.05, 1, 8);
+    expect(pool.admit(loud, 0.05)).toBe(true);
+    expect(quiet.map((v) => v.releasedAt)).toEqual([0.05, 0.05, null]);
+    expect(pool.activeCost).toBe(12);
+  });
+
+  it('steals nothing when the voices it would need include a more important one', () => {
+    const pool = new VoicePool<FakeVoice>(24, 12);
+    const quiet = new FakeVoice(10, 0, 1, 4);
+    const combo = new FakeVoice(100, 0, 1, 8);
+    pool.admit(quiet, 0);
+    pool.admit(combo, 0);
+    expect(pool.admit(new FakeVoice(60, 0, 1, 6), 0)).toBe(false);
+    expect(quiet.releasedAt).toBeNull();
+    expect(combo.releasedAt).toBeNull();
+    expect(pool.activeCost).toBe(12);
+  });
+
+  it('refuses a voice that alone exceeds the whole budget', () => {
+    const pool = new VoicePool<FakeVoice>(4, 10);
+    expect(pool.canAdmit(100, 11, 0)).toBe(false);
+  });
+
+  it('never exceeds the source budget under a flood of rich hits and combo notes', () => {
+    const pool = new VoicePool<FakeVoice>();
+    for (let i = 0; i < 400; i++) {
+      const now = i * 0.002;
+      const combo = i % 25 === 0;
+      pool.admit(
+        new FakeVoice(combo ? 100 : 10 + (i % 50), now, now + 0.9, combo ? 12 : 12 - (i % 9)),
+        now,
+      );
+      expect(pool.activeCost).toBeLessThanOrEqual(MAX_ACTIVE_SOURCES);
       expect(pool.activeCount).toBeLessThanOrEqual(MAX_VOICES);
     }
   });
@@ -136,5 +200,20 @@ describe('BurstLimiter', () => {
       false,
     ]);
     expect(limiter.tryConsume(0.02)).toBe(true);
+  });
+
+  it('spends the window in sources, so rich hits use it up faster than ticks', () => {
+    const limiter = new BurstLimiter(20, 0.02);
+    expect(limiter.tryConsume(0, 12)).toBe(true);
+    expect(limiter.tryConsume(0.001, 12)).toBe(false);
+    expect(limiter.tryConsume(0.002, 8)).toBe(true);
+    expect(limiter.tryConsume(0.003, 1)).toBe(false);
+    expect(limiter.tryConsume(0.021, 12)).toBe(true);
+  });
+
+  it('lets one voice costlier than the whole window through when the window is empty', () => {
+    const limiter = new BurstLimiter(4, 0.02);
+    expect(limiter.tryConsume(0, 9)).toBe(true);
+    expect(limiter.tryConsume(0.001, 1)).toBe(false);
   });
 });

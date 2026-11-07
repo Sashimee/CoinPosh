@@ -1,4 +1,4 @@
-import { startComboVoice } from './combo/comboVoice.ts';
+import { comboVoiceCost, startComboVoice } from './combo/comboVoice.ts';
 import {
   assertComboTier,
   comboStepNote,
@@ -13,10 +13,10 @@ import { renderRivieraTrack, type MusicTrack } from './music/render.ts';
 import { RIVIERA_KEY, type VenueKey } from './music/theory.ts';
 import type { Rng } from './rng.ts';
 import { createNoiseBuffer } from './synth/buffers.ts';
-import { startImpactVoice } from './synth/impact.ts';
+import { impactVoiceCost, startImpactVoice } from './synth/impact.ts';
 import { buildImpactSpec, ImpactVariator, type ImpactEvent } from './synth/impactSpec.ts';
 import type { SourceVoice } from './synth/voice.ts';
-import { armUnlock, type UnlockHandle } from './unlock.ts';
+import { manageAudioLifecycle } from './unlock.ts';
 import { BurstLimiter, MAX_VOICES, VoicePool, VoicePriority } from './voicePool.ts';
 
 export interface AudioEngineOptions {
@@ -72,43 +72,18 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
   const burst = new BurstLimiter();
   const variator = new ImpactVariator(rng);
 
-  let unlock: UnlockHandle = armUnlock(ctx, gestureTarget);
-  const whenUnlocked = unlock.unlocked;
+  const lifecycle = manageAudioLifecycle(ctx, gestureTarget, document);
   let comboTier = 0;
   let track: Promise<MusicTrack> | null = null;
   let musicRequest = 0;
-  let suspendedForVisibility = false;
   let disposed = false;
 
   const running = () => ctx.state === 'running';
 
-  const rearmIfLocked = () => {
-    if (disposed || running() || suspendedForVisibility) return;
-    unlock.disarm();
-    unlock = armUnlock(ctx, gestureTarget);
-  };
-
-  const onStateChange = () => {
-    if (!running()) rearmIfLocked();
-  };
-  ctx.addEventListener('statechange', onStateChange);
-
-  const onVisibility = () => {
-    if (document.visibilityState === 'hidden') {
-      if (!running()) return;
-      suspendedForVisibility = true;
-      void ctx.suspend();
-      return;
-    }
-    if (!suspendedForVisibility) return;
-    suspendedForVisibility = false;
-    ctx.resume().then(rearmIfLocked, rearmIfLocked);
-  };
-  document.addEventListener('visibilitychange', onVisibility);
-
   const playComboNote = (note: ComboNote, when: number) => {
     const now = ctx.currentTime;
-    if (!pool.canAdmit(VoicePriority.combo, now)) return;
+    const cost = comboVoiceCost(note, ctx.sampleRate);
+    if (cost === 0 || !pool.canAdmit(VoicePriority.combo, cost, now)) return;
     pool.admit(startComboVoice(ctx, note, mixer.sfx, when), now);
   };
 
@@ -116,7 +91,7 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
     get unlocked() {
       return running();
     },
-    whenUnlocked,
+    whenUnlocked: lifecycle.whenUnlocked,
     get activeVoices() {
       return pool.activeCount;
     },
@@ -126,7 +101,8 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
       const spec = buildImpactSpec(event, variator, rng);
       if (!spec) return;
       const now = ctx.currentTime;
-      if (!burst.tryConsume(now) || !pool.canAdmit(spec.priority, now)) return;
+      const cost = impactVoiceCost(spec);
+      if (!pool.canAdmit(spec.priority, cost, now) || !burst.tryConsume(now, cost)) return;
       pool.admit(startImpactVoice(ctx, spec, mixer.sfx, noise, now), now);
     },
 
@@ -158,7 +134,7 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
       const request = ++musicRequest;
       track ??= renderRivieraTrack(ctx);
       const rendered = await track;
-      await whenUnlocked;
+      await lifecycle.whenUnlocked;
       if (request === musicRequest && !disposed && !director.isPlaying) director.play(rendered);
     },
 
@@ -182,9 +158,7 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
     async dispose() {
       if (disposed) return;
       disposed = true;
-      unlock.disarm();
-      ctx.removeEventListener('statechange', onStateChange);
-      document.removeEventListener('visibilitychange', onVisibility);
+      lifecycle.dispose();
       pool.releaseAll(ctx.currentTime);
       director.stop(0.05);
       await ctx.close();

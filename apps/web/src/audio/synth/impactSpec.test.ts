@@ -9,6 +9,7 @@ import {
   ImpactVariator,
   MAX_IMPACT_PAN,
   MIN_PITCH_STEP,
+  modesToKeep,
   PITCH_JITTER,
   strengthToBrightness,
   strengthToGain,
@@ -182,6 +183,32 @@ describe('buildImpactSpec', () => {
     expect(buildImpactSpec({ material: 'coin', velocity: 1, pan: 0.2 }, variator, rng)?.pan).toBe(
       0.2,
     );
+  });
+
+  it('rejects a non-finite pan before any voice is built', () => {
+    const rng = createRng(3);
+    const variator = new ImpactVariator(rng);
+    for (const pan of [Number.NaN, Infinity, -Infinity]) {
+      expect(() => buildImpactSpec({ material: 'coin', velocity: 1, pan }, variator, rng)).toThrow(
+        RangeError,
+      );
+    }
+  });
+
+  it('keeps fewer modes at mid strength and every mode at full strength', () => {
+    expect(modesToKeep(6, 1)).toBe(6);
+    expect(modesToKeep(6, 0.5)).toBeLessThan(6);
+    expect(modesToKeep(6, 0)).toBe(2);
+    expect(modesToKeep(1, 0)).toBe(1);
+    for (let s = 0; s < 1; s += 0.1)
+      expect(modesToKeep(6, s)).toBeLessThanOrEqual(modesToKeep(6, s + 0.1));
+    expect(spec('coin', 0.4).partials.length).toBeLessThan(spec('coin', 2.8).partials.length);
+  });
+
+  it('never needs more than 12 sources for the richest hit', () => {
+    for (const material of IMPACT_MATERIALS) {
+      expect(spec(material, 2.8).partials.length + 1).toBeLessThanOrEqual(12);
+    }
   });
 
   it('never produces the same impact twice in a row from identical input', () => {
