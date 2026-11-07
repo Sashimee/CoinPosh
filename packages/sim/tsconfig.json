@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowJs": true
+  },
+  "include": ["src", "vitest.config.ts", "eslint.config.js", "eslint.determinism.js"]
+}

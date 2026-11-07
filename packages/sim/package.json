@@ -1,0 +1,21 @@
+{
+  "name": "@coinposh/sim",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-deterministic-compat": "0.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "vitest": "4.1.12"
+  }
+}

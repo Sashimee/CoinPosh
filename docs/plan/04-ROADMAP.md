@@ -19,7 +19,7 @@ them using Demo Mode / mocks until the human completes them.
 ### T-0.01 · Monorepo scaffold
 - **agent:** lead-architect
 - **deps:** none
-- **owns:** `/package.json`, `/pnpm-workspace.yaml`, `/turbo.json`, `/tsconfig*.json`, `/.eslintrc*`, `/eslint.config.*`, `/.prettierrc*`, `/.gitignore`, `/.nvmrc`, `apps/web/` (skeleton only), `apps/server/` (skeleton only), `packages/*/package.json`, `docs/plan/STACK.lock.md`
+- **owns:** `/package.json`, `/pnpm-workspace.yaml`, `/pnpm-lock.yaml`, `/turbo.json`, `/tsconfig*.json`, `/.eslintrc*`, `/eslint.config.*`, `/.prettierrc*`, `/.gitignore`, `/.nvmrc`, `apps/web/` (skeleton only), `apps/server/` (skeleton only), `packages/*/package.json`, `docs/plan/STACK.lock.md`
 - **accept:** `pnpm i && pnpm check` (typecheck + lint + test, all green) works from clean; Vite app renders a black canvas with three WebGPURenderer (WebGL2 fallback logged); Worker `wrangler dev` answers `GET /health`; exact versions recorded in STACK.lock.md; root scripts `dev`, `build`, `check`, `test`, `e2e`.
 
 ### T-0.02 · Shared contracts v1
@@ -32,7 +32,7 @@ them using Demo Mode / mocks until the human completes them.
 - **agent:** lead-architect
 - **deps:** T-0.01
 - **owns:** `.github/workflows/**`, `apps/web/vite.config.ts`, `apps/web/public/404.html`
-- **accept:** PR workflow runs `pnpm check` + build; `deploy-web.yml` deploys `apps/web/dist` to Pages on push to `main` with base `/CoinPosh/`; `deploy-server.yml` runs only if `CLOUDFLARE_API_TOKEN` secret exists (skips cleanly otherwise).
+- **accept:** PR workflow runs `pnpm check` + build; `deploy-web.yml` deploys `apps/web/dist` to Pages on push to `main` with base `/CoinPosh/`; `deploy-server.yml` runs only if `CLOUDFLARE_API_TOKEN` secret exists (skips cleanly otherwise) and prints the deployed `workers.dev` URL; the web build reads the repo variable `VITE_API_URL` (`${{ vars.VITE_API_URL }}`), and an unset or empty value builds Demo Mode.
 
 ### T-0.04 · Deterministic sim core skeleton
 - **agent:** physics-engineer
@@ -93,7 +93,7 @@ them using Demo Mode / mocks until the human completes them.
 - **agent:** backend-engineer
 - **deps:** T-0.02
 - **owns:** `apps/server/**`
-- **accept:** guest auth with device-key-signed requests; PlayerDO handles drop (debit + mint IDs), claims (fall/fusion/crate) with conservation checks, idempotency; D1 migrations; append-only ledger; Vitest with miniflare covers: double-claim rejected, unknown ID rejected, forged value ignored, fusion tier mismatch rejected.
+- **accept:** guest auth with device-key-signed requests; PlayerDO handles drop (debit + mint IDs), claims (fall/fusion/crate) with conservation checks, idempotency; D1 migrations; append-only ledger; Vitest with miniflare covers: double-claim rejected, unknown ID rejected, forged value ignored, fusion tier mismatch rejected; CORS allows only `https://sashimee.github.io` and localhost dev origins.
 
 ### T-1.08 · Server: provably fair RNG + rate envelopes
 - **agent:** backend-engineer

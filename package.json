@@ -1,0 +1,32 @@
+{
+  "name": "coinposh",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.4.2",
+  "engines": {
+    "node": ">=24.20.0",
+    "pnpm": ">=12.4.2"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "check": "pnpm format:check && turbo run typecheck lint test",
+    "test": "turbo run test",
+    "e2e": "turbo run e2e",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "format": "prettier --write --ignore-unknown \"apps/**\" \"packages/**\" \"*.{json,js}\" pnpm-workspace.yaml",
+    "format:check": "prettier --check --ignore-unknown \"apps/**\" \"packages/**\" \"*.{json,js}\" pnpm-workspace.yaml"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.14.0",
+    "eslint-config-prettier": "10.1.8",
+    "globals": "17.14.0",
+    "prettier": "3.9.10",
+    "turbo": "2.11.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
+  }
+}
