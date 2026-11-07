@@ -1,0 +1,156 @@
+{
+  "app": {
+    "name": "CoinPosh",
+    "hudLabel": "Spielsteuerung"
+  },
+  "venue": {
+    "rivieraYacht": "Riviera-Yacht"
+  },
+  "currency": {
+    "coins_one": "{{value}} Münze",
+    "coins_other": "{{value}} Münzen",
+    "goldBars_one": "{{value}} Goldbarren",
+    "goldBars_other": "{{value}} Goldbarren"
+  },
+  "hud": {
+    "vault": "Tresor",
+    "balanceAria": "Tresorguthaben: {{value}}",
+    "goldBarsAria": "Goldbarren: {{value}}",
+    "provisional": "Das Haus bestätigt"
+  },
+  "combo": {
+    "label": "Kaskade",
+    "idle": "Schieben für Kaskaden",
+    "next": "Noch {{count}} bis {{tier}}",
+    "peak": "Gipfel",
+    "multiplier": "×{{value}}",
+    "aria": "Kaskade {{tier}}, {{coins}}, Multiplikator {{multiplier}}",
+    "ariaIdle": "Keine Kaskade aktiv",
+    "tier": {
+      "chic": "Chic",
+      "lavish": "Üppig",
+      "opulent": "Opulent",
+      "decadent": "Dekadent",
+      "obscene": "OBSZÖN"
+    }
+  },
+  "decorum": {
+    "label": "Etikette",
+    "aria": "Etikette verbraucht: {{percent}}",
+    "calm": "Gefasst",
+    "warning": "Benehmen, bitte",
+    "frozenTitle": "Der Concierge missbilligt",
+    "frozenCountdown_one": "Der Tisch läuft in {{count}} Sekunde weiter",
+    "frozenCountdown_other": "Der Tisch läuft in {{count}} Sekunden weiter"
+  },
+  "dock": {
+    "upgrades": "Upgrades",
+    "settings": "Einstellungen",
+    "affordable_one": "{{count}} Upgrade bereit",
+    "affordable_other": "{{count}} Upgrades bereit"
+  },
+  "upgrades": {
+    "title": "Upgrades",
+    "subtitle": "Verfeinern Sie den Tisch, Luxus für Luxus.",
+    "venueSection": "Die Yacht",
+    "globalSection": "Das Family Office",
+    "globalHint": "Bezahlt in Goldbarren. Bleibt bei jedem Aufstieg erhalten.",
+    "level": "St. {{level}}",
+    "levelAria": "Stufe {{level}} von {{max}}",
+    "maxed": "Max.",
+    "buy": "Kaufen",
+    "pending": "Wird bestätigt…",
+    "buyAria": "{{name}} Stufe {{level}} für {{cost}} kaufen",
+    "cannotAfford": "Nicht genug Guthaben",
+    "effect": {
+      "multiplier": "×{{value}}",
+      "count": "{{value}}",
+      "hours": "{{value}} Std.",
+      "next": "{{current}} → {{next}}"
+    },
+    "line": {
+      "pusherSpeed": {
+        "name": "Schieber-Tempo",
+        "description": "Ein flotterer Schwung des Messingschiebers."
+      },
+      "dropRate": {
+        "name": "Hand des Stewards",
+        "description": "Münzen verlassen Ihre Hand öfter."
+      },
+      "coinValue": {
+        "name": "Münzpolitur",
+        "description": "Jede Münze ist mehr wert."
+      },
+      "crateChance": {
+        "name": "Frachtliste",
+        "description": "Tresorkisten erscheinen öfter."
+      },
+      "vaultCapacity": {
+        "name": "Stahlkammer",
+        "description": "Mehr Platz im Samttresor."
+      },
+      "offlineHours": {
+        "name": "Nachtpersonal",
+        "description": "Das Haus schiebt länger, während Sie fort sind."
+      },
+      "fusionWindow": {
+        "name": "Geduld des Alchemisten",
+        "description": "Münzen haben länger Zeit zu verschmelzen."
+      },
+      "decorumCapacity": {
+        "name": "Dickes Fell",
+        "description": "Öfter rütteln, bevor der Concierge einschreitet."
+      },
+      "oldMoney": {
+        "name": "Altes Geld",
+        "description": "Münzen sind an jedem Ort mehr wert."
+      },
+      "privateCourier": {
+        "name": "Privatkurier",
+        "description": "Kisten kommen an jedem Ort öfter."
+      },
+      "trustFund": {
+        "name": "Treuhandfonds",
+        "description": "Beginnen Sie jeden Ort mit Münzen in der Hand."
+      }
+    }
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "subtitle": "Ganz nach Ihrem Geschmack.",
+    "audio": "Ton",
+    "master": "Gesamt",
+    "music": "Musik",
+    "sfx": "Effekte",
+    "mono": "Mono-Ton",
+    "monoHint": "Fasst Stereo auf einen Kanal zusammen.",
+    "feel": "Gefühl",
+    "haptics": "Haptik",
+    "hapticsHint": "Tippen und Vibrieren auf unterstützten Handys.",
+    "reduceMotion": "Bewegung reduzieren",
+    "reduceMotionHint": "Ruhigere Übergänge. Folgt standardmäßig Ihrem Gerät.",
+    "motion": {
+      "system": "Gerät",
+      "reduced": "An",
+      "full": "Aus"
+    },
+    "display": "Anzeige",
+    "quality": "Grafik",
+    "qualityOption": {
+      "auto": "Auto",
+      "low": "Leicht",
+      "high": "Prächtig"
+    },
+    "language": "Sprache",
+    "languageName": {
+      "en": "English",
+      "fr": "Français",
+      "de": "Deutsch"
+    },
+    "sliderValue": "{{value}} Prozent"
+  },
+  "common": {
+    "close": "Schließen",
+    "dragToClose": "Nach unten ziehen zum Schließen"
+  }
+}
