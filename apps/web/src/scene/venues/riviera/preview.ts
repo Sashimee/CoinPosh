@@ -10,7 +10,7 @@ import {
   WebGPURenderer,
   type Object3D,
 } from 'three/webgpu';
-import { applyCameraPreset, createRivieraVenue } from './index.ts';
+import { applyCameraPreset, createRivieraVenue, type RivieraQuality } from './index.ts';
 import { RIVIERA_TABLE } from './layout.ts';
 import { rivieraTokens } from './palette.ts';
 
@@ -20,16 +20,32 @@ import { rivieraTokens } from './palette.ts';
  * `t=<s>` freezes time there, `stroke=<0..1>` sets the pusher, `coins` drops stand-in coins
  * for scale, `probe` adds a chrome sphere to check environment alignment, and
  * `cam=x,y,z&look=x,y,z&fov=n` overrides the preset camera, and `env=<n>` / `lights=<n>`
- * override the environment intensity and scale the venue lights for look-dev.
+ * override the environment intensity and scale the venue lights for look-dev. `quality=low`
+ * builds the low tier.
+ *
+ * Timing: `frameMs` is the p50/p95 of the requestAnimationFrame interval over the last
+ * {@link SAMPLE_WINDOW} frames (what the player feels, capped by vsync). With `gpu`, `gpuMs`
+ * is the p50/p95 of the GPU render-pass time from timestamp queries; it stays null where the
+ * backend lacks `timestamp-query` / `EXT_disjoint_timer_query_webgl2`.
  */
+interface Percentiles {
+  p50: number;
+  p95: number;
+}
+
 interface PreviewStats {
   ready: boolean;
   backend: string;
+  quality: RivieraQuality;
   drawCalls: number;
   triangles: number;
-  frameMs: number;
+  frames: number;
+  frameMs: Percentiles | null;
+  gpuMs: Percentiles | null;
   error?: string;
 }
+
+const SAMPLE_WINDOW = 240;
 
 declare global {
   interface Window {
@@ -38,8 +54,35 @@ declare global {
 }
 
 const params = new URLSearchParams(location.search);
-const stats: PreviewStats = { ready: false, backend: '', drawCalls: 0, triangles: 0, frameMs: 0 };
+const quality = params.get('quality') === 'low' ? 'low' : 'high';
+const stats: PreviewStats = {
+  ready: false,
+  backend: '',
+  quality,
+  drawCalls: 0,
+  triangles: 0,
+  frames: 0,
+  frameMs: null,
+  gpuMs: null,
+};
 window.__preview = stats;
+
+class SampleWindow {
+  private readonly samples: number[] = [];
+
+  push(value: number): void {
+    this.samples.push(value);
+    if (this.samples.length > SAMPLE_WINDOW) this.samples.shift();
+  }
+
+  percentiles(): Percentiles | null {
+    if (this.samples.length === 0) return null;
+    const sorted = [...this.samples].sort((a, b) => a - b);
+    const at = (q: number): number =>
+      sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? Number.NaN;
+    return { p50: at(0.5), p95: at(0.95) };
+  }
+}
 
 function vectorParam(name: string): Vector3 | null {
   const raw = params.get(name);
@@ -82,15 +125,26 @@ function standInCoins(): Object3D[] {
 async function boot(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#preview');
   if (!canvas) throw new Error('Preview canvas #preview is missing');
-  const renderer = new WebGPURenderer({ canvas, antialias: true, forceWebGL: params.has('webgl') });
+  const renderer = new WebGPURenderer({
+    canvas,
+    antialias: true,
+    forceWebGL: params.has('webgl'),
+    trackTimestamp: params.has('gpu'),
+  });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   await renderer.init();
   stats.backend = 'isWebGPUBackend' in renderer.backend ? 'webgpu' : 'webgl2';
+  const gpuTimed =
+    params.has('gpu') &&
+    renderer.hasFeature(
+      stats.backend === 'webgpu' ? 'timestamp-query' : 'EXT_disjoint_timer_query_webgl2',
+    );
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(42, 1, 0.05, 120);
   const venue = await createRivieraVenue(scene, renderer, {
     reducedMotion: params.has('reduced'),
+    quality,
   });
 
   if (params.has('coins')) scene.add(...standInCoins());
@@ -107,7 +161,12 @@ async function boot(): Promise<void> {
   if (envIntensity !== null) scene.environmentIntensity = Number(envIntensity);
   const lightScale = params.get('lights');
   if (lightScale !== null) {
-    for (const light of [venue.lighting.key, venue.lighting.rimWarm, venue.lighting.rimCool]) {
+    for (const light of [
+      venue.lighting.key,
+      venue.lighting.rimWarm,
+      venue.lighting.rimCool,
+      venue.lighting.fill,
+    ]) {
       light.intensity *= Number(lightScale);
     }
   }
@@ -135,16 +194,24 @@ async function boot(): Promise<void> {
   }
 
   const timer = new Timer();
-  let smoothed = 0;
+  const intervals = new SampleWindow();
+  const gpuTimes = new SampleWindow();
+  let previous: number | null = null;
   await renderer.setAnimationLoop((now: number) => {
     timer.update(now);
     const dt = timer.getDelta();
     if (frozen === null) venue.update(dt);
-    const start = performance.now();
+    if (previous !== null) intervals.push(now - previous);
+    previous = now;
     renderer.render(scene, camera);
-    const ms = performance.now() - start;
-    smoothed = smoothed === 0 ? ms : smoothed * 0.9 + ms * 0.1;
-    stats.frameMs = smoothed;
+    if (gpuTimed) {
+      void renderer.resolveTimestampsAsync('render').then((ms) => {
+        if (ms !== undefined && ms > 0) gpuTimes.push(ms);
+        stats.gpuMs = gpuTimes.percentiles();
+      });
+    }
+    stats.frames += 1;
+    stats.frameMs = intervals.percentiles();
     stats.drawCalls = renderer.info.render.drawCalls;
     stats.triangles = renderer.info.render.triangles;
     stats.ready = true;

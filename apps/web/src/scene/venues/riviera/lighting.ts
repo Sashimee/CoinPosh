@@ -6,6 +6,7 @@ export interface RivieraLighting {
   readonly key: SpotLight;
   readonly rimWarm: DirectionalLight;
   readonly rimCool: DirectionalLight;
+  readonly fill: DirectionalLight;
   dispose(): void;
 }
 
@@ -19,6 +20,8 @@ export interface LightingOptions {
  * Key: a soft cabin downlight above the player's shoulder that pools on the playfield and
  * casts the only shadow. Rims: the low sunset behind the table (warm, from the sun's bearing
  * but lifted so it grazes the trims) and a cool sea-glass kicker from the opposite quarter.
+ * Fill: a weak warm wash from behind the camera so the sun-backlit bulwark reads as ivory
+ * gelcoat rather than a grey silhouette.
  */
 export function createRivieraLighting(options: LightingOptions): RivieraLighting {
   const group = new Group();
@@ -44,17 +47,23 @@ export function createRivieraLighting(options: LightingOptions): RivieraLighting
   rimCool.position.set(-sun.x * 4 + 1.5, 1.2, sun.z * 3);
   rimCool.target.position.set(0, 0, 0);
 
-  group.add(key, key.target, rimWarm, rimWarm.target, rimCool, rimCool.target);
+  const fill = new DirectionalLight(new Color(rivieraTones.rimWarm), 2.6);
+  fill.position.set(0.9, 0.7, 3);
+  fill.target.position.set(0, 0, -0.2);
+
+  group.add(key, key.target, rimWarm, rimWarm.target, rimCool, rimCool.target, fill, fill.target);
 
   return {
     group,
     key,
     rimWarm,
     rimCool,
+    fill,
     dispose() {
       key.dispose();
       rimWarm.dispose();
       rimCool.dispose();
+      fill.dispose();
     },
   };
 }

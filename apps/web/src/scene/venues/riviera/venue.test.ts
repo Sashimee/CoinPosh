@@ -2,11 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { Box3, Mesh, PerspectiveCamera, Vector3, type BufferGeometry } from 'three/webgpu';
 import { createRivieraDeck } from './deck.ts';
 import { halfRoundProfile, line, mergeAll, roundedBox, sweepProfile } from './geometry.ts';
-import { applyCameraPreset, RIVIERA_TABLE, rivieraCameraPreset } from './layout.ts';
+import {
+  applyCameraPreset,
+  RIVIERA_SUN_DIRECTION,
+  RIVIERA_TABLE,
+  rivieraCameraPreset,
+} from './layout.ts';
+import { createNoiseTexture } from '../../env/noise-texture.ts';
 import { createRivieraMaterials } from './materials.ts';
 import { createRivieraTable, TABLE_BOUNDS } from './table.ts';
 
-const materials = createRivieraMaterials();
+const materials = createRivieraMaterials({ noise: createNoiseTexture(16) });
 
 function meshCount(root: { traverse(cb: (o: unknown) => void): void }): number {
   let count = 0;
@@ -59,13 +65,23 @@ describe('createRivieraTable', () => {
     table.setPusherStroke(-4);
     expect(table.pusher.position.z).toBe(0);
   });
+
+  it('rejects a non-finite stroke instead of moving the pusher to NaN', () => {
+    table.setPusherStroke(0.5);
+    for (const bad of [Number.NaN, Infinity, -Infinity]) {
+      expect(() => {
+        table.setPusherStroke(bad);
+      }).toThrow(RangeError);
+    }
+    expect(table.pusher.position.z).toBeCloseTo(RIVIERA_TABLE.pusherStroke / 2, 10);
+  });
 });
 
 describe('createRivieraDeck', () => {
-  it('builds the deck, bulwark, rails and stanchions in five merged meshes', () => {
+  it('builds the deck, bulwark, gold pinstripe, rails and stanchions in six merged meshes', () => {
     const deck = createRivieraDeck(materials, true);
-    expect(deck.meshes).toHaveLength(5);
-    expect(meshCount(deck.group)).toBe(5);
+    expect(deck.meshes).toHaveLength(6);
+    expect(meshCount(deck.group)).toBe(6);
     const box = new Box3().setFromObject(deck.group);
     expect(box.min.y).toBeGreaterThanOrEqual(RIVIERA_TABLE.deckY - 0.1);
     deck.dispose();
@@ -120,7 +136,16 @@ describe('rivieraCameraPreset', () => {
     new Vector3(-TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.top, TABLE_BOUNDS.backZ),
     new Vector3(TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.top, TABLE_BOUNDS.backZ),
     new Vector3(0, -0.04, TABLE_BOUNDS.frontZ),
+    new Vector3(-TABLE_BOUNDS.halfWidth, -0.12, TABLE_BOUNDS.frontZ),
+    new Vector3(TABLE_BOUNDS.halfWidth, -0.12, TABLE_BOUNDS.frontZ),
   ];
+
+  function presetCamera(aspect: number): PerspectiveCamera {
+    const camera = new PerspectiveCamera(50, aspect, 0.05, 2000);
+    applyCameraPreset(camera, rivieraCameraPreset(aspect));
+    camera.updateMatrixWorld();
+    return camera;
+  }
 
   for (const [label, aspect] of [
     ['desktop 16:10', 1.6],
@@ -128,25 +153,35 @@ describe('rivieraCameraPreset', () => {
     ['tablet 4:3', 4 / 3],
     ['phone portrait', 390 / 844],
   ] as const) {
-    it(`keeps the playfield, tray lip and backboard in frame on ${label}`, () => {
-      const camera = new PerspectiveCamera(50, aspect, 0.05, 120);
-      applyCameraPreset(camera, rivieraCameraPreset(aspect));
-      camera.updateMatrixWorld();
+    it(`keeps the playfield, tray lip, finials and backboard in frame on ${label}`, () => {
+      const camera = presetCamera(aspect);
       for (const corner of corners) {
         const ndc = corner.clone().project(camera);
         expect(Math.abs(ndc.x), `x of ${corner.toArray().join(',')}`).toBeLessThanOrEqual(1);
         expect(Math.abs(ndc.y), `y of ${corner.toArray().join(',')}`).toBeLessThanOrEqual(1);
       }
+      const frontFrameTop = new Vector3(0, -0.2, TABLE_BOUNDS.frontZ).project(camera);
+      expect(frontFrameTop.y, 'front panel frame clears the bottom edge').toBeGreaterThan(-0.92);
     });
   }
 
-  it('keeps the horizon in the upper part of a landscape frame', () => {
-    const camera = new PerspectiveCamera(50, 1.6, 0.05, 120);
-    applyCameraPreset(camera, rivieraCameraPreset(1.6));
-    camera.updateMatrixWorld();
-    const farAhead = camera.position.clone().add(new Vector3(0, 0, -1000));
-    const ndc = farAhead.project(camera);
-    expect(ndc.y).toBeGreaterThan(0.6);
-    expect(ndc.y).toBeLessThan(1);
-  });
+  for (const [label, aspect] of [
+    ['1280x800', 1280 / 800],
+    ['390x844', 390 / 844],
+  ] as const) {
+    it(`puts the horizon in the upper half and the sun disc inside the frame at ${label}`, () => {
+      const camera = presetCamera(aspect);
+      const horizon = camera.position
+        .clone()
+        .add(new Vector3(0, 0, -1000))
+        .project(camera);
+      expect(horizon.y).toBeGreaterThan(0.25);
+      expect(horizon.y).toBeLessThan(0.85);
+      const sunOnDome = RIVIERA_SUN_DIRECTION.clone().multiplyScalar(90).project(camera);
+      expect(Math.abs(sunOnDome.x)).toBeLessThan(0.85);
+      expect(sunOnDome.y).toBeGreaterThan(horizon.y);
+      expect(sunOnDome.y).toBeLessThan(0.9);
+      expect(sunOnDome.z).toBeLessThan(1);
+    });
+  }
 });

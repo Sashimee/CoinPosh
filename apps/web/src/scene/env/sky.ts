@@ -4,23 +4,25 @@ import {
   Mesh,
   MeshBasicNodeMaterial,
   SphereGeometry,
-  type Vector3,
   type Node,
+  type Texture,
+  type Vector3,
 } from 'three/webgpu';
 import {
   dot,
   float,
   max,
   mix,
-  mx_fractal_noise_float,
   normalize,
   positionLocal,
   pow,
   saturate,
   smoothstep,
   uniform,
+  vec2,
   vec3,
 } from 'three/tsl';
+import { decodeNoise, NOISE_CHANNELS, sampleNoiseAtlas } from './noise-texture.ts';
 
 export interface SunsetSkyColors {
   readonly zenith: string;
@@ -39,6 +41,10 @@ export interface SunsetSkyOptions {
   /** Linear HDR multiplier on the sun disc, so it blooms and glints in reflections. */
   readonly sunIntensity?: number;
   readonly radius?: number;
+  /** Baked noise atlas the cloud band is read from (see `createNoiseTexture`). */
+  readonly noise: Texture;
+  /** Paints the streaky cloud band on the dome. Low quality tiers turn it off. */
+  readonly clouds?: boolean;
 }
 
 export interface SunsetSky {
@@ -86,8 +92,12 @@ export function createSunsetSky(options: SunsetSkyOptions): SunsetSky {
 
     if (clouds) {
       const lift = max(h, 0.0).add(0.035);
-      const stretched = vec3(d.x.div(lift).mul(0.18), d.z.div(lift).mul(0.75), 3.1);
-      const n = mx_fractal_noise_float(stretched, 4, 2.0, 0.5);
+      const { cloud } = NOISE_CHANNELS;
+      const stretched = vec2(
+        d.x.div(lift).mul(0.18 / cloud.cellsX),
+        d.z.div(lift).mul(0.75 / cloud.cellsY),
+      ).add(0.37);
+      const n = decodeNoise(sampleNoiseAtlas(options.noise, stretched), cloud);
       const band = smoothstep(0.02, 0.1, h).mul(float(1).sub(smoothstep(0.22, 0.5, h)));
       const coverage = smoothstep(0.0, 0.4, n).mul(band);
       const lit = mix(cloudShadow, horizon.mul(1.35), pow(towardSun, 3));
@@ -106,7 +116,7 @@ export function createSunsetSky(options: SunsetSkyOptions): SunsetSky {
   };
 
   const material = new MeshBasicNodeMaterial({ side: BackSide, fog: false });
-  material.colorNode = radiance(positionLocal, { clouds: true });
+  material.colorNode = radiance(positionLocal, { clouds: options.clouds ?? true });
   const radius = options.radius ?? 90;
   const geometry = new SphereGeometry(radius, 48, 24);
   const mesh = new Mesh(geometry, material);

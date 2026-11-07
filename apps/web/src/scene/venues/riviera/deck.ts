@@ -8,6 +8,44 @@ const BULWARK_THICKNESS = 0.09;
 const CAP_WIDTH = 0.13;
 const CAP_THICKNESS = 0.035;
 const CORNER = 0.35;
+/** How far the inboard face curves outboard from its toe to its top: a gentle tumblehome. */
+const TUMBLEHOME = 0.016;
+const TOE_HEIGHT = 0.05;
+const TOE_RADIUS = 0.03;
+const PINSTRIPE_HEIGHT = 0.27;
+
+/** Inboard offset of the bulwark's inner face from its centre line at height `t`. */
+function inboardFace(t: number): number {
+  const k = Math.min(Math.max((t - TOE_HEIGHT) / (D.bulwarkHeight - TOE_HEIGHT), 0), 1);
+  return BULWARK_THICKNESS / 2 - TUMBLEHOME * k * k;
+}
+
+/**
+ * Bulwark cross-section, outboard (s < 0) to inboard (s > 0): a plain topside, a rounded
+ * top edge under the cap, an inboard face that curves away with height so the key light
+ * grades down it instead of lighting a flat slab, and a coved toe into the deck.
+ */
+function bulwarkProfile(): Vector2[] {
+  const h = D.bulwarkHeight;
+  const half = BULWARK_THICKNESS / 2;
+  const points = [new Vector2(-half, 0), new Vector2(-half, h - 0.012)];
+  points.push(new Vector2(-half + 0.004, h - 0.003), new Vector2(-half + 0.012, h));
+  points.push(
+    new Vector2(inboardFace(h) - 0.012, h),
+    new Vector2(inboardFace(h) - 0.003, h - 0.004),
+  );
+  const faceSteps = 10;
+  for (let i = 0; i <= faceSteps; i += 1) {
+    const t = h - 0.012 - ((h - 0.012 - TOE_HEIGHT) * i) / faceSteps;
+    points.push(new Vector2(inboardFace(t), t));
+  }
+  const coveSteps = 6;
+  for (let i = 1; i <= coveSteps; i += 1) {
+    const a = (Math.PI / 2) * (i / coveSteps);
+    points.push(new Vector2(half + TOE_RADIUS * (1 - Math.cos(a)), TOE_HEIGHT * (1 - Math.sin(a))));
+  }
+  return points;
+}
 
 export interface RivieraDeck {
   readonly group: Group;
@@ -87,25 +125,14 @@ export function createRivieraDeck(materials: RivieraMaterials, shadows: boolean)
   );
 
   const bulwarkTop = T.deckY + D.bulwarkHeight;
-  const bulwarkY = T.deckY + D.bulwarkHeight / 2;
-  const bulwark = [
-    roundedBox(
-      new Vector3(D.halfWidth * 2, D.bulwarkHeight, BULWARK_THICKNESS),
-      new Vector3(0, bulwarkY, D.sternZ + BULWARK_THICKNESS / 2),
-      0.02,
-    ),
-    ...[-1, 1].map((side) =>
-      roundedBox(
-        new Vector3(BULWARK_THICKNESS, D.bulwarkHeight, deckLength),
-        new Vector3(
-          side * (D.halfWidth - BULWARK_THICKNESS / 2),
-          bulwarkY,
-          (D.forwardZ + D.sternZ) / 2,
-        ),
-        0.02,
-      ),
-    ),
-  ];
+  const bulwark = sweepProfile(railOutline(BULWARK_THICKNESS / 2, T.deckY), bulwarkProfile(), {
+    up: Y,
+  });
+  const pinstripe = sweepProfile(
+    railOutline(BULWARK_THICKNESS / 2 + inboardFace(PINSTRIPE_HEIGHT), T.deckY + PINSTRIPE_HEIGHT),
+    roundProfile(0.0055, 12),
+    { up: Y },
+  );
 
   const capY = bulwarkTop + CAP_THICKNESS / 2;
   const capAcross = roundedBox(
@@ -150,7 +177,7 @@ export function createRivieraDeck(materials: RivieraMaterials, shadows: boolean)
   deckMesh.name = 'deck-teak';
   deckMesh.receiveShadow = shadows;
 
-  const gelcoat = new Mesh(mergeAll(bulwark, 'deck/gelcoat'), materials.gelcoat);
+  const gelcoat = new Mesh(mergeAll([bulwark], 'deck/gelcoat'), materials.gelcoat);
   gelcoat.name = 'deck-bulwark';
   gelcoat.receiveShadow = shadows;
 
@@ -165,7 +192,10 @@ export function createRivieraDeck(materials: RivieraMaterials, shadows: boolean)
   const steel = new Mesh(mergeAll(chrome, 'deck/chrome'), materials.chrome);
   steel.name = 'deck-chrome';
 
-  const meshes = [deckMesh, gelcoat, capRail, capSideMesh, steel];
+  const goldLine = new Mesh(mergeAll([pinstripe], 'deck/pinstripe'), materials.goldPolished);
+  goldLine.name = 'deck-pinstripe';
+
+  const meshes = [deckMesh, gelcoat, capRail, capSideMesh, steel, goldLine];
   group.add(...meshes);
 
   return {

@@ -36,6 +36,12 @@ export const RIVIERA_DECK = {
   seaLevel: -4.1,
 } as const;
 
+/**
+ * Bearing of the low sunset in the backdrop frame: almost dead astern and a touch to port, so
+ * the disc sits inside even a portrait frame, just above the horizon beside the backboard.
+ */
+export const RIVIERA_SUN_DIRECTION = new Vector3(-0.1, 0.035, -1).normalize();
+
 export interface CameraPreset {
   readonly position: Vector3;
   readonly target: Vector3;
@@ -43,21 +49,27 @@ export interface CameraPreset {
 }
 
 const TABLE_CENTRE = new Vector3(0, 0.04, -0.08);
-const ELEVATION = (25 * Math.PI) / 180;
-const LOOK_PITCH_WIDE = (20.5 * Math.PI) / 180;
-const LOOK_PITCH_TALL = (24 * Math.PI) / 180;
-const VERTICAL_FOV = 44;
-const FIT_HALF_WIDTH = 0.5;
-const MIN_DISTANCE = 1.7;
+const ELEVATION = (22 * Math.PI) / 180;
+const LOOK_PITCH_WIDE = (15 * Math.PI) / 180;
+const LOOK_PITCH_TALL = (11 * Math.PI) / 180;
+const VERTICAL_FOV_WIDE = 44;
+const VERTICAL_FOV_TALL = 56;
+const FIT_HALF_WIDTH = 0.56;
+const MIN_DISTANCE = 2.4;
 
 /**
  * Frames the table for any aspect ratio. The camera sits on a fixed elevation above the table
- * centre and backs off until the cabinet's full width fits, but looks a little shallower than
- * its elevation so the table sits low in frame and the sunset horizon stays visible above it.
- * Tall (portrait) frames have sky to spare, so they look further down to keep the tray in shot.
+ * centre and backs off until the cabinet's full width fits (never closer than enough to keep
+ * the tray, finials and the top of the front panel's gold frame clear of the bottom edge on
+ * wide screens), but looks shallower than its elevation so the table sits low in frame with
+ * the sunset horizon and sun above it. Tall
+ * (portrait) frames widen the vertical field of view so the cabinet fits closer, and look up
+ * a little so the sky fills the space above the backboard instead of the cabinet's front panel.
  */
 export function rivieraCameraPreset(aspect: number): CameraPreset {
-  const halfV = (VERTICAL_FOV * Math.PI) / 360;
+  const tall = Math.min(Math.max((1.3 - aspect) / (1.3 - 0.45), 0), 1);
+  const fov = VERTICAL_FOV_WIDE + (VERTICAL_FOV_TALL - VERTICAL_FOV_WIDE) * tall;
+  const halfV = (fov * Math.PI) / 360;
   const halfH = Math.atan(Math.tan(halfV) * Math.max(aspect, 0.1));
   const distance = Math.max(FIT_HALF_WIDTH / Math.tan(halfH), MIN_DISTANCE);
   const position = new Vector3(
@@ -65,12 +77,11 @@ export function rivieraCameraPreset(aspect: number): CameraPreset {
     TABLE_CENTRE.y + Math.sin(ELEVATION) * distance,
     TABLE_CENTRE.z + Math.cos(ELEVATION) * distance,
   );
-  const tall = Math.min(Math.max((1.3 - aspect) / (1.3 - 0.45), 0), 1);
   const pitch = LOOK_PITCH_WIDE + (LOOK_PITCH_TALL - LOOK_PITCH_WIDE) * tall;
   const target = position
     .clone()
     .add(new Vector3(0, -Math.sin(pitch), -Math.cos(pitch)).multiplyScalar(distance));
-  return { position, target, fov: VERTICAL_FOV };
+  return { position, target, fov };
 }
 
 export function applyCameraPreset(camera: PerspectiveCamera, preset: CameraPreset): void {

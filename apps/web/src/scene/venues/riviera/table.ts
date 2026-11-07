@@ -45,7 +45,10 @@ export interface RivieraTable {
   readonly group: Group;
   /** The pusher carriage; its local z = 0 is the fully retracted position. */
   readonly pusher: Group;
-  /** Moves the pusher forward by `stroke01` of its stroke (0 = retracted, 1 = full). */
+  /**
+   * Moves the pusher forward by `stroke01` of its stroke (0 = retracted, 1 = full); finite
+   * values outside 0..1 clamp, non-finite ones throw a RangeError.
+   */
   setPusherStroke(stroke01: number): void;
   readonly meshes: readonly Mesh[];
   dispose(): void;
@@ -409,6 +412,9 @@ export function createRivieraTable(materials: RivieraMaterials, shadows: boolean
     pusher,
     meshes,
     setPusherStroke(stroke01: number) {
+      if (!Number.isFinite(stroke01)) {
+        throw new RangeError(`Pusher stroke must be a finite number, got ${stroke01}`);
+      }
       const k = Math.min(Math.max(stroke01, 0), 1);
       pusher.position.z = k * T.pusherStroke;
     },

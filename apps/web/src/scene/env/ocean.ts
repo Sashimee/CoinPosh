@@ -5,6 +5,7 @@ import {
   MeshBasicNodeMaterial,
   Vector2,
   type Node,
+  type Texture,
 } from 'three/webgpu';
 import {
   cameraPosition,
@@ -15,7 +16,6 @@ import {
   max,
   mix,
   modelWorldMatrixInverse,
-  mx_noise_vec3,
   normalize,
   positionLocal,
   pow,
@@ -27,6 +27,7 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+import { decodeNoise, NOISE_CHANNELS, sampleNoiseAtlas } from './noise-texture.ts';
 import type { SunsetSky } from './sky.ts';
 
 export interface OceanOptions {
@@ -38,6 +39,10 @@ export interface OceanOptions {
   /** Sea level in the backdrop's local frame (below the deck). */
   readonly level: number;
   readonly radius?: number;
+  /** Baked noise atlas the near-hull ripples are read from (see `createNoiseTexture`). */
+  readonly noise: Texture;
+  /** Fine ripples near the hull on top of the swells. Low quality tiers turn them off. */
+  readonly ripples?: boolean;
 }
 
 export interface Ocean {
@@ -74,8 +79,9 @@ function linear(hex: string): Node<'vec3'> {
 /**
  * Backdrop sea: a flat disc shaded per pixel. Slopes come from analytic sums of deep-water
  * swells (dispersion ω = √(g·k)), each faded out once it falls below a pixel to avoid shimmer,
- * plus fine noise ripples near the hull. Reflections sample the same sky function as the dome,
- * so the sun glitter path and the far haze match the sky exactly and the horizon has no seam.
+ * plus fine ripples near the hull read from the baked noise atlas. Reflections sample the same
+ * sky function as the dome, so the sun glitter path and the far haze match the sky exactly and
+ * the horizon has no seam.
  */
 export function createOcean(options: OceanOptions): Ocean {
   const time = uniform(0);
@@ -101,11 +107,23 @@ export function createOcean(options: OceanOptions): Ocean {
     slopeX = slopeX.add(slope.mul(swell.direction.x));
     slopeZ = slopeZ.add(slope.mul(swell.direction.y));
   }
-  const rippleFade = float(1).sub(smoothstep(4, 14, distance));
-  const ripple = mx_noise_vec3(vec3(p.x.mul(2.2), p.y.mul(2.2), time.mul(0.45))).mul(
-    rippleFade.mul(0.05),
-  );
-  const normal = normalize(vec3(slopeX.negate().add(ripple.x), 1, slopeZ.negate().add(ripple.z)));
+  if (options.ripples ?? true) {
+    const { speckle } = NOISE_CHANNELS;
+    const rippleFade = float(1)
+      .sub(smoothstep(4, 14, distance))
+      .mul(0.05);
+    const at = p.mul(2.2 / speckle.cellsX);
+    const driftA = vec2(0.011, 0.004).mul(time);
+    const driftB = vec2(-0.005, 0.009).mul(time);
+    const a = decodeNoise(sampleNoiseAtlas(options.noise, at.add(driftA)), speckle);
+    const b = decodeNoise(
+      sampleNoiseAtlas(options.noise, at.mul(1.37).add(0.5).add(driftB)),
+      speckle,
+    );
+    slopeX = slopeX.sub(a.mul(rippleFade));
+    slopeZ = slopeZ.sub(b.mul(rippleFade));
+  }
+  const normal = normalize(vec3(slopeX.negate(), 1, slopeZ.negate()));
 
   const view = normalize(toEye);
   const facing = saturate(dot(normal, view));
