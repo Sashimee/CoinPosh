@@ -44,6 +44,8 @@ export interface PostPipeline {
   readonly dynamicScale: number;
   /** The scene pass's actual scale relative to the drawing buffer. */
   readonly sceneScale: number;
+  /** The renderer's current pixel ratio (drawing-buffer pixels per CSS pixel). */
+  readonly rendererPixelRatio: number;
   setProfile(profile: QualityProfile): void;
   setDynamicScale(scale: number): void;
   render(nowMs: number): void;
@@ -135,6 +137,9 @@ export function createPostPipeline(
     },
     get sceneScale() {
       return sceneScaleFor(dynamicScale);
+    },
+    get rendererPixelRatio() {
+      return renderer.getPixelRatio();
     },
     setProfile(next) {
       if (next === profile) return;

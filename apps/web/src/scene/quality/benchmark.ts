@@ -17,6 +17,11 @@ export interface BenchmarkResult {
   /** Median GPU+submit cost of one high-tier frame, readback latency removed. */
   readonly msPerFrame: number;
   readonly samples: readonly number[];
+  /**
+   * Shader compile plus the first post render, which sits outside TIME_BUDGET_MS. On WebGL2
+   * mobile it can take seconds, so the benchmark must run behind the loading screen.
+   */
+  readonly compileMs: number;
 }
 
 /**
@@ -37,9 +42,9 @@ export async function runBenchmark(
   const sync = () => renderer.readRenderTargetPixelsAsync(target, 0, 0, 1, 1);
 
   try {
+    const compileStarted = now();
     await renderer.compileAsync(bench.scene, bench.camera);
     renderer.setRenderTarget(target);
-    const started = now();
 
     const renderBatch = async (): Promise<number> => {
       const t0 = now();
@@ -49,12 +54,14 @@ export async function runBenchmark(
     };
 
     // The first pipeline render compiles its full-screen materials; keep that out of the score.
-    post.render(started);
+    post.render(compileStarted);
     await sync();
+    const started = now();
+    const compileMs = started - compileStarted;
     const firstBatch = await renderBatch();
     const roughCost = firstBatch / FRAMES_PER_BATCH;
     if (roughCost > TIER_THRESHOLDS_MS.medium * HOPELESS_FACTOR) {
-      return { tier: 'low', msPerFrame: roughCost, samples: [roughCost] };
+      return { tier: 'low', msPerFrame: roughCost, samples: [roughCost], compileMs };
     }
     for (let i = 1; i < WARMUP_BATCHES; i++) await renderBatch();
 
@@ -77,6 +84,7 @@ export async function runBenchmark(
       tier: tierForFrameCost(msPerFrame),
       msPerFrame,
       samples: batches.map((ms) => Math.max(ms - syncLatency, 0) / FRAMES_PER_BATCH),
+      compileMs,
     };
   } finally {
     renderer.setRenderTarget(previousTarget);

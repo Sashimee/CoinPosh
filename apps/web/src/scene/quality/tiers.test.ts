@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isQualityTier, lowerTier, QUALITY_PROFILES, QUALITY_TIERS } from './tiers.ts';
+import {
+  canvasPixelRatio,
+  isQualityTier,
+  lowerTier,
+  QUALITY_PROFILES,
+  QUALITY_TIERS,
+} from './tiers.ts';
 
 describe('quality tiers', () => {
   it('orders tiers from cheapest to richest and steps down one at a time', () => {
@@ -34,5 +40,14 @@ describe('quality tiers', () => {
     expect(medium.maxPixelRatio).toBeLessThan(high.maxPixelRatio);
     expect(low.bloom.resolutionScale).toBeLessThan(medium.bloom.resolutionScale);
     expect(medium.bloom.resolutionScale).toBeLessThan(high.bloom.resolutionScale);
+  });
+
+  it('caps the canvas pixel ratio at the tier, never above the device', () => {
+    const { low, medium, high } = QUALITY_PROFILES;
+    expect(canvasPixelRatio(low, 2)).toBe(1);
+    expect(canvasPixelRatio(medium, 2)).toBe(1.5);
+    expect(canvasPixelRatio(high, 2)).toBe(2);
+    expect(canvasPixelRatio(high, 1)).toBe(1);
+    expect(canvasPixelRatio(medium, 1.25)).toBe(1.25);
   });
 });

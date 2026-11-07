@@ -37,20 +37,29 @@ describe('quality storage', () => {
   it('round-trips a tier for the same backend', () => {
     const store = memoryStore();
     const log = logger();
-    expect(saveQuality(store, { tier: 'medium', backend: 'webgpu', benchmarkMs: 9.5 }, log)).toBe(
-      true,
-    );
+    expect(
+      saveQuality(
+        store,
+        { tier: 'medium', backend: 'webgpu', benchmarkMs: 9.5, downgrade: null },
+        log,
+      ),
+    ).toBe(true);
     expect(loadQuality(store, 'webgpu', log)).toEqual({
       tier: 'medium',
       backend: 'webgpu',
       benchmarkMs: 9.5,
+      downgrade: null,
     });
     expect(log.warn).not.toHaveBeenCalled();
   });
 
   it('ignores a tier measured on the other backend so it gets re-benchmarked', () => {
     const store = memoryStore();
-    saveQuality(store, { tier: 'high', backend: 'webgpu', benchmarkMs: 4 }, logger());
+    saveQuality(
+      store,
+      { tier: 'high', backend: 'webgpu', benchmarkMs: 4, downgrade: null },
+      logger(),
+    );
     expect(loadQuality(store, 'webgl2', logger())).toBeNull();
   });
 
@@ -63,11 +72,39 @@ describe('quality storage', () => {
   it.each([
     ['not json', '{tier:'],
     ['wrong shape', '[]'],
-    ['unknown tier', JSON.stringify({ tier: 'ultra', backend: 'webgpu', benchmarkMs: 1 })],
-    ['unknown backend', JSON.stringify({ tier: 'low', backend: 'metal', benchmarkMs: 1 })],
+    [
+      'unknown tier',
+      JSON.stringify({ tier: 'ultra', backend: 'webgpu', benchmarkMs: 1, downgrade: null }),
+    ],
+    [
+      'unknown backend',
+      JSON.stringify({ tier: 'low', backend: 'metal', benchmarkMs: 1, downgrade: null }),
+    ],
     [
       'non-finite benchmark',
       JSON.stringify({ tier: 'low', backend: 'webgpu', benchmarkMs: 'fast' }),
+    ],
+    [
+      'sticky downgrade from an older build',
+      JSON.stringify({ tier: 'low', backend: 'webgpu', benchmarkMs: null }),
+    ],
+    [
+      'unknown downgrade tier',
+      JSON.stringify({
+        tier: 'high',
+        backend: 'webgpu',
+        benchmarkMs: 4,
+        downgrade: { tier: 'ultra', bootsLeft: 2 },
+      }),
+    ],
+    [
+      'negative boots left',
+      JSON.stringify({
+        tier: 'high',
+        backend: 'webgpu',
+        benchmarkMs: 4,
+        downgrade: { tier: 'low', bootsLeft: -1 },
+      }),
     ],
   ])('warns and re-benchmarks on a malformed record (%s)', (_label, raw) => {
     const log = logger();
@@ -75,24 +112,46 @@ describe('quality storage', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('malformed'));
   });
 
-  it('accepts a downgrade record without a benchmark time', () => {
+  it('round-trips a governor downgrade next to the benchmark tier', () => {
     const store = memoryStore();
-    saveQuality(store, { tier: 'low', backend: 'webgl2', benchmarkMs: null }, logger());
-    expect(loadQuality(store, 'webgl2', logger())?.tier).toBe('low');
+    const record = {
+      tier: 'high',
+      backend: 'webgl2',
+      benchmarkMs: 5,
+      downgrade: { tier: 'low', bootsLeft: 3 },
+    } as const;
+    saveQuality(store, record, logger());
+    expect(loadQuality(store, 'webgl2', logger())).toEqual(record);
+  });
+
+  it('reads a record without a downgrade field as "no downgrade"', () => {
+    const raw = JSON.stringify({ tier: 'medium', backend: 'webgpu', benchmarkMs: 8 });
+    expect(loadQuality(memoryStore({ [QUALITY_STORAGE_KEY]: raw }), 'webgpu', logger())).toEqual({
+      tier: 'medium',
+      backend: 'webgpu',
+      benchmarkMs: 8,
+      downgrade: null,
+    });
   });
 
   it('survives storage that throws on read and write', () => {
     const log = logger();
     expect(loadQuality(throwingStore(), 'webgpu', log)).toBeNull();
     expect(
-      saveQuality(throwingStore(), { tier: 'low', backend: 'webgpu', benchmarkMs: 1 }, log),
+      saveQuality(
+        throwingStore(),
+        { tier: 'low', backend: 'webgpu', benchmarkMs: 1, downgrade: null },
+        log,
+      ),
     ).toBe(false);
     expect(log.warn).toHaveBeenCalledTimes(2);
   });
 
   it('treats a missing store as "nothing saved"', () => {
     expect(loadQuality(null, 'webgpu')).toBeNull();
-    expect(saveQuality(null, { tier: 'low', backend: 'webgpu', benchmarkMs: 1 })).toBe(false);
+    expect(
+      saveQuality(null, { tier: 'low', backend: 'webgpu', benchmarkMs: 1, downgrade: null }),
+    ).toBe(false);
   });
 
   it('returns null with a warning when localStorage access itself throws', () => {

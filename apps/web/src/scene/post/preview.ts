@@ -14,7 +14,7 @@ if (!canvas) throw new Error('preview.html is missing <canvas id="preview">');
 
 const renderer = new WebGPURenderer({
   canvas,
-  antialias: true,
+  antialias: false,
   forceWebGL: params.get('webgl') === '1',
 });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -28,6 +28,7 @@ if (params.get('bench') === '1') {
   report.benchTier = result.tier;
   report.benchMs = result.msPerFrame.toFixed(2);
   report.benchSamples = result.samples.map((ms) => ms.toFixed(2)).join(',');
+  report.benchCompileMs = result.compileMs.toFixed(0);
 }
 
 const requested = params.get('tier');

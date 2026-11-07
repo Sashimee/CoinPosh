@@ -5,11 +5,25 @@ export const QUALITY_STORAGE_KEY = 'coinposh.quality.v1';
 
 export type KeyValueStore = Pick<Storage, 'getItem' | 'setItem'>;
 
+/**
+ * Boots a governor downgrade outlives the session that made it. It then expires and the
+ * benchmark tier returns, so one bad session (low-power mode, a hot phone) is not permanent.
+ */
+export const DOWNGRADE_BOOTS = 3;
+
+export interface StoredDowngrade {
+  readonly tier: QualityTier;
+  /** Further boots that start at `tier` before the benchmark tier is used again. */
+  readonly bootsLeft: number;
+}
+
 export interface StoredQuality {
+  /** The tier the first-boot benchmark picked. */
   readonly tier: QualityTier;
   readonly backend: RenderBackend;
-  /** Median milliseconds per frame the first-boot benchmark measured, or null if a downgrade wrote it. */
-  readonly benchmarkMs: number | null;
+  /** Median milliseconds per frame the first-boot benchmark measured. */
+  readonly benchmarkMs: number;
+  readonly downgrade: StoredDowngrade | null;
 }
 
 export interface QualityStorageLogger {
@@ -81,8 +95,19 @@ function parseStoredQuality(raw: string): StoredQuality | null {
   const { tier, backend, benchmarkMs } = record;
   if (!isQualityTier(tier)) return null;
   if (backend !== 'webgpu' && backend !== 'webgl2') return null;
-  if (benchmarkMs !== null && (typeof benchmarkMs !== 'number' || !Number.isFinite(benchmarkMs))) {
-    return null;
+  if (typeof benchmarkMs !== 'number' || !Number.isFinite(benchmarkMs)) return null;
+  const downgrade = parseDowngrade(record.downgrade);
+  if (downgrade === undefined) return null;
+  return { tier, backend, benchmarkMs, downgrade };
+}
+
+function parseDowngrade(value: unknown): StoredDowngrade | null | undefined {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object') return undefined;
+  const { tier, bootsLeft } = value as Record<string, unknown>;
+  if (!isQualityTier(tier)) return undefined;
+  if (typeof bootsLeft !== 'number' || !Number.isInteger(bootsLeft) || bootsLeft < 0) {
+    return undefined;
   }
-  return { tier, backend, benchmarkMs };
+  return { tier, bootsLeft };
 }

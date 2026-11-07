@@ -3,7 +3,8 @@ import type { QualityTier } from './tiers.ts';
 /**
  * Milliseconds per high-tier frame of the bench scene at which each tier is still chosen.
  * The bench is GPU-heavy but skips physics, audio and UI, so a tier needs roughly 2.5x
- * headroom against the 16.7 ms frame to hold 60 fps in play.
+ * headroom against the 16.7 ms frame to hold 60 fps in play. These lines were only measured
+ * on SwiftShader; they still need calibrating against real mid-range phones.
  */
 export const TIER_THRESHOLDS_MS = { high: 6.5, medium: 13 } as const;
 

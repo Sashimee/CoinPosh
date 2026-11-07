@@ -68,3 +68,12 @@ export function lowerTier(tier: QualityTier): QualityTier | null {
   const index = QUALITY_TIERS.indexOf(tier);
   return index > 0 ? (QUALITY_TIERS[index - 1] ?? null) : null;
 }
+
+/**
+ * Pixel ratio the canvas drawing buffer should use for a tier. The composite, AgX, grain and
+ * FXAA passes run at the full drawing buffer, so leaving the canvas at device DPR would keep
+ * a full-resolution cost that dynamic resolution can never shed.
+ */
+export function canvasPixelRatio(profile: QualityProfile, devicePixelRatio: number): number {
+  return Math.min(profile.maxPixelRatio, devicePixelRatio);
+}

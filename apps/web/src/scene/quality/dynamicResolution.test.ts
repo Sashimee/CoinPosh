@@ -10,22 +10,23 @@ interface Device {
   readonly gpuFullMs: number;
 }
 
-/** A 60 Hz display: a frame that misses vsync waits for the next one, as browsers present. */
-function presentedFrameMs(device: Device, scale: number): number {
+/** A frame that misses vsync waits for the next one, as browsers present. */
+function presentedFrameMs(device: Device, scale: number, intervalMs = VSYNC_MS): number {
   const work = device.fixedMs + device.gpuFullMs * scale * scale;
-  return Math.max(1, Math.ceil(work / VSYNC_MS - 1e-9)) * VSYNC_MS;
+  return Math.max(1, Math.ceil(work / intervalMs - 1e-9)) * intervalMs;
 }
 
 function simulate(
   controller: DynamicResolution,
   device: (elapsedMs: number) => Device,
   durationMs: number,
+  intervalMs = VSYNC_MS,
 ): { frames: { at: number; ms: number; scale: number }[]; events: ResolutionEvent[] } {
   const frames: { at: number; ms: number; scale: number }[] = [];
   const events: ResolutionEvent[] = [];
   let elapsed = 0;
   while (elapsed < durationMs) {
-    const ms = presentedFrameMs(device(elapsed), controller.scale);
+    const ms = presentedFrameMs(device(elapsed), controller.scale, intervalMs);
     elapsed += ms;
     frames.push({ at: elapsed, ms, scale: controller.scale });
     const event = controller.sample(ms);
@@ -113,19 +114,85 @@ describe('DynamicResolution', () => {
 
   it('still reacts on a device too slow to ever reach 60 fps', () => {
     const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1 });
-    const events: ResolutionEvent[] = [];
-    for (let i = 0; i < 40; i++) {
-      const event = controller.sample(400);
-      if (event !== null) events.push(event);
-    }
+    const { events } = simulate(controller, () => ({ fixedMs: 4, gpuFullMs: 400 }), 30_000);
     expect(controller.scale).toBe(0.5);
     expect(events).toContainEqual({ kind: 'exhausted' });
   });
 
-  it('reports exhaustion after sustained overload at the minimum scale', () => {
+  it('reports exhaustion once downscaling helped but the minimum scale is still too slow', () => {
+    const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1 });
+    const { events, frames } = simulate(controller, () => ({ fixedMs: 4, gpuFullMs: 90 }), 20_000);
+    expect(frames[0]?.ms).toBeGreaterThan(90);
+    expect(controller.scale).toBe(0.5);
+    expect(events).toContainEqual({ kind: 'exhausted' });
+  });
+
+  it('never reports exhaustion without evidence that resolution matters', () => {
     const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1, initialScale: 0.5 });
-    const { events } = simulate(controller, () => ({ fixedMs: 30, gpuFullMs: 10 }), 6000);
-    expect(events.filter((event) => event.kind === 'scale')).toEqual([]);
+    const { events } = simulate(controller, () => ({ fixedMs: 30, gpuFullMs: 10 }), 30_000);
+    expect(events).toEqual([]);
+  });
+
+  it('keeps full resolution under a 30 Hz rAF cap (low-power mode)', () => {
+    const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1 });
+    const light: Device = { fixedMs: 3, gpuFullMs: 8 };
+    const { events, frames } = simulate(controller, () => light, 60_000, 1000 / 30);
+    expect(events).not.toContainEqual({ kind: 'exhausted' });
+    expect(controller.scale).toBe(1);
+    expect(controller.holding).toBe(true);
+    const late = frames.filter((frame) => frame.at > 10_000);
+    expect(late.every((frame) => frame.scale === 1)).toBe(true);
+  });
+
+  it('keeps full resolution on a 50 Hz display', () => {
+    const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1 });
+    const { events } = simulate(controller, () => ({ fixedMs: 3, gpuFullMs: 8 }), 60_000, 20);
+    expect(events).not.toContainEqual({ kind: 'exhausted' });
+    expect(controller.scale).toBe(1);
+  });
+
+  it('restores resolution when the frame is CPU-bound and does not respond to scale', () => {
+    const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1 });
+    const cpuBound: Device = { fixedMs: 26, gpuFullMs: 3 };
+    const { events, frames } = simulate(controller, () => cpuBound, 60_000);
+    expect(events).not.toContainEqual({ kind: 'exhausted' });
+    expect(controller.scale).toBe(1);
+    const late = frames.filter((frame) => frame.at > 10_000);
+    expect(new Set(late.map((frame) => frame.scale))).toEqual(new Set([1]));
+  });
+
+  it('drops resolution again when a held load turns GPU-heavy', () => {
+    const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1 });
+    const cpuBound: Device = { fixedMs: 26, gpuFullMs: 3 };
+    const gpuSpike: Device = { fixedMs: 4, gpuFullMs: 30 };
+    simulate(controller, () => cpuBound, 20_000);
+    expect(controller.holding).toBe(true);
+    const { frames } = simulate(controller, () => gpuSpike, 20_000);
+    expect(controller.holding).toBe(false);
+    expect(controller.scale).toBeLessThan(0.75);
+    expect(fpsBetween(frames, 12_000, 20_000)).toBeGreaterThanOrEqual(55);
+  });
+
+  it('counts a tier change that did not help against the baseline it was given', () => {
+    const controller = new DynamicResolution({
+      minScale: 0.5,
+      maxScale: 1,
+      initialScale: 0.5,
+      baselineFrameMs: VSYNC_MS * 2,
+    });
+    const { events } = simulate(controller, () => ({ fixedMs: 30, gpuFullMs: 10 }), 30_000);
+    expect(events).toEqual([]);
+    expect(controller.holding).toBe(true);
+  });
+
+  it('exhausts at the floor when the tier change before it measurably helped', () => {
+    const controller = new DynamicResolution({
+      minScale: 0.5,
+      maxScale: 1,
+      initialScale: 0.5,
+      baselineFrameMs: VSYNC_MS * 4,
+    });
+    const { events } = simulate(controller, () => ({ fixedMs: 4, gpuFullMs: 100 }), 10_000);
     expect(events).toContainEqual({ kind: 'exhausted' });
   });
 
