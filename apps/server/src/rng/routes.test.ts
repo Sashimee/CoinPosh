@@ -1,4 +1,10 @@
-import { endpoints, HEADERS, type FairRotateRequest, type IdempotencyKey } from '@coinposh/shared';
+import {
+  endpoints,
+  ErrorEnvelopeSchema,
+  HEADERS,
+  type FairRotateRequest,
+  type IdempotencyKey,
+} from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { Hono } from 'hono';
@@ -15,12 +21,14 @@ import {
   type Session,
 } from '../test/client.ts';
 import { expectError } from '../test/game.ts';
-import { FairSeeds, verifyRevealedSeed } from './fair.ts';
+import { FairSeeds, MIN_ROTATION_INTERVAL_MS, verifyRevealedSeed } from './fair.ts';
 import { fairRoutes, type FairSeedHostResolver } from './routes.ts';
 
 /**
  * Stands in for the PlayerDO methods the integrator adds: each call runs FairSeeds on
  * the signed-in player's own Durable Object storage, inside one storage transaction.
+ * The first seed is committed one throttle interval back, as for a player who signed up
+ * earlier, so a test's first rotation is allowed.
  */
 const rotations: Command<FairRotateRequest>[] = [];
 
@@ -30,7 +38,7 @@ const resolveHost: FairSeedHostResolver = (workerEnv, playerId) => {
     runInDurableObject(stub, (_instance: PlayerDO, ctx) =>
       ctx.storage.transactionSync(() => {
         const fair = new FairSeeds(ctx.storage.sql);
-        fair.open(Date.now());
+        fair.open(Date.now() - MIN_ROTATION_INTERVAL_MS);
         return run(fair);
       }),
     );
@@ -45,7 +53,7 @@ const resolveHost: FairSeedHostResolver = (workerEnv, playerId) => {
         return { ok: true, replayed: false, body };
       } catch (error) {
         if (!(error instanceof ApiFailure)) throw error;
-        return { ok: false, error: { code: error.code, message: error.message } };
+        return { ok: false, error: { ...error.extra, code: error.code, message: error.message } };
       }
     },
   };
@@ -176,6 +184,23 @@ describe('POST /v1/fair/rotate', () => {
     const replay = await call(session, endpoints.fairRotate.path, { body: {}, idempotencyKey });
     expect(await replay.json()).toEqual(await first.json());
     expect((await seeds(session)).revealed).toHaveLength(1);
+  });
+
+  it('throttles back-to-back rotations with fresh keys and reports the wait', async () => {
+    const session = await newSession();
+    const first = await call(session, endpoints.fairRotate.path, { body: {} });
+    expect(first.status).toBe(200);
+    const afterFirst = await seeds(session);
+    for (let i = 0; i < 5; i++) {
+      const refused = await call(session, endpoints.fairRotate.path, { body: {} });
+      expect(refused.status).toBe(429);
+      const { error } = ErrorEnvelopeSchema.parse(await refused.json());
+      expect(error.code).toBe('rate_limited');
+      const retryAfterMs = error.retryAfterMs ?? 0;
+      expect(retryAfterMs).toBeGreaterThan(0);
+      expect(retryAfterMs).toBeLessThanOrEqual(MIN_ROTATION_INTERVAL_MS);
+    }
+    expect(await seeds(session)).toEqual(afterFirst);
   });
 
   it('refuses a rotation without an Idempotency-Key', async () => {

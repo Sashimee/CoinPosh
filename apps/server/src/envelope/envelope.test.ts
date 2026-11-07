@@ -118,7 +118,7 @@ describe('RateEnvelope sliding window', () => {
     }
     expect(result.botAdmits).toHaveLength(LIMITS.drops.max * 20);
     expect(result.botUnranked).toBe(true);
-    expect(result.flags).toBe(400 - result.botAdmits.length);
+    expect(result.flags).toBe(20);
     expect(honest).toEqual({ rejected: 0, unranked: false });
   });
 
@@ -200,7 +200,7 @@ describe('RateEnvelope multi-metric claims', () => {
 });
 
 describe('RateEnvelope flags and the shadow pool', () => {
-  it('soft-flags each over-envelope claim with the evidence and moves the player to unranked', async () => {
+  it('soft-flags an over-envelope claim with the evidence and moves the player to unranked', async () => {
     const result = await inFreshDo((sql) => {
       const envelope = new RateEnvelope(sql, LIMITS);
       envelope.admit(one('crates'), T0, 'crate_1');
@@ -221,6 +221,49 @@ describe('RateEnvelope flags and the shadow pool', () => {
         windowMs: LIMITS.crates.windowMs,
         ref: 'crate_3',
       },
+    ]);
+  });
+
+  it('writes at most one flag per metric per window under a 10,000-claim flood', async () => {
+    const durationMs = 10_000;
+    const result = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      let refused = 0;
+      for (let i = 0; i < 10_000; i++) {
+        const at = T0 + Math.floor((i * durationMs) / 10_000);
+        const metric: EnvelopeMetric = i % 2 === 0 ? 'drops' : 'fusions';
+        if (!envelope.admit(one(metric), at, `claim_${i}`).admitted) refused++;
+      }
+      const rows = sql
+        .exec<{ metric: EnvelopeMetric; n: number }>(
+          'SELECT metric, COUNT(*) AS n FROM envelope_flags GROUP BY metric',
+        )
+        .toArray();
+      return { refused, rows: Object.fromEntries(rows.map((row) => [row.metric, row.n])) };
+    });
+    expect(result.refused).toBeGreaterThan(9_000);
+    expect(result.rows.drops).toBeGreaterThan(0);
+    expect(result.rows.drops).toBeLessThanOrEqual(Math.ceil(durationMs / LIMITS.drops.windowMs));
+    expect(result.rows.fusions).toBe(1);
+    expect(result.rows.fusions).toBeLessThanOrEqual(
+      Math.ceil(durationMs / LIMITS.fusions.windowMs),
+    );
+  });
+
+  it('keeps the first refusal of each window as evidence and flags again in the next window', async () => {
+    const flags = await inFreshDo((sql) => {
+      const envelope = new RateEnvelope(sql, LIMITS);
+      envelope.admit(one('crates', 2), T0, 'crate_ok');
+      envelope.admit(one('crates'), T0 + 1, 'crate_first');
+      envelope.admit(one('crates'), T0 + 2, 'crate_repeat');
+      envelope.admit(one('drops', 6), T0 + 3, 'drop_burst');
+      envelope.admit(one('crates', 3), T0 + 1 + LIMITS.crates.windowMs, 'crate_next_window');
+      return envelope.flags().map(({ metric, ref }) => ({ metric, ref }));
+    });
+    expect(flags).toEqual([
+      { metric: 'crates', ref: 'crate_first' },
+      { metric: 'drops', ref: 'drop_burst' },
+      { metric: 'crates', ref: 'crate_next_window' },
     ]);
   });
 

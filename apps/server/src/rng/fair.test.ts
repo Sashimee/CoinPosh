@@ -17,12 +17,14 @@ import {
   fairDigest,
   fairRngFromDigest,
   FairSeeds,
+  MIN_ROTATION_INTERVAL_MS,
   REVEALED_SEED_HISTORY,
   verifyRevealedSeed,
 } from './fair.ts';
 import { toHex } from './hmac.ts';
 
 const T0 = 1_800_000_000_000;
+const T1 = T0 + MIN_ROTATION_INTERVAL_MS;
 
 function inFreshDo<T>(run: (sql: SqlStorage, ctx: DurableObjectState) => T): Promise<T> {
   const stub = env.PLAYER.get(env.PLAYER.idFromName(`fair-${crypto.randomUUID()}`));
@@ -191,7 +193,7 @@ describe('FairSeeds rotation', () => {
       fair.open(T0);
       const before = fair.active();
       const digests = [0, 1, 2, 3].map((i) => fair.roll('safe.gold', null, T0 + i).digest);
-      const rotation = fair.rotate({}, { at: T0 + 10, idempotencyKey: key() });
+      const rotation = fair.rotate({}, { at: T1 + 10, idempotencyKey: key() });
       return { before, digests, rotation, seeds: fair.seeds() };
     });
     const { before, digests, rotation, seeds } = result;
@@ -201,7 +203,7 @@ describe('FairSeeds rotation', () => {
       serverSeedHash: before.serverSeedHash,
       clientSeed: before.clientSeed,
       finalNonce: 4,
-      revealedAt: T0 + 10,
+      revealedAt: T1 + 10,
     });
     expect(verifyRevealedSeed(rotation.revealed)).toBe(true);
     for (const [nonce, digest] of digests.entries()) {
@@ -223,7 +225,7 @@ describe('FairSeeds rotation', () => {
     const rotation = await inFreshDo((sql) => {
       const fair = new FairSeeds(sql);
       fair.open(T0);
-      return fair.rotate({ clientSeed: 'my-lucky-seed!' }, { at: T0, idempotencyKey: key() });
+      return fair.rotate({ clientSeed: 'my-lucky-seed!' }, { at: T1, idempotencyKey: key() });
     });
     expect(rotation.active.clientSeed).toBe('my-lucky-seed!');
     expect(rotation.revealed.clientSeed).not.toBe('my-lucky-seed!');
@@ -234,13 +236,13 @@ describe('FairSeeds rotation', () => {
       const fair = new FairSeeds(sql);
       fair.open(T0);
       const idempotencyKey = key();
-      const first = fair.rotate({ clientSeed: 'replayed' }, { at: T0, idempotencyKey });
-      fair.roll('crate.vault', null, T0 + 1);
-      const replay = fair.rotate({ clientSeed: 'replayed' }, { at: T0 + 5, idempotencyKey });
-      const bare = fair.rotate({}, { at: T0 + 6, idempotencyKey });
+      const first = fair.rotate({ clientSeed: 'replayed' }, { at: T1, idempotencyKey });
+      fair.roll('crate.vault', null, T1 + 1);
+      const replay = fair.rotate({ clientSeed: 'replayed' }, { at: T1 + 5, idempotencyKey });
+      const bare = fair.rotate({}, { at: T1 + 6, idempotencyKey });
       let reused: unknown = null;
       try {
-        fair.rotate({ clientSeed: 'something-else' }, { at: T0 + 7, idempotencyKey });
+        fair.rotate({ clientSeed: 'something-else' }, { at: T1 + 7, idempotencyKey });
       } catch (error) {
         reused = error;
       }
@@ -259,16 +261,96 @@ describe('FairSeeds rotation', () => {
       const fair = new FairSeeds(sql);
       fair.open(T0);
       for (let i = 0; i < REVEALED_SEED_HISTORY + 3; i++) {
-        fair.rotate({}, { at: T0 + i, idempotencyKey: key() });
+        fair.rotate({}, { at: T0 + (i + 1) * MIN_ROTATION_INTERVAL_MS, idempotencyKey: key() });
       }
       return fair.seeds();
     });
     expect(seeds.revealed).toHaveLength(REVEALED_SEED_HISTORY);
     expect(seeds.revealed.map((seed) => seed.revealedAt)).toEqual(
-      Array.from({ length: REVEALED_SEED_HISTORY }, (_, i) => T0 + REVEALED_SEED_HISTORY + 2 - i),
+      Array.from(
+        { length: REVEALED_SEED_HISTORY },
+        (_, i) => T0 + (REVEALED_SEED_HISTORY + 3 - i) * MIN_ROTATION_INTERVAL_MS,
+      ),
     );
     expect(seeds.revealed.every(verifyRevealedSeed)).toBe(true);
     expect(new Set(seeds.revealed.map((seed) => seed.serverSeed)).size).toBe(REVEALED_SEED_HISTORY);
+  });
+});
+
+describe('FairSeeds rotation throttle', () => {
+  function attempt(fair: FairSeeds, at: number) {
+    try {
+      return fair.rotate({}, { at, idempotencyKey: key() });
+    } catch (error) {
+      if (!(error instanceof ApiFailure)) throw error;
+      return error;
+    }
+  }
+
+  function seedRows(sql: SqlStorage): number {
+    return sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM fair_seeds').one().n;
+  }
+
+  it('refuses a rotation sooner than the interval with the wait, and changes nothing', async () => {
+    const result = await inFreshDo((sql) => {
+      const fair = new FairSeeds(sql);
+      fair.open(T0);
+      const before = fair.seeds();
+      const early = attempt(fair, T1 - 1);
+      return { before, early, after: fair.seeds(), rows: seedRows(sql) };
+    });
+    expect(result.early).toBeInstanceOf(ApiFailure);
+    expect(result.early).toMatchObject({ code: 'rate_limited', extra: { retryAfterMs: 1 } });
+    expect(result.after).toEqual(result.before);
+    expect(result.rows).toBe(1);
+  });
+
+  it('measures the interval from the latest commitment, not the first', async () => {
+    const result = await inFreshDo((sql) => {
+      const fair = new FairSeeds(sql);
+      fair.open(T0);
+      const onTime = attempt(fair, T1);
+      const tooSoon = attempt(fair, T1 + MIN_ROTATION_INTERVAL_MS - 250);
+      const next = attempt(fair, T1 + MIN_ROTATION_INTERVAL_MS);
+      return { onTime, tooSoon, next };
+    });
+    expect(result.onTime).not.toBeInstanceOf(ApiFailure);
+    expect(result.tooSoon).toMatchObject({ code: 'rate_limited', extra: { retryAfterMs: 250 } });
+    expect(result.next).not.toBeInstanceOf(ApiFailure);
+  });
+
+  it('bounds storage against a client minting a fresh Idempotency-Key per request', async () => {
+    const rows = await inFreshDo((sql) => {
+      const fair = new FairSeeds(sql);
+      fair.open(T0);
+      for (let ms = 0; ms < 10 * MIN_ROTATION_INTERVAL_MS; ms += 600) attempt(fair, T0 + ms);
+      return seedRows(sql);
+    });
+    expect(rows).toBeLessThanOrEqual(1 + 10);
+  });
+
+  it('stays closed when the server clock steps back behind the active commitment', async () => {
+    const early = await inFreshDo((sql) => {
+      const fair = new FairSeeds(sql);
+      fair.open(T1);
+      return attempt(fair, T0);
+    });
+    expect(early).toMatchObject({
+      code: 'rate_limited',
+      extra: { retryAfterMs: 2 * MIN_ROTATION_INTERVAL_MS },
+    });
+  });
+
+  it('still answers a replay inside the interval with the original rotation', async () => {
+    const result = await inFreshDo((sql) => {
+      const fair = new FairSeeds(sql);
+      fair.open(T0);
+      const idempotencyKey = key();
+      const first = fair.rotate({}, { at: T1, idempotencyKey });
+      const replay = fair.rotate({}, { at: T1 + 1, idempotencyKey });
+      return { first, replay };
+    });
+    expect(result.replay).toEqual(result.first);
   });
 });
 
@@ -289,7 +371,7 @@ describe('FairSeeds tamper resistance', () => {
       expectAbort(() => sql.exec(`UPDATE fair_seeds SET revealed_by = 'sneaky'`), fixed);
       expectAbort(() => sql.exec('DELETE FROM fair_seeds'), /append-only/);
 
-      fair.rotate({}, { at: T0 + 1, idempotencyKey: key() });
+      fair.rotate({}, { at: T1, idempotencyKey: key() });
       expectAbort(
         () => sql.exec('UPDATE fair_seeds SET revealed_at = NULL WHERE revealed_at IS NOT NULL'),
         fixed,
@@ -324,7 +406,10 @@ describe('FairSeeds tamper resistance', () => {
       fair.open(T0);
       const seen = [fair.active().serverSeedHash];
       for (let i = 0; i < 50; i++) {
-        seen.push(fair.rotate({}, { at: T0 + i, idempotencyKey: key() }).active.serverSeedHash);
+        seen.push(
+          fair.rotate({}, { at: T0 + (i + 1) * MIN_ROTATION_INTERVAL_MS, idempotencyKey: key() })
+            .active.serverSeedHash,
+        );
       }
       return seen;
     });

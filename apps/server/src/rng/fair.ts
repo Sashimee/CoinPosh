@@ -19,6 +19,11 @@ import { hmacSha256, sha256, toHex } from './hmac.ts';
 
 /** How many revealed seeds `GET /v1/fair/seeds` lists, newest first. */
 export const REVEALED_SEED_HISTORY = 20;
+/**
+ * Every rotation appends a seed row that can never be deleted, so rotation is throttled
+ * per active seed: a client minting fresh Idempotency-Keys cannot grow storage faster.
+ */
+export const MIN_ROTATION_INTERVAL_MS = 60_000;
 const SERVER_SEED_BYTES = 32;
 const DEFAULT_CLIENT_SEED_LENGTH = 16;
 
@@ -228,7 +233,8 @@ export class FairSeeds {
 
   /**
    * Reveals the active seed and commits a fresh one. Replaying the same idempotency key
-   * answers with the original rotation instead of revealing a second seed.
+   * answers with the original rotation instead of revealing a second seed. A new
+   * rotation sooner than `MIN_ROTATION_INTERVAL_MS` after the active commitment is refused.
    */
   rotate(request: FairRotateRequest, context: FairContext): FairRotateResponse {
     if (context.idempotencyKey !== null) {
@@ -236,6 +242,14 @@ export class FairSeeds {
       if (replay !== null) return replay;
     }
     const current = this.activeRow();
+    const retryAfterMs = current.committed_at + MIN_ROTATION_INTERVAL_MS - context.at;
+    if (retryAfterMs > 0) {
+      throw new ApiFailure(
+        'rate_limited',
+        `Seeds can be rotated at most once every ${MIN_ROTATION_INTERVAL_MS / 1000} s. Wait retryAfterMs, then rotate with a new Idempotency-Key.`,
+        { retryAfterMs },
+      );
+    }
     this.sql.exec(
       'UPDATE fair_seeds SET revealed_at = ?, revealed_by = ? WHERE id = ?',
       context.at,

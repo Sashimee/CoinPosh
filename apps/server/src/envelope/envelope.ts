@@ -45,7 +45,9 @@ export interface EnvelopeFlag {
 
 /**
  * Events age out of the window, so `envelope_events` is pruned. Flags are evidence for
- * the shadow pool and audits, so `envelope_flags` is append-only like the ledger.
+ * the shadow pool and audits, so `envelope_flags` is append-only like the ledger. Since a
+ * flag can never be deleted, only the first refusal of a metric inside each window is
+ * written: a bot hammering the limit adds at most one row per metric per window.
  */
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS envelope_events (
@@ -66,6 +68,7 @@ const SCHEMA = `
     window_ms INTEGER NOT NULL,
     ref       TEXT
   );
+  CREATE INDEX IF NOT EXISTS envelope_flags_metric_at ON envelope_flags (metric, at);
 
   CREATE TRIGGER IF NOT EXISTS envelope_flags_no_update BEFORE UPDATE ON envelope_flags
   BEGIN
@@ -124,8 +127,9 @@ export class RateEnvelope {
   }
 
   /**
-   * Admits every charge or none. On rejection nothing is recorded, the first charge
-   * that does not fit is flagged, and the player drops into the unranked shadow pool.
+   * Admits every charge or none. On rejection nothing is admitted, the first charge
+   * that does not fit is flagged (unless its metric was already flagged inside the
+   * window), and the player drops into the unranked shadow pool.
    */
   admit(charges: readonly EnvelopeCharge[], now: EpochMs, ref: string | null): EnvelopeVerdict {
     for (const charge of charges) assertCharge(charge);
@@ -226,11 +230,16 @@ export class RateEnvelope {
     const { windowMs, max } = this.limits[metric];
     if (amount > max) return null;
     let used = this.used(metric, clock);
-    for (const event of this.sql.exec<{ at: number; amount: number }>(
-      'SELECT at, amount FROM envelope_events WHERE metric = ? AND at > ? ORDER BY at, id',
-      metric,
-      clock - windowMs,
-    )) {
+    // Drained with toArray: cursors abandoned mid-iteration stay open in workerd and made
+    // each later statement slower, so a 10,000-refusal flood went quadratic.
+    const events = this.sql
+      .exec<{ at: number; amount: number }>(
+        'SELECT at, amount FROM envelope_events WHERE metric = ? AND at > ? ORDER BY at, id',
+        metric,
+        clock - windowMs,
+      )
+      .toArray();
+    for (const event of events) {
       used -= event.amount;
       if (used + amount <= max) return event.at + windowMs - clock;
     }
@@ -238,6 +247,15 @@ export class RateEnvelope {
   }
 
   private flag(flag: EnvelopeFlag): void {
+    const alreadyFlagged =
+      this.sql
+        .exec(
+          'SELECT 1 FROM envelope_flags WHERE metric = ? AND at > ? LIMIT 1',
+          flag.metric,
+          flag.at - flag.windowMs,
+        )
+        .toArray().length > 0;
+    if (alreadyFlagged) return;
     this.sql.exec(
       `INSERT INTO envelope_flags (at, metric, amount, used, max, window_ms, ref)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
