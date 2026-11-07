@@ -27,10 +27,8 @@ function step(): void {
   if (tick % 6 === 0 && table.coinCount < TARGET_COINS) {
     table.dropCoin((rng.nextInt(301) - 150) / 1000, rng);
   }
-  table.beforeStep();
-  world.step();
   tick += 1;
-  table.afterStep(tick);
+  table.step(tick);
 }
 
 for (let i = 0; i < WARMUP_TICKS; i++) {

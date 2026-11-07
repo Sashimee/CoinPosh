@@ -22,8 +22,12 @@ export const PLAYFIELD = {
   fieldHalfWidth: 0.18,
   /** Open channel between the floor and each side wall: wider than a coin, so one falls flat in. */
   gutterWidth: 0.032,
-  /** z of the front (payout) edge of the lower tier. */
-  fieldFrontZ: 0.07,
+  /**
+   * z of the front (payout) edge of the lower tier, 9 cm ahead of the pusher's
+   * default reach. At 11 cm the 250-coin budget filled both tiers without the lower
+   * pile ever reaching the edge, and the table could settle with nothing paying out.
+   */
+  fieldFrontZ: 0.05,
   /** Lower-tier floor slab thickness. Its underside is the bottom of the cabinet interior. */
   floorThickness: 0.02,
   wallThickness: 0.012,

@@ -12,14 +12,18 @@ import {
   TABLE_INNER_HALF_WIDTH,
 } from './layout.ts';
 import { DEFAULT_PUSHER_MOTION, PusherClock, type PusherMotion } from './pusher.ts';
-import { COIN_MATERIAL, TABLE_MATERIAL } from './tuning.ts';
+import { COIN_MATERIAL, TABLE_MATERIAL, TABLE_SOLVER } from './tuning.ts';
 
 /** Mirrors FallEdge in packages/shared, which packages/sim cannot import yet. */
 export type FallEdge = 'front' | 'left' | 'right';
 
-const SOFT_CCD_SPEED_SQ = COIN_MATERIAL.softCcdSpeed * COIN_MATERIAL.softCcdSpeed;
-/** Rapier stores the prediction as f32; comparing against the rounded value avoids a write every tick. */
-const SOFT_CCD_ON = Math.fround(COIN_MATERIAL.softCcdPrediction);
+/** World units per metre; see TABLE_SOLVER.worldScale. */
+const SCALE = TABLE_SOLVER.worldScale;
+const SUBSTEPS = TABLE_SOLVER.substeps;
+const SOFT_CCD_SPEED = COIN_MATERIAL.softCcdSpeed * SCALE;
+const SOFT_CCD_SPEED_SQ = SOFT_CCD_SPEED * SOFT_CCD_SPEED;
+const SOFT_CCD_ON = COIN_MATERIAL.softCcdPrediction * SCALE;
+const FALL_Y = PLAYFIELD.fallY * SCALE;
 
 export interface FallEvent {
   readonly coinId: number;
@@ -50,8 +54,9 @@ export interface TableOptions {
 /**
  * The two-tier pusher table inside a Rapier world: fixed floor, side walls with open
  * gutters, a backboard, a kinematic pusher, the coins on the table and fall
- * detection. The caller owns the world and the tick; it calls `beforeStep()`, then
- * `world.step()`, then `afterStep()` once per tick.
+ * detection. The caller owns the world (set up with `configureTableWorld`) and the
+ * tick count, and calls `step()` once per tick; the table steps the world itself,
+ * TABLE_SOLVER.substeps times per tick.
  */
 export class PusherTable {
   readonly #rapier: Rapier;
@@ -95,7 +100,7 @@ export class PusherTable {
   coins(): TableCoin[] {
     return Array.from(this.#coins, ([id, body]) => ({
       id,
-      translation: body.translation(),
+      translation: toMetres(body.translation()),
       rotation: body.rotation(),
       sleeping: body.isSleeping(),
     }));
@@ -122,17 +127,17 @@ export class PusherTable {
     const { RigidBodyDesc, ColliderDesc, CoefficientCombineRule } = this.#rapier;
     const body = this.#world.createRigidBody(
       RigidBodyDesc.dynamic()
-        .setTranslation(translation.x, translation.y, translation.z)
+        .setTranslation(translation.x * SCALE, translation.y * SCALE, translation.z * SCALE)
         .setRotation(rotation)
         .setLinearDamping(COIN_MATERIAL.linearDamping)
         .setAngularDamping(COIN_MATERIAL.angularDamping)
         .setCanSleep(true)
         .setCcdEnabled(true)
-        .setSoftCcdPrediction(COIN_MATERIAL.softCcdPrediction),
+        .setSoftCcdPrediction(SOFT_CCD_ON),
     );
     this.#world.createCollider(
-      ColliderDesc.cylinder(COIN.halfThickness, COIN.radius)
-        .setDensity(COIN.density)
+      ColliderDesc.cylinder(COIN.halfThickness * SCALE, COIN.radius * SCALE)
+        .setDensity(COIN.density / (SCALE * SCALE * SCALE))
         .setFriction(COIN_MATERIAL.friction)
         .setRestitution(COIN_MATERIAL.restitution)
         .setRestitutionCombineRule(CoefficientCombineRule.Min),
@@ -144,29 +149,33 @@ export class PusherTable {
     return id;
   }
 
-  /** Moves the pusher toward its pose for the coming tick. Call right before `world.step()`. */
-  beforeStep(): void {
+  /**
+   * Advances the table by one tick: sweeps the pusher, steps the world, then removes
+   * every coin that fell below the fall plane and reports where it left, in ascending
+   * coin id order. `tick` is the tick count after this step, like Sim.tick.
+   */
+  step(tick: number): FallEvent[] {
+    const from = this.#clock.offset;
     this.#clock.advance();
-    this.#pusher.setNextKinematicTranslation({
-      x: 0,
-      y: PUSHER.height / 2,
-      z: PUSHER.frontZ + this.#clock.offset - PUSHER.depth / 2,
-    });
+    const to = this.#clock.offset;
+    for (let i = 1; i <= SUBSTEPS; i++) {
+      this.#pusher.setNextKinematicTranslation(
+        this.#pusherCentre(from + ((to - from) * i) / SUBSTEPS),
+      );
+      this.#world.step();
+    }
+    return this.#collectFalls(tick);
   }
 
-  /**
-   * Removes every coin that fell below the fall plane during the step and reports
-   * where it left, in ascending coin id order. Call right after `world.step()`.
-   */
-  afterStep(tick: number): FallEvent[] {
+  #collectFalls(tick: number): FallEvent[] {
     const falls: FallEvent[] = [];
     for (const [id, body] of this.#coins) {
       if (body.isSleeping()) {
         continue;
       }
       const t = body.translation();
-      if (t.y < PLAYFIELD.fallY) {
-        falls.push({ coinId: id, edge: fallEdge(t), tick });
+      if (t.y < FALL_Y) {
+        falls.push({ coinId: id, edge: fallEdge(t.x / SCALE), tick });
         this.#coins.delete(id);
         this.#world.removeRigidBody(body);
         continue;
@@ -227,8 +236,8 @@ export class PusherTable {
       friction: number,
     ): void => {
       this.#world.createCollider(
-        ColliderDesc.cuboid(hx, hy, hz)
-          .setTranslation(x, y, z)
+        ColliderDesc.cuboid(hx * SCALE, hy * SCALE, hz * SCALE)
+          .setTranslation(x * SCALE, y * SCALE, z * SCALE)
           .setFriction(friction)
           .setRestitution(TABLE_MATERIAL.restitution)
           .setRestitutionCombineRule(CoefficientCombineRule.Min),
@@ -261,18 +270,15 @@ export class PusherTable {
 
   #buildPusher(): RigidBody {
     const { RigidBodyDesc, ColliderDesc, CoefficientCombineRule } = this.#rapier;
+    const centre = this.#pusherCentre(this.#clock.offset);
     const body = this.#world.createRigidBody(
-      RigidBodyDesc.kinematicPositionBased().setTranslation(
-        0,
-        PUSHER.height / 2,
-        PUSHER.frontZ + this.#clock.offset - PUSHER.depth / 2,
-      ),
+      RigidBodyDesc.kinematicPositionBased().setTranslation(centre.x, centre.y, centre.z),
     );
     this.#world.createCollider(
       ColliderDesc.cuboid(
-        PLAYFIELD.fieldHalfWidth - PUSHER.sideClearance,
-        PUSHER.height / 2,
-        PUSHER.depth / 2,
+        (PLAYFIELD.fieldHalfWidth - PUSHER.sideClearance) * SCALE,
+        (PUSHER.height / 2) * SCALE,
+        (PUSHER.depth / 2) * SCALE,
       )
         .setFriction(TABLE_MATERIAL.pusherFriction)
         .setRestitution(TABLE_MATERIAL.restitution)
@@ -281,6 +287,18 @@ export class PusherTable {
     );
     return body;
   }
+
+  #pusherCentre(offset: number): Vector {
+    return {
+      x: 0,
+      y: (PUSHER.height / 2) * SCALE,
+      z: (PUSHER.frontZ + offset - PUSHER.depth / 2) * SCALE,
+    };
+  }
+}
+
+function toMetres(v: Readonly<Vector>): Vector {
+  return { x: v.x / SCALE, y: v.y / SCALE, z: v.z / SCALE };
 }
 
 /**
@@ -288,11 +306,11 @@ export class PusherTable {
  * the floor's width: the floor is solid between the gutters, so nothing can fall
  * through it.
  */
-function fallEdge(t: Readonly<Vector>): FallEdge {
-  if (t.x < -PLAYFIELD.fieldHalfWidth) {
+function fallEdge(x: number): FallEdge {
+  if (x < -PLAYFIELD.fieldHalfWidth) {
     return 'left';
   }
-  if (t.x > PLAYFIELD.fieldHalfWidth) {
+  if (x > PLAYFIELD.fieldHalfWidth) {
     return 'right';
   }
   return 'front';
