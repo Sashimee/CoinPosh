@@ -13,9 +13,10 @@ import { configureTableWorld } from './tuning.ts';
  * real steady state: a full upper tier riding the pusher, a packed lower tier being
  * shoved over the edge, and a fresh drop every tick that the table is short of 250,
  * which holds it at 238 to 250 coins (a sweep over the edge can take a dozen at
- * once), with at most one asleep (see TABLE_SOLVER). Measured: 3.5 ms mean, 4.05 ms
- * at the 99th percentile, so the mean holds the budget with about 13% to spare and
- * the slowest 1% of ticks run just past it. The coin and sleeping counts over the
+ * once), none of them asleep (see TABLE_SOLVER). Measured with the impact sweep
+ * (COIN_MATERIAL.impactSpeed): 3.41 ms mean, 3.91 ms at the 99th percentile, so
+ * the mean holds the budget with about 15% to spare and only the slowest 0.1% of
+ * ticks run past it. The coin and sleeping counts over the
  * measured ticks are printed after the run, so the result always says what it
  * measured.
  */

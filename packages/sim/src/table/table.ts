@@ -1,4 +1,10 @@
-import type { RigidBody, Rotation, Vector, World } from '@dimforge/rapier3d-deterministic-compat';
+import type {
+  RigidBody,
+  Rotation,
+  Shape,
+  Vector,
+  World,
+} from '@dimforge/rapier3d-deterministic-compat';
 import { COIN, COIN_DROP_MAX_JITTER, COIN_DROP_MAX_TILT } from '../coin.ts';
 import type { StateHasher } from '../hash.ts';
 import type { Xoshiro128ss } from '../prng.ts';
@@ -20,9 +26,10 @@ export type FallEdge = 'front' | 'left' | 'right';
 /** World units per metre; see TABLE_SOLVER.worldScale. */
 const SCALE = TABLE_SOLVER.worldScale;
 const SUBSTEPS = TABLE_SOLVER.substeps;
-const SOFT_CCD_SPEED = COIN_MATERIAL.softCcdSpeed * SCALE;
-const SOFT_CCD_SPEED_SQ = SOFT_CCD_SPEED * SOFT_CCD_SPEED;
-const SOFT_CCD_ON = COIN_MATERIAL.softCcdPrediction * SCALE;
+const IMPACT_SPEED = COIN_MATERIAL.impactSpeed * SCALE;
+const IMPACT_SPEED_SQ = IMPACT_SPEED * IMPACT_SPEED;
+const IMPACT_MARGIN = COIN_MATERIAL.impactMargin * SCALE;
+const IMPACT_PASSES = COIN_MATERIAL.impactPasses;
 const FALL_Y = PLAYFIELD.fallY * SCALE;
 
 export interface FallEvent {
@@ -63,6 +70,7 @@ export class PusherTable {
   readonly #world: World;
   readonly #pusher: RigidBody;
   readonly #clock: PusherClock;
+  readonly #coinShape: Shape;
   /** Insertion-ordered by ascending coin id, which fixes the iteration order. */
   readonly #coins = new Map<number, RigidBody>();
   #nextCoinId = 0;
@@ -71,6 +79,11 @@ export class PusherTable {
     this.#rapier = rapier;
     this.#world = world;
     this.#clock = new PusherClock(options.pusher ?? DEFAULT_PUSHER_MOTION);
+    this.#coinShape = new rapier.RoundCylinder(
+      (COIN.halfThickness - COIN_MATERIAL.rimRadius) * SCALE,
+      (COIN.radius - COIN_MATERIAL.rimRadius) * SCALE,
+      COIN_MATERIAL.rimRadius * SCALE,
+    );
     this.#buildCabinet();
     this.#pusher = this.#buildPusher();
   }
@@ -132,11 +145,10 @@ export class PusherTable {
         .setLinearDamping(COIN_MATERIAL.linearDamping)
         .setAngularDamping(COIN_MATERIAL.angularDamping)
         .setCanSleep(true)
-        .setCcdEnabled(true)
-        .setSoftCcdPrediction(SOFT_CCD_ON),
+        .setCcdEnabled(true),
     );
     this.#world.createCollider(
-      ColliderDesc.cylinder(COIN.halfThickness * SCALE, COIN.radius * SCALE)
+      new ColliderDesc(this.#coinShape)
         .setDensity(COIN.density / (SCALE * SCALE * SCALE))
         .setFriction(COIN_MATERIAL.friction)
         .setRestitution(COIN_MATERIAL.restitution)
@@ -163,9 +175,68 @@ export class PusherTable {
       this.#pusher.setNextKinematicTranslation(
         this.#pusherCentre(from + ((to - from) * i) / SUBSTEPS),
       );
+      this.#absorbImpacts();
       this.#world.step();
     }
     return this.#collectFalls(tick);
+  }
+
+  /**
+   * Lands every fast coin that would strike something during the coming substep:
+   * the coin is moved forward to the point of contact and loses its closing speed
+   * along the contact normal, as if the struck body were immovable. See
+   * COIN_MATERIAL.impactSpeed for why the solver is not left to do this.
+   */
+  #absorbImpacts(): void {
+    for (const body of this.#coins.values()) {
+      if (body.isSleeping()) {
+        continue;
+      }
+      for (let pass = 0; pass < IMPACT_PASSES && this.#absorbImpact(body); pass++) {
+        // Each pass lands the coin on the nearest thing in its path; a glancing hit
+        // leaves it sliding, so look again along the new velocity.
+      }
+    }
+  }
+
+  /** Returns whether the coin hit something and had its motion changed. */
+  #absorbImpact(body: RigidBody): boolean {
+    const v = body.linvel();
+    if (v.x * v.x + v.y * v.y + v.z * v.z <= IMPACT_SPEED_SQ) {
+      return false;
+    }
+    const dt = this.#world.timestep;
+    const t = body.translation();
+    const hit = this.#world.castShape(
+      t,
+      body.rotation(),
+      { x: v.x * dt, y: v.y * dt, z: v.z * dt },
+      this.#coinShape,
+      IMPACT_MARGIN,
+      1,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      body,
+    );
+    if (!hit || hit.time_of_impact >= 1) {
+      return false;
+    }
+    const n = hit.normal1;
+    const other = hit.collider.parent();
+    const u = other && !other.isFixed() ? other.linvel() : ZERO;
+    const closing = (v.x - u.x) * n.x + (v.y - u.y) * n.y + (v.z - u.z) * n.z;
+    if (closing >= 0) {
+      return false;
+    }
+    const ahead = hit.time_of_impact * dt;
+    body.setTranslation({ x: t.x + v.x * ahead, y: t.y + v.y * ahead, z: t.z + v.z * ahead }, true);
+    body.setLinvel(
+      { x: v.x - closing * n.x, y: v.y - closing * n.y, z: v.z - closing * n.z },
+      true,
+    );
+    return true;
   }
 
   #collectFalls(tick: number): FallEvent[] {
@@ -179,12 +250,6 @@ export class PusherTable {
         falls.push({ coinId: id, edge: fallEdge(t.x / SCALE), tick });
         this.#coins.delete(id);
         this.#world.removeRigidBody(body);
-        continue;
-      }
-      const v = body.linvel();
-      const fast = v.x * v.x + v.y * v.y + v.z * v.z > SOFT_CCD_SPEED_SQ;
-      if (fast !== body.softCcdPrediction() > 0) {
-        body.setSoftCcdPrediction(fast ? SOFT_CCD_ON : 0);
       }
     }
     return falls;
@@ -207,7 +272,6 @@ export class PusherTable {
         .quat(body.rotation())
         .vec3(body.linvel())
         .vec3(body.angvel())
-        .float(body.softCcdPrediction())
         .bool(body.isSleeping());
     }
     return h;
@@ -296,6 +360,8 @@ export class PusherTable {
     };
   }
 }
+
+const ZERO: Readonly<Vector> = { x: 0, y: 0, z: 0 };
 
 function toMetres(v: Readonly<Vector>): Vector {
   return { x: v.x / SCALE, y: v.y / SCALE, z: v.z / SCALE };

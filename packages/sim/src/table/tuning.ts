@@ -25,30 +25,46 @@ export const COIN_MATERIAL = {
   linearDamping: 0.05,
   angularDamping: 0.6,
   /**
-   * Soft-CCD prediction distance in metres. Rapier's swept CCD misses a flat coin
-   * falling face first (a 12 cm drop tunnels straight through the upper tier); soft
-   * CCD widens the contact prediction instead and catches it.
+   * Coins faster than this (m/s) are swept along their motion before every substep
+   * and landed on the first thing in their path (PusherTable#absorbImpacts). The
+   * solver alone lets fast coins sink deep into the pile: on first contact Rapier
+   * builds a sparse manifold (at most four points, only those inside the 2 mm
+   * look-ahead), so a coin arriving at 1 m/s or more takes an off-centre impulse,
+   * spins, and its far rim slams through the neighbour within the same substep.
+   * Neither swept CCD (blind to that spin) nor soft CCD (which itself added 80 to
+   * 90 rad/s of spurious spin to a flat drop) stopped it, and more solver
+   * iterations or a stiffer contact did not either; a wider global look-ahead did,
+   * at 6 ms a tick. Below 0.3 m/s a coin moves under 2.5 mm a substep and the
+   * ordinary contacts catch it. On the scripted minute, checked every tick, this
+   * took the deepest pair from 10.2 mm to 2.9 mm and the pair-ticks past 0.5 mm
+   * from 3546 to 772, for no measurable cost.
    */
-  softCcdPrediction: 0.03,
+  impactSpeed: 0.3,
+  /** Gap in metres the sweep leaves between a landed coin and what it hit. */
+  impactMargin: 0.0001,
   /**
-   * The widened soft-CCD prediction is switched on only above this speed (m/s),
-   * checked after every tick; swept (hard) CCD stays on for every coin all the
-   * time. Below it a coin moves under 2.5 mm a substep, inside the 2 mm contact
-   * look-ahead (TABLE_SOLVER) plus both coins' skins, so the ordinary contacts catch
-   * it. Keeping the widened prediction off the slow pile cut the narrow phase by
-   * half on the full table.
+   * Sweeps per coin per substep. A glancing landing leaves the coin sliding into
+   * the next coin along; one pass left the deepest pair at 4.8 mm, three at 2.9.
    */
-  softCcdSpeed: 0.3,
+  impactPasses: 3,
   /**
-   * Contact skin in metres: Rapier treats every coin as 0.15 mm larger all round,
-   * so two coins push apart when their real surfaces are still 0.3 mm short of
-   * touching. A pile settles with that hairline gap, which the renderer's bevel
-   * hides, instead of resting at the solver's allowed sink, and a squeezed pair has
-   * 0.3 mm of give before the real shapes overlap. It cut the pairs sunk past
-   * 0.5 mm by four on the full table and made the step 5% cheaper. 0.1 mm left
-   * twice as many; 0.2 mm was no better than 0.15.
+   * Contact skin in metres: Rapier treats every coin as 0.3 mm larger all round, so
+   * two coins push apart when their real surfaces are still 0.6 mm short of
+   * touching. A pile settles with that hairline gap instead of resting at the
+   * solver's allowed sink, and a squeezed pair has 0.6 mm of give before the real
+   * shapes overlap. With the impact sweep and 600 Hz contacts (TABLE_SOLVER),
+   * 0.3 mm left 4 times fewer pair-ticks past 0.5 mm than 0.15 mm; 0.4 mm was no
+   * better.
    */
-  contactSkin: 0.00015,
+  contactSkin: 0.0003,
+  /**
+   * The collider is a rounded cylinder with this edge radius in metres. Where two
+   * sharp cylinder rims meet Rapier finds a poor contact normal and the pair
+   * interpenetrates; N-gon hulls of 8 to 24 sides let a drop onto a resting coin
+   * sink 4.9 to 7.1 mm, the rounded rim (with the impact sweep) 0.3 mm. A 0.8 mm
+   * rim was worse on the full table, 7.5 mm deepest against 2.9.
+   */
+  rimRadius: 0.0005,
 } as const;
 
 /**
@@ -91,9 +107,11 @@ export const TABLE_MATERIAL = {
  *   with a 0.8 mm look-ahead it sank 4.5 mm into the pusher top before the contact
  *   caught it. At 2 mm, with the coin's contact skin, none of 12 drops reaches
  *   the pusher top.
- * - contactNaturalFrequency 360 Hz (Rapier default 30): at 30 Hz the thin coins
+ * - contactNaturalFrequency 600 Hz (Rapier default 30): at 30 Hz the thin coins
  *   sink 1 to 1.5 mm into each other under the weight of a stack and the upper
- *   tier clogs. 240 Hz left 1.5 times as many deep pairs as 360; 480 was no better.
+ *   tier clogs. 240 Hz left 1.5 times as many deep pairs as 360. With the rounded
+ *   rim and the impact sweep (COIN_MATERIAL), 600 Hz with a 0.3 mm skin left a
+ *   quarter of the pair-ticks past 0.5 mm that 360 Hz with 0.15 mm did.
  * - substeps 2: the narrow phase runs once per substep, and a stale contact set
  *   between runs is what lets flat neighbours slide into each other rim first (one
  *   step of 6 iterations was four times worse). Three substeps cost 4.3 to 4.9 ms
@@ -104,21 +122,24 @@ export const TABLE_MATERIAL = {
  *   inner left 3 to 4 times as many pairs past 0.5 mm as 2 with 4; 3 with 2 matched
  *   2 with 4 but cost 3.8 ms a tick against 3.3.
  *
- * Measured with these settings on four seeds (0x7ab1e001, 12345, 777, 99), once a
- * second from 30 s to 60 s with about 700 touching pairs per sample: 0.7 to 1.2
- * pairs past 0.5 mm per sample (4.9 to 11 with 3 outer, 1 inner and no skin), 0.2
- * past 1 mm, the deepest 1.65 to 1.93 mm (was 2.7 to 4.9), and no pair past 0.5 mm
- * in more than 3 samples in a row (was 6). Checked every tick on 0x7ab1e001, no
- * pair stays past 0.5 mm for more than 16 ticks or past 1.5 mm for more than 5:
- * what is left is the instant of an impact (a drop landing on the heap, a coin
- * falling over the lip onto the lower tier, the pusher loading the pile), which
- * can peak at a few millimetres for a tick or two and clears straight away.
+ * Measured with these settings, every coin pair on every tick of the minute: on
+ * 0x7ab1e001 the deepest pair reaches 2.89 mm, with 770 pair-ticks past 0.5 mm
+ * (0.2 a tick against 450 to 700 touching pairs), and no pair stays past 0.5 mm
+ * for more than 16 ticks. Six more seeds (12345, 777, 99, 424242, 31337, 2024) gave
+ * 698 to 1073 pair-ticks past 0.5 mm and a deepest pair of 4.0 to 7.5 mm. What is
+ * left is a pair squeezed rim to rim under the pusher loading the upper heap, a
+ * coin rocking across another's rim, or two coins tumbling over the lip together.
+ * Checked only once a second, as before, these peaks were missed: the same minute
+ * then read 1.65 mm deepest while it really peaked at 10.2 mm. 6 inner PGS
+ * iterations trimmed the pair-ticks by a third but not the peaks (3.0 to 7.0 mm)
+ * and made the step about 1.5 times slower; a much wider contact look-ahead
+ * removed the peaks but cost 6 ms a tick.
  *
  * Nothing on a full table sleeps: rapier3d 0.21 exposes no sleep thresholds, a body
  * only sleeps with its whole contact island, and the moving pusher wakes every coin
  * it touches, which on a full table connect to nearly all the others. The 4 ms
- * budget is for 250 coins all awake: table.bench.ts measures 3.5 ms a tick on
- * average, 4.0 ms at the 99th percentile.
+ * budget is for 250 coins all awake: table.bench.ts measures 3.41 ms a tick on
+ * average, 3.91 ms at the 99th percentile.
  */
 export const TABLE_SOLVER = {
   worldScale: 10,
@@ -128,7 +149,7 @@ export const TABLE_SOLVER = {
   numSolverIterations: 2,
   numInternalPgsIterations: 4,
   maxCcdSubsteps: SOLVER.maxCcdSubsteps,
-  contactNaturalFrequency: 360,
+  contactNaturalFrequency: 600,
 } as const;
 
 /**

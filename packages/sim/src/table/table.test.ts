@@ -1,5 +1,5 @@
 import type { World } from '@dimforge/rapier3d-deterministic-compat';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { COIN } from '../coin.ts';
 import { FIXED_DT, GRAVITY, TICK_RATE_HZ } from '../constants.ts';
 import { StateHasher } from '../hash.ts';
@@ -24,10 +24,10 @@ interface Rig {
 
 const live: World[] = [];
 
-async function createRig(options: TableOptions = {}, seed = SEED): Promise<Rig> {
+/** A rig the caller frees. */
+async function buildRig(options: TableOptions = {}, seed = SEED): Promise<Rig> {
   const rapier = await loadRapier();
   const world = new rapier.World(GRAVITY);
-  live.push(world);
   configureTableWorld(world);
   const table = new PusherTable(rapier, world, options);
   const rig: Rig = {
@@ -40,6 +40,13 @@ async function createRig(options: TableOptions = {}, seed = SEED): Promise<Rig> 
       return table.step(rig.tick);
     },
   };
+  return rig;
+}
+
+/** A rig freed after the current test. */
+async function createRig(options: TableOptions = {}, seed = SEED): Promise<Rig> {
+  const rig = await buildRig(options, seed);
+  live.push(rig.world);
   return rig;
 }
 
@@ -285,10 +292,18 @@ function cross(a: Vec, b: Vec): Vec {
   return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
 }
 
-/** Half the width of a coin whose face normal is `axis`, measured along the unit direction `n`. */
+const RIM = COIN_MATERIAL.rimRadius;
+
+/**
+ * Half the width of a coin whose face normal is `axis`, measured along the unit
+ * direction `n`: the support of the collider, a cylinder shrunk by the rim radius
+ * and swept by a sphere of that radius.
+ */
 function halfExtent(axis: Vec, n: Vec): number {
   const along = Math.min(1, Math.abs(dot(axis, n)));
-  return COIN.halfThickness * along + COIN.radius * Math.sqrt(1 - along * along);
+  return (
+    (COIN.halfThickness - RIM) * along + (COIN.radius - RIM) * Math.sqrt(1 - along * along) + RIM
+  );
 }
 
 const CUBE_STEPS = 6;
@@ -327,8 +342,7 @@ const NUDGES: readonly Vec[] = [
  * all directions (separating axis theorem), searched here over the face normals, the
  * centre line, the edge directions and a dense sphere of directions, then refined
  * locally. It is measured from the poses alone, independent of Rapier's own contact
- * depths (which misreport for thin cylinders), and is not capped by the coin's
- * thickness the way a point-inside test is.
+ * depths, and is not capped by the coin's thickness the way a point-inside test is.
  */
 function penetrationDepth(a: TableCoin, b: TableCoin): number {
   const axisA = rotate(a.rotation, UP);
@@ -393,25 +407,18 @@ function penetrationDepth(a: TableCoin, b: TableCoin): number {
   return best;
 }
 
-interface OverlapSample {
-  /** Pairs whose bounding spheres touch. */
-  readonly near: number;
-  readonly deepest: number;
-  /** Pairs past OVERLAP_TOLERANCE, as "lowId-highId". */
-  readonly pastTolerance: string[];
-  readonly pastOneMm: string[];
-}
-
 /**
- * The overlap the pile is held to. Coins carry a contact skin and rest apart, and
- * Rapier lets a contact sink only 0.15 mm at the table's length unit (see
- * TABLE_SOLVER), so a settled pair sits well inside this.
+ * The overlap a settled pair is held to. Coins carry a contact skin and rest apart,
+ * and Rapier lets a contact sink only 0.15 mm at the table's length unit (see
+ * TABLE_SOLVER), so a resting pair sits well inside this.
  */
 const OVERLAP_TOLERANCE = 0.0005;
+const DEEP_OVERLAP = 0.001;
 
-function sampleOverlaps(coins: readonly TableCoin[]): OverlapSample {
+/** Every pair of coins whose bounding spheres touch, with its penetration depth. */
+function touchingPairs(coins: readonly TableCoin[]): { pair: string; depth: number }[] {
   const reach = 2 * Math.sqrt(COIN.radius * COIN.radius + COIN.halfThickness * COIN.halfThickness);
-  const sample = { near: 0, deepest: 0, pastTolerance: [] as string[], pastOneMm: [] as string[] };
+  const pairs: { pair: string; depth: number }[] = [];
   for (let i = 0; i < coins.length; i++) {
     for (let j = i + 1; j < coins.length; j++) {
       const a = coins[i];
@@ -422,22 +429,60 @@ function sampleOverlaps(coins: readonly TableCoin[]): OverlapSample {
       const dx = a.translation.x - b.translation.x;
       const dy = a.translation.y - b.translation.y;
       const dz = a.translation.z - b.translation.z;
-      if (dx * dx + dy * dy + dz * dz > reach * reach) {
-        continue;
-      }
-      sample.near += 1;
-      const depth = penetrationDepth(a, b);
-      sample.deepest = Math.max(sample.deepest, depth);
-      const pair = `${Math.min(a.id, b.id)}-${Math.max(a.id, b.id)}`;
-      if (depth > OVERLAP_TOLERANCE) {
-        sample.pastTolerance.push(pair);
-      }
-      if (depth > 0.001) {
-        sample.pastOneMm.push(pair);
+      if (dx * dx + dy * dy + dz * dz <= reach * reach) {
+        pairs.push({ pair: `${a.id}-${b.id}`, depth: penetrationDepth(a, b) });
       }
     }
   }
-  return sample;
+  return pairs;
+}
+
+/** Most consecutive ticks any one pair has stayed past a depth. */
+class RunTracker {
+  longest = 0;
+  #runs = new Map<string, number>();
+
+  update(pairs: readonly string[]): void {
+    const next = new Map<string, number>();
+    for (const pair of pairs) {
+      const run = (this.#runs.get(pair) ?? 0) + 1;
+      next.set(pair, run);
+      this.longest = Math.max(this.longest, run);
+    }
+    this.#runs = next;
+  }
+}
+
+/** Pair overlaps measured on every tick of a session, from the first drop to the end. */
+class OverlapLog {
+  ticks = 0;
+  deepest = 0;
+  /** Fewest touching pairs on any tick from FULL_TABLE_TICKS on. */
+  fewestNearOnFullTable = Number.POSITIVE_INFINITY;
+  /** Sum over ticks of the pairs past OVERLAP_TOLERANCE. */
+  pairTicksPastTolerance = 0;
+  mostPastToleranceAtOnce = 0;
+  mostDeepAtOnce = 0;
+  readonly pastTolerance = new RunTracker();
+  readonly deep = new RunTracker();
+
+  record(coins: readonly TableCoin[], tick: number): void {
+    const pairs = touchingPairs(coins);
+    const past = pairs.filter((p) => p.depth > OVERLAP_TOLERANCE).map((p) => p.pair);
+    const deep = pairs.filter((p) => p.depth > DEEP_OVERLAP).map((p) => p.pair);
+    this.ticks += 1;
+    for (const { depth } of pairs) {
+      this.deepest = Math.max(this.deepest, depth);
+    }
+    if (tick >= FULL_TABLE_TICKS) {
+      this.fewestNearOnFullTable = Math.min(this.fewestNearOnFullTable, pairs.length);
+    }
+    this.pairTicksPastTolerance += past.length;
+    this.mostPastToleranceAtOnce = Math.max(this.mostPastToleranceAtOnce, past.length);
+    this.mostDeepAtOnce = Math.max(this.mostDeepAtOnce, deep.length);
+    this.pastTolerance.update(past);
+    this.deep.update(deep);
+  }
 }
 
 function tableHash(rig: Rig): string {
@@ -446,125 +491,177 @@ function tableHash(rig: Rig): string {
 
 const SESSION_TICKS = 60 * TICK_RATE_HZ;
 const HASH_INTERVAL = 600;
-
-interface Session {
-  readonly hashes: string[];
-  readonly falls: Record<FallEvent['edge'], number>;
-  readonly upperTierPeak: number;
-  readonly coins: ReturnType<PusherTable['coins']>;
-  readonly nextCoinId: number;
-  /** Overlap samples, once a second from FULL_TABLE_TICKS on. */
-  readonly overlaps: OverlapSample[];
-  /**
-   * For every pair a sample caught past OVERLAP_TOLERANCE: how many ticks it took,
-   * checked every tick from then on, to get back within it.
-   */
-  readonly releaseTicks: number[];
-}
-
 const FULL_TABLE_TICKS = 30 * TICK_RATE_HZ;
 
 function onUpperTier(coin: { translation: { y: number } }): boolean {
   return coin.translation.y > PUSHER.height;
 }
 
+/** The scripted session, played forward only as far as a test asks. */
+class Session {
+  readonly hashes: string[] = [];
+  readonly falls: Record<FallEvent['edge'], number> = { front: 0, left: 0, right: 0 };
+  upperTierPeak = 0;
+  readonly #rig: Rig;
+  readonly #overlaps: OverlapLog | undefined;
+
+  constructor(rig: Rig, overlaps?: OverlapLog) {
+    this.#rig = rig;
+    this.#overlaps = overlaps;
+  }
+
+  get rig(): Rig {
+    return this.#rig;
+  }
+
+  get overlaps(): OverlapLog {
+    if (!this.#overlaps) {
+      throw new Error('this session was played without measuring overlaps');
+    }
+    return this.#overlaps;
+  }
+
+  advanceTo(ticks: number): this {
+    const rig = this.#rig;
+    playSession(rig, ticks - rig.tick, (tickFalls) => {
+      for (const fall of tickFalls) {
+        this.falls[fall.edge] += 1;
+      }
+      this.#overlaps?.record(rig.table.coins(), rig.tick);
+      if (rig.tick % TICK_RATE_HZ === 0) {
+        const upper = rig.table.coins().filter(onUpperTier).length;
+        this.upperTierPeak = Math.max(this.upperTierPeak, upper);
+      }
+      if (rig.tick % HASH_INTERVAL === 0) {
+        this.hashes.push(tableHash(rig));
+      }
+    });
+    return this;
+  }
+
+  /** Everything the session produced that a replay has to reproduce exactly. */
+  outcome(): object {
+    const { table } = this.#rig;
+    return {
+      hashes: this.hashes,
+      falls: this.falls,
+      upperTierPeak: this.upperTierPeak,
+      coins: table.coins(),
+      nextCoinId: table.nextCoinId,
+    };
+  }
+}
+
+interface ScriptedMinute {
+  /** Measures pair overlaps on every tick. */
+  readonly reference: Session;
+  readonly replica: Session;
+}
+
+let minute: Promise<ScriptedMinute> | undefined;
+
 /**
- * Follows pairs caught past OVERLAP_TOLERANCE tick by tick until they are back within
- * it (or one coin has left the table), recording how long each took.
+ * Two independent plays of the scripted minute that live for the whole file and
+ * advance only as far as a test asks. Playing the minute twice inside one test
+ * risks the CI timeout on a 2-vCPU runner, so the comparison is spread over one
+ * test per checkpoint rather than shortened.
  */
-class OverlapWatch {
-  readonly releaseTicks: number[] = [];
-  readonly #since = new Map<string, number>();
-
-  watch(pairs: readonly string[], tick: number): void {
-    for (const pair of pairs) {
-      if (!this.#since.has(pair)) {
-        this.#since.set(pair, tick);
-      }
-    }
-  }
-
-  update(table: PusherTable, tick: number): void {
-    if (this.#since.size === 0) {
-      return;
-    }
-    const byId = new Map(table.coins().map((coin) => [coin.id, coin]));
-    for (const [pair, since] of this.#since) {
-      const [a, b] = pair.split('-').map((id) => byId.get(Number(id)));
-      if (!a || !b || penetrationDepth(a, b) <= OVERLAP_TOLERANCE) {
-        this.releaseTicks.push(tick - since);
-        this.#since.delete(pair);
-      }
-    }
-  }
-
-  /** Pairs still past the tolerance count as held until `tick`. */
-  close(tick: number): void {
-    for (const since of this.#since.values()) {
-      this.releaseTicks.push(tick - since);
-    }
-    this.#since.clear();
-  }
+function scriptedMinute(): Promise<ScriptedMinute> {
+  minute ??= Promise.all([buildRig(), buildRig()]).then(([reference, replica]) => ({
+    reference: new Session(reference, new OverlapLog()),
+    replica: new Session(replica),
+  }));
+  return minute;
 }
 
-async function recordSession(seed = SEED, ticks = SESSION_TICKS): Promise<Session> {
-  const rig = await createRig({}, seed);
-  const hashes: string[] = [];
-  const overlaps: OverlapSample[] = [];
-  const watch = new OverlapWatch();
-  const falls = { front: 0, left: 0, right: 0 };
-  let upperTierPeak = 0;
-  playSession(rig, ticks, (tickFalls) => {
-    for (const fall of tickFalls) {
-      falls[fall.edge] += 1;
-    }
-    watch.update(rig.table, rig.tick);
-    if (rig.tick % TICK_RATE_HZ === 0) {
-      upperTierPeak = Math.max(upperTierPeak, rig.table.coins().filter(onUpperTier).length);
-      if (rig.tick >= FULL_TABLE_TICKS) {
-        const sample = sampleOverlaps(rig.table.coins());
-        overlaps.push(sample);
-        watch.watch(sample.pastTolerance, rig.tick);
-      }
-    }
-    if (rig.tick % HASH_INTERVAL === 0) {
-      hashes.push(tableHash(rig));
-    }
+async function referenceTo(ticks: number): Promise<Session> {
+  return (await scriptedMinute()).reference.advanceTo(ticks);
+}
+
+afterAll(async () => {
+  if (minute) {
+    const { reference, replica } = await minute;
+    reference.rig.world.free();
+    replica.rig.world.free();
+  }
+});
+
+const CHECKPOINT_TICKS = Array.from(
+  { length: SESSION_TICKS / HASH_INTERVAL },
+  (_, i) => (i + 1) * HASH_INTERVAL,
+);
+
+describe('determinism', () => {
+  it.each(CHECKPOINT_TICKS)(
+    'produces identical hashes up to tick %i for the same seed and drops',
+    async (tick) => {
+      const { replica } = await scriptedMinute();
+      const expected = (await referenceTo(tick)).hashes;
+      expect(expected).toHaveLength(tick / HASH_INTERVAL);
+      expect(replica.advanceTo(tick).hashes).toEqual(expected);
+    },
+  );
+
+  it('ends both plays of the minute with the same coins, falls and next coin id', async () => {
+    const { replica } = await scriptedMinute();
+    const reference = await referenceTo(SESSION_TICKS);
+    expect(replica.advanceTo(SESSION_TICKS).outcome()).toEqual(reference.outcome());
+    expect(new Set(reference.hashes).size).toBe(reference.hashes.length);
   });
-  watch.close(rig.tick);
-  return {
-    hashes,
-    falls,
-    upperTierPeak,
-    coins: rig.table.coins(),
-    nextCoinId: rig.table.nextCoinId,
-    overlaps,
-    releaseTicks: watch.releaseTicks,
-  };
-}
 
-let reference: Promise<Session> | undefined;
-/** The scripted minute, played once and shared by the tests that inspect or compare against it. */
-function referenceSession(): Promise<Session> {
-  reference ??= recordSession();
-  return reference;
-}
+  it('pins the final table hash so geometry, tuning or pusher changes are caught', async () => {
+    const { hashes } = await referenceTo(SESSION_TICKS);
+    // Changing this value breaks replay audits of every input log recorded before
+    // the change. Update it only alongside a deliberate sim version bump.
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"18542c554c6831a6"`);
+  });
+
+  it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
+    const expected = (await referenceTo(2 * HASH_INTERVAL)).hashes;
+    const a = await createRig();
+    const b = await createRig();
+    for (let i = 0; i < 2 * HASH_INTERVAL; i++) {
+      playSession(a, 1);
+      playSession(b, 1);
+    }
+    expect(tableHash(a)).toBe(expected[1]);
+    expect(tableHash(b)).toBe(expected[1]);
+  });
+
+  it('diverges for a different seed', async () => {
+    const expected = (await referenceTo(HASH_INTERVAL)).hashes;
+    const other = new Session(await createRig({}, SEED + 1)).advanceTo(HASH_INTERVAL);
+    expect(other.hashes[0]).not.toBe(expected[0]);
+  });
+
+  it('hashes the pusher motion, including a queued change', async () => {
+    const a = await createRig();
+    const b = await createRig();
+    runTicks(a, 10);
+    runTicks(b, 10);
+    expect(tableHash(b)).toBe(tableHash(a));
+    b.table.setPusherMotion({ ...DEFAULT_PUSHER_MOTION, stroke: 0.05 });
+    expect(b.table.pusher.motion).toEqual(DEFAULT_PUSHER_MOTION);
+    expect(tableHash(b)).not.toBe(tableHash(a));
+  });
+});
 
 describe('gameplay', () => {
   it('drains the upper tier over the lip and pays out mostly over the front edge', async () => {
-    const { falls, upperTierPeak, coins } = await referenceSession();
+    const { falls, upperTierPeak, rig } = await referenceTo(SESSION_TICKS);
     expect(upperTierPeak).toBeGreaterThan(80);
-    expect(coins.filter(onUpperTier).length).toBeLessThan(upperTierPeak);
+    expect(rig.table.coins().filter(onUpperTier).length).toBeLessThan(upperTierPeak);
     expect(falls.front).toBeGreaterThan(20);
     expect(falls.front).toBeGreaterThan(2 * (falls.left + falls.right));
   });
 
   it('keeps every coin inside the cabinet: none behind the backboard, over a wall or bouncing high', async () => {
-    const { coins, nextCoinId } = await referenceSession();
+    const { table } = (await referenceTo(SESSION_TICKS)).rig;
+    const coins = table.coins();
     expect(coins.length).toBeGreaterThan(200);
     // The table keeps paying out, so drops continue to the end; the last second of
     // them may still be in the air.
-    const landedBefore = nextCoinId - TICK_RATE_HZ / 6;
+    const landedBefore = table.nextCoinId - TICK_RATE_HZ / 6;
     for (const coin of coins) {
       expect(coin.translation.z).toBeGreaterThan(BACKBOARD.frontZ);
       expect(Math.abs(coin.translation.x)).toBeLessThan(TABLE_INNER_HALF_WIDTH);
@@ -582,36 +679,42 @@ function flatCoinAt(id: number, x: number): TableCoin {
   return { id, translation: { x, y: COIN.halfThickness, z: 0 }, rotation: FLAT, sleeping: false };
 }
 
-/** Pairs still in `pick` of a sample one second after they were in it. */
-function persistentPairs(
-  overlaps: readonly OverlapSample[],
-  pick: (sample: OverlapSample) => readonly string[],
-): string[] {
-  const persistent: string[] = [];
-  for (const [i, sample] of overlaps.entries()) {
-    const previous = overlaps[i - 1];
-    if (previous) {
-      const before = new Set(pick(previous));
-      persistent.push(...pick(sample).filter((pair) => before.has(pair)));
-    }
-  }
-  return persistent;
+/** A coin tilted about the z axis by the angle whose half has tangent `halfTan`. */
+function tiltedZ(halfTan: number): Quat {
+  const norm = Math.sqrt(halfTan * halfTan + 1);
+  return { x: 0, y: 0, z: halfTan / norm, w: 1 / norm };
 }
 
-/** Most consecutive samples any one pair stays past OVERLAP_TOLERANCE. */
-function longestPersistence(overlaps: readonly OverlapSample[]): number {
-  let longest = 0;
-  let runs = new Map<string, number>();
-  for (const sample of overlaps) {
-    const next = new Map<string, number>();
-    for (const pair of sample.pastTolerance) {
-      const run = (runs.get(pair) ?? 0) + 1;
-      next.set(pair, run);
-      longest = Math.max(longest, run);
+interface ImpactRun {
+  readonly deepest: number;
+  readonly hash: string;
+  readonly top: TableCoin;
+  readonly bottom: TableCoin;
+}
+
+/**
+ * Drops a coin from 12 cm, about 1.5 m/s on impact, onto one resting on the lower
+ * tier, `offset` metres off centre and tilted so its rim strikes first, and follows
+ * the pair for two seconds.
+ */
+async function dropOntoRestingCoin(offset: number, tilt: number): Promise<ImpactRun> {
+  const rig = await createRig();
+  const z = PLAYFIELD.fieldFrontZ - 0.04;
+  rig.table.addCoin({ x: 0, y: COIN.halfThickness, z }, FLAT);
+  runTicks(rig, TICK_RATE_HZ / 2);
+  rig.table.addCoin({ x: offset, y: 0.12, z }, tiltedZ(tilt));
+  let deepest = 0;
+  for (let i = 0; i < 2 * TICK_RATE_HZ; i++) {
+    rig.step();
+    for (const { depth } of touchingPairs(rig.table.coins())) {
+      deepest = Math.max(deepest, depth);
     }
-    runs = next;
   }
-  return longest;
+  const [bottom, top] = rig.table.coins();
+  if (!bottom || !top) {
+    throw new Error(`expected two coins on the table, found ${rig.table.coinCount}`);
+  }
+  return { deepest, hash: tableHash(rig), top, bottom };
 }
 
 describe('contacts', () => {
@@ -627,6 +730,21 @@ describe('contacts', () => {
       2 * COIN.halfThickness,
       6,
     );
+  });
+
+  it('measures the rounded rim: coins meeting corner to corner touch where sharp ones would overlap', () => {
+    const a = flatCoinAt(0, 0);
+    // The second coin sits up and to the side so the two rims meet on a 45 degree
+    // diagonal, `gap` apart. Sharp corners would already overlap by (2 - sqrt 2)
+    // rim radii there, 0.29 mm.
+    const placed = (gap: number): TableCoin => {
+      const along = (2 * RIM + gap) / Math.SQRT2;
+      const x = 2 * (COIN.radius - RIM) + along;
+      const y = COIN.halfThickness + 2 * (COIN.halfThickness - RIM) + along;
+      return { ...flatCoinAt(1, x), translation: { x, y, z: 0 } };
+    };
+    expect(penetrationDepth(a, placed(0.00005))).toBe(0);
+    expect(penetrationDepth(a, placed(-0.0002))).toBeCloseTo(0.0002, 5);
   });
 
   it('rests two coins face to face a skin apart, and measures a planted one exactly', async () => {
@@ -650,71 +768,39 @@ describe('contacts', () => {
     expect(penetrationDepth(bottom, sunk)).toBeCloseTo(0.0005, 4);
   });
 
-  it('keeps coins in the full, moving pile from sinking into each other', async () => {
-    const { overlaps, releaseTicks } = await referenceSession();
-    expect(overlaps).toHaveLength((SESSION_TICKS - FULL_TABLE_TICKS) / TICK_RATE_HZ + 1);
-    // Measured on this session (31 samples, 504 to 760 touching pairs each): at most
-    // 3 pairs past 0.5 mm and 2 past 1 mm per sample, the deepest 1.65 mm; 22 pairs
-    // caught past 0.5 mm, each back within it after at most 8 ticks; 2 pair-samples
-    // still past 0.5 mm a second later (none past 1 mm), and no pair in more than 2
-    // samples in a row. Before the contact skin and the inner PGS iterations this
-    // session had 3 to 20 pairs past 0.5 mm per sample and a pair held for 6 s.
-    for (const sample of overlaps) {
-      expect(sample.near).toBeGreaterThan(500);
-      expect(sample.pastTolerance.length).toBeLessThanOrEqual(4);
-      expect(sample.pastOneMm.length).toBeLessThanOrEqual(2);
-      expect(sample.deepest).toBeLessThan(0.002);
+  it('lands a fast coin striking another rim first without sinking into it, the same way every run', async () => {
+    const cases = [
+      [0, 0.3],
+      [0.008, 0.5],
+      [0.016, -0.4],
+      [0.024, 0.2],
+    ] as const;
+    for (const [offset, tilt] of cases) {
+      const run = await dropOntoRestingCoin(offset, tilt);
+      expect(run.deepest).toBeLessThan(OVERLAP_TOLERANCE);
+      expect(run.top.translation.y).toBeLessThan(run.bottom.translation.y + 3 * COIN.halfThickness);
+      expect((await dropOntoRestingCoin(offset, tilt)).hash).toBe(run.hash);
     }
-    expect(releaseTicks.length).toBeGreaterThan(0);
-    expect(Math.max(...releaseTicks)).toBeLessThanOrEqual(TICK_RATE_HZ / 4);
-    expect(persistentPairs(overlaps, (s) => s.pastTolerance).length).toBeLessThanOrEqual(4);
-    expect(persistentPairs(overlaps, (s) => s.pastOneMm)).toEqual([]);
-    expect(longestPersistence(overlaps)).toBeLessThanOrEqual(2);
-  });
-});
-
-describe('determinism', () => {
-  it('produces identical hashes for the same seed and drops', async () => {
-    const first = await referenceSession();
-    const second = await recordSession();
-    expect(first.hashes).toHaveLength(SESSION_TICKS / HASH_INTERVAL);
-    expect(second).toEqual(first);
-    expect(new Set(first.hashes).size).toBe(first.hashes.length);
   });
 
-  it('pins the final table hash so geometry, tuning or pusher changes are caught', async () => {
-    const { hashes } = await referenceSession();
-    // Changing this value breaks replay audits of every input log recorded before
-    // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"0f07d3e911f71f99"`);
-  });
-
-  it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
-    const expected = (await referenceSession()).hashes;
-    const a = await createRig();
-    const b = await createRig();
-    for (let i = 0; i < 2 * HASH_INTERVAL; i++) {
-      playSession(a, 1);
-      playSession(b, 1);
-    }
-    expect(tableHash(a)).toBe(expected[1]);
-    expect(tableHash(b)).toBe(expected[1]);
-  });
-
-  it('diverges for a different seed', async () => {
-    const expected = (await referenceSession()).hashes;
-    const other = await recordSession(SEED + 1, HASH_INTERVAL);
-    expect(other.hashes[0]).not.toBe(expected[0]);
-  });
-
-  it('hashes the pusher motion, including a queued change', async () => {
-    const a = await createRig();
-    const b = await createRig();
-    runTicks(a, 10);
-    runTicks(b, 10);
-    expect(tableHash(b)).toBe(tableHash(a));
-    b.table.setPusherMotion({ ...DEFAULT_PUSHER_MOTION, stroke: 0.05 });
-    expect(b.table.pusher.motion).toEqual(DEFAULT_PUSHER_MOTION);
-    expect(tableHash(b)).not.toBe(tableHash(a));
+  it('keeps coins in the full, moving pile from sinking into each other, checked every tick', async () => {
+    const overlaps = (await referenceTo(SESSION_TICKS)).overlaps;
+    // Measured on this session, every pair on every tick of the minute (441 to about
+    // 700 touching pairs a tick once the table is full): the deepest 2.89 mm, 770
+    // pair-ticks past 0.5 mm in all (0.2 a tick), at most 4 pairs past 0.5 mm and 3
+    // past 1 mm on any tick, and no pair past 0.5 mm for more than 16 ticks in a row
+    // or past 1 mm for more than 13. What is left is a pair squeezed rim to rim by
+    // the pusher loading the upper heap, a coin rocking across another's rim, or two
+    // coins tumbling over the lip together, each clearing within about a quarter second.
+    // Before the rounded rim and the impact sweep the deepest was 10.2 mm, with 3546
+    // pair-ticks past 0.5 mm.
+    expect(overlaps.ticks).toBe(SESSION_TICKS);
+    expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
+    expect(overlaps.deepest).toBeLessThan(0.0035);
+    expect(overlaps.pairTicksPastTolerance).toBeLessThanOrEqual(1000);
+    expect(overlaps.mostPastToleranceAtOnce).toBeLessThanOrEqual(5);
+    expect(overlaps.mostDeepAtOnce).toBeLessThanOrEqual(4);
+    expect(overlaps.pastTolerance.longest).toBeLessThanOrEqual(TICK_RATE_HZ / 3);
+    expect(overlaps.deep.longest).toBeLessThanOrEqual(TICK_RATE_HZ / 4);
   });
 });
