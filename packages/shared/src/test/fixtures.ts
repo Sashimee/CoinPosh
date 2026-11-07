@@ -121,8 +121,8 @@ export const endpointFixtures: { [N in EndpointName]: EndpointFixture<N> } = {
       wallet,
       flags: { monetization: false, premiumSeasonTrack: false, rewardedAds: false },
       venue: {
-        id: 'riviera',
-        unlocked: ['riviera'],
+        id: 'rivieraYacht',
+        unlocked: ['rivieraYacht'],
         upgrades: { 'pusher-speed': 3, 'coin-value': 1 },
         loadout: [
           { socket: 0, charmId: ids.charm },
@@ -200,13 +200,13 @@ export const endpointFixtures: { [N in EndpointName]: EndpointFixture<N> } = {
     response: { receivedEvents: 4, receivedCheckpoints: 1 },
   },
   upgradesBuy: {
-    body: { venueId: 'riviera', lineId: 'pusher-speed', level: 4 },
-    response: { venueId: 'riviera', lineId: 'pusher-speed', level: 4, wallet },
+    body: { venueId: 'rivieraYacht', lineId: 'pusher-speed', level: 4 },
+    response: { venueId: 'rivieraYacht', lineId: 'pusher-speed', level: 4, wallet },
   },
   charmsEquip: {
-    body: { venueId: 'riviera', socket: 1, charmId: ids.charm },
+    body: { venueId: 'rivieraYacht', socket: 1, charmId: ids.charm },
     response: {
-      venueId: 'riviera',
+      venueId: 'rivieraYacht',
       loadout: [
         { socket: 0, charmId: null },
         { socket: 1, charmId: ids.charm },
@@ -262,11 +262,11 @@ export const endpointFixtures: { [N in EndpointName]: EndpointFixture<N> } = {
     },
   },
   ascend: {
-    body: { venueId: 'riviera' },
+    body: { venueId: 'rivieraYacht' },
     response: {
-      venueId: 'riviera',
+      venueId: 'rivieraYacht',
       goldBarsGranted: 14,
-      unlockedVenueId: 'salon-de-paris',
+      unlockedVenueId: 'salonDeParis',
       wallet: { ...wallet, coins: 0, bullion: 0, goldBars: 14 },
     },
   },

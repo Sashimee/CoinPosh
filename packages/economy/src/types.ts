@@ -236,4 +236,82 @@ export interface EconomyConfig {
   readonly ascension: AscensionConfig;
   readonly season: SeasonConfig;
   readonly pacing: readonly PacingTargetDef[];
+  /**
+   * Optional only until `src/config/index.ts` carries it; `rateEnvelope` in
+   * `src/config.ts` is the shipped table and `rateEnvelopeFor` reads it by default.
+   */
+  readonly rateEnvelope?: RateEnvelopeConfig;
 }
+
+/** What the server's sliding-window envelope meters (01-ARCHITECTURE.md, Layer 2). */
+export const RATE_ENVELOPE_METRIC_IDS = [
+  'drops',
+  'falls',
+  'fallValue',
+  'fusions',
+  'crates',
+] as const;
+export type RateEnvelopeMetricId = (typeof RATE_ENVELOPE_METRIC_IDS)[number];
+
+/** At most `max` units of a metric inside any `windowMs` span of server time. */
+export interface RateEnvelopeLimit {
+  readonly windowMs: number;
+  readonly max: number;
+}
+
+export type RateEnvelopeLimits = Readonly<Record<RateEnvelopeMetricId, RateEnvelopeLimit>>;
+
+export interface RateEnvelopeMetricDef extends RateEnvelopeLimit {
+  /**
+   * How each upgrade stat stretches `max`, as an elasticity: the limit is multiplied by
+   * `1 + weight × (stat / base − 1)`, so 1 scales in proportion and 0 ignores the stat.
+   */
+  readonly scaleBy: Readonly<Partial<Record<UpgradeStatId, number>>>;
+  /** Non-null when the metric is coin value, so venue, Charms and album sets stretch it too. */
+  readonly value: { readonly perCharm: number } | null;
+}
+
+/** `max` is the base table (every line at level 0, first venue, no Charms, no album bonus). */
+export type RateEnvelopeConfig = Readonly<Record<RateEnvelopeMetricId, RateEnvelopeMetricDef>>;
+
+/** One table configuration, as the server knows it. */
+export interface RateEnvelopeTable {
+  /** Upgrade line id → level; missing lines are at level 0. */
+  readonly levels: Readonly<Record<string, number>>;
+  readonly venue: VenueId;
+  /** Charms owned; only as many as the venue has sockets count. */
+  readonly charms: number;
+  /** Sum of completed album set bonuses. */
+  readonly albumBonus: number;
+}
+
+/**
+ * The honest-play burst model the base limits are derived from. The economy sim gives
+ * mean rates only; these describe how an honest player's drops, cascades and crates
+ * bunch up inside a window, so the 99.9th percentile has something to measure.
+ */
+export interface RateEnvelopeDerivation {
+  readonly percentile: number;
+  /** Multiplier over the simulated percentile for model error until physics telemetry lands. */
+  readonly headroom: number;
+  readonly sessions: number;
+  readonly seed: number;
+  readonly slotMs: number;
+  /** Share of play time spent in a Sommelier Pour. */
+  readonly pourShare: number;
+  /** Drop cadence while pouring, as a multiple of the sim's mean cadence. */
+  readonly pourCadence: number;
+  readonly meanPourSeconds: number;
+  /** How long the pusher takes to turn a burst of drops into falls. */
+  readonly tableLagSeconds: number;
+  /** Largest clump an OBSCENE cascade drops in one go. */
+  readonly obsceneMaxCoins: number;
+  /** Largest clump of loose coins below the first cascade tier. */
+  readonly looseMaxCoins: number;
+  /** A crate falls this many seconds after it spawns, uniformly. */
+  readonly crateFallSeconds: { readonly min: number; readonly max: number };
+}
+
+// Re-exported here because the package entry already re-exports this module; the
+// envelope table must reach @coinposh/economy before src/index.ts names src/config.ts.
+export * from './config.ts';
