@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { StateHasher } from '../hash.ts';
 import { Xoshiro128ss } from '../prng.ts';
+import { COIN } from '../coin.ts';
 import { PUSHER } from '../table/layout.ts';
+import type { TableCoin } from '../table/table.ts';
+import { COIN_MATERIAL } from '../table/tuning.ts';
 import { type MechanicEvent, TableMechanics, type TowerToppleEvent } from './mechanics.ts';
 import { MechanicsRig } from './rig.ts';
+import type { MechanicTable } from './table.ts';
+import { ChampagneTower } from './tower.ts';
 import { TOWER_TUNING } from './tuning.ts';
 
 const TIERS = ['copper', 'silver', 'gold'] as const;
@@ -95,6 +100,47 @@ describe('ChampagneTower', () => {
     for (const { offset } of tower?.coins ?? []) {
       expect(Math.sqrt(offset.x * offset.x + offset.z * offset.z)).toBeLessThan(0.003);
     }
+  });
+
+  it('measures each capture in one tick against the stack as it stands after the last', async () => {
+    const rig = await MechanicsRig.create();
+    live.push(rig);
+    const tower = new ChampagneTower(rig.rapier, rig.world);
+    const removed: number[] = [];
+    const table: MechanicTable = {
+      coins: () => [],
+      addCoin: () => {
+        throw new Error('the tower adds no coin while it stands');
+      },
+      removeCoin: (id) => {
+        removed.push(id);
+      },
+    };
+    const resting = COIN.halfThickness + COIN_MATERIAL.contactSkin;
+    const top = tower.state.pedestalTop;
+    const at = (id: number, y: number): TableCoin => ({
+      id,
+      translation: { x: AXIS.x, y, z: AXIS.z },
+      rotation: { x: 0, y: 0, z: 0, w: 1 },
+      sleeping: false,
+    });
+
+    const sideBySide = tower.step(1, [at(0, top + resting), at(1, top + resting)], () => 0, table);
+    expect(sideBySide.captures.map(({ coinId, height }) => [coinId, height])).toEqual([[0, 1]]);
+
+    const stackTop = top + 2 * COIN.halfThickness;
+    const onEachOther = tower.step(
+      2,
+      [at(2, stackTop + resting), at(3, stackTop + 3 * resting)],
+      () => 0,
+      table,
+    );
+    expect(onEachOther.captures.map(({ coinId, height }) => [coinId, height])).toEqual([
+      [2, 2],
+      [3, 3],
+    ]);
+    expect(removed).toEqual([0, 2, 3]);
+    expect(tower.state.coins.map(({ id }) => id)).toEqual([0, 2, 3]);
   });
 
   it('leaves a coin that lands beside the pedestal on the table', async () => {

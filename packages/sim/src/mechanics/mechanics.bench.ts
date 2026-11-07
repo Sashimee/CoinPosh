@@ -2,29 +2,46 @@ import { afterAll, bench, describe } from 'vitest';
 import { GRAVITY, TICK_RATE_HZ } from '../constants.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { loadRapier } from '../rapier.ts';
-import { PusherTable } from '../table/table.ts';
+import { PusherTable, type TableCoin } from '../table/table.ts';
 import { configureTableWorld } from '../table/tuning.ts';
 import { CoinContactFinder, NO_GROUP } from './contacts.ts';
 import { ContactFusion } from './fusion.ts';
+import type { MechanicTable } from './table.ts';
+import { ChampagneTower } from './tower.ts';
 import { FUSION_TUNING } from './tuning.ts';
 
 /**
- * Budget: the mechanics share the table's 4 ms tick with 250 coins. Run with
+ * Budget: the mechanics share the table's 4 ms tick with 250 coins, at the 99th
+ * percentile as well as on average. Run with
  * `pnpm --filter @coinposh/sim exec vitest bench --run src/mechanics`.
  *
- * The table is filled by playing, as in table.bench.ts, and every coin is copper, the
- * worst case: every contact on the table is a same-tier contact to find and time.
- * Fusions are reported but not applied (PusherTable cannot remove coins yet), so the
- * piles stay ripe and the walk over them runs every tick, where a real table would
- * have fused them away. The tower is left out: its step is one distance check per
- * coin.
+ * The table is a real PusherTable with the tower's pedestal in its world, filled by
+ * playing as in table.bench.ts, and every coin is copper, the worst case: every
+ * contact on the table is a same-tier contact to find and time. Each mechanics step
+ * reads the coins, finds the slice of contacts due this tick, runs the fusion clock
+ * and steps the ChampagneTower, which is what TableMechanics.step does.
  *
- * Measured with the table at about 510 same-tier contacts and 70 ripe groups a tick:
- * the table alone 3.03 ms mean, 3.75 ms p99; with the mechanics 3.66 ms mean, 4.55 ms
- * p99. So the mechanics add about 0.6 ms a tick in this worst case, about 0.3 ms with
- * the poses held still (the bookkeeping, without fresh distance queries). The mean
- * holds the 4 ms budget, the slowest percent does not: the table alone leaves 0.25 ms
- * at p99. A table that fuses its piles away carries a fraction of these contacts.
+ * PusherTable cannot remove a coin yet (the PusherTable.removeCoin follow-up), so:
+ *
+ * - A fusion is applied to the clock, not to the table: the clock forgets its coins'
+ *   contacts, as TableMechanics does, but the coins stay where they are, all copper,
+ *   so their contacts start again at once, as if a new pile of the tier had formed in
+ *   the same place. The table stays at full same-tier density for the finder, and the
+ *   clock fires fusions at the rate such piles would.
+ * - A coin the tower captures is hidden from the mechanics instead of removed: its
+ *   body stays in the world and the table keeps paying for it. So that hidden bodies
+ *   do not end up inside a growing stack collider, which no real table would ever
+ *   simulate, the stepped tower lives in a world of its own at the same placement,
+ *   and the table's world holds a second, never stepped tower: the pedestal's
+ *   physical cost on the table, and the tower's logic, are both measured as they are.
+ *
+ * Measured 2026-11-07 (Node, x86-64 dev machine), 250 coins, about 185 same-tier
+ * contacts and 2.9 fusions per step: the mechanics alone take 0.19 ms mean and
+ * 0.34 ms at p99; the table alone 3.00 ms mean and 4.07 ms at p99; table then
+ * mechanics 3.33 ms mean and 4.36 ms at p99. The mean is inside the budget, the p99
+ * is not, and the table's own p99 already is past it in this process, so the
+ * headroom has to come from the table. The coin, contact and capture counts over the
+ * measured steps are printed after the run, so the result always says what it measured.
  */
 const TARGET_COINS = 250;
 const WARMUP_TICKS = 45 * TICK_RATE_HZ;
@@ -33,12 +50,33 @@ const rapier = await loadRapier();
 const world = new rapier.World(GRAVITY);
 configureTableWorld(world);
 const table = new PusherTable(rapier, world);
+new ChampagneTower(rapier, world);
+const towerWorld = new rapier.World(GRAVITY);
+const tower = new ChampagneTower(rapier, towerWorld);
 const rng = Xoshiro128ss.fromSeed(0xbe7c4);
 const live = new Set<number>();
-const contacts = new CoinContactFinder(rapier, FUSION_TUNING.touchGap);
-const fusion = new ContactFusion({ inputCount: 3, contactSeconds: 0.4 }, FUSION_TUNING.graceTicks);
+const hidden = new Set<number>();
+const contacts = new CoinContactFinder(FUSION_TUNING.touchGap);
+const fusion = new ContactFusion(
+  { inputCount: 3, contactSeconds: 0.4 },
+  FUSION_TUNING.graceTicks,
+  FUSION_TUNING.sampleTicks,
+);
 let tick = 0;
-const measured = { samples: 0, pairs: 0, ripe: 0 };
+const measured = { samples: 0, pairs: 0, fusions: 0, captures: 0, topples: 0 };
+
+const towerTable: MechanicTable = {
+  coins: (): TableCoin[] => table.coins().filter(({ id }) => !hidden.has(id)),
+  addCoin: (translation, rotation) => {
+    const id = table.addCoin(translation, rotation);
+    live.add(id);
+    return id;
+  },
+  removeCoin: (id) => {
+    hidden.add(id);
+    live.delete(id);
+  },
+};
 
 function stepTable(): void {
   if (table.coinCount < TARGET_COINS) {
@@ -47,17 +85,29 @@ function stepTable(): void {
   tick += 1;
   for (const { coinId } of table.step(tick)) {
     live.delete(coinId);
+    hidden.delete(coinId);
   }
 }
 
 function stepMechanics(): void {
-  const coins = table.coins();
+  const coins = towerTable.coins();
   const groups = new Int32Array(coins.length);
   coins.forEach(({ id }, i) => {
     groups[i] = live.has(id) ? 0 : NO_GROUP;
   });
-  const touching = contacts.find(coins, groups);
-  measured.ripe += fusion.update(tick, touching).length;
+  const touching = contacts.find(
+    coins,
+    groups,
+    tick % FUSION_TUNING.sampleTicks,
+    FUSION_TUNING.sampleTicks,
+  );
+  for (const ids of fusion.update(tick, touching)) {
+    fusion.forget(ids);
+    measured.fusions += 1;
+  }
+  const { captures, topple } = tower.step(tick, coins, () => 0, towerTable);
+  measured.captures += captures.length;
+  measured.topples += topple ? 1 : 0;
   measured.pairs += touching.length;
   measured.samples += 1;
 }
@@ -66,22 +116,24 @@ for (let i = 0; i < WARMUP_TICKS; i++) {
   stepTable();
   stepMechanics();
 }
-measured.samples = measured.pairs = measured.ripe = 0;
+measured.samples = measured.pairs = measured.fusions = measured.captures = measured.topples = 0;
 
 afterAll(() => {
-  const { samples, pairs, ripe } = measured;
+  const { samples, pairs, fusions, captures, topples } = measured;
   console.info(
     `measured ${samples} mechanics steps at ${table.coinCount} coins: ` +
       `${(pairs / Math.max(1, samples)).toFixed(1)} same-tier contacts and ` +
-      `${(ripe / Math.max(1, samples)).toFixed(2)} ripe groups per step`,
+      `${(fusions / Math.max(1, samples)).toFixed(2)} fusions per step, ` +
+      `${captures} tower captures and ${topples} topples`,
   );
   world.free();
+  towerWorld.free();
 });
 
 describe(`mechanics, ${TARGET_COINS} coins`, () => {
   bench('table tick alone, for comparison', stepTable, { time: 5000, warmupTime: 500 });
   bench(
-    'table tick, then contact finding and fusion clock',
+    'table tick, then the mechanics',
     () => {
       stepTable();
       stepMechanics();
@@ -89,7 +141,7 @@ describe(`mechanics, ${TARGET_COINS} coins`, () => {
     { time: 5000, warmupTime: 500 },
   );
   bench(
-    'contact finding and fusion clock alone, on a full table',
+    'the mechanics alone, on a full table',
     () => {
       tick += 1;
       stepMechanics();

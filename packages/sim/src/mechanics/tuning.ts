@@ -7,20 +7,28 @@ import { DROP_ZONE } from '../table/layout.ts';
  * decide what counts as touching and where the new coin appears.
  *
  * - touchGap 1 mm: every coin carries a 0.3 mm contact skin (COIN_MATERIAL), so two
- *   coins resting against each other sit about 0.6 mm apart, and the table's
- *   separation pass keeps them within 0.2 mm of overlap. 1 mm counts every resting
- *   contact, flat or edge on, while two coins a visible hair apart do not fuse.
+ *   coins resting against each other sit about 0.6 mm apart. On PusherTable its
+ *   separation pass (TABLE_SOLVER.separationSlop) keeps them within 0.2 mm of
+ *   overlap; MechanicsRig, where the mechanics tests run, has no such pass and leaves
+ *   that to the solver, so a pair there can sit a little deeper. 1 mm counts every
+ *   resting contact, flat or edge on, while two coins a visible hair apart do not fuse.
  * - graceTicks 3 (50 ms): a pile under the pusher jostles, and a pair that bounces
  *   apart for a tick or two is still, to the player, three coins that sat together.
  *   Longer than that and the coins visibly separated, so the clock starts over.
  * - spawnLift 1.5 mm: the fused coin appears this far above the highest of its
  *   inputs, at their centroid, and settles with a soft clack instead of being planted
  *   into the coins around it. The renderer plays the hop; the sim only lands it.
+ * - sampleTicks 3: a pair is looked at only on the ticks its lower id is due, every
+ *   third tick (20 Hz), which splits the contact search over three ticks to keep it in
+ *   the step budget. A contact is seen up to 2 ticks late (33 ms) and a fusion fires up
+ *   to 2 ticks after its window, which no player can tell. The grace is stretched by
+ *   the period, so a pair found apart on one look, however briefly, is forgiven.
  */
 export const FUSION_TUNING = {
   touchGap: 0.001,
   graceTicks: 3,
   spawnLift: 0.0015,
+  sampleTicks: 3,
 } as const;
 
 /** Where the Champagne Tower pedestal stands on the upper tier, in metres. */
@@ -78,7 +86,9 @@ export interface TowerPlacement {
  *   the excess each tick becomes lean, so a tower that keeps being shaken tilts a
  *   little further with every knock until it goes.
  * - minToppleCoins 3: a stack of one or two coins cannot tip over.
- * - Measured on MechanicsRig (tower.test.ts), one drop every 1/3 s: fed down the
+ * - Measured on MechanicsRig (tower.test.ts), not on PusherTable, which cannot remove
+ *   a captured coin yet and whose separation pass does not see the pedestal or the
+ *   stack; rerun these there once it can. One drop every 1/3 s: fed down the
  *   axis the tower builds to the full 36 and the 37th coin tips it; fed within ±4 mm
  *   it topples at 18 to 25 coins, within ±7 mm at 18 to 34. The released cascade
  *   litters the tier, and the next tower, knocked by that litter, goes sooner.

@@ -1,9 +1,11 @@
 import type { Rotation } from '@dimforge/rapier3d-deterministic-compat';
 import { describe, expect, it } from 'vitest';
 import { COIN } from '../coin.ts';
+import { GRAVITY, TICK_RATE_HZ } from '../constants.ts';
+import { Xoshiro128ss } from '../prng.ts';
 import { loadRapier } from '../rapier.ts';
-import type { TableCoin } from '../table/table.ts';
-import { COIN_MATERIAL } from '../table/tuning.ts';
+import { PusherTable, type TableCoin } from '../table/table.ts';
+import { COIN_MATERIAL, configureTableWorld } from '../table/tuning.ts';
 import { CoinContactFinder, NO_GROUP } from './contacts.ts';
 import { FUSION_TUNING } from './tuning.ts';
 
@@ -17,7 +19,7 @@ function coin(id: number, x: number, y = 0.04, z = -0.17, rotation: Rotation = F
 }
 
 function finder(): CoinContactFinder {
-  return new CoinContactFinder(rapier, FUSION_TUNING.touchGap);
+  return new CoinContactFinder(FUSION_TUNING.touchGap);
 }
 
 describe('CoinContactFinder', () => {
@@ -93,9 +95,48 @@ describe('CoinContactFinder', () => {
     ).toHaveLength(39);
   });
 
+  it('finds the same pairs as a fresh finder on a table in play, whatever it saw before', () => {
+    const world = new rapier.World(GRAVITY);
+    try {
+      configureTableWorld(world);
+      const table = new PusherTable(rapier, world);
+      const rng = Xoshiro128ss.fromSeed(0xbe7c4);
+      const slices = FUSION_TUNING.sampleTicks;
+      const longLived = finder();
+      let compared = 0;
+      let found = 0;
+      for (let tick = 1; tick <= 20 * TICK_RATE_HZ; tick++) {
+        if (tick % 4 === 0) {
+          table.dropCoin((rng.nextInt(301) - 150) / 1000, rng);
+        }
+        table.step(tick);
+        const coins = table.coins();
+        const groups = coins.map(({ id }) => id % 3);
+        const slice = tick % slices;
+        const pairs = longLived.find(coins, groups, slice, slices);
+        if (tick % 30 !== 0) {
+          continue;
+        }
+        expect(pairs).toEqual(finder().find(coins, groups, slice, slices));
+        const all = finder().find(coins, groups);
+        expect(longLived.find(coins, groups)).toEqual(all);
+        const sliced = Array.from({ length: slices }, (_, k) =>
+          longLived.find(coins, groups, k, slices),
+        ).flat();
+        expect(sliced.sort((p, q) => p.a - q.a || p.b - q.b)).toEqual(all);
+        compared += 1;
+        found += all.length;
+      }
+      expect(compared).toBe(40);
+      expect(found).toBeGreaterThan(100);
+    } finally {
+      world.free();
+    }
+  });
+
   it('rejects a groups array of the wrong length and a bad gap', () => {
     expect(() => finder().find([coin(0, 0)], [])).toThrow(/one group per coin/);
-    expect(() => new CoinContactFinder(rapier, -0.001)).toThrow(RangeError);
-    expect(() => new CoinContactFinder(rapier, Number.NaN)).toThrow(RangeError);
+    expect(() => new CoinContactFinder(-0.001)).toThrow(RangeError);
+    expect(() => new CoinContactFinder(Number.NaN)).toThrow(RangeError);
   });
 });

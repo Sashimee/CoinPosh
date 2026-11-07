@@ -189,7 +189,7 @@ export class ChampagneTower {
   ): TowerStep {
     const near = new Map<number, Watched>();
     const captures: TowerCapture[] = [];
-    const stackTop = this.#pedestalTop + this.#stack.length * PITCH;
+    let stackTop = this.#pedestalTop + this.#stack.length * PITCH;
     let kickX = 0;
     let kickZ = 0;
     let overfull = false;
@@ -230,6 +230,7 @@ export class ChampagneTower {
         this.#stack.push(placed);
         this.#sumX += placed.x;
         this.#sumZ += placed.z;
+        stackTop += PITCH;
         captures.push({
           coinId: coin.id,
           group: placed.group,

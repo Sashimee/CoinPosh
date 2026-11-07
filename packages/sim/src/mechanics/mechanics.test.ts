@@ -13,6 +13,12 @@ const FUSION = { inputCount: 3, contactSeconds: 0.4 };
 const RESTING = 2 * (COIN.radius + COIN_MATERIAL.contactSkin);
 const LANE_Z = -0.17;
 const SEED = 0xf05e;
+/**
+ * A pair is looked at on the ticks its lower id is due (FUSION_TUNING.sampleTicks), so
+ * the contact of coins 0 and 1 starts on tick 3, the first tick due for id 0, and the
+ * row fuses once it has lasted the fusion window from there.
+ */
+const FIRST_LOOK = FUSION_TUNING.sampleTicks;
 
 const live: MechanicsRig[] = [];
 
@@ -67,12 +73,12 @@ describe('Contact Fusion on the table', () => {
     const { rig, mechanics } = await setUp(false);
     const ids = placeRow(rig, mechanics, ['copper', 'copper', 'copper']);
     const before = rig.coins();
-    expect(run(rig, mechanics, 24)).toEqual([]);
+    expect(run(rig, mechanics, FIRST_LOOK + mechanics.fusionTicks - 1)).toEqual([]);
     const [fusion, ...rest] = run(rig, mechanics, 1);
     expect(rest).toEqual([]);
     expect(fusion).toEqual({
       kind: 'fusion',
-      tick: 25,
+      tick: FIRST_LOOK + mechanics.fusionTicks,
       ids,
       tier: 'copper',
       into: 'silver',
@@ -103,7 +109,12 @@ describe('Contact Fusion on the table', () => {
     placeRow(rig, mechanics, ['silver', 'silver', 'silver']);
     const [fusion] = run(rig, mechanics, 60);
     expect(mechanics.fusionTicks).toBe(36);
-    expect(fusion).toMatchObject({ kind: 'fusion', tick: 37, tier: 'silver', into: 'gold' });
+    expect(fusion).toMatchObject({
+      kind: 'fusion',
+      tick: FIRST_LOOK + 36,
+      tier: 'silver',
+      into: 'gold',
+    });
   });
 
   it('chains: three fused coins of the next tier fuse again', async () => {
@@ -111,7 +122,7 @@ describe('Contact Fusion on the table', () => {
     for (const row of [0, 1, 2]) {
       placeRow(rig, mechanics, ['copper', 'copper', 'copper'], -0.12 + row * 0.09);
     }
-    const first = run(rig, mechanics, 25);
+    const first = run(rig, mechanics, FIRST_LOOK + mechanics.fusionTicks);
     expect(first.map((e) => e.kind === 'fusion' && e.into)).toEqual(['silver', 'silver', 'silver']);
     expect(rig.coins()).toHaveLength(3);
   });
@@ -244,6 +255,6 @@ describe('mechanics determinism', () => {
 
   it('pins the session state so a change to the mechanics is noticed', async () => {
     const { digests } = await playSession(SEED);
-    expect(digests.at(-1)).toMatchInlineSnapshot(`"94bbe1fd200045b8"`);
+    expect(digests.at(-1)).toMatchInlineSnapshot(`"5b133732fd75a28e"`);
   });
 });

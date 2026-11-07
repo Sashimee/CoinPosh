@@ -1,16 +1,6 @@
-import type {
-  Rotation,
-  Shape,
-  ShapeContact,
-  Vector,
-} from '@dimforge/rapier3d-deterministic-compat';
 import { COIN } from '../coin.ts';
-import type { Rapier } from '../rapier.ts';
 import type { TableCoin } from '../table/table.ts';
-import { COIN_MATERIAL, TABLE_SOLVER } from '../table/tuning.ts';
-import { coinFrame, distanceLowerBound, distanceUpperBound } from './bounds.ts';
-
-const SCALE = TABLE_SOLVER.worldScale;
+import { type CoinFrame, coinFrame, withinGap } from './bounds.ts';
 
 /** Groups below zero never touch anything: a coin that cannot fuse is left out. */
 export const NO_GROUP = -1;
@@ -21,223 +11,250 @@ export interface CoinPair {
   readonly b: number;
 }
 
-/**
- * The poses of a pair when it was last measured, and its distance then, in metres.
- * The distance may be a bound, but always one on the far side of the gap from where
- * the pair is: a lower bound when apart, an upper bound when touching.
- */
-interface Measured {
-  readonly distance: number;
-  readonly rx: number;
-  readonly ry: number;
-  readonly rz: number;
-  readonly qa: Readonly<Rotation>;
-  readonly qb: Readonly<Rotation>;
-}
-
-/** Slack against the exact query's rounding when reusing a measured distance, in metres. */
-const REUSE_SLACK = 1e-6;
-
-/** Coin ids are table ids, which count up from zero; 2^26 of them outlast any session. */
-const ID_LIMIT = 0x4000000;
-
-function pairKey(lo: number, hi: number): number {
-  if (hi >= ID_LIMIT) {
-    throw new RangeError(`CoinContactFinder: coin id ${hi} is past the ${ID_LIMIT} it can key`);
-  }
-  return lo * ID_LIMIT + hi;
-}
-
-function at(values: ArrayLike<number>, i: number): number {
+function at(values: Float64Array, i: number): number {
   const value = values[i];
   if (value === undefined) {
-    throw new Error(`CoinContactFinder: no coin at index ${i} of ${values.length}`);
+    throw new Error(`CoinContactFinder: no scratch entry at ${i} of ${values.length}`);
   }
   return value;
 }
 
+/** The grid is at most this many cells along x and z; coins beyond share the edge cells. */
+const MAX_CELLS = 64;
+
 /**
  * Finds the pairs of coins in the same group whose surfaces are within `gap` metres of
- * each other, from their poses alone. The query uses the exact collider shape the
- * table simulates (the rounded cylinder at the solver's world scale), so a pair counts
- * as touching exactly when the physics has them resting against each other, whatever
+ * each other, from their poses alone. Distances are those of the exact collider shape
+ * the table simulates (a cylinder rounded by the rim radius), so a pair counts as
+ * touching exactly when the physics has them resting against each other, whatever
  * their tilt.
  *
- * Candidates come from a sweep along x with a bounding-sphere test, and pairs in
- * different groups are dropped before any exact query: fusion only cares about coins
- * of one tier. The exact query is the expensive part (a few microseconds across the
- * WASM boundary, and a pile has hundreds of candidates), so it is the last resort:
+ * Candidates come from a grid over x and z with cells as wide as the reach, so a
+ * coin only meets the coins of its own and the eight cells around it, and pairs in
+ * different groups are dropped before any distance work: fusion only cares about
+ * coins of one tier. Each candidate is then settled by withinGap (bounds.ts), which
+ * refines true geometric bounds until they fall on one side of the gap, always with
+ * the lower id first.
  *
- * - A pair's distance is kept and reused while the pair cannot have crossed the gap:
- *   moving two coins changes their distance by at most how far one moved relative to
- *   the other plus how far each one's rim swung, and a pile riding the pusher moves
- *   together.
- * - Otherwise cheap bounds (bounds.ts) settle most pairs: their shadows are farther
- *   apart than the gap, or two points on them are nearer than it.
- *
- * The bounds are true geometric bounds. Rapier's query is iterative and reads up to
- * about 0.4 mm long on these rounded shapes, so a pair within that of the gap may be
- * classed differently than the query alone would class it, always deterministically.
+ * The finder keeps nothing from one call to the next but scratch space, so what it
+ * returns is a pure function of its arguments: a finder made mid-session, or one
+ * rebuilt from a restored state, finds the same pairs.
  */
 export class CoinContactFinder {
-  readonly #shape: Shape;
-  readonly #contact: ShapeContact;
   readonly #gap: number;
-  readonly #reachWorld: number;
-  /** Bounding radius of a coin: no point of it is farther from its centre. */
-  readonly #bound: number;
   /** Centre distance beyond which two coins cannot be within the gap. */
   readonly #reach: number;
   readonly #reachSq: number;
-  readonly #posA: Vector = { x: 0, y: 0, z: 0 };
-  readonly #posB: Vector = { x: 0, y: 0, z: 0 };
-  /** Last tick's candidates, by pairKey. */
-  #measured = new Map<number, Measured>();
-  #order: number[] = [];
-  #xs = new Float64Array(0);
+  /** The grouped coins: their centres, groups, ids and grid cells. */
+  #x = new Float64Array(0);
+  #y = new Float64Array(0);
+  #z = new Float64Array(0);
+  #group = new Float64Array(0);
+  #id = new Float64Array(0);
+  #cellX = new Float64Array(0);
+  #cellZ = new Float64Array(0);
+  /** The grouped coins by cell: cell c holds #byCell[#cellStart[c]] up to #cellStart[c + 1]. */
+  #byCell = new Float64Array(0);
+  #cellStart = new Float64Array(0);
+  #members: TableCoin[] = [];
+  /** The members' frames, made the first time a call needs one. */
+  #frames: (CoinFrame | undefined)[] = [];
 
-  constructor(rapier: Rapier, gap: number) {
+  constructor(gap: number) {
     if (!Number.isFinite(gap) || gap < 0) {
       throw new RangeError(`Contact gap must be a finite number of metres >= 0, got ${gap}`);
     }
-    const rim = COIN_MATERIAL.rimRadius;
-    this.#shape = new rapier.RoundCylinder(
-      (COIN.halfThickness - rim) * SCALE,
-      (COIN.radius - rim) * SCALE,
-      rim * SCALE,
-    );
-    this.#contact = new rapier.ShapeContact(0, zero(), zero(), zero(), zero());
     this.#gap = gap;
-    this.#bound = Math.sqrt(COIN.radius * COIN.radius + COIN.halfThickness * COIN.halfThickness);
-    this.#reach = 2 * this.#bound + gap;
+    const bound = Math.sqrt(COIN.radius * COIN.radius + COIN.halfThickness * COIN.halfThickness);
+    this.#reach = 2 * bound + gap;
     this.#reachSq = this.#reach * this.#reach;
-    this.#reachWorld = this.#reach * SCALE;
   }
 
   /**
-   * Every touching pair of coins whose `groups` entries match and are not below zero,
+   * The touching pairs of coins whose `groups` entries match and are not below zero,
    * sorted by `a` then `b`. `groups[i]` belongs to `coins[i]`.
+   *
+   * With `slices` above one, only the pairs whose lower id is `slice` modulo `slices`
+   * are looked at, so a caller can spread the work over that many ticks and still
+   * see every pair once a round.
    */
-  find(coins: readonly TableCoin[], groups: ArrayLike<number>): CoinPair[] {
+  find(coins: readonly TableCoin[], groups: ArrayLike<number>, slice = 0, slices = 1): CoinPair[] {
     if (groups.length !== coins.length) {
       throw new RangeError(
         `CoinContactFinder.find needs one group per coin, got ${groups.length} for ${coins.length}`,
       );
     }
-    const n = coins.length;
-    if (this.#xs.length < n) {
-      this.#xs = new Float64Array(Math.max(n, 2 * this.#xs.length));
+    if (
+      !Number.isInteger(slices) ||
+      slices < 1 ||
+      !Number.isInteger(slice) ||
+      slice < 0 ||
+      slice >= slices
+    ) {
+      throw new RangeError(
+        `CoinContactFinder.find needs a whole slice below a whole number of slices, got ${slice} of ${slices}`,
+      );
     }
-    const xs = this.#xs;
-    const order = this.#order;
-    order.length = 0;
-    for (let i = 0; i < n; i++) {
-      if (at(groups, i) >= 0) {
-        xs[i] = this.#coin(coins, i).translation.x;
-        order.push(i);
-      }
-    }
-    order.sort((i, j) => at(xs, i) - at(xs, j) || i - j);
-
+    const m = this.#gather(coins, groups);
     const pairs: CoinPair[] = [];
-    const previous = this.#measured;
-    const measured = new Map<number, Measured>();
-    for (let s = 0; s < order.length; s++) {
-      const i = at(order, s);
-      const ci = this.#coin(coins, i);
-      const gi = at(groups, i);
-      const pi = ci.translation;
-      for (let t = s + 1; t < order.length; t++) {
-        const j = at(order, t);
-        const pj = this.#coin(coins, j).translation;
-        if (pj.x - pi.x > this.#reach) {
-          break;
-        }
-        if (at(groups, j) !== gi) {
-          continue;
-        }
-        const dx = pj.x - pi.x;
-        const dy = pj.y - pi.y;
-        const dz = pj.z - pi.z;
-        if (dx * dx + dy * dy + dz * dz > this.#reachSq) {
-          continue;
-        }
-        const cj = this.#coin(coins, j);
-        const lo = ci.id < cj.id ? ci : cj;
-        const hi = lo === ci ? cj : ci;
-        const key = pairKey(lo.id, hi.id);
-        const entry = this.#measure(lo, hi, previous.get(key));
-        measured.set(key, entry);
-        if (entry.distance <= this.#gap) {
-          pairs.push({ a: lo.id, b: hi.id });
+    if (m < 2) {
+      this.#members.length = 0;
+      return pairs;
+    }
+    const [width, depth] = this.#bin(m);
+    const id = this.#id;
+    const cellX = this.#cellX;
+    const cellZ = this.#cellZ;
+    for (let s = 0; s < m; s++) {
+      if (at(id, s) % slices !== slice) {
+        continue;
+      }
+      const cx = at(cellX, s);
+      const cz = at(cellZ, s);
+      const x0 = Math.max(0, cx - 1);
+      const x1 = Math.min(width - 1, cx + 1);
+      const z0 = Math.max(0, cz - 1);
+      const z1 = Math.min(depth - 1, cz + 1);
+      for (let gx = x0; gx <= x1; gx++) {
+        for (let gz = z0; gz <= z1; gz++) {
+          this.#scanCell(s, gx * depth + gz, pairs);
         }
       }
     }
-    this.#measured = measured;
+    this.#members.length = 0;
     pairs.sort((p, q) => p.a - q.a || p.b - q.b);
     return pairs;
   }
 
-  /** `last` again if the pair cannot have crossed the gap since, else a fresh measurement. */
-  #measure(a: TableCoin, b: TableCoin, last: Measured | undefined): Measured {
-    const pa = a.translation;
-    const pb = b.translation;
-    const rx = pb.x - pa.x;
-    const ry = pb.y - pa.y;
-    const rz = pb.z - pa.z;
-    if (last) {
-      const dx = rx - last.rx;
-      const dy = ry - last.ry;
-      const dz = rz - last.rz;
-      const drift =
-        Math.sqrt(dx * dx + dy * dy + dz * dz) +
-        2 * this.#bound * (turn(a.rotation, last.qa) + turn(b.rotation, last.qb)) +
-        REUSE_SLACK;
-      if (Math.abs(last.distance - this.#gap) > drift) {
-        return last;
+  /** Copies the grouped coins into the scratch arrays and returns how many there are. */
+  #gather(coins: readonly TableCoin[], groups: ArrayLike<number>): number {
+    const n = coins.length;
+    if (this.#x.length < n) {
+      const size = Math.max(n, 2 * this.#x.length);
+      this.#x = new Float64Array(size);
+      this.#y = new Float64Array(size);
+      this.#z = new Float64Array(size);
+      this.#group = new Float64Array(size);
+      this.#id = new Float64Array(size);
+      this.#cellX = new Float64Array(size);
+      this.#cellZ = new Float64Array(size);
+      this.#byCell = new Float64Array(size);
+    }
+    const members = this.#members;
+    members.length = 0;
+    let m = 0;
+    for (let i = 0; i < n; i++) {
+      const group = groups[i];
+      if (group === undefined) {
+        throw new Error(`CoinContactFinder: no group at index ${i} of ${groups.length}`);
+      }
+      if (group < 0) {
+        continue;
+      }
+      const coin = this.#coin(coins, i);
+      const { x, y, z } = coin.translation;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        throw new RangeError(`CoinContactFinder.find: coin ${coin.id} is not at a finite position`);
+      }
+      this.#x[m] = x;
+      this.#y[m] = y;
+      this.#z[m] = z;
+      this.#group[m] = group;
+      this.#id[m] = coin.id;
+      members.push(coin);
+      m += 1;
+    }
+    this.#frames.length = 0;
+    this.#frames.length = m;
+    return m;
+  }
+
+  /** Puts the m members in their grid cells, by counting sort. Returns the grid's width and depth. */
+  #bin(m: number): [number, number] {
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+    for (let s = 0; s < m; s++) {
+      const x = at(this.#x, s);
+      const z = at(this.#z, s);
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minZ = Math.min(minZ, z);
+      maxZ = Math.max(maxZ, z);
+    }
+    const reach = this.#reach;
+    // Clamping the cells keeps neighbours within one cell of each other, so a coin far
+    // off the table only makes the edge cells fuller, never misses a pair.
+    const width = Math.min(MAX_CELLS, Math.floor((maxX - minX) / reach) + 1);
+    const depth = Math.min(MAX_CELLS, Math.floor((maxZ - minZ) / reach) + 1);
+    const cells = width * depth;
+    if (this.#cellStart.length < cells + 1) {
+      this.#cellStart = new Float64Array(MAX_CELLS * MAX_CELLS + 1);
+    }
+    const start = this.#cellStart;
+    start.fill(0, 0, cells + 1);
+    for (let s = 0; s < m; s++) {
+      const cx = Math.min(width - 1, Math.floor((at(this.#x, s) - minX) / reach));
+      const cz = Math.min(depth - 1, Math.floor((at(this.#z, s) - minZ) / reach));
+      this.#cellX[s] = cx;
+      this.#cellZ[s] = cz;
+      const cell = cx * depth + cz;
+      start[cell + 1] = at(start, cell + 1) + 1;
+    }
+    for (let c = 0; c < cells; c++) {
+      start[c + 1] = at(start, c + 1) + at(start, c);
+    }
+    for (let s = 0; s < m; s++) {
+      const cell = at(this.#cellX, s) * depth + at(this.#cellZ, s);
+      const slot = at(start, cell);
+      this.#byCell[slot] = s;
+      start[cell] = slot + 1;
+    }
+    for (let c = cells; c > 0; c--) {
+      start[c] = at(start, c - 1);
+    }
+    start[0] = 0;
+    return [width, depth];
+  }
+
+  /** Pairs member `s` with every touching member of a higher id in `cell`. */
+  #scanCell(s: number, cell: number, pairs: CoinPair[]): void {
+    const id = at(this.#id, s);
+    const group = at(this.#group, s);
+    const x = at(this.#x, s);
+    const y = at(this.#y, s);
+    const z = at(this.#z, s);
+    const end = at(this.#cellStart, cell + 1);
+    for (let k = at(this.#cellStart, cell); k < end; k++) {
+      const t = at(this.#byCell, k);
+      const other = at(this.#id, t);
+      if (other <= id || at(this.#group, t) !== group) {
+        continue;
+      }
+      const dx = at(this.#x, t) - x;
+      const dy = at(this.#y, t) - y;
+      const dz = at(this.#z, t) - z;
+      if (
+        dx * dx + dy * dy + dz * dz <= this.#reachSq &&
+        withinGap(this.#frame(s), this.#frame(t), this.#gap)
+      ) {
+        pairs.push({ a: id, b: other });
       }
     }
-    return { distance: this.#bounded(a, b), rx, ry, rz, qa: a.rotation, qb: b.rotation };
   }
 
-  /** A bound that settles which side of the gap the pair is on, or the exact distance. */
-  #bounded(a: TableCoin, b: TableCoin): number {
-    const fa = coinFrame(a.translation, a.rotation);
-    const fb = coinFrame(b.translation, b.rotation);
-    const lower = distanceLowerBound(fa, fb);
-    if (lower > this.#gap) {
-      return lower;
+  #frame(s: number): CoinFrame {
+    let frame = this.#frames[s];
+    if (!frame) {
+      const coin = this.#members[s];
+      if (!coin) {
+        throw new Error(`CoinContactFinder: no coin at member index ${s}`);
+      }
+      frame = coinFrame(coin.translation, coin.rotation);
+      this.#frames[s] = frame;
     }
-    const upper = distanceUpperBound(fa, fb);
-    if (upper <= this.#gap) {
-      return upper;
-    }
-    return this.#distance(a, b);
-  }
-
-  /**
-   * Surface distance in metres. The query looks as far as the candidate reach, so a
-   * candidate's distance is always measured; beyond it, the reach is a lower bound.
-   */
-  #distance(a: TableCoin, b: TableCoin): number {
-    const posA = this.#posA;
-    const posB = this.#posB;
-    posA.x = a.translation.x * SCALE;
-    posA.y = a.translation.y * SCALE;
-    posA.z = a.translation.z * SCALE;
-    posB.x = b.translation.x * SCALE;
-    posB.y = b.translation.y * SCALE;
-    posB.z = b.translation.z * SCALE;
-    const hit = this.#shape.contactShape(
-      posA,
-      a.rotation,
-      this.#shape,
-      posB,
-      b.rotation,
-      this.#reachWorld,
-      this.#contact,
-    );
-    return hit === null ? this.#reach : hit.distance / SCALE;
+    return frame;
   }
 
   #coin(coins: readonly TableCoin[], i: number): TableCoin {
@@ -247,23 +264,4 @@ export class CoinContactFinder {
     }
     return coin;
   }
-}
-
-/**
- * An upper bound on the sine of half the angle between two orientations: |q - q'|
- * with the sign of q' chosen nearer, which is 2 sin(θ/4). A point r from the centre
- * moves 2r sin(θ/2) under the turn, at most 2r times this.
- */
-function turn(q: Readonly<Rotation>, p: Readonly<Rotation>): number {
-  const dot = q.x * p.x + q.y * p.y + q.z * p.z + q.w * p.w;
-  const s = dot < 0 ? -1 : 1;
-  const x = q.x - s * p.x;
-  const y = q.y - s * p.y;
-  const z = q.z - s * p.z;
-  const w = q.w - s * p.w;
-  return Math.sqrt(x * x + y * y + z * z + w * w);
-}
-
-function zero(): Vector {
-  return { x: 0, y: 0, z: 0 };
 }

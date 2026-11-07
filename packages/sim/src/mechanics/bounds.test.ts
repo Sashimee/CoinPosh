@@ -4,7 +4,13 @@ import { COIN } from '../coin.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { loadRapier } from '../rapier.ts';
 import { COIN_MATERIAL, TABLE_SOLVER } from '../table/tuning.ts';
-import { coinFrame, distanceLowerBound, distanceUpperBound, nearCorePoints } from './bounds.ts';
+import {
+  coinFrame,
+  distanceLowerBound,
+  distanceUpperBound,
+  nearCorePoints,
+  withinGap,
+} from './bounds.ts';
 
 const rapier = await loadRapier();
 const SCALE = TABLE_SOLVER.worldScale;
@@ -98,6 +104,43 @@ describe('coin distance bounds', () => {
       }
     }
     expect(tight).toBeGreaterThan(trials / 4);
+  });
+
+  it('settle whether two coins are within a gap as the true distance does', () => {
+    const rng = Xoshiro128ss.fromSeed(0x9a95);
+    const gap = 0.001;
+    let touching = 0;
+    let apart = 0;
+    for (let i = 0; i < 3000; i++) {
+      const tilt = i % 2 === 0 ? 0.1 : 3;
+      const pa = { x: 0, y: 0, z: 0 };
+      const pb = {
+        x: rng.nextRange(-0.03, 0.03),
+        y: rng.nextRange(-0.006, 0.006),
+        z: rng.nextRange(-0.03, 0.03),
+      };
+      const qa = randomRotation(rng, tilt);
+      const qb = randomRotation(rng, tilt);
+      const a = coinFrame(pa, qa);
+      const b = coinFrame(pb, qb);
+      const within = withinGap(a, b, gap);
+      expect(withinGap(a, b, gap)).toBe(within);
+      if (distanceUpperBound(a, b) <= gap) {
+        expect(within).toBe(true);
+      }
+      // Rapier mostly reads long on tilted pairs (see above), so it vouches only for a
+      // pair being within the gap, and only where the shadows do not prove a wider one:
+      // it has been seen to read a pair 0.35 mm apart as overlapping.
+      if (distanceLowerBound(a, b) > gap) {
+        expect(within).toBe(false);
+        apart += 1;
+      } else if (exact(pa, qa, pb, qb) <= gap) {
+        expect(within).toBe(true);
+        touching += 1;
+      }
+    }
+    expect(touching).toBeGreaterThan(300);
+    expect(apart).toBeGreaterThan(300);
   });
 
   it('are exact for flat coins side by side and stacked', () => {

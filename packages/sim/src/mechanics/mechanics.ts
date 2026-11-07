@@ -77,8 +77,12 @@ export class TableMechanics<Tier extends string> {
     });
     this.#table = table;
     this.#tiers = config.tiers;
-    this.#contacts = new CoinContactFinder(rapier, FUSION_TUNING.touchGap);
-    this.#fusion = new ContactFusion(config.fusion, FUSION_TUNING.graceTicks);
+    this.#contacts = new CoinContactFinder(FUSION_TUNING.touchGap);
+    this.#fusion = new ContactFusion(
+      config.fusion,
+      FUSION_TUNING.graceTicks,
+      FUSION_TUNING.sampleTicks,
+    );
     this.#tower = config.tower === null ? null : new ChampagneTower(rapier, world, config.tower);
   }
 
@@ -192,7 +196,15 @@ export class TableMechanics<Tier extends string> {
       const index = this.#index(coin.id);
       groups[i] = index === top ? NO_GROUP : index;
     });
-    const ripe = this.#fusion.update(tick, this.#contacts.find(coins, groups));
+    const ripe = this.#fusion.update(
+      tick,
+      this.#contacts.find(
+        coins,
+        groups,
+        tick % FUSION_TUNING.sampleTicks,
+        FUSION_TUNING.sampleTicks,
+      ),
+    );
     const fused = new Set<number>();
     if (ripe.length === 0) {
       return fused;
