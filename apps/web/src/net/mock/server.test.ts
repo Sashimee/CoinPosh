@@ -922,40 +922,81 @@ describe('mock server: attacks from a compromised client', () => {
 
 describe('mock server: memory stays bounded in a long session', () => {
   it('keeps replays, the ledger and spent coin IDs bounded over thousands of drops and falls', async () => {
-    const stepMs = 500;
-    const cycles = 1_400;
+    // Signing and verifying every request is the slow part, so most cycles go straight to the
+    // world's rules and every `signedEvery`-th one takes the full request path to fill the replay store.
+    const stepMs = 1_000;
+    const signedEvery = 10;
+    const ledgerTarget = Math.ceil(1.25 * MOCK_RULES.ledgerRetained);
+    const sessionMs = 2 * MOCK_RULES.claimExpiryMs;
     const fallTicks = Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond);
     let buffer = (await state()).table.buffer;
+    const found = server.world.player(requirePlayerId(alice));
+    if (found === undefined) throw new Error('Expected Alice in the mock world.');
+    const player = found;
+
+    async function drop(coinId: CoinId, tick: number, signed: boolean) {
+      const body = { x: 0, tick, coinId };
+      if (signed) return alice.client.call('tableDrop', { body });
+      const at = time.now();
+      const result = await server.world.handle(player, 'tableDrop', body, undefined as never, at);
+      server.world.touch(player, at);
+      return DropResponseSchema.parse(result);
+    }
+
+    async function claim(claims: Claim[], signed: boolean) {
+      if (signed) return claimAt(claims);
+      const at = time.now();
+      const result = await server.world.handle(
+        player,
+        'tableClaims',
+        { claims },
+        undefined as never,
+        at,
+      );
+      server.world.touch(player, at);
+      return ClaimsResponseSchema.parse(result).results;
+    }
+
+    const startedAt = time.now();
+    const signedBefore = alice.requests.length;
     const inFlight: { coin: MintedCoin; tick: number }[] = [];
+    let cycles = 0;
     let accepted = 0;
-    for (let i = 0; i < cycles; i++) {
+    while (
+      (server.ledger().at(-1)?.seq ?? 0) < ledgerTarget ||
+      time.now() - startedAt < sessionMs
+    ) {
+      const signed = cycles % signedEvery === 0;
+      cycles += 1;
       time.advance(stepMs);
       const tick = time.tick();
       const coin = buffer[0];
-      if (coin === undefined) throw new Error(`The buffer ran dry at cycle ${String(i)}.`);
-      const dropped = await alice.client.call('tableDrop', {
-        body: { x: 0, tick, coinId: coin.id },
-      });
+      if (coin === undefined) throw new Error(`The buffer ran dry at cycle ${String(cycles)}.`);
+      const dropped = await drop(coin.id, tick, signed);
       buffer = dropped.buffer;
       inFlight.push({ coin: dropped.coin, tick });
       const due = inFlight.filter((entry) => entry.tick + fallTicks <= tick);
       if (due.length === 0) continue;
       inFlight.splice(0, due.length);
-      const results = await claimAt(due.map((entry) => fallAt(entry.coin, tick)));
+      const results = await claim(
+        due.map((entry) => fallAt(entry.coin, tick)),
+        signed,
+      );
       accepted += results.filter((result) => result.status === 'accepted').length;
     }
     expect(accepted).toBeGreaterThan(cycles - 10);
 
-    const requestsPerExpiry = (2 * MOCK_RULES.claimExpiryMs) / stepMs;
-    expect(server.retainedReplays()).toBeLessThanOrEqual(requestsPerExpiry + 2);
-    expect(server.retainedReplays()).toBeLessThan(2 * cycles);
+    const signedRequests = alice.requests.length - signedBefore;
+    const signedPerExpiry = (2 * MOCK_RULES.claimExpiryMs) / (stepMs * signedEvery);
+    expect(server.retainedReplays()).toBeLessThanOrEqual(signedPerExpiry + 2);
+    expect(signedRequests).toBeGreaterThan(1.5 * (signedPerExpiry + 2));
     const ledger = server.ledger();
     expect(ledger).toHaveLength(MOCK_RULES.ledgerRetained);
-    expect(ledger.at(-1)?.seq).toBeGreaterThan(MOCK_RULES.ledgerRetained);
+    expect(ledger.at(-1)?.seq).toBeGreaterThanOrEqual(ledgerTarget);
     const seqs = ledger.map((entry) => entry.seq);
     expect(seqs).toEqual(seqs.map((_, i) => (seqs[0] ?? 0) + i));
-    const gone = server.world.player(requirePlayerId(alice))?.gone.size ?? Infinity;
-    expect(gone).toBeLessThanOrEqual(MOCK_RULES.claimExpiryMs / stepMs + 1);
+    expect(cycles).toBeGreaterThan(2 * (MOCK_RULES.claimExpiryMs / stepMs) - 1);
+    expect(player.gone.size).toBeLessThanOrEqual(MOCK_RULES.claimExpiryMs / stepMs + 1);
     expectConserved();
   });
 
