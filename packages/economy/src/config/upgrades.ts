@@ -14,7 +14,7 @@ export const upgradeLines = [
     baseCost: 25,
     growth: 1.16,
     maxLevel: 50,
-    effect: { stat: 'pusherSpeed', base: 1, perLevel: 0.04 },
+    effect: { stat: 'pusherSpeed', base: 1, perLevel: 0.06 },
   },
   {
     id: 'dropRate',
@@ -29,7 +29,7 @@ export const upgradeLines = [
     id: 'coinValue',
     scope: 'venue',
     currency: 'coins',
-    baseCost: 50,
+    baseCost: 40,
     growth: 1.14,
     maxLevel: 100,
     effect: { stat: 'coinValue', base: 1, perLevel: 0.2 },

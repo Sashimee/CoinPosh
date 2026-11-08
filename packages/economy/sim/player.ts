@@ -30,6 +30,20 @@ export type MilestoneId =
   | 'ascendVenue2'
   | 'seasonFreeTrack';
 
+/** Where every coin the player ever held came from and went, for conservation checks. */
+export interface CoinLedger {
+  granted: number;
+  won: number;
+  crateIncome: number;
+  offline: number;
+  dropsPaid: number;
+  upgradesPaid: number;
+  /** Coins left in hand when Ascension resets the venue. */
+  forfeited: number;
+}
+
+export type IncomeSource = 'won' | 'crateIncome' | 'offline';
+
 export interface PlayerState {
   activeSeconds: number;
   venueIndex: number;
@@ -49,6 +63,9 @@ export interface PlayerState {
   levels: Map<string, number>;
   pity: PityState;
   dropCarry: number;
+  /** Drops still needed to build the pile up to where the front edge starts paying. */
+  pileDebt: number;
+  ledger: CoinLedger;
   milestones: Partial<Record<MilestoneId, number>>;
   /**
    * Rates derived from levels, venue, charms and album bonus. Cleared whenever one of
@@ -165,10 +182,20 @@ export function createPlayer(ctx: PlayerContext): PlayerState {
     levels: new Map(),
     pity: initialPityState(ctx.config.pity),
     dropCarry: 0,
+    pileDebt: Math.max(0, ctx.model.pile.firstFallAfterDrops - ctx.model.pile.startingCoins),
+    ledger: {
+      granted: 0,
+      won: 0,
+      crateIncome: 0,
+      offline: 0,
+      dropsPaid: 0,
+      upgradesPaid: 0,
+      forfeited: 0,
+    },
     milestones: {},
     rates: null,
   };
-  player.coins = stat(ctx, player, 'startingCoins');
+  grant(ctx, player);
   return player;
 }
 
@@ -239,6 +266,7 @@ export function dropsPerSecond(ctx: PlayerContext, player: PlayerState): number 
 
 /** Net coins per active second: what the server would measure as the player's active rate. */
 export function netRatePerSecond(ctx: PlayerContext, player: PlayerState): number {
+  if (player.pileDebt > 0) return 0;
   return Math.max(0, dropsPerSecond(ctx, player) * (grossPerDrop(ctx, player) - 1));
 }
 
@@ -262,9 +290,16 @@ function mark(player: PlayerState, id: MilestoneId): void {
   player.milestones[id] ??= player.activeSeconds;
 }
 
-function earn(player: PlayerState, value: number): void {
+function earn(player: PlayerState, source: IncomeSource, value: number): void {
   player.coins += value;
   player.venueWinnings += value;
+  player.ledger[source] += value;
+}
+
+function grant(ctx: PlayerContext, player: PlayerState): void {
+  const coins = stat(ctx, player, 'startingCoins');
+  player.coins = coins;
+  player.ledger.granted += coins;
 }
 
 function grantAlbumCard(ctx: PlayerContext, player: PlayerState, rarity: RarityId): void {
@@ -301,7 +336,7 @@ function openCrate(ctx: PlayerContext, player: PlayerState, scripted: boolean): 
   const reward = config.crateRewards[rarity];
   player.crates += 1;
   mark(player, 'firstCrate');
-  earn(player, reward.incomeSeconds * rates(ctx, player).netPerSecond);
+  earn(player, 'crateIncome', reward.incomeSeconds * rates(ctx, player).netPerSecond);
   player.pearls += reward.pearls;
   player.keys += reward.keys;
   player.tickets += reward.tickets;
@@ -326,6 +361,7 @@ function buyUpgrades(ctx: PlayerContext, player: PlayerState): void {
     const best = rates(ctx, player).cheapestVenueUpgrade;
     if (best === null || player.coins - best.cost < ctx.model.dropReserve) return;
     player.coins -= best.cost;
+    player.ledger.upgradesPaid += best.cost;
     setLevel(player, best.line, levelOf(player, best.line) + 1);
     mark(player, 'firstUpgrade');
   }
@@ -357,7 +393,8 @@ function tryAscend(ctx: PlayerContext, player: PlayerState): void {
   player.rates = null;
   buyFamilyOffice(ctx, player);
   player.venueWinnings = 0;
-  player.coins = stat(ctx, player, 'startingCoins');
+  player.ledger.forfeited += player.coins;
+  grant(ctx, player);
 }
 
 /** Advance one active tick: drops, returns, crates, purchases, ascension. */
@@ -373,7 +410,13 @@ export function activeTick(ctx: PlayerContext, player: PlayerState): void {
   while (player.dropCarry >= 1 && player.coins >= 1) {
     player.dropCarry -= 1;
     player.coins -= 1;
-    earn(player, gross);
+    player.ledger.dropsPaid += 1;
+    if (player.pileDebt > 0) {
+      player.pileDebt -= 1;
+      if (player.pileDebt === 0) player.rates = null;
+    } else {
+      earn(player, 'won', gross);
+    }
     player.drops += 1;
     if (player.drops % config.season.dropsPerStar === 0) player.stars += 1;
     if (player.drops === config.crateSpawn.ftueScriptedDrop) {
@@ -398,7 +441,7 @@ export function claimOffline(ctx: PlayerContext, player: PlayerState, hoursAway:
     ratePerHour,
     ctx.config.offline,
   );
-  earn(player, coins);
+  earn(player, 'offline', coins);
   buyUpgrades(ctx, player);
   tryAscend(ctx, player);
   return coins;

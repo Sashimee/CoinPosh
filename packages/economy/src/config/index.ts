@@ -2,7 +2,7 @@ import type { EconomyConfig } from '../types.ts';
 import { cascade, coinTiers, fusion } from './coins.ts';
 import { currencies } from './currencies.ts';
 import { crateRewards, crateSpawn, dropTables, pity } from './drops.ts';
-import { pacing } from './pacing.ts';
+import { ftueTargets, pacing } from './pacing.ts';
 import { album, ascension, bullion, offline, season, venues } from './progression.ts';
 import { upgradeCostRule, upgradeLines } from './upgrades.ts';
 // Imported last and read through a getter: ../config.ts imports this module back, so
@@ -43,6 +43,7 @@ export {
   crateSpawn,
   currencies,
   dropTables,
+  ftueTargets,
   fusion,
   offline,
   pacing,

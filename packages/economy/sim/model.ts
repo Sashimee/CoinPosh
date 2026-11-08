@@ -22,6 +22,21 @@ export interface SimModel {
   /** Active-play ceiling for the FTUE-to-season cohort. */
   readonly activeCapHours: number;
   readonly casual: CasualSchedule;
+  readonly pile: TablePile;
+}
+
+/**
+ * The coin pile the pusher works. Measured on packages/sim's PusherTable (T-1.01) with
+ * copper drops across the full chute width, seeds 1 to 3 at 0.8 to 2.4 drops/s: an empty
+ * table pays nothing until 130 to 158 coins sit on it and settles at 165 to 212 coins.
+ */
+export interface TablePile {
+  /** Coins a table holds once returns are steady. */
+  readonly steadyCoins: number;
+  /** Coins dropped onto an empty table before the first one leaves the front edge. */
+  readonly firstFallAfterDrops: number;
+  /** Coins already on the table when a player first sits down (house stock, not theirs). */
+  readonly startingCoins: number;
 }
 
 export interface CasualSchedule {
@@ -42,5 +57,12 @@ export const simModel = {
   casual: {
     sessionStartHours: [8, 20],
     sessionMinutes: 25,
+  },
+  // A seeded table is a hard FTUE dependency: from an empty one, 20 starting coins never
+  // reach the front edge (balance report T-1.16, "First upgrade").
+  pile: {
+    steadyCoins: 195,
+    firstFallAfterDrops: 145,
+    startingCoins: 195,
   },
 } as const satisfies SimModel;
