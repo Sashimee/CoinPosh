@@ -1,0 +1,39 @@
+CoinPosh balancing sim · 200 players · seed 1 · 7 casual days
+
+Pacing targets (02-ECONOMY.md): 7/7 on target
+      Target                   Bound                    At   Sim          p10 / p50 / p90
+────  ───────────────────────  ───────────────────────  ───  ───────────  ───────────────────────────────────────
+PASS  First upgrade            ≤ 2 min                  p90  1 min 47 s   1 min 10 s / 1 min 34 s / 1 min 47 s
+PASS  First Charm              ≤ 5 min                  p90  14 s         14 s / 14 s / 14 s
+PASS  First album set          ≤ 45 min                 p50  19 min 28 s  10 min 34 s / 19 min 28 s / 32 min 36 s
+PASS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  4 h 24 min   3 h 57 min / 4 h 24 min / 4 h 37 min
+PASS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  day 2.00     day 2.00 / day 2.00 / day 2.50
+PASS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  ×1.63        ×1.53 / ×1.63 / ×1.74
+PASS  Free season track        25.0 h – 35.0 h          p50  28.5 h       28.3 h / 28.5 h / 28.8 h
+
+FTUE targets (00-VISION.md): 1/1 on target
+      Target             Bound   At   Sim   p10 / p50 / p90
+────  ─────────────────  ──────  ───  ────  ─────────────────
+PASS  First Vault Crate  ≤ 45 s  p90  14 s  4 s / 14 s / 14 s
+
+Active-play milestones (continuous play, capped at 60 h)
+Milestone              p10          p50          p90
+─────────────────────  ───────────  ───────────  ───────────
+First upgrade          1 min 10 s   1 min 34 s   1 min 47 s
+First Vault Crate      4 s          14 s         14 s
+First Charm            14 s         14 s         14 s
+First album set        10 min 34 s  19 min 28 s  32 min 36 s
+Ascend Riviera Yacht   3 h 57 min   4 h 24 min   4 h 37 min
+Ascend Salon de Paris  10 h 32 min  11 h 42 min  12 h 10 min
+Free season track      28 h 16 min  28 h 33 min  28 h 49 min
+
+Casual player, median at end of each day
+Day  Active   Venue  Bullion  Gold Bars  Crates  Charms  Sets  Pearls  Keys  Season
+───  ───────  ─────  ───────  ─────────  ──────  ──────  ────  ──────  ────  ───────
+1    50 min   1      5 %      0          115     12      2     142     6     tier 1
+2    100 min  1      50 %     0          282     29      2     357     16    tier 2
+3    150 min  2      9 %      0          438     45      2     559     26    tier 4
+4    200 min  2      70 %     0          606     61      2     784     37    tier 5
+5    250 min  3      10 %     1          776     79      2     1003    47    tier 7
+6    300 min  3      38 %     1          952     98      2     1243    58    tier 8
+7    350 min  3      69 %     1          1130    116     2     1471    69    tier 10

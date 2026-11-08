@@ -11,14 +11,14 @@ export const venues = [
   {
     id: 'rivieraYacht',
     order: 1,
-    bullionThreshold: 2_600,
+    bullionThreshold: 2_800,
     coinValueMultiplier: 1,
     charmSockets: 3,
   },
   {
     id: 'salonDeParis',
     order: 2,
-    bullionThreshold: 18_000,
+    bullionThreshold: 20_000,
     coinValueMultiplier: 2,
     charmSockets: 4,
   },

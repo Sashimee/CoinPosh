@@ -1,0 +1,35 @@
+CoinPosh balancing sim · 200 players · seed 1 · 3 casual days
+
+Pacing targets (02-ECONOMY.md): 1/7 on target
+      Target                   Bound                    At   Sim          p10 / p50 / p90
+────  ───────────────────────  ───────────────────────  ───  ───────────  ───────────────────────────────────────
+MISS  First upgrade            ≤ 2 min                  p90  not reached  not reached / not reached / not reached
+PASS  First Charm              ≤ 5 min                  p90  14 s         14 s / 14 s / 14 s
+MISS  First album set          ≤ 45 min                 p50  not reached  not reached / not reached / not reached
+MISS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  not reached  not reached / not reached / not reached
+MISS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  not reached  not reached / not reached / not reached
+MISS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  not reached  not reached / not reached / not reached
+MISS  Free season track        25.0 h – 35.0 h          p50  not reached  not reached / not reached / not reached
+
+FTUE targets (00-VISION.md): 1/1 on target
+      Target             Bound   At   Sim   p10 / p50 / p90
+────  ─────────────────  ──────  ───  ────  ─────────────────
+PASS  First Vault Crate  ≤ 45 s  p90  14 s  4 s / 14 s / 14 s
+
+Active-play milestones (continuous play, capped at 60 h)
+Milestone              p10   p50   p90
+─────────────────────  ────  ────  ────  ─────────────────
+First upgrade          —     —     —     200/200 unreached
+First Vault Crate      4 s   14 s  14 s
+First Charm            14 s  14 s  14 s
+First album set        —     —     —     200/200 unreached
+Ascend Riviera Yacht   —     —     —     200/200 unreached
+Ascend Salon de Paris  —     —     —     200/200 unreached
+Free season track      —     —     —     200/200 unreached
+
+Casual player, median at end of each day
+Day  Active   Venue  Bullion  Gold Bars  Crates  Charms  Sets  Pearls  Keys  Season
+───  ───────  ─────  ───────  ─────────  ──────  ──────  ────  ──────  ────  ──────
+1    50 min   1      0 %      0          1       1       0     1       0     tier 0
+2    100 min  1      0 %      0          1       1       0     1       0     tier 0
+3    150 min  1      0 %      0          1       1       0     1       0     tier 0
