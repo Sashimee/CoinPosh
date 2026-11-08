@@ -34,5 +34,9 @@ export const SOLVER = {
  *   input, contact events, opening heap and fusion run inside Sim (P-111). Pinned
  *   table hash a4e6238cc93d4acc, sim hash c5b0aeb071b1065b (was 590da61d0e98c762),
  *   mechanics digest 729f6f15f07d6198 (was 5b133732fd75a28e).
+ * - 4: the pusher's cam knocks at full reach (PUSHER_CAM, P-176), so a heap with room
+ *   in front creeps forward instead of riding the block. Pinned table hash
+ *   ee25f4b04dd687a6 (was a4e6238cc93d4acc), sim hash d715fa236eb0783f (was
+ *   c5b0aeb071b1065b), mechanics digest 5935d058d1943638 (was 729f6f15f07d6198).
  */
-export const SIM_VERSION = 3;
+export const SIM_VERSION = 4;
