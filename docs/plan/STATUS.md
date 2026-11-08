@@ -57,6 +57,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-202 | blocked(review: layout.ts unchanged; lip-to-dock non-floor share 29.4 % at 390x844 vs 10 % limit, unreachable from the camera under P-154/P-170; layout.test.ts red) | task/P-202 (9a7354e, not merged) | Tray reclaim needs the table.ts cabinet front redesign or an amended acceptance; follow-ups P-209..P-211 |
 | P-209 | done | task/P-209 (merge 4fc23ba) | Riviera cabinet front redesigned: reeded lacquer front under a thin brass tray lip (a8ae1ad); pnpm check green after merge |
 | P-200 | done | task/P-200 (merge 5159d30) | Empty-Vault dead end: Steward's allowance rule for a broke player in packages/economy/src/config/allowance.ts and 02-ECONOMY.md, plus an empty-Vault HUD state with EN/FR/DE strings (bb14f4d); mock/server crediting queued as P-216..P-220; pnpm check green after merge |
+| P-179 | done | task/P-179 (merge 6789df8) | Offline earnings capped below play: measured active rate (30 min window, 10 min minimum span, net play coins) with a documented Velvet Vault starter floor of 60/h in packages/economy/src/config/offlineRate.ts, used by the Demo mock and the server offline route (2a8b03a); follow-ups P-227..P-229; pnpm check green after merge |
+| P-107 | done | task/P-107 (merge 3a8f775) | Live-mode guest sign-up obtains a Cloudflare Turnstile token (apps/web/src/net/turnstile.ts, ui/turnstile/overlay.ts) and sends it as turnstileToken; Demo Mode skips Turnstile (4fb47c9, f0ee693); follow-up P-230; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 

@@ -26,14 +26,38 @@ function resolveApiUrl(raw: string | undefined): string | undefined {
   return url.href.replace(/\/+$/, '');
 }
 
+const TURNSTILE_SITE_KEY = /^[\w-]+$/;
+
+function resolveTurnstileSiteKey(raw: string | undefined): string | undefined {
+  const value = raw?.trim() ?? '';
+  if (value === '') {
+    return undefined;
+  }
+  if (!TURNSTILE_SITE_KEY.test(value)) {
+    throw new Error(
+      `VITE_TURNSTILE_SITE_KEY is not a Cloudflare Turnstile site key: "${value}". Copy the site key (not the secret key) from the Turnstile dashboard.`,
+    );
+  }
+  return value;
+}
+
 export default defineConfig(({ command, mode }) => {
-  const apiUrl = resolveApiUrl(loadEnv(mode, '.', 'VITE_').VITE_API_URL);
+  const env = loadEnv(mode, '.', 'VITE_');
+  const apiUrl = resolveApiUrl(env.VITE_API_URL);
+  const turnstileSiteKey = resolveTurnstileSiteKey(env.VITE_TURNSTILE_SITE_KEY);
+  if (apiUrl !== undefined && turnstileSiteKey === undefined) {
+    throw new Error(
+      `VITE_API_URL is set (${apiUrl}) but VITE_TURNSTILE_SITE_KEY is empty, so live guest sign-up could not pass Cloudflare Turnstile. Set the repository variable VITE_TURNSTILE_SITE_KEY to the site key paired with the server's TURNSTILE_SECRET_KEY (for local runs, Cloudflare's always-pass test key 1x00000000000000000000AA), or unset VITE_API_URL to build Demo Mode.`,
+    );
+  }
 
   return {
     base: command === 'build' ? PAGES_BASE : '/',
     define: {
       // An empty VITE_API_URL (an unset repo variable expands to '') must reach the client as undefined, which selects Demo Mode.
       'import.meta.env.VITE_API_URL': apiUrl === undefined ? 'undefined' : JSON.stringify(apiUrl),
+      'import.meta.env.VITE_TURNSTILE_SITE_KEY':
+        turnstileSiteKey === undefined ? 'undefined' : JSON.stringify(turnstileSiteKey),
     },
     build: {
       // The lazily imported stage chunk is three/webgpu (~815 kB minified). It loads after first paint, so the budget sits just above it to keep flagging real growth.
