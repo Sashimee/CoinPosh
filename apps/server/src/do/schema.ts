@@ -62,6 +62,9 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX idempotency_at ON idempotency (at);
   `,
+  `
+  ALTER TABLE coins ADD COLUMN paid INTEGER NOT NULL DEFAULT 0 CHECK (paid >= 0);
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {

@@ -22,6 +22,7 @@ export { NET_I18N_KEYS, NET_I18N_SOURCE, type NetI18nKey } from './i18nKeys.ts';
 export { resolveNetMode, currentNetMode, type NetMode } from './env.ts';
 export { ApiRequestError, NetworkError } from './errors.ts';
 export { ContractViolationError } from './request.ts';
+export { openingTableCoins } from './openingTable.ts';
 export type { ApiClient } from './client.ts';
 export type { Session } from './session.ts';
 export type { ServerClock } from './clock.ts';

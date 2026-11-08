@@ -27,6 +27,7 @@ interface CoinRow extends Record<string, SqlStorageValue> {
   value: number;
   state: CoinState;
   dropped_tick: number | null;
+  paid: number;
 }
 
 interface CrateRow extends Record<string, SqlStorageValue> {
@@ -39,6 +40,8 @@ interface CrateRow extends Record<string, SqlStorageValue> {
 export interface StoredCoin extends MintedCoin {
   readonly state: CoinState;
   readonly droppedTick: Tick | null;
+  /** What the wallet prepaid to reserve this coin in the buffer; 0 for every other coin. */
+  readonly paid: number;
 }
 
 export interface StoredCrate extends TableCrate {
@@ -74,6 +77,7 @@ function toStoredCoin(row: CoinRow): StoredCoin {
     value: row.value,
     state: row.state,
     droppedTick: row.dropped_tick,
+    paid: row.paid,
   };
 }
 
@@ -99,7 +103,10 @@ export class Entities {
 
   coin(id: CoinId): StoredCoin | null {
     const row = this.sql
-      .exec<CoinRow>('SELECT id, tier, value, state, dropped_tick FROM coins WHERE id = ?', id)
+      .exec<CoinRow>(
+        'SELECT id, tier, value, state, dropped_tick, paid FROM coins WHERE id = ?',
+        id,
+      )
       .toArray()[0];
     return row === undefined ? null : toStoredCoin(row);
   }
@@ -107,7 +114,7 @@ export class Entities {
   coinsIn(state: CoinState): StoredCoin[] {
     return this.sql
       .exec<CoinRow>(
-        'SELECT id, tier, value, state, dropped_tick FROM coins WHERE state = ? ORDER BY rowid',
+        'SELECT id, tier, value, state, dropped_tick, paid FROM coins WHERE state = ? ORDER BY rowid',
         state,
       )
       .toArray()
@@ -127,7 +134,7 @@ export class Entities {
     droppedTick: Tick | null,
     at: EpochMs,
   ): StoredCoin {
-    const coin: StoredCoin = { id: newCoinId(), tier, value, state, droppedTick };
+    const coin: StoredCoin = { id: newCoinId(), tier, value, state, droppedTick, paid: 0 };
     this.sql.exec(
       'INSERT INTO coins (id, tier, value, state, dropped_tick, minted_at) VALUES (?, ?, ?, ?, ?, ?)',
       coin.id,
@@ -138,6 +145,15 @@ export class Entities {
       at,
     );
     return coin;
+  }
+
+  markPaid(id: CoinId, paid: number): void {
+    this.sql.exec("UPDATE coins SET paid = ? WHERE id = ? AND state = 'buffer'", paid, id);
+  }
+
+  /** Only for a reservation nothing paid for: it holds no value and has no ledger legs. */
+  discardUnpaid(id: CoinId): void {
+    this.sql.exec("DELETE FROM coins WHERE id = ? AND state = 'buffer' AND paid = 0", id);
   }
 
   placeOnTable(id: CoinId, tick: Tick): void {
