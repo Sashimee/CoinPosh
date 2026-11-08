@@ -10,9 +10,8 @@ import { createNoiseTexture } from '../../env/noise-texture.ts';
 import {
   applyCameraPreset,
   COIN_FLOOR_FRONT,
-  COIN_FLOOR_REAR,
   PORTRAIT_FIELD_MAX_X,
-  RIVIERA_SUN_DIRECTION,
+  RIVIERA_DECK,
   RIVIERA_TABLE as T,
   rivieraCameraPreset,
 } from './layout.ts';
@@ -20,6 +19,7 @@ import { createRivieraMaterials } from './materials.ts';
 import { createRivieraTable, TABLE_BOUNDS, type RivieraTable } from './table.ts';
 
 const COIN_RADIUS = 0.0135;
+const COIN_THICKNESS = 0.0026;
 const materials = createRivieraMaterials({ noise: createNoiseTexture(16) });
 
 interface Viewport {
@@ -32,15 +32,21 @@ interface Viewport {
 
 const PORTRAIT: Viewport = { width: 390, height: 844, plaqueBottom: 164, dockTop: 774 };
 const LANDSCAPE: Viewport = { width: 844, height: 390, plaqueBottom: 137, dockTop: 324 };
+const DESKTOP: Viewport = { width: 1440, height: 900, plaqueBottom: 147, dockTop: 830 };
 
 /**
- * Share of the band between the plaque and the dock that the coin floor (back of the upper tier
- * down to the payout edge) fills. Landscape holds P-99's 55 %. Portrait cannot: with the floor's
- * front corners inside |NDC x| <= PORTRAIT_FIELD_MAX_X for the side meters, its 0.27 m depth
- * spans at most about 34 % of the band even looking straight down, so portrait asserts the
- * reachable target proposed to the lead as the P-99 amendment (31 % at |NDC x| 0.7).
+ * Share of the band between the plaque and the dock that the playfield (backboard crest down to
+ * the payout lip) fills. Portrait cannot reach P-154's 70 %: the frame is width-bound, so with
+ * the floor's front corners inside |NDC x| <= PORTRAIT_FIELD_MAX_X the crest-to-lip height is
+ * at most about 1.15 times the field width on screen, about 58 % of the band, unless the frame
+ * crops the coin floor or shows more than 15 % deck above the backboard. The lead decides the
+ * portrait target (P-154 follow-up); this pins what the preset reaches.
  */
-const MIN_COIN_FLOOR_SHARE = { portrait: 0.31, landscape: 0.55 } as const;
+const MIN_PLAYFIELD_SHARE = new Map<Viewport, number>([
+  [PORTRAIT, 0.55],
+  [LANDSCAPE, 0.7],
+  [DESKTOP, 0.7],
+]);
 
 function presetCamera(aspect: number): PerspectiveCamera {
   const camera = new PerspectiveCamera(50, aspect, 0.05, 2000);
@@ -167,28 +173,128 @@ describe('createRivieraTable on the sim layout', () => {
   });
 });
 
+/**
+ * Share of the frame showing open sea or sky: view rays on a grid that hit neither the deck
+ * inside its outline nor the stern bulwark below its top.
+ */
+function skyFraction(camera: PerspectiveCamera, samples = 60): number {
+  const D = RIVIERA_DECK;
+  let sky = 0;
+  for (let i = 0; i < samples; i += 1) {
+    for (let j = 0; j < samples; j += 1) {
+      const ndc = new Vector3(((i + 0.5) / samples) * 2 - 1, ((j + 0.5) / samples) * 2 - 1, 0.5);
+      const dir = ndc.unproject(camera).sub(camera.position).normalize();
+      if (dir.y < 0) {
+        const onDeck = camera.position
+          .clone()
+          .addScaledVector(dir, (T.deckY - camera.position.y) / dir.y);
+        if (Math.abs(onDeck.x) <= D.halfWidth && onDeck.z >= D.sternZ && onDeck.z <= D.forwardZ) {
+          continue;
+        }
+      }
+      if (dir.z < 0) {
+        const atStern = camera.position
+          .clone()
+          .addScaledVector(dir, (D.sternZ - camera.position.z) / dir.z);
+        if (atStern.y <= T.deckY + D.bulwarkHeight && Math.abs(atStern.x) <= D.halfWidth) continue;
+      }
+      sky += 1;
+    }
+  }
+  return sky / (samples * samples);
+}
+
+/** Highest screen point of the backboard crest, in CSS px from the top. */
+function crestTop(camera: PerspectiveCamera, view: Viewport): number {
+  let top = Infinity;
+  for (const x of [-TABLE_BOUNDS.halfWidth, 0, TABLE_BOUNDS.halfWidth]) {
+    for (const z of [TABLE_BOUNDS.backZ, T.backboardFrontZ]) {
+      top = Math.min(top, toPixels(new Vector3(x, TABLE_BOUNDS.top, z), camera, view).y);
+    }
+  }
+  return top;
+}
+
+/** Rows of the centre column below the lip whose first surface is the empty catch tray. */
+function trayRows(camera: PerspectiveCamera, view: Viewport, table: RivieraTable): number {
+  const solid = table.meshes.filter((m) => m.name !== 'table-glass');
+  for (const mesh of solid) mesh.updateMatrixWorld(true);
+  const lip = Math.ceil(toPixels(COIN_FLOOR_FRONT, camera, view).y);
+  const raycaster = new Raycaster();
+  let rows = 0;
+  for (let y = lip; y < view.height; y += 1) {
+    const ndc = new Vector3(0, 1 - ((y + 0.5) / view.height) * 2, 0.5);
+    const dir = ndc.unproject(camera).sub(camera.position).normalize();
+    raycaster.set(camera.position, dir);
+    const hit = raycaster.intersectObjects(solid, false)[0];
+    if (!hit) continue;
+    const inTray = hit.point.z > T.fieldFrontZ && hit.point.z <= T.cabinetFrontZ;
+    if (inTray && hit.point.y < 0) rows += 1;
+  }
+  return rows;
+}
+
 describe('rivieraCameraPreset', () => {
-  for (const [orientation, view] of [
-    ['portrait', PORTRAIT],
-    ['landscape', LANDSCAPE],
-  ] as const) {
+  const table = createRivieraTable(materials, false);
+
+  for (const view of [PORTRAIT, LANDSCAPE, DESKTOP]) {
     const label = `${view.width}x${view.height}`;
+    const preset = rivieraCameraPreset(view.width / view.height);
     const camera = presetCamera(view.width / view.height);
     const band = view.dockTop - view.plaqueBottom;
+    const lip = toPixels(COIN_FLOOR_FRONT, camera, view).y;
 
-    it(`gives the coin floor at least ${MIN_COIN_FLOOR_SHARE[orientation] * 100} % of the HUD band at ${label}`, () => {
-      const top = Math.max(toPixels(COIN_FLOOR_REAR, camera, view).y, view.plaqueBottom);
-      const bottom = Math.min(toPixels(COIN_FLOOR_FRONT, camera, view).y, view.dockTop);
-      expect((bottom - top) / band).toBeGreaterThanOrEqual(MIN_COIN_FLOOR_SHARE[orientation]);
+    it(`keeps open sea and sky to at most 5 % of the frame at ${label}`, () => {
+      expect(skyFraction(camera)).toBeLessThanOrEqual(0.05);
+      const horizon = camera.position
+        .clone()
+        .add(new Vector3(0, 0, -1000))
+        .project(camera);
+      expect(horizon.y).toBeGreaterThan(0.9);
     });
 
-    it(`draws front-row coins at least 16 CSS px wide at ${label}`, () => {
-      for (const x of [0, T.fieldHalfWidth - COIN_RADIUS]) {
-        const z = T.fieldFrontZ - COIN_RADIUS;
+    it(`puts the payout lip in the lower 40 % of the frame at ${label}`, () => {
+      expect(lip / view.height).toBeGreaterThanOrEqual(0.6);
+      expect(lip).toBeLessThan(view.dockTop);
+    });
+
+    it(`draws front-row coins at least 16 CSS px wide with their rims showing at ${label}`, () => {
+      const z = T.fieldFrontZ - COIN_RADIUS;
+      for (const x of [0, T.fieldHalfWidth - COIN_RADIUS, -(T.fieldHalfWidth - COIN_RADIUS)]) {
         const left = toPixels(new Vector3(x - COIN_RADIUS, 0, z), camera, view);
         const right = toPixels(new Vector3(x + COIN_RADIUS, 0, z), camera, view);
-        expect(right.x - left.x).toBeGreaterThanOrEqual(16);
+        expect(right.x - left.x, `coin at x ${x}`).toBeGreaterThanOrEqual(16);
+        const face = toPixels(new Vector3(x, COIN_THICKNESS, z + COIN_RADIUS), camera, view);
+        const foot = toPixels(new Vector3(x, 0, z + COIN_RADIUS), camera, view);
+        expect(foot.y - face.y, `rim of the coin at x ${x}`).toBeGreaterThanOrEqual(1);
       }
+      expect(camera.position.y).toBeGreaterThan(COIN_THICKNESS);
+      expect(camera.position.z).toBeGreaterThan(T.fieldFrontZ);
+    });
+
+    it(`looks down at the table at 35 to 45 degrees at ${label}`, () => {
+      const offset = preset.position.clone().sub(preset.target);
+      const pitch = (Math.asin(offset.y / offset.length()) * 180) / Math.PI;
+      expect(pitch).toBeGreaterThanOrEqual(35);
+      expect(pitch).toBeLessThanOrEqual(45);
+    });
+
+    it(`shows at most 15 % deck above the backboard at ${label}`, () => {
+      const top = crestTop(camera, view);
+      expect(top / view.height).toBeLessThanOrEqual(0.15);
+      expect(top).toBeGreaterThan(0);
+    });
+
+    it(`fills at least ${(MIN_PLAYFIELD_SHARE.get(view) ?? 1) * 100} % of the HUD band with the playfield at ${label}`, () => {
+      const top = Math.max(crestTop(camera, view), view.plaqueBottom);
+      const bottom = Math.min(lip, view.dockTop);
+      expect((bottom - top) / band).toBeGreaterThanOrEqual(MIN_PLAYFIELD_SHARE.get(view) ?? 1);
+    });
+
+    it(`keeps the empty catch tray to at most 10 % of the height at ${label}`, () => {
+      const rows = trayRows(camera, view, table);
+      expect(rows).toBeGreaterThan(0);
+      expect(rows / view.height).toBeLessThanOrEqual(0.1);
     });
 
     it(`keeps the coin floor between the plaque and the dock at ${label}`, () => {
@@ -219,68 +325,37 @@ describe('rivieraCameraPreset', () => {
     }
   });
 
-  const corners = [
-    new Vector3(-TABLE_BOUNDS.halfWidth, 0.1, TABLE_BOUNDS.frontZ),
-    new Vector3(TABLE_BOUNDS.halfWidth, 0.1, TABLE_BOUNDS.frontZ),
-    new Vector3(-TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.top, TABLE_BOUNDS.backZ),
-    new Vector3(TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.top, TABLE_BOUNDS.backZ),
-    new Vector3(0, TABLE_BOUNDS.trayFloor, TABLE_BOUNDS.frontZ),
-    new Vector3(-TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.trayFloor, TABLE_BOUNDS.frontZ),
-    new Vector3(TABLE_BOUNDS.halfWidth, TABLE_BOUNDS.trayFloor, TABLE_BOUNDS.frontZ),
-  ];
+  for (const [label, aspect] of [
+    ['1280x800', 1280 / 800],
+    ['1920x1080', 1920 / 1080],
+    ['1024x768', 1024 / 768],
+    ['360x780', 360 / 780],
+    ['430x932', 430 / 932],
+    ['2560x1080', 2560 / 1080],
+  ] as const) {
+    it(`keeps open sea and sky to at most 5 % of the frame at ${label}`, () => {
+      expect(skyFraction(presetCamera(aspect))).toBeLessThanOrEqual(0.05);
+    });
+  }
 
   for (const [label, aspect] of [
     ['desktop 16:10', 1.6],
     ['desktop 16:9', 16 / 9],
     ['tablet 4:3', 4 / 3],
   ] as const) {
-    it(`keeps the playfield, tray, finials and backboard in frame on ${label}`, () => {
+    it(`keeps the coin floor and both gutters in frame on ${label}`, () => {
       const camera = presetCamera(aspect);
-      for (const corner of corners) {
-        const ndc = corner.clone().project(camera);
-        expect(Math.abs(ndc.x), `x of ${corner.toArray().join(',')}`).toBeLessThanOrEqual(1);
-        expect(Math.abs(ndc.y), `y of ${corner.toArray().join(',')}`).toBeLessThanOrEqual(1);
+      const outer = T.fieldHalfWidth + T.gutterWidth;
+      for (const point of [
+        new Vector3(-outer, 0, T.fieldFrontZ),
+        new Vector3(outer, 0, T.fieldFrontZ),
+        new Vector3(-T.fieldHalfWidth, T.pusherHeight, T.backboardFrontZ),
+        new Vector3(T.fieldHalfWidth, T.pusherHeight, T.backboardFrontZ),
+      ]) {
+        const ndc = point.clone().project(camera);
+        expect(Math.abs(ndc.x), `x of ${point.toArray().join(',')}`).toBeLessThanOrEqual(1);
+        expect(Math.abs(ndc.y), `y of ${point.toArray().join(',')}`).toBeLessThanOrEqual(1);
       }
-    });
-
-    it(`keeps the front panel frame clear of the bottom edge on ${label}`, () => {
-      const camera = presetCamera(aspect);
-      const frameTop = new Vector3(0, -T.trayDepth - 0.05, T.cabinetFrontZ + 0.035);
-      expect(frameTop.project(camera).y).toBeGreaterThan(-0.92);
-    });
-  }
-
-  for (const [label, aspect] of [
-    ['1280x800', 1280 / 800],
-    ['1920x1080', 1920 / 1080],
-    ['1024x768', 1024 / 768],
-  ] as const) {
-    it(`shows the horizon and the sun above the backboard crest at ${label}`, () => {
-      const camera = presetCamera(aspect);
-      const horizon = camera.position
-        .clone()
-        .add(new Vector3(0, 0, -1000))
-        .project(camera);
-      expect(horizon.y).toBeGreaterThan(0.25);
-      expect(horizon.y).toBeLessThan(0.85);
-      const sunOnDome = RIVIERA_SUN_DIRECTION.clone().multiplyScalar(90).project(camera);
-      expect(Math.abs(sunOnDome.x)).toBeLessThan(0.85);
-      expect(sunOnDome.y).toBeGreaterThan(horizon.y);
-      expect(sunOnDome.y).toBeLessThan(0.9);
-      expect(sunOnDome.z).toBeLessThan(1);
-
-      let crestTop = -Infinity;
-      for (const x of [-TABLE_BOUNDS.halfWidth, 0, TABLE_BOUNDS.halfWidth]) {
-        for (const z of [TABLE_BOUNDS.backZ, T.backboardFrontZ]) {
-          crestTop = Math.max(crestTop, new Vector3(x, TABLE_BOUNDS.top, z).project(camera).y);
-        }
-      }
-      expect(crestTop, 'backboard crest stays below the horizon').toBeLessThan(horizon.y);
-      const sunRadiusNdc =
-        Math.tan((0.62 * Math.PI) / 180) / Math.tan((camera.fov * Math.PI) / 360);
-      expect(sunOnDome.y - sunRadiusNdc, 'sun disc clears the backboard crest').toBeGreaterThan(
-        crestTop,
-      );
     });
   }
 
