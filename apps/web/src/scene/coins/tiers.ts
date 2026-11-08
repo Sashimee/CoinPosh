@@ -33,6 +33,8 @@ export interface CoinLook {
   readonly iridescence: number;
   readonly sparkle: number;
   readonly prismatic: boolean;
+  /** Scene-linear luminance a highlight eases towards; see `compressHighlight` in materials.ts. */
+  readonly highlightCeiling: number;
   readonly face: CoinFaceDesign;
 }
 
@@ -50,10 +52,11 @@ export const COIN_LOOKS: Readonly<Record<CoinTierId, CoinLook>> = {
     iridescence: 0,
     sparkle: 0,
     prismatic: false,
+    highlightCeiling: 1.6,
     face: { laurelLeaves: 6, berries: false, beads: 0, stars: 1, gem: false, guilloche: 0 },
   },
   silver: {
-    metal: '#E4E6EA',
+    metal: '#E6E7E8',
     recess: '#2B2E36',
     roughness: 0.18,
     reliefRoughness: 0.42,
@@ -65,6 +68,7 @@ export const COIN_LOOKS: Readonly<Record<CoinTierId, CoinLook>> = {
     iridescence: 0,
     sparkle: 0,
     prismatic: false,
+    highlightCeiling: 1.6,
     face: { laurelLeaves: 7, berries: false, beads: 60, stars: 2, gem: false, guilloche: 0 },
   },
   gold: {
@@ -75,11 +79,12 @@ export const COIN_LOOKS: Readonly<Record<CoinTierId, CoinLook>> = {
     edgeRoughness: 0.2,
     anisotropy: 0.7,
     turningRings: 0.05,
-    clearcoat: 0.35,
+    clearcoat: 0,
     clearcoatRoughness: 0.08,
     iridescence: 0,
     sparkle: 0,
     prismatic: false,
+    highlightCeiling: 1.8,
     face: { laurelLeaves: 8, berries: true, beads: 64, stars: 3, gem: false, guilloche: 0 },
   },
   platinum: {
@@ -95,6 +100,7 @@ export const COIN_LOOKS: Readonly<Record<CoinTierId, CoinLook>> = {
     iridescence: 0,
     sparkle: 0,
     prismatic: false,
+    highlightCeiling: 1.8,
     face: { laurelLeaves: 9, berries: true, beads: 72, stars: 4, gem: false, guilloche: 0.6 },
   },
   diamond: {
@@ -110,6 +116,7 @@ export const COIN_LOOKS: Readonly<Record<CoinTierId, CoinLook>> = {
     iridescence: 0.35,
     sparkle: 1,
     prismatic: false,
+    highlightCeiling: 3.2,
     face: { laurelLeaves: 9, berries: true, beads: 80, stars: 5, gem: false, guilloche: 1 },
   },
   heirloom: {
@@ -125,6 +132,7 @@ export const COIN_LOOKS: Readonly<Record<CoinTierId, CoinLook>> = {
     iridescence: 0.55,
     sparkle: 0.6,
     prismatic: true,
+    highlightCeiling: 3.2,
     face: { laurelLeaves: 10, berries: true, beads: 80, stars: 0, gem: true, guilloche: 1 },
   },
 };
