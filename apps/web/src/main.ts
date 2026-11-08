@@ -249,9 +249,14 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   app.setUpgradeLevels(state.venue.upgrades);
   const resyncWhenShown = (): void => {
     if (document.visibilityState !== 'visible') return;
-    net.table.resume().catch((error: unknown) => {
-      console.error('CoinPosh net: the table did not resync after the tab came back.', error);
-    });
+    net.table.resume().then(
+      () => {
+        vault.resumed();
+      },
+      (error: unknown) => {
+        console.error('CoinPosh net: the table did not resync after the tab came back.', error);
+      },
+    );
   };
   document.addEventListener('visibilitychange', resyncWhenShown);
   teardown.push(() => {
@@ -282,7 +287,7 @@ async function loadState(net: Net, app: UiApp): Promise<StateResponse> {
           error,
         );
         hideOffline ??= showOfflineBanner(app);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await abortableDelay(delayMs, stopped.signal);
       }
     }
   } finally {
@@ -290,6 +295,24 @@ async function loadState(net: Net, app: UiApp): Promise<StateResponse> {
   }
 }
 
+function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Error('CoinPosh net: stopped loading the table because the page is going away.'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * TODO(net owner): the offline copy promises coins are counted on reconnect, but nothing can be
+ * played before the first load; swap in a dedicated EN/FR/DE key such as `net.status.connecting`.
+ */
 function showOfflineBanner(app: UiApp): () => void {
   const banner = document.createElement('p');
   banner.setAttribute('role', 'status');
@@ -310,6 +333,8 @@ function showOfflineBanner(app: UiApp): () => void {
 interface VaultTracker {
   /** A drop took `coin` from the pre-minted buffer, or asked the server to mint when null. */
   spent(coin: MintedCoin | null): void;
+  /** The table re-hydrated from a fresh server snapshot after the tab came back. */
+  resumed(): void;
 }
 
 /**
@@ -320,11 +345,15 @@ interface VaultTracker {
  * TableSync says how many coins are buffered but not what they are worth, so the worth comes
  * from server coins seen here: the snapshot's buffer, oldest first as drops take them, and for
  * coins the server minted into the buffer since, the value of the latest drop coin it sent.
- * TODO(net owner): read the buffered value from TableSync once P-145 exposes it.
+ * A resync replaces the buffer wholesale, so the coins seen before it no longer describe it; once
+ * the table is synced again every buffered coin is valued like the latest drop coin.
+ * TODO(net owner): read the buffered value from TableSync, or get a 'resynced' event, once P-145
+ * exposes one.
  */
 function trackVault(app: UiApp, table: Net['table'], state: StateResponse): VaultTracker {
   const known = state.table.buffer.map((coin) => coin.value);
   let refillValue = state.table.buffer.at(-1)?.value ?? 0;
+  let awaitingSync = false;
   const refresh = (): void => {
     const balance = table.balance;
     if (!balance) return;
@@ -336,9 +365,18 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
       provisional: balance.provisionalCoins > 0,
     });
   };
+  const forgetBuffer = (): void => {
+    awaitingSync = false;
+    known.length = 0;
+    refresh();
+  };
   teardown.push(
     table.subscribe((event) => {
       if (event.type === 'dropSettled') refillValue = event.coin.value;
+      if (awaitingSync && event.type === 'status' && event.status === 'synced') {
+        forgetBuffer();
+        return;
+      }
       refresh();
     }),
   );
@@ -349,6 +387,10 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
         refillValue = coin.value;
       }
       refresh();
+    },
+    resumed() {
+      if (table.status === 'synced') forgetBuffer();
+      else awaitingSync = true;
     },
   };
 }
@@ -495,6 +537,7 @@ function startPlay(
   teardown.push(() => {
     systems.dispose();
   });
+  focusForKeys(stage.canvas);
   systems.hydrate(boot.state);
   const offs = [
     systems.events.on('drop:requested', ({ coin, poured }) => {
@@ -509,6 +552,25 @@ function startPlay(
     for (const off of offs) off();
   });
   return systems;
+}
+
+/**
+ * The input surface listens for keys on the canvas, and its pointerdown calls preventDefault,
+ * which in Chromium stops a click from focusing it; so Space and W would go nowhere.
+ * TODO(input owner): focus the canvas in game/input/surface.ts's pointerdown, then drop this.
+ */
+function focusForKeys(canvas: HTMLCanvasElement): void {
+  const focus = (): void => {
+    canvas.focus({ preventScroll: true });
+  };
+  const onPointerDown = (event: PointerEvent): void => {
+    if (event.isPrimary) focus();
+  };
+  canvas.addEventListener('pointerdown', onPointerDown);
+  teardown.push(() => {
+    canvas.removeEventListener('pointerdown', onPointerDown);
+  });
+  focus();
 }
 
 /** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */
