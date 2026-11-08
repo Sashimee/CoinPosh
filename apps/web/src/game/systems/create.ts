@@ -1,0 +1,164 @@
+import type { StateResponse } from '@coinposh/shared';
+import type { Bus } from '../../app/bus.ts';
+import type { UiApp } from '../../app/index.ts';
+import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
+import { bindInputSurface, linearAimMap, type AimMap } from '../input/index.ts';
+import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
+import {
+  createSystemsCore,
+  type ClockPort,
+  type ContactReport,
+  type FusionReport,
+  type SimPort,
+  type TablePort,
+} from './core.ts';
+import type { GameEvents } from './events.ts';
+import { registerSystemsStrings, systemsKey } from './i18n.ts';
+import { createSystemsOverlay } from './overlay.ts';
+import type { TableBounds } from './tableWatch.ts';
+
+export interface GameSystemsOptions {
+  /** The sim worker bridge (`SimBridge`). */
+  readonly bridge: SimPort;
+  readonly net: { readonly table: TablePort; readonly clock: ClockPort };
+  readonly ui: Pick<UiApp, 'setCascade' | 'setDecorum' | 'bus' | 'i18n' | 'bannerSlot'>;
+  /** The surface the player touches; the WebGL canvas. */
+  readonly canvas: HTMLCanvasElement;
+  readonly bounds?: TableBounds;
+  readonly aimMap?: AimMap;
+  readonly now?: () => number;
+  readonly upgradeLevels?: Readonly<Record<string, number>>;
+}
+
+/**
+ * The gameplay glue, ready for main.ts. Wire it as the coin source and subscribe effects to
+ * `events`:
+ *
+ *   const systems = createGameSystems({ bridge, net, ui, canvas });
+ *   systems.hydrate(state);
+ *   stage.onFrame(() => systems.sync(stage.coins));
+ *   systems.events.on('cascade:tier', ({ rank }) => audio.setComboTier(rank));
+ */
+export interface GameSystems {
+  readonly events: Bus<GameEvents>;
+  /** Once per frame: reads input, writes the sim's coins into `field`, runs the timers. */
+  sync(field: CoinTransformTarget): void;
+  hydrate(state: StateResponse): void;
+  setUpgradeLevels(levels: Readonly<Record<string, number>>): void;
+  /** For the sim's contact stream once the worker forwards it. */
+  reportContact(contact: ContactReport): void;
+  /** For the sim's fusion stream once the worker forwards it. */
+  reportFusion(fusion: FusionReport): void;
+  dispose(): void;
+}
+
+export function createGameSystems(options: GameSystemsOptions): GameSystems {
+  const { ui, canvas } = options;
+  const now = options.now ?? (() => performance.now());
+  const aimMap = options.aimMap ?? linearAimMap();
+  const host = ui.bannerSlot.closest<HTMLElement>('.cp-ui-host');
+  if (!host) {
+    throw new Error(
+      'createGameSystems: the UI is not mounted; call mountUi before the game systems.',
+    );
+  }
+  registerSystemsStrings(ui.i18n);
+  const t = (key: Parameters<typeof systemsKey>[0]): string => ui.i18n.t(systemsKey(key));
+
+  const core = createSystemsCore({
+    sim: options.bridge,
+    table: options.net.table,
+    clock: options.net.clock,
+    ui: {
+      setCascade: (count) => {
+        ui.setCascade(count);
+      },
+      setDecorum: (decorum) => {
+        ui.setDecorum(decorum);
+      },
+      feedback: (kind) => {
+        ui.bus.emit('ui:feedback', { kind });
+      },
+    },
+    bounds: options.bounds ?? RIVIERA_TABLE,
+    now,
+    ...(options.upgradeLevels ? { upgradeLevels: options.upgradeLevels } : {}),
+  });
+
+  const overlay = createSystemsOverlay(host, { aim: t('aim.label'), gauge: t('pour.gauge') });
+  const previousLabel = canvas.getAttribute('aria-label');
+  canvas.setAttribute('aria-label', t('surface.label'));
+
+  const input = bindInputSurface(
+    canvas,
+    {
+      aim: (aim) => {
+        core.setAim(aim);
+      },
+      drop: (aim) => {
+        core.drop(aim);
+      },
+      pourStart: (aim) => {
+        core.startPour(aim);
+      },
+      pourEnd: (aim) => {
+        core.setAim(aim);
+        core.endPour();
+      },
+      pourCancel: () => {
+        core.cancelPour();
+      },
+      nudge: (direction, strength, source) => {
+        core.nudge(direction, strength, source);
+      },
+    },
+    { aimMap, currentAim: () => core.aim, now },
+  );
+
+  const offs = [
+    core.events.on('pour:end', ({ grade }) => {
+      overlay.stamp(t(`pour.${grade}`), grade === 'perfect' ? 'perfect' : 'neutral');
+    }),
+    core.events.on('drop:blocked', ({ reason }) => {
+      if (reason === 'empty') overlay.stamp(t('notice.empty'), 'warn');
+    }),
+    core.events.on('nudge:rejected', ({ reason }) => {
+      if (reason === 'offline') overlay.stamp(t('notice.nudgeOffline'), 'warn');
+    }),
+  ];
+
+  let disposed = false;
+  return {
+    events: core.events,
+    sync(field) {
+      if (disposed) return;
+      input.tick();
+      core.sync(field);
+      core.update();
+      const width = canvas.getBoundingClientRect().width;
+      overlay.render(aimMap.toPx(core.aim, width), input.pressed, core.pourView());
+    },
+    hydrate: (state) => {
+      core.hydrate(state);
+    },
+    setUpgradeLevels: (levels) => {
+      core.setUpgradeLevels(levels);
+    },
+    reportContact: (contact) => {
+      core.reportContact(contact);
+    },
+    reportFusion: (fusion) => {
+      core.reportFusion(fusion);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const off of offs) off();
+      input.dispose();
+      overlay.dispose();
+      core.dispose();
+      if (previousLabel === null) canvas.removeAttribute('aria-label');
+      else canvas.setAttribute('aria-label', previousLabel);
+    },
+  };
+}
