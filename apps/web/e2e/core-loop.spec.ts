@@ -68,6 +68,9 @@ async function recordTimeline(page: Page): Promise<void> {
     };
     setInterval(sample, 10);
     new MutationObserver((records) => {
+      // A pop and the fall counter can change in the same task, before the next interval tick,
+      // so the counter is read first to keep every fall stamped no later than its pop.
+      sample();
       for (const record of records) {
         const el = record.target;
         if (el instanceof HTMLElement && el.classList.contains('cp-pop') && !el.hidden) {
@@ -89,6 +92,22 @@ function readTimeline(page: Page): Promise<Timeline> {
       fluteFill: t.fluteFill,
     };
   });
+}
+
+/**
+ * Pairs each fall with its own feedback event: the earliest unclaimed one that lands no earlier
+ * than the fall and within FEEDBACK_WINDOW_MS. Feedback that comes first, or one pop shared by
+ * two falls, leaves a fall unmatched. Taking the earliest fit in fall order is a maximum
+ * matching, because every fall has a window of the same length.
+ */
+function matchEach(falls: readonly number[], feedback: readonly number[]): (number | undefined)[] {
+  const unclaimed = [...feedback].sort((a, b) => a - b);
+  return [...falls]
+    .sort((a, b) => a - b)
+    .map((at) => {
+      const i = unclaimed.findIndex((t) => t - at >= 0 && t - at <= FEEDBACK_WINDOW_MS);
+      return i < 0 ? undefined : unclaimed.splice(i, 1)[0];
+    });
 }
 
 function settled(p: Probe): boolean {
@@ -218,18 +237,24 @@ test.describe('core loop at 390x844 (P-192, P-221)', () => {
     const rises = vault
       .filter(([, value], i) => value > (i === 0 ? start.vault : (vault[i - 1]?.[1] ?? value)))
       .map(([at]) => at);
-    const near = (times: readonly number[], at: number): boolean =>
-      times.some((t) => Math.abs(t - at) <= FEEDBACK_WINDOW_MS);
-    for (const at of fallsInRun) {
+    const pops = matchEach(fallsInRun, recorded.pops);
+    fallsInRun.forEach((at, i) => {
       expect(
-        near(recorded.pops, at),
-        `a number pop within ${FEEDBACK_WINDOW_MS} ms of the fall at ${Math.round(at)} ms`,
-      ).toBe(true);
+        pops[i],
+        `its own number pop within ${FEEDBACK_WINDOW_MS} ms after the fall at ${Math.round(at)} ms`,
+      ).toBeDefined();
+    });
+    // Falls seen in one sample reach the page in one sim message and are credited by one Vault
+    // update, so each such batch, not each coin, claims its own rise.
+    const batches = [...new Set(fallsInRun)];
+    const vaultRises = matchEach(batches, rises);
+    batches.forEach((at, i) => {
+      const coins = fallsInRun.filter((t) => t === at).length;
       expect(
-        near(rises, at),
-        `a Vault rise within ${FEEDBACK_WINDOW_MS} ms of the fall at ${Math.round(at)} ms`,
-      ).toBe(true);
-    }
+        vaultRises[i],
+        `its own Vault rise within ${FEEDBACK_WINDOW_MS} ms after the ${coins} fall(s) at ${Math.round(at)} ms`,
+      ).toBeDefined();
+    });
     expect(recorded.fluteFill, 'the Cascade flute filled').toBeGreaterThan(0);
   });
 });
