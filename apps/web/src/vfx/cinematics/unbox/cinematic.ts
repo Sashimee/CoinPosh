@@ -1,0 +1,193 @@
+import type { Rarity } from '@coinposh/shared';
+import { Vector3, type Object3D, type PerspectiveCamera } from 'three/webgpu';
+import type { CameraPreset } from '../../../scene/venues/riviera/layout.ts';
+import type { CameraKickOptions } from '../../camera/cameraKick.ts';
+import type { ContactOptions } from '../../index.ts';
+import type { HapticPattern } from '../../haptics.ts';
+import {
+  burstStyle,
+  unboxBeats,
+  unboxPose,
+  unboxTimeline,
+  type UnboxBeat,
+  type UnboxPose,
+  type UnboxTimeline,
+} from './plan.ts';
+import { CRATE_SIZE, UnboxStage, type UnboxHero } from './stage.ts';
+
+/** The slice of `Vfx` the unbox fires into; any of it may be missing (tests, a lost GPU). */
+export interface UnboxVfx {
+  hitStop(ms?: number): void;
+  cameraKick(options: CameraKickOptions): void;
+  confetti(): number;
+  contactSparks(position: Vector3, options: ContactOptions): void;
+}
+
+export interface UnboxCinematicOptions {
+  readonly parent: Object3D;
+  readonly camera: PerspectiveCamera;
+  /** The venue framing for an aspect ratio; the dolly leaves it and returns to it. */
+  readonly framing: (aspect: number) => CameraPreset;
+  /** Where the crate lands: the catch tray floor, in world space. */
+  readonly at: Vector3;
+  readonly rarity: Rarity;
+  readonly hero: UnboxHero;
+  readonly reducedMotion: boolean;
+  readonly vfx?: UnboxVfx | null;
+  readonly haptics?: { pulse(pattern: HapticPattern): boolean } | null;
+  /** Every beat as it lands, including ones a skip jumps over; stingers and the card hang off it. */
+  readonly onBeat?: (beat: UnboxBeat) => void;
+}
+
+/** How far along the line to the crate the dolly travels at its deepest. */
+const DOLLY_REACH = 0.42;
+const LOOK_LIFT = CRATE_SIZE * 0.9;
+
+/**
+ * One crate opening, driven by `update(dt)` in effect time (pass the delta `Vfx.update`
+ * returns, so its hit-stop freezes the lid mid-burst). Holds on the reveal until `collect()`,
+ * then flies the item out and hands the camera back to the venue framing.
+ */
+export class UnboxCinematic {
+  readonly stage: UnboxStage;
+  readonly timeline: UnboxTimeline;
+  private readonly options: UnboxCinematicOptions;
+  private readonly beats: readonly UnboxBeat[];
+  private next = 0;
+  private elapsedMs = 0;
+  private flyMs: number | null = null;
+  private lastPose: UnboxPose;
+  private disposed = false;
+  private readonly eye = new Vector3();
+  private readonly look = new Vector3();
+  private framingAspect = Number.NaN;
+  private framed: CameraPreset | null = null;
+
+  constructor(options: UnboxCinematicOptions) {
+    this.options = options;
+    this.timeline = unboxTimeline(options.reducedMotion);
+    this.beats = unboxBeats(this.timeline);
+    this.stage = new UnboxStage(options.rarity, options.hero);
+    this.stage.root.position.copy(options.at);
+    options.parent.add(this.stage.root);
+    this.lastPose = unboxPose(0, this.timeline, options.reducedMotion);
+    this.stage.apply(this.lastPose);
+  }
+
+  get pose(): UnboxPose {
+    return this.lastPose;
+  }
+
+  get elapsed(): number {
+    return this.elapsedMs;
+  }
+
+  get revealed(): boolean {
+    return this.next >= this.beats.length;
+  }
+
+  get done(): boolean {
+    return this.flyMs !== null && this.flyMs >= this.timeline.flyMs;
+  }
+
+  update(dt: number): void {
+    if (this.disposed) return;
+    const step = Number.isFinite(dt) ? Math.max(0, dt) * 1000 : 0;
+    this.elapsedMs += step;
+    if (this.flyMs !== null) this.flyMs += step;
+    this.fireBeats(false);
+    this.render(step / 1000);
+  }
+
+  /** Jumps to the reveal: every beat not yet played fires once, without hit-stop or shake. */
+  skip(): void {
+    if (this.disposed || this.revealed) return;
+    this.elapsedMs = Math.max(this.elapsedMs, this.timeline.revealAtMs);
+    this.fireBeats(true);
+    this.render(0);
+  }
+
+  /** Starts the item's flight to the inventory; `done` turns true when it lands. */
+  collect(): void {
+    if (this.disposed) return;
+    this.skip();
+    this.flyMs ??= 0;
+    this.render(0);
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const framing = this.framing();
+    this.options.camera.position.copy(framing.position);
+    this.options.camera.lookAt(framing.target);
+    this.stage.dispose();
+  }
+
+  private fireBeats(skipped: boolean): void {
+    while (this.next < this.beats.length) {
+      const beat = this.beats[this.next];
+      if (!beat || beat.atMs > this.elapsedMs) break;
+      this.next++;
+      this.juice(beat, skipped);
+      this.options.onBeat?.(beat);
+    }
+  }
+
+  private juice(beat: UnboxBeat, skipped: boolean): void {
+    const { vfx, haptics, reducedMotion, at } = this.options;
+    switch (beat.kind) {
+      case 'land':
+        haptics?.pulse('tap');
+        if (!skipped) vfx?.contactSparks(at, { strength: 0.7, surface: 'wood' });
+        break;
+      case 'shudder':
+        haptics?.pulse(beat.step >= 3 ? 'tap' : 'tick');
+        if (!skipped && !reducedMotion) vfx?.cameraKick({ shake: 0.05 * beat.step });
+        break;
+      case 'rays':
+        break;
+      case 'burst': {
+        const burst = burstStyle(this.options.rarity);
+        haptics?.pulse(burst.haptic);
+        const top = at.clone();
+        top.y += CRATE_SIZE;
+        vfx?.contactSparks(top, { strength: 1, surface: 'metal' });
+        if (burst.confetti) vfx?.confetti();
+        if (skipped) break;
+        if (burst.hitStopMs > 0) vfx?.hitStop(burst.hitStopMs);
+        vfx?.cameraKick({ shake: burst.shake, fov: burst.fovKick });
+        break;
+      }
+      case 'reveal':
+        break;
+    }
+  }
+
+  private render(dtSeconds: number): void {
+    const pose = unboxPose(this.elapsedMs, this.timeline, this.options.reducedMotion, this.flyMs);
+    this.lastPose = pose;
+    this.stage.apply(pose, dtSeconds);
+    this.placeCamera(pose.dolly);
+  }
+
+  private placeCamera(dolly: number): void {
+    const { camera, at } = this.options;
+    const framing = this.framing();
+    this.eye.copy(framing.position).lerp(at, DOLLY_REACH * dolly);
+    this.look.copy(at);
+    this.look.y += LOOK_LIFT;
+    this.look.lerpVectors(framing.target, this.look, dolly);
+    camera.position.copy(this.eye);
+    camera.lookAt(this.look);
+  }
+
+  private framing(): CameraPreset {
+    const aspect = this.options.camera.aspect;
+    if (this.framed === null || aspect !== this.framingAspect) {
+      this.framed = this.options.framing(aspect);
+      this.framingAspect = aspect;
+    }
+    return this.framed;
+  }
+}
