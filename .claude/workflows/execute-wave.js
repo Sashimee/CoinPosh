@@ -24,6 +24,9 @@ git config --worktree user.name "${GIT_NAME}"
 git config --worktree user.email "${GIT_EMAIL}"
 Then verify both: git config user.name must print ${GIT_NAME} and git config user.email must print ${GIT_EMAIL}. If either differs, stop and report it.`
 
+const SERVERS = `Any dev, preview or static server you start (vite, pnpm dev, pnpm preview, serve, http-server) must be stopped before you return:
+start it in the background, record its PID, and kill that PID when done. Never leave a server running; leftovers from earlier waves exhausted the machine's memory.`
+
 const PLAN_SCHEMA = {
   type: 'object',
   properties: {
@@ -133,6 +136,7 @@ ${t.brief}
 
 You are in an isolated git worktree.
 ${GIT_IDENTITY}
+${SERVERS}
 Work on a detached HEAD: if a branch task/${t.id} exists from an earlier attempt,
 run git switch --detach task/${t.id} && git merge --no-edit ${plan.base}; otherwise git switch --detach ${plan.base}.
 Never switch to or create a task/* branch: other worktrees may hold it. Install deps if needed (pnpm i).
@@ -149,10 +153,12 @@ Implementer summary: ${impl.summary}
 You are in an isolated worktree: run git switch --detach ${tip}, pnpm i, pnpm check. Review exactly ${tip}; ignore any task/${t.id}* branch refs. Diff with git diff ${plan.base}...${tip}.
 Verify each acceptance criterion with evidence. Reject on any ownership violation, client-trusted value,
 sim nondeterminism, disabled/skipped tests, missing i18n, perf budget risk, or anything that feels cheap.
+${SERVERS}
 Do not edit code. Return approved + concrete issues (file:line — problem — fix).`
 
 const fixPrompt = (t, issues, tip) => `Fix review findings for task ${t.id} (${t.title}) on top of commit ${tip}.
 ${GIT_IDENTITY}
+${SERVERS}
 In your isolated worktree: git switch --detach ${tip}. Never switch to or create a task/* branch. Stay within owns paths: ${t.owns.join(', ')}.
 Findings:
 - ${issues.join('\n- ')}
@@ -255,6 +261,7 @@ if (A.playtest !== false && approved.length) {
   critique = await agent(
     `Playtest CoinPosh on ${plan.base} as a picky player who wants a premium, addictive coin pusher.
 ${GIT_IDENTITY}
+${SERVERS}
 If apps/web exists and builds: pnpm --filter web build && serve the dist, drive it with Playwright (chromium preinstalled; --trace off),
 portrait 390x844, take screenshots at key moments (boot, first drop, cascade, crate unbox, menus), and judge against
 docs/plan/00-VISION.md and 03-ART-AUDIO-JUICE.md: beauty, juice, readability, FTUE timings, fps.

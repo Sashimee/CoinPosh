@@ -6,8 +6,12 @@ import {
   type CascadeTier,
   type CoinTier,
   type Currency,
+  type DropSourceId,
   type Rarity,
+  type VenueId,
 } from '@coinposh/shared';
+
+export { DROP_SOURCE_IDS, VENUE_IDS, type DropSourceId, type VenueId } from '@coinposh/shared';
 
 export const CURRENCY_IDS = CURRENCIES;
 export type CurrencyId = Currency;
@@ -59,9 +63,6 @@ export type RarityId = Rarity;
 
 /** Weights in basis points of a percent: 10 000 = 100 %. Integers only, so sums are exact. */
 export type OddsTable = Readonly<Record<RarityId, number>>;
-
-export const DROP_SOURCE_IDS = ['vaultCrate', 'goldSafe', 'gacha', 'scratch'] as const;
-export type DropSourceId = (typeof DROP_SOURCE_IDS)[number];
 
 export interface DropTableDef {
   readonly source: DropSourceId;
@@ -141,15 +142,6 @@ export interface UpgradeCostRule {
   readonly minGrowth: number;
   readonly maxGrowth: number;
 }
-
-export const VENUE_IDS = [
-  'rivieraYacht',
-  'salonDeParis',
-  'tokyoPenthouse',
-  'alpineChalet',
-  'orbitalCasino',
-] as const;
-export type VenueId = (typeof VENUE_IDS)[number];
 
 export interface VenueDef {
   readonly id: VenueId;
@@ -236,11 +228,7 @@ export interface EconomyConfig {
   readonly ascension: AscensionConfig;
   readonly season: SeasonConfig;
   readonly pacing: readonly PacingTargetDef[];
-  /**
-   * Optional only until `src/config/index.ts` carries it; `rateEnvelope` in
-   * `src/config.ts` is the shipped table and `rateEnvelopeFor` reads it by default.
-   */
-  readonly rateEnvelope?: RateEnvelopeConfig;
+  readonly rateEnvelope: RateEnvelopeConfig;
 }
 
 /** What the server's sliding-window envelope meters (01-ARCHITECTURE.md, Layer 2). */
@@ -311,7 +299,3 @@ export interface RateEnvelopeDerivation {
   /** A crate falls this many seconds after it spawns, uniformly. */
   readonly crateFallSeconds: { readonly min: number; readonly max: number };
 }
-
-// Re-exported here because the package entry already re-exports this module; the
-// envelope table must reach @coinposh/economy before src/index.ts names src/config.ts.
-export * from './config.ts';

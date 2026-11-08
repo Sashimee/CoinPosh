@@ -1,0 +1,1230 @@
+import { cascade, cascadeTierFor, crateSpawn, fusion, fusionValue } from '@coinposh/economy';
+import {
+  ClaimsResponseSchema,
+  DropResponseSchema,
+  ErrorEnvelopeSchema,
+  GuestAuthResponseSchema,
+  StateResponseSchema,
+  type Claim,
+  type ClaimResult,
+  type CoinId,
+  type MintedCoin,
+} from '@coinposh/shared';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { loadOrCreateDeviceKey } from '../device.ts';
+import { verifyFairProofMembership } from '../fair.ts';
+import { ApiRequestError } from '../errors.ts';
+import { newIdempotencyKey } from '../request.ts';
+import { memoryStore } from '../store.ts';
+import {
+  FakeTime,
+  connectPlayer,
+  createMockServer,
+  errorCode,
+  forge,
+  ledgerWallet,
+  requirePlayerId,
+  serverWallet,
+  type Player,
+} from '../test/harness.ts';
+import type { MockServer } from './server.ts';
+import { MOCK_RULES } from './rules.ts';
+
+let time: FakeTime;
+let server: MockServer;
+let alice: Player;
+
+beforeEach(async () => {
+  time = new FakeTime();
+  server = createMockServer({ now: time.now });
+  alice = await connectPlayer(server, time);
+});
+
+async function state(player: Player = alice) {
+  return player.client.call('state');
+}
+
+async function bufferedCoin(player: Player = alice): Promise<MintedCoin> {
+  const { table } = await state(player);
+  const coin = table.buffer[0];
+  if (coin === undefined) throw new Error('Expected a pre-minted coin in the buffer.');
+  return coin;
+}
+
+/** Drops a buffered coin the honest way, after letting enough real time pass. */
+async function dropBuffered(player: Player = alice): Promise<MintedCoin> {
+  time.advance(100);
+  const coin = await bufferedCoin(player);
+  const response = await player.client.call('tableDrop', {
+    body: { x: 0, tick: time.tick(), coinId: coin.id },
+  });
+  return response.coin;
+}
+
+/** Lets a freshly dropped coin cross the table, as it physically has to before it can fall. */
+function travel(): void {
+  time.advance(MOCK_RULES.minFallMsAfterDrop);
+}
+
+async function claimFall(coinId: CoinId, player: Player = alice): Promise<ClaimResult> {
+  travel();
+  const { results } = await player.client.call('tableClaims', {
+    body: { claims: [{ kind: 'fall', coinId, tick: time.tick(), edge: 'front' }] },
+  });
+  const [result] = results;
+  if (result === undefined) throw new Error('Expected one claim result.');
+  return result;
+}
+
+async function claimAt(claims: readonly Claim[], player: Player = alice) {
+  return (await player.client.call('tableClaims', { body: { claims: [...claims] } })).results;
+}
+
+function fallAt(coin: MintedCoin, tick: number): Claim {
+  return { kind: 'fall', coinId: coin.id, tick, edge: 'front' };
+}
+
+async function accessToken(player: Player = alice): Promise<string> {
+  return player.session.accessToken();
+}
+
+function expectConserved(player: Player = alice): void {
+  const id = requirePlayerId(player);
+  expect(ledgerWallet(server, id)).toEqual(serverWallet(server, id));
+}
+
+describe('mock server: value is minted and conserved server-side', () => {
+  it('pre-pays the buffer from the starting coins and records every movement in the ledger', async () => {
+    const snapshot = await state();
+    expect(snapshot.table.buffer).toHaveLength(MOCK_RULES.bufferSize);
+    expect(snapshot.wallet.coins).toBeGreaterThanOrEqual(0);
+    const reasons = server.ledger().map((entry) => entry.reason);
+    expect(reasons[0]).toBe('signup.startingCoins');
+    expect(reasons.filter((reason) => reason === 'drop.prepay')).toHaveLength(
+      MOCK_RULES.bufferSize,
+    );
+    expectConserved();
+  });
+
+  it('credits a fallen coin exactly its minted value, once', async () => {
+    const coin = await dropBuffered();
+    const before = (await state()).wallet.coins;
+    const result = await claimFall(coin.id);
+    expect(result).toEqual({
+      status: 'accepted',
+      credited: coin.value,
+      cascade: null,
+      minted: null,
+    });
+    const after = await state();
+    expect(after.wallet.coins - before).toBe(coin.value);
+    expectConserved();
+  });
+
+  it('keeps ledger sequence numbers strictly increasing (append-only)', async () => {
+    await claimFall((await dropBuffered()).id);
+    const seqs = server.ledger().map((entry) => entry.seq);
+    expect(seqs).toEqual(seqs.map((_, i) => i));
+  });
+
+  it('applies the cascade multiplier to plausible, forward-moving falls after the travel time', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    travel();
+    const start = time.tick();
+    const gap = Math.floor(((cascade.windowMs / 1000) * MOCK_RULES.ticksPerSecond) / 2);
+    const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * gap)));
+    const third = cascadeTierFor(3, cascade);
+    expect(third).not.toBeNull();
+    expect(results.map((result) => result.status)).toEqual(['accepted', 'accepted', 'accepted']);
+    expect(results[2]).toEqual({
+      status: 'accepted',
+      credited: Math.floor((coins[2]?.value ?? 0) * (third?.multiplier ?? 1)),
+      cascade: third?.id ?? null,
+      minted: null,
+    });
+    expectConserved();
+  });
+
+  it('breaks the cascade when falls are further apart than the cascade window', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    travel();
+    const start = time.tick();
+    const apart = Math.ceil((cascade.windowMs / 1000) * MOCK_RULES.ticksPerSecond) + 1;
+    const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * apart)));
+    expect(results).toEqual(
+      coins.map((coin) => ({
+        status: 'accepted',
+        credited: coin.value,
+        cascade: null,
+        minted: null,
+      })),
+    );
+  });
+
+  it('credits nothing for coins that slide off the side gutters', async () => {
+    const coin = await dropBuffered();
+    travel();
+    const { results } = await alice.client.call('tableClaims', {
+      body: { claims: [{ kind: 'fall', coinId: coin.id, tick: time.tick(), edge: 'left' }] },
+    });
+    expect(results[0]).toEqual({ status: 'accepted', credited: 0, cascade: null, minted: null });
+  });
+
+  it('refuses a fresh drop the wallet cannot pay for', async () => {
+    let coins = (await state()).wallet.coins;
+    while (coins > 0) {
+      time.advance(100);
+      coins = (await alice.client.call('tableDrop', { body: { x: 0, tick: time.tick() } })).wallet
+        .coins;
+    }
+    time.advance(100);
+    await expect(
+      alice.client.call('tableDrop', { body: { x: 0, tick: time.tick() } }),
+    ).rejects.toMatchObject({ code: 'insufficient_funds' });
+    expectConserved();
+  });
+
+  it('fuses three same-tier coins into the next tier at the economy fusion value', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
+    const { results } = await alice.client.call('tableClaims', {
+      body: {
+        claims: [
+          {
+            kind: 'fusion',
+            coinIds: [coins[0]?.id, coins[1]?.id, coins[2]?.id] as [CoinId, CoinId, CoinId],
+            tick: time.tick(),
+          },
+        ],
+      },
+    });
+    const result = results[0];
+    expect(result?.status).toBe('accepted');
+    if (result?.status !== 'accepted' || result.minted === null)
+      throw new Error('Expected a minted coin.');
+    expect(result.minted.tier).toBe('silver');
+    expect(result.minted.value).toBe(
+      Math.floor(
+        fusionValue(
+          coins.map((coin) => coin.value),
+          fusion,
+        ),
+      ),
+    );
+    const firstInput = coins[0];
+    if (firstInput === undefined) throw new Error('Expected fusion inputs.');
+    expect(await claimFall(firstInput.id)).toEqual({
+      status: 'rejected',
+      reason: 'already_claimed',
+    });
+    expect((await claimFall(result.minted.id)).status).toBe('accepted');
+    expectConserved();
+  });
+});
+
+describe('mock server: attacks from a compromised client', () => {
+  it('replays a resent request instead of applying it twice', async () => {
+    const coin = await dropBuffered();
+    const token = await accessToken();
+    time.advance(100);
+    const key = newIdempotencyKey();
+    const body = JSON.stringify({
+      claims: [{ kind: 'fall', coinId: coin.id, tick: time.tick(), edge: 'front' }],
+    });
+    const first = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/claims',
+      body,
+      key,
+      token,
+    });
+    const entries = server.ledger().length;
+    const second = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/claims',
+      body,
+      key,
+      token,
+    });
+    expect(first.status).toBe(200);
+    expect(second).toEqual(first);
+    expect(server.ledger()).toHaveLength(entries);
+    expectConserved();
+  });
+
+  it('refuses an idempotency key reused for a different body', async () => {
+    const token = await accessToken();
+    const key = newIdempotencyKey();
+    time.advance(100);
+    const first = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/drop',
+      body: JSON.stringify({ x: 0, tick: time.tick() }),
+      key,
+      token,
+    });
+    const second = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/drop',
+      body: JSON.stringify({ x: 0.5, tick: time.tick() }),
+      key,
+      token,
+    });
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(422);
+    expect(errorCode(second)).toBe('idempotency_key_reused');
+  });
+
+  it('credits a double claim once, across batches and inside one batch', async () => {
+    const coin = await dropBuffered();
+    expect((await claimFall(coin.id)).status).toBe('accepted');
+    expect(await claimFall(coin.id)).toEqual({ status: 'rejected', reason: 'already_claimed' });
+
+    const other = await dropBuffered();
+    travel();
+    const tick = time.tick();
+    const { results } = await alice.client.call('tableClaims', {
+      body: {
+        claims: [
+          { kind: 'fall', coinId: other.id, tick, edge: 'front' },
+          { kind: 'fall', coinId: other.id, tick, edge: 'front' },
+        ],
+      },
+    });
+    expect(results.map((result) => result.status)).toEqual(['accepted', 'rejected']);
+    expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(2);
+    expectConserved();
+  });
+
+  it('rejects forged coin IDs that were never minted', async () => {
+    expect(await claimFall('coin_AAAAAAAAAAAAAAAA' as CoinId)).toEqual({
+      status: 'rejected',
+      reason: 'unknown_entity',
+    });
+    time.advance(100);
+    await expect(
+      alice.client.call('tableDrop', {
+        body: { x: 0, tick: time.tick(), coinId: 'coin_BBBBBBBBBBBBBBBB' },
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('rejects an ID of the wrong kind at the contract, before any rule runs', async () => {
+    const token = await accessToken();
+    time.advance(100);
+    const response = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/claims',
+      body: JSON.stringify({
+        claims: [
+          { kind: 'fall', coinId: 'crate_AAAAAAAAAAAAAAAA', tick: time.tick(), edge: 'front' },
+        ],
+      }),
+      token,
+    });
+    expect(response.status).toBe(400);
+    expect(errorCode(response)).toBe('validation_failed');
+  });
+
+  it('never lets one player claim or spend coins minted for another', async () => {
+    const bob = await connectPlayer(server, time);
+    const aliceCoin = await dropBuffered();
+    const aliceBuffered = await bufferedCoin();
+    expect(await claimFall(aliceCoin.id, bob)).toEqual({
+      status: 'rejected',
+      reason: 'unknown_entity',
+    });
+    time.advance(100);
+    await expect(
+      bob.client.call('tableDrop', { body: { x: 0, tick: time.tick(), coinId: aliceBuffered.id } }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    expect((await claimFall(aliceCoin.id)).status).toBe('accepted');
+  });
+
+  it('refuses to credit a coin still in the buffer (claimed but never dropped)', async () => {
+    const coin = await bufferedCoin();
+    expect(await claimFall(coin.id)).toEqual({ status: 'rejected', reason: 'not_on_table' });
+  });
+
+  it('refuses to spend the same buffered coin twice', async () => {
+    const coin = await dropBuffered();
+    time.advance(100);
+    await expect(
+      alice.client.call('tableDrop', { body: { x: 0, tick: time.tick(), coinId: coin.id } }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('rejects value, reward and balance fields smuggled into a body', async () => {
+    const token = await accessToken();
+    const smuggled = [
+      ['/v1/table/drop', { x: 0, tick: time.tick(), value: 1_000_000 }],
+      [
+        '/v1/table/claims',
+        {
+          claims: [
+            {
+              kind: 'fall',
+              coinId: 'coin_AAAAAAAAAAAAAAAA',
+              tick: 0,
+              edge: 'front',
+              credited: 999,
+            },
+          ],
+        },
+      ],
+      ['/v1/table/claims', { claims: [], wallet: { coins: 1e9 } }],
+      ['/v1/gacha/pull', { count: 1, rarity: 'heirloom' }],
+    ] as const;
+    for (const [path, body] of smuggled) {
+      const response = await forge(server, alice.device, {
+        method: 'POST',
+        path,
+        body: JSON.stringify(body),
+        token,
+      });
+      expect(response.status, path).toBe(400);
+      expect(errorCode(response), path).toBe('validation_failed');
+    }
+    expectConserved();
+  });
+
+  it('rejects a body the device signature does not cover', async () => {
+    const token = await accessToken();
+    time.advance(100);
+    const response = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/drop',
+      body: JSON.stringify({ x: 1, tick: time.tick() }),
+      signedBody: JSON.stringify({ x: 0, tick: time.tick() }),
+      token,
+    });
+    expect(errorCode(response)).toBe('invalid_signature');
+  });
+
+  it('rejects a stolen access token used from another device', async () => {
+    const token = await accessToken();
+    const thief = await loadOrCreateDeviceKey(memoryStore());
+    const response = await forge(server, thief, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+      token,
+    });
+    expect(response.status).toBe(401);
+    expect(errorCode(response)).toBe('invalid_signature');
+  });
+
+  it('rejects a missing or garbage signature', async () => {
+    const token = await accessToken();
+    const response = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+      token,
+      signature: 'A'.repeat(86),
+    });
+    expect(errorCode(response)).toBe('invalid_signature');
+    const malformed = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+      token,
+      signature: 'nope',
+    });
+    expect(errorCode(malformed)).toBe('invalid_signature');
+  });
+
+  it('requires an idempotency key on every mutation', async () => {
+    const token = await accessToken();
+    const response = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/drop',
+      body: JSON.stringify({ x: 0, tick: 0 }),
+      key: null,
+      token,
+    });
+    expect(response.status).toBe(400);
+    expect(errorCode(response)).toBe('idempotency_key_missing');
+  });
+
+  it('rejects forged, missing and expired access tokens using server time', async () => {
+    const forged = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+      token: 'at_forged',
+    });
+    expect(errorCode(forged)).toBe('unauthorized');
+    const missing = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+    });
+    expect(errorCode(missing)).toBe('unauthorized');
+    const token = await accessToken();
+    time.advance(MOCK_RULES.accessTokenTtlMs);
+    const expired = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+      token,
+    });
+    expect(errorCode(expired)).toBe('token_expired');
+  });
+
+  it('revokes every session when a rotated refresh token comes back (token theft)', async () => {
+    await accessToken();
+    const stored = (await alice.store.get('session')) as { refreshToken: string };
+    const refresh = (refreshToken: string) =>
+      forge(server, alice.device, {
+        method: 'POST',
+        path: '/v1/auth/refresh',
+        body: JSON.stringify({ refreshToken }),
+      });
+    const rotated = await refresh(stored.refreshToken);
+    expect(rotated.status).toBe(200);
+    const next = GuestAuthResponseSchema.parse(rotated.body);
+    expect(errorCode(await refresh(stored.refreshToken))).toBe('unauthorized');
+    expect(errorCode(await refresh(next.refreshToken))).toBe('unauthorized');
+    const revoked = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+      token: next.accessToken,
+    });
+    expect(errorCode(revoked)).toBe('unauthorized');
+  });
+
+  it('refuses a refresh token signed by a different device', async () => {
+    await accessToken();
+    const stored = (await alice.store.get('session')) as { refreshToken: string };
+    const thief = await loadOrCreateDeviceKey(memoryStore());
+    const response = await forge(server, thief, {
+      method: 'POST',
+      path: '/v1/auth/refresh',
+      body: JSON.stringify({ refreshToken: stored.refreshToken }),
+    });
+    expect(errorCode(response)).toBe('invalid_signature');
+  });
+
+  it('refuses a reused Turnstile token at sign-up', async () => {
+    const devices = [
+      await loadOrCreateDeviceKey(memoryStore()),
+      await loadOrCreateDeviceKey(memoryStore()),
+    ];
+    const responses = [];
+    for (const device of devices) {
+      responses.push(
+        await forge(server, device, {
+          method: 'POST',
+          path: '/v1/auth/guest',
+          body: JSON.stringify({
+            devicePublicKey: device.publicKey,
+            turnstileToken: 'replayed',
+            locale: 'en',
+          }),
+        }),
+      );
+    }
+    expect(responses[0]?.status).toBe(200);
+    expect(errorCode(responses[1] ?? { status: 0, body: null })).toBe('forbidden');
+  });
+
+  it('rejects a guest sign-up signed by a key other than the one it registers', async () => {
+    const device = await loadOrCreateDeviceKey(memoryStore());
+    const impostor = await loadOrCreateDeviceKey(memoryStore());
+    const response = await forge(server, device, {
+      method: 'POST',
+      path: '/v1/auth/guest',
+      body: JSON.stringify({
+        devicePublicKey: impostor.publicKey,
+        turnstileToken: 'fresh-token',
+        locale: 'en',
+      }),
+    });
+    expect(errorCode(response)).toBe('invalid_signature');
+  });
+
+  it('flags claims stamped with ticks from the future (clock skew / speed hack)', async () => {
+    const coin = await dropBuffered();
+    const { results } = await alice.client.call('tableClaims', {
+      body: {
+        claims: [{ kind: 'fall', coinId: coin.id, tick: time.tick() + 60 * 30, edge: 'front' }],
+      },
+    });
+    expect(results[0]).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    expect((await claimFall(coin.id)).status).toBe('accepted');
+  });
+
+  it('stops a sped-up client whose ticks outrun server time', async () => {
+    await dropBuffered();
+    let tick = time.tick();
+    let refused: unknown = null;
+    for (let i = 0; i < 40 && refused === null; i++) {
+      time.advance(10);
+      tick += 30;
+      await alice.client.call('tableDrop', { body: { x: 0, tick } }).catch((error: unknown) => {
+        refused = error;
+      });
+    }
+    expect(refused).toBeInstanceOf(ApiRequestError);
+    expect(refused).toMatchObject({ code: 'bad_request' });
+  });
+
+  it('expires a claim whose tick is older than the 10-minute claim expiry, however late it arrives', async () => {
+    const coin = await dropBuffered();
+    travel();
+    const stale = time.tick();
+    time.advance(MOCK_RULES.claimExpiryMs + 1_000);
+    expect(await claimAt([fallAt(coin, stale)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    time.advance(3 * 86_400_000);
+    expect(await claimAt([fallAt(coin, stale + 1)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(0);
+    expect((await claimFall(coin.id)).status).toBe('accepted');
+    expectConserved();
+  });
+
+  it('accepts a queued claim still inside the expiry window', async () => {
+    const coin = await dropBuffered();
+    travel();
+    const queued = time.tick();
+    time.advance(MOCK_RULES.claimExpiryMs - 1_000);
+    expect((await claimAt([fallAt(coin, queued)]))[0]?.status).toBe('accepted');
+  });
+
+  it('refuses a buffered-coin drop older than the expiry and keeps the coin in the buffer', async () => {
+    await dropBuffered();
+    const stale = time.tick() + MOCK_RULES.minTicksBetweenDrops;
+    const coin = await bufferedCoin();
+    time.advance(MOCK_RULES.claimExpiryMs + 1_000);
+    await expect(
+      alice.client.call('tableDrop', { body: { x: 0, tick: stale, coinId: coin.id } }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect((await state()).table.buffer.map((buffered) => buffered.id)).toContain(coin.id);
+    expect(await claimFall(coin.id)).toEqual({ status: 'rejected', reason: 'not_on_table' });
+    expectConserved();
+  });
+
+  it('re-anchors the paused tick clock on resume, but keeps a held-back pre-pause claim expired', async () => {
+    const held = await dropBuffered();
+    travel();
+    const heldTick = time.tick();
+    await dropBuffered();
+    let sim = time.tick();
+    time.advance(11 * 60_000);
+    const coin = await bufferedCoin();
+
+    sim += MOCK_RULES.minTicksBetweenDrops;
+    const dropped = await alice.client.call('tableDrop', {
+      body: { x: 0, tick: sim, coinId: coin.id },
+    });
+    expect(dropped.coin).toEqual(coin);
+    time.advance(MOCK_RULES.minFallMsAfterDrop);
+    sim += Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond);
+    expect(await claimAt([fallAt(coin, sim)])).toEqual([
+      { status: 'accepted', credited: coin.value, cascade: null, minted: null },
+    ]);
+    expect(await claimAt([fallAt(held, heldTick)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    expect(
+      server.ledger().filter((entry) => entry.reason === 'claim.fall' && entry.ref === held.id),
+    ).toHaveLength(0);
+    expectConserved();
+  });
+
+  it('settles the offline vault on the resume snapshot even when queued play arrived first', async () => {
+    await dropBuffered();
+    const awayMs = 2 * 3_600_000;
+    time.advance(awayMs);
+    const { results } = await alice.client.call('tableClaims', {
+      body: {
+        claims: [{ kind: 'fall', coinId: 'coin_ZZZZZZZZZZZZZZZZ', tick: 0, edge: 'front' }],
+      },
+    });
+    expect(results).toEqual([{ status: 'rejected', reason: 'expired' }]);
+    const resumed = await state();
+    expect(resumed.offline).toMatchObject({ awayMs });
+    expect(resumed.offline?.coins).toBeGreaterThan(0);
+    expect((await state()).offline).toBeNull();
+    expectConserved();
+  });
+
+  it('never lets a held-back claim sent first after a resume become the new anchor', async () => {
+    const held = await dropBuffered();
+    travel();
+    const heldTick = time.tick();
+    await dropBuffered();
+    const sim = time.tick();
+    time.advance(11 * 60_000);
+    await state();
+    expect(await claimAt([fallAt(held, heldTick)])).toEqual([
+      { status: 'rejected', reason: 'expired' },
+    ]);
+    const coin = await bufferedCoin();
+    await expect(
+      alice.client.call('tableDrop', {
+        body: { x: 0, tick: sim + MOCK_RULES.minTicksBetweenDrops, coinId: coin.id },
+      }),
+    ).resolves.toMatchObject({ coin });
+    expectConserved();
+  });
+
+  it('only re-anchors after a real absence, not on state polled through the pause', async () => {
+    await dropBuffered();
+    const sim = time.tick();
+    for (let waited = 0; waited <= MOCK_RULES.claimExpiryMs; waited += 30_000) {
+      time.advance(30_000);
+      await state();
+    }
+    const coin = await bufferedCoin();
+    await expect(
+      alice.client.call('tableDrop', {
+        body: { x: 0, tick: sim + MOCK_RULES.minTicksBetweenDrops, coinId: coin.id },
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expectConserved();
+  });
+
+  it('still stops a sped-up client after a resume re-anchored its clock', async () => {
+    await dropBuffered();
+    let tick = time.tick();
+    time.advance(11 * 60_000);
+    await state();
+    let refused: unknown = null;
+    for (let i = 0; i < 40 && refused === null; i++) {
+      time.advance(10);
+      tick += 30;
+      await alice.client.call('tableDrop', { body: { x: 0, tick } }).catch((error: unknown) => {
+        refused = error;
+      });
+    }
+    expect(refused).toMatchObject({ code: 'bad_request' });
+    expectConserved();
+  });
+
+  it('rejects a fall claimed in the same instant as its drop (no table crossing)', async () => {
+    const coin = await bufferedCoin();
+    time.advance(100);
+    const tick = time.tick();
+    await alice.client.call('tableDrop', { body: { x: 0, tick, coinId: coin.id } });
+    const before = server.ledger().length;
+    expect(await claimAt([fallAt(coin, tick)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    const justShort =
+      tick + Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond) - 1;
+    time.advance(MOCK_RULES.minFallMsAfterDrop);
+    expect(await claimAt([fallAt(coin, justShort)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    expect(server.ledger()).toHaveLength(before);
+    expect((await claimFall(coin.id)).status).toBe('accepted');
+    expectConserved();
+  });
+
+  it('defeats a drop-then-claim farming bot: no credit or bullion without the table crossing', async () => {
+    const before = (await state()).wallet;
+    const results: ClaimResult[] = [];
+    for (let i = 0; i < 8; i++) {
+      const coin = await dropBuffered();
+      results.push(...(await claimAt([fallAt(coin, time.tick())])));
+    }
+    expect(results).toEqual(results.map(() => ({ status: 'rejected', reason: 'over_envelope' })));
+    expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(0);
+    expect((await state()).wallet.bullion).toBe(before.bullion);
+    expectConserved();
+  });
+
+  it('caps a burst of same-tick claims and never multiplies it into a high cascade', async () => {
+    const coins: MintedCoin[] = [];
+    for (let i = 0; i < 10; i++) coins.push(await dropBuffered());
+    travel();
+    const tick = time.tick();
+    const results = await claimAt(coins.map((coin) => fallAt(coin, tick)));
+    const { maxPerTick } = MOCK_RULES.fallEnvelope;
+    expect(results.slice(0, maxPerTick).map((result) => result.status)).toEqual(
+      Array.from({ length: maxPerTick }, () => 'accepted'),
+    );
+    expect(results.slice(maxPerTick)).toEqual(
+      coins.slice(maxPerTick).map(() => ({ status: 'rejected', reason: 'over_envelope' })),
+    );
+    const best = cascadeTierFor(maxPerTick, cascade);
+    expect(results[maxPerTick - 1]).toMatchObject({ cascade: best?.id ?? null });
+    expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(
+      maxPerTick,
+    );
+    expectConserved();
+  });
+
+  it('caps falls per sliding window even when the bot spreads its ticks', async () => {
+    const { max, windowMs } = MOCK_RULES.fallEnvelope;
+    const coins: MintedCoin[] = [];
+    while (coins.length < max + 3) coins.push(await dropBuffered());
+    travel();
+    const start = time.tick();
+    const windowTicks = (windowMs / 1000) * MOCK_RULES.ticksPerSecond;
+    const step = Math.max(1, Math.floor(windowTicks / coins.length));
+    const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * step)));
+    expect(results.filter((result) => result.status === 'accepted')).toHaveLength(max);
+    expect(results.at(-1)).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    expectConserved();
+  });
+
+  it('rejects claim ticks that go backwards, so out-of-order ticks cannot extend a cascade', async () => {
+    const first = await dropBuffered();
+    const second = await dropBuffered();
+    travel();
+    const tick = time.tick();
+    expect((await claimAt([fallAt(first, tick)]))[0]?.status).toBe('accepted');
+    expect(await claimAt([fallAt(second, tick - 1)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    expect((await claimAt([fallAt(second, tick)]))[0]?.status).toBe('accepted');
+  });
+
+  it('rejects a fusion of coins that have not landed yet', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    const ids = coins.map((coin) => coin.id) as [CoinId, CoinId, CoinId];
+    expect(await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
+    expect((await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }]))[0]?.status).toBe(
+      'accepted',
+    );
+  });
+
+  it('enforces the minimum spacing between drops (over-envelope bot)', async () => {
+    await dropBuffered();
+    const tick = time.tick();
+    await expect(
+      alice.client.call('tableDrop', { body: { x: 0, tick: tick + 1 } }),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+  });
+
+  it('rate-limits a request flood per player and says when to come back', async () => {
+    const token = await accessToken();
+    const responses = [];
+    for (let i = 0; i < MOCK_RULES.maxRequestsPerSecond + 5; i++) {
+      responses.push(
+        await forge(server, alice.device, { method: 'GET', path: '/v1/state', body: null, token }),
+      );
+    }
+    const limited = responses.filter((response) => response.status === 429);
+    expect(limited.length).toBeGreaterThan(0);
+    const envelope = ErrorEnvelopeSchema.parse(limited[0]?.body);
+    expect(envelope.error.code).toBe('rate_limited');
+    expect(envelope.error.retryAfterMs).toBeGreaterThan(0);
+    time.advance(1_000);
+    expect(
+      (await forge(server, alice.device, { method: 'GET', path: '/v1/state', body: null, token }))
+        .status,
+    ).toBe(200);
+  });
+
+  it('caps body size', async () => {
+    const token = await accessToken();
+    const response = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/drop',
+      body: JSON.stringify({ x: 0, tick: 0, pad: 'x'.repeat(70_000) }),
+      token,
+    });
+    expect(response.status).toBe(413);
+  });
+
+  it('rejects malformed JSON, unknown routes and bodies on GET', async () => {
+    const token = await accessToken();
+    expect(
+      errorCode(
+        await forge(server, alice.device, {
+          method: 'POST',
+          path: '/v1/table/drop',
+          body: '{"x":',
+          token,
+        }),
+      ),
+    ).toBe('bad_request');
+    expect(
+      errorCode(
+        await forge(server, alice.device, {
+          method: 'GET',
+          path: '/v1/admin/mint',
+          body: null,
+          token,
+        }),
+      ),
+    ).toBe('not_found');
+    expect(
+      errorCode(
+        await forge(server, alice.device, { method: 'GET', path: '/v1/state', body: '{}', token }),
+      ),
+    ).toBe('bad_request');
+  });
+
+  it('refuses fusing coins of different tiers', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
+    const fused = await alice.client.call('tableClaims', {
+      body: {
+        claims: [
+          {
+            kind: 'fusion',
+            coinIds: coins.map((coin) => coin.id) as [CoinId, CoinId, CoinId],
+            tick: time.tick(),
+          },
+        ],
+      },
+    });
+    const silver = fused.results[0]?.status === 'accepted' ? fused.results[0].minted : null;
+    if (silver === null) throw new Error('Expected a silver coin.');
+    const coppers = [await dropBuffered(), await dropBuffered()];
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
+    const { results } = await alice.client.call('tableClaims', {
+      body: {
+        claims: [
+          {
+            kind: 'fusion',
+            coinIds: [silver.id, coppers[0]?.id, coppers[1]?.id] as [CoinId, CoinId, CoinId],
+            tick: time.tick(),
+          },
+        ],
+      },
+    });
+    expect(results[0]).toEqual({ status: 'rejected', reason: 'tier_mismatch' });
+  });
+
+  it('freezes the table when nudges exhaust the Concierge’s decorum', async () => {
+    let frozen = false;
+    for (let i = 0; i < 20 && !frozen; i++) {
+      time.advance(10);
+      const response = await alice.client.call('tableNudge', {
+        body: { tick: time.tick(), direction: 'left' },
+      });
+      frozen = response.frozenUntil !== null;
+    }
+    expect(frozen).toBe(true);
+    time.advance(10);
+    await expect(
+      alice.client.call('tableNudge', { body: { tick: time.tick(), direction: 'left' } }),
+    ).rejects.toMatchObject({ code: 'table_frozen' });
+    time.advance(MOCK_RULES.conciergeFreezeMs);
+    await expect(
+      alice.client.call('tableNudge', { body: { tick: time.tick(), direction: 'right' } }),
+    ).resolves.toMatchObject({ frozenUntil: null });
+  });
+});
+
+describe('mock server: memory stays bounded in a long session', () => {
+  it('keeps replays, the ledger and spent coin IDs bounded over thousands of drops and falls', async () => {
+    // Signing and verifying every request is the slow part, so most cycles go straight to the
+    // world's rules and every `signedEvery`-th one takes the full request path to fill the replay store.
+    const stepMs = 1_000;
+    const signedEvery = 10;
+    const ledgerTarget = Math.ceil(1.25 * MOCK_RULES.ledgerRetained);
+    const sessionMs = 2 * MOCK_RULES.claimExpiryMs;
+    const fallTicks = Math.ceil((MOCK_RULES.minFallMsAfterDrop / 1000) * MOCK_RULES.ticksPerSecond);
+    let buffer = (await state()).table.buffer;
+    const found = server.world.player(requirePlayerId(alice));
+    if (found === undefined) throw new Error('Expected Alice in the mock world.');
+    const player = found;
+
+    async function drop(coinId: CoinId, tick: number, signed: boolean) {
+      const body = { x: 0, tick, coinId };
+      if (signed) return alice.client.call('tableDrop', { body });
+      const at = time.now();
+      const result = await server.world.handle(player, 'tableDrop', body, undefined as never, at);
+      server.world.touch(player, at);
+      return DropResponseSchema.parse(result);
+    }
+
+    async function claim(claims: Claim[], signed: boolean) {
+      if (signed) return claimAt(claims);
+      const at = time.now();
+      const result = await server.world.handle(
+        player,
+        'tableClaims',
+        { claims },
+        undefined as never,
+        at,
+      );
+      server.world.touch(player, at);
+      return ClaimsResponseSchema.parse(result).results;
+    }
+
+    const startedAt = time.now();
+    const signedBefore = alice.requests.length;
+    const inFlight: { coin: MintedCoin; tick: number }[] = [];
+    let cycles = 0;
+    let accepted = 0;
+    while (
+      (server.ledger().at(-1)?.seq ?? 0) < ledgerTarget ||
+      time.now() - startedAt < sessionMs
+    ) {
+      const signed = cycles % signedEvery === 0;
+      cycles += 1;
+      time.advance(stepMs);
+      const tick = time.tick();
+      const coin = buffer[0];
+      if (coin === undefined) throw new Error(`The buffer ran dry at cycle ${String(cycles)}.`);
+      const dropped = await drop(coin.id, tick, signed);
+      buffer = dropped.buffer;
+      inFlight.push({ coin: dropped.coin, tick });
+      const due = inFlight.filter((entry) => entry.tick + fallTicks <= tick);
+      if (due.length === 0) continue;
+      inFlight.splice(0, due.length);
+      const results = await claim(
+        due.map((entry) => fallAt(entry.coin, tick)),
+        signed,
+      );
+      accepted += results.filter((result) => result.status === 'accepted').length;
+    }
+    expect(accepted).toBeGreaterThan(cycles - 10);
+
+    const signedRequests = alice.requests.length - signedBefore;
+    const signedPerExpiry = (2 * MOCK_RULES.claimExpiryMs) / (stepMs * signedEvery);
+    expect(server.retainedReplays()).toBeLessThanOrEqual(signedPerExpiry + 2);
+    expect(signedRequests).toBeGreaterThan(1.5 * (signedPerExpiry + 2));
+    const ledger = server.ledger();
+    expect(ledger).toHaveLength(MOCK_RULES.ledgerRetained);
+    expect(ledger.at(-1)?.seq).toBeGreaterThanOrEqual(ledgerTarget);
+    const seqs = ledger.map((entry) => entry.seq);
+    expect(seqs).toEqual(seqs.map((_, i) => (seqs[0] ?? 0) + i));
+    expect(cycles).toBeGreaterThan(2 * (MOCK_RULES.claimExpiryMs / stepMs) - 1);
+    expect(player.gone.size).toBeLessThanOrEqual(MOCK_RULES.claimExpiryMs / stepMs + 1);
+    expectConserved();
+  });
+
+  it('answers a replay inside the expiry from the store and refuses one after it', async () => {
+    const coin = await bufferedCoin();
+    time.advance(100);
+    const key = newIdempotencyKey();
+    const body = { x: 0, tick: time.tick(), coinId: coin.id };
+    const first = await alice.client.call('tableDrop', { body }, { idempotencyKey: key });
+    const entries = server.ledger().length;
+    time.advance(MOCK_RULES.claimExpiryMs - 1_000);
+    await expect(
+      alice.client.call('tableDrop', { body }, { idempotencyKey: key }),
+    ).resolves.toEqual(first);
+    time.advance(2_000);
+    await expect(
+      alice.client.call('tableDrop', { body }, { idempotencyKey: key }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect(server.ledger()).toHaveLength(entries);
+    expectConserved();
+  });
+});
+
+describe('mock server: crates and provable fairness', () => {
+  it('scripts the FTUE crate, opens it once, and the roll verifies against the revealed seed', async () => {
+    let crate = null;
+    for (let i = 0; i < crateSpawn.ftueScriptedDrop && crate === null; i++) {
+      const coin = await bufferedCoin();
+      time.advance(100);
+      const response = await alice.client.call('tableDrop', {
+        body: { x: 0, tick: time.tick(), coinId: coin.id },
+      });
+      crate = response.spawnedCrates[0] ?? null;
+      await claimFall(coin.id);
+    }
+    if (crate === null) throw new Error('Expected the scripted FTUE crate.');
+    await expect(
+      alice.client.call('cratesOpen', { body: { crateId: crate.id } }),
+    ).rejects.toMatchObject({
+      code: 'not_ready',
+    });
+    time.advance(100);
+    await alice.client.call('tableClaims', {
+      body: { claims: [{ kind: 'crate', crateId: crate.id, tick: time.tick(), edge: 'front' }] },
+    });
+    const opened = await alice.client.call('cratesOpen', { body: { crateId: crate.id } });
+    expect(opened.roll.rarity).toBe(crateSpawn.ftueScriptedRarity);
+    expect(opened.roll.rewards.some((reward) => reward.kind === 'charm')).toBe(
+      crateSpawn.ftueScriptedCharm,
+    );
+    await expect(
+      alice.client.call('cratesOpen', { body: { crateId: crate.id } }),
+    ).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    const rotated = await alice.client.call('fairRotate', { body: {} });
+    expect(rotated.revealed.serverSeedHash).toBe(opened.roll.proof.serverSeedHash);
+    await expect(verifyFairProofMembership(rotated.revealed, opened.roll.proof)).resolves.toBe(
+      true,
+    );
+    expectConserved();
+  });
+  it('rejects a crate claim from before the crate spawned and accepts one at or after spawn', async () => {
+    let crate = null;
+    let spawnTick = 0;
+    let spawningCoin: CoinId | null = null;
+    for (let i = 0; i < crateSpawn.ftueScriptedDrop && crate === null; i++) {
+      const coin = await bufferedCoin();
+      time.advance(100);
+      spawnTick = time.tick();
+      const response = await alice.client.call('tableDrop', {
+        body: { x: 0, tick: spawnTick, coinId: coin.id },
+      });
+      crate = response.spawnedCrates[0] ?? null;
+      if (crate === null) await claimFall(coin.id);
+      else spawningCoin = coin.id;
+    }
+    if (crate === null || spawningCoin === null)
+      throw new Error('Expected the scripted FTUE crate.');
+    const entries = server.ledger().length;
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: spawnTick - 1, edge: 'front' }]),
+    ).toEqual([{ status: 'rejected', reason: 'not_on_table' }]);
+    expect(server.ledger()).toHaveLength(entries);
+    await expect(
+      alice.client.call('cratesOpen', { body: { crateId: crate.id } }),
+    ).rejects.toMatchObject({ code: 'not_ready' });
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: spawnTick, edge: 'front' }]),
+    ).toEqual([{ status: 'accepted', credited: 0, cascade: null, minted: null }]);
+    expect(server.ledger().length).toBeGreaterThan(entries);
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: spawnTick + 1, edge: 'front' }]),
+    ).toEqual([{ status: 'rejected', reason: 'already_claimed' }]);
+    await alice.client.call('cratesOpen', { body: { crateId: crate.id } });
+    await claimFall(spawningCoin);
+    expectConserved();
+  });
+});
+
+describe('mock server: every endpoint honours its shared contract', () => {
+  it('answers each endpoint with a body its zod schema accepts, or a valid error envelope', async () => {
+    const coin = await dropBuffered();
+    const outcomes: Record<string, string> = {};
+    const record = async (name: string, call: () => Promise<unknown>) => {
+      try {
+        await call();
+        outcomes[name] = 'ok';
+      } catch (error) {
+        if (!(error instanceof ApiRequestError)) throw error;
+        outcomes[name] = error.code;
+      }
+    };
+    const { client } = alice;
+    const tick = () => {
+      time.advance(100);
+      return time.tick();
+    };
+    await record('authGuest', () => alice.session.accessToken());
+    await record('authRefresh', async () => {
+      alice.session.expireAccessToken();
+      await alice.session.accessToken();
+    });
+    await record('state', () => client.call('state'));
+    await record('tableDrop', () => client.call('tableDrop', { body: { x: 0.25, tick: tick() } }));
+    await record('tableClaims', () =>
+      client.call('tableClaims', {
+        body: { claims: [{ kind: 'fall', coinId: coin.id, tick: tick(), edge: 'front' }] },
+      }),
+    );
+    await record('tableNudge', () =>
+      client.call('tableNudge', { body: { tick: tick(), direction: 'forward' } }),
+    );
+    await record('tableInputs', () =>
+      client.call('tableInputs', {
+        body: {
+          fromTick: 0,
+          toTick: 10,
+          events: [{ kind: 'pourStart', tick: 1 }],
+          checkpoints: [{ tick: 10, hash: 'deadbeef' }],
+        },
+      }),
+    );
+    await record('upgradesBuy', () =>
+      client.call('upgradesBuy', {
+        body: { venueId: 'rivieraYacht', lineId: 'pusherSpeed', level: 1 },
+      }),
+    );
+    await record('charmsEquip', () =>
+      client.call('charmsEquip', { body: { venueId: 'rivieraYacht', socket: 0, charmId: null } }),
+    );
+    await record('cratesOpen', () =>
+      client.call('cratesOpen', { body: { crateId: 'crate_AAAAAAAAAAAAAAAA' } }),
+    );
+    await record('safesOpen', () =>
+      client.call('safesOpen', { body: { safeId: 'safe_AAAAAAAAAAAAAAAA', method: 'timer' } }),
+    );
+    await record('gachaPull', () => client.call('gachaPull', { body: { count: 1 } }));
+    await record('scratchReveal', () =>
+      client.call('scratchReveal', { body: { cardId: 'scratch_AAAAAAAAAAAAAAAA' } }),
+    );
+    await record('ascend', () => client.call('ascend', { body: { venueId: 'rivieraYacht' } }));
+    await record('album', () => client.call('album'));
+    await record('fairSeeds', () => client.call('fairSeeds'));
+    await record('fairRotate', () =>
+      client.call('fairRotate', { body: { clientSeed: 'my-own-seed' } }),
+    );
+    await record('quests', () => client.call('quests'));
+    await record('questsClaim', () =>
+      client.call('questsClaim', { body: { questId: 'quest_AAAAAAAAAAAAAAAA' } }),
+    );
+    await record('season', () => client.call('season'));
+    await record('leaderboard', () => client.call('leaderboard', { params: { board: 'weekly' } }));
+    await record('eventsCurrent', () => client.call('eventsCurrent'));
+
+    expect(outcomes).toEqual({
+      authGuest: 'ok',
+      authRefresh: 'ok',
+      state: 'ok',
+      tableDrop: 'ok',
+      tableClaims: 'ok',
+      tableNudge: 'ok',
+      tableInputs: 'ok',
+      upgradesBuy: 'insufficient_funds',
+      charmsEquip: 'ok',
+      cratesOpen: 'not_found',
+      safesOpen: 'not_found',
+      gachaPull: 'insufficient_funds',
+      scratchReveal: 'not_found',
+      ascend: 'not_ready',
+      album: 'ok',
+      fairSeeds: 'ok',
+      fairRotate: 'ok',
+      quests: 'ok',
+      questsClaim: 'not_found',
+      season: 'ok',
+      leaderboard: 'ok',
+      eventsCurrent: 'ok',
+    });
+    expectConserved();
+  });
+
+  it('serves responses that re-parse with the shared schemas after a JSON round trip', async () => {
+    const token = await accessToken();
+    const snapshot = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state',
+      body: null,
+      token,
+    });
+    expect(StateResponseSchema.safeParse(snapshot.body).success).toBe(true);
+    time.advance(100);
+    const drop = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/drop',
+      body: JSON.stringify({ x: 0, tick: time.tick() }),
+      token,
+    });
+    const parsed = DropResponseSchema.parse(drop.body);
+    travel();
+    const claims = await forge(server, alice.device, {
+      method: 'POST',
+      path: '/v1/table/claims',
+      body: JSON.stringify({
+        claims: [{ kind: 'fall', coinId: parsed.coin.id, tick: time.tick(), edge: 'front' }],
+      }),
+      token,
+    });
+    expect(ClaimsResponseSchema.safeParse(claims.body).success).toBe(true);
+  });
+});
