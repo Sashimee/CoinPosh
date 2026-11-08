@@ -21,14 +21,34 @@ export class CoinLedger {
   readonly #bySim = new Map<number, MintedCoin>();
   readonly #simOf = new Map<CoinId, number>();
   readonly #voided = new Set<CoinId>();
+  readonly #reserved = new Set<number>();
 
   /** Records a coin just handed to `SimBridge.drop`. */
   expect(coin: MintedCoin): void {
     this.#expected.push(coin);
   }
 
-  /** Pairs a new sim body with the oldest coin still waiting for one. */
+  /** Pairs a sim body with a coin known up front, as the opening heap's are. */
+  bind(simId: number, coin: MintedCoin): void {
+    this.#reserved.delete(simId);
+    const previous = this.#bySim.get(simId);
+    if (previous) this.#simOf.delete(previous.id);
+    this.#bySim.set(simId, coin);
+    this.#simOf.set(coin.id, simId);
+  }
+
+  /** Keeps a body the sim made itself, as a fusion does, from taking a dropped coin. */
+  reserve(simId: number): void {
+    if (!this.#bySim.has(simId)) this.#reserved.add(simId);
+  }
+
+  /**
+   * Pairs a new sim body with its bound coin, or else with the oldest coin still waiting for one.
+   */
   assign(simId: number): MintedCoin | null {
+    const bound = this.#bySim.get(simId);
+    if (bound) return bound;
+    if (this.#reserved.delete(simId)) return null;
     const coin = this.#expected.shift();
     if (!coin) return null;
     this.#bySim.set(simId, coin);
@@ -66,6 +86,7 @@ export class CoinLedger {
 
   /** Forgets a body that left the table; its coin can never be claimed twice. */
   release(simId: number): void {
+    this.#reserved.delete(simId);
     const coin = this.#bySim.get(simId);
     this.#bySim.delete(simId);
     if (!coin) return;
