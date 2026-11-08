@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../../audio/rng.ts';
+import { LANGUAGES, type Language } from '../../i18n/core.ts';
+import { COMPACT_BALANCE_FROM, formatBalance } from '../../i18n/format.ts';
 import {
   alignFromRight,
   canCount,
@@ -7,7 +9,6 @@ import {
   OdometerTrack,
   readout,
   ROLL_MS,
-  rollTarget,
   splitGlyphs,
   wheelPosition,
   wrapDigit,
@@ -36,31 +37,6 @@ describe('wrapDigit', () => {
   });
 });
 
-describe('rollTarget', () => {
-  it('rolls forward through 9 to 0 when rising', () => {
-    expect(rollTarget(9, 0, 1)).toBe(10);
-    expect(rollTarget(3, 7, 1)).toBe(7);
-    expect(rollTarget(7, 7, 1)).toBe(7);
-  });
-
-  it('rolls backward through 0 to 9 when falling', () => {
-    expect(rollTarget(10, 9, -1)).toBe(9);
-    expect(rollTarget(0, 9, -1)).toBe(-1);
-    expect(rollTarget(5, 2, -1)).toBe(2);
-  });
-
-  it('starts from the nearest whole turn mid-roll', () => {
-    expect(rollTarget(4.6, 6, 1)).toBe(6);
-    expect(wrapDigit(rollTarget(-3, 2, 1))).toBe(2);
-  });
-
-  it('rejects anything but a single digit', () => {
-    expect(() => rollTarget(0, 10, 1)).toThrow(RangeError);
-    expect(() => rollTarget(0, -1, 1)).toThrow(RangeError);
-    expect(() => rollTarget(0, 1.5, 1)).toThrow(RangeError);
-  });
-});
-
 describe('alignFromRight', () => {
   it('keeps units aligned when a digit and separator are added', () => {
     expect(alignFromRight(splitGlyphs('999'), splitGlyphs('1,000'))).toEqual([null, null, 0, 1, 2]);
@@ -86,6 +62,60 @@ const expectWellFormed = (frame: OdometerFrame): void => {
 };
 const isWhole = (frame: OdometerFrame): boolean =>
   frame.columns.every((column) => column.kind === 'static' || Number.isInteger(column.position));
+
+interface Reading {
+  /** The balance the text names, at the middle of the range it rounds from. */
+  readonly value: number;
+  readonly low: number;
+  readonly high: number;
+}
+
+/**
+ * Reads a balance plaque text back as the balances it can stand for, or null when no balance
+ * formats to it (a leading zero, a missing digit, a wrong suffix).
+ */
+const readBalance = (text: string, language: Language): Reading | null => {
+  const numeric = /^[\d.,\u00a0\u202f ]*\d/.exec(text)?.[0] ?? '';
+  if (numeric === '') return null;
+  const suffix = text.slice(numeric.length);
+  if (suffix === '') {
+    const value = Number(numeric.replace(/\D/g, ''));
+    return formatBalance(value, language) === text ? { value, low: value, high: value } : null;
+  }
+  const scale = [1e6, 1e9].find(
+    (unit) => formatBalance(unit, language).replace(/^[\d.,]+/, '') === suffix,
+  );
+  if (scale === undefined) return null;
+  const decimal =
+    new Intl.NumberFormat(language).formatToParts(1.5).find((part) => part.type === 'decimal')
+      ?.value ?? '.';
+  const [whole = '', fraction = ''] = numeric.split(decimal);
+  const step = scale / 10 ** fraction.length;
+  const value = Number(`${whole}${fraction}`) * step;
+  if (formatBalance(value, language) !== text) return null;
+  return { value, low: value - step / 2, high: value + step / 2 };
+};
+
+describe('readBalance', () => {
+  it('reads grouped and compact texts in every language', () => {
+    expect(readBalance('999,990', 'en')).toEqual({ value: 999_990, low: 999_990, high: 999_990 });
+    expect(readBalance('1.01M', 'en')).toEqual({
+      value: 1_010_000,
+      low: 1_005_000,
+      high: 1_015_000,
+    });
+    expect(readBalance(formatBalance(1_010_000, 'de'), 'de')?.value).toBe(1_010_000);
+    expect(readBalance(formatBalance(12_300_000, 'fr'), 'fr')?.value).toBe(12_300_000);
+    expect(readBalance(formatBalance(999_024, 'fr'), 'fr')?.value).toBe(999_024);
+  });
+
+  it('rejects texts no balance formats to', () => {
+    expect(readBalance('019.649', 'de')).toBeNull();
+    expect(readBalance('0.00M', 'en')).toBeNull();
+    expect(readBalance('1.0M', 'en')).toBeNull();
+    expect(readBalance('', 'en')).toBeNull();
+  });
+});
 
 describe('wheelPosition', () => {
   it('reads as the rounded value at every point of a mechanical roll', () => {
@@ -267,10 +297,16 @@ describe('OdometerTrack', () => {
    * checks every frame: it reads as a whole formatted number (no missing digit, no leading
    * zero) and stays between the balances of the last ROLL_MS, so it never runs ahead of the
    * balance nor lags more than ROLL_MS behind it. A rising stream must also never roll back.
+   * Texts are the plaque's own, so streams past COMPACT_BALANCE_FROM change scale.
    */
-  const playCredits = (start: number, credits: readonly Credit[]): OdometerTrack => {
+  const playCredits = (
+    start: number,
+    credits: readonly Credit[],
+    language: Language = 'en',
+  ): OdometerTrack => {
+    const plaque = (balance: number): string => formatBalance(balance, language);
     const track = new OdometerTrack();
-    track.jump(format(start));
+    track.jump(plaque(start));
     const history: Credit[] = [{ at: -Infinity, balance: start }, ...credits];
     const balanceAt = (ms: number): number =>
       history.filter((entry) => entry.at <= ms).at(-1)?.balance ?? start;
@@ -283,26 +319,27 @@ describe('OdometerTrack', () => {
       const previous = balanceAt(now - 1);
       for (const credit of credits) {
         if (credit.at !== now) continue;
-        track.push(format(credit.balance), credit.balance >= previous ? 1 : -1, now, false);
+        track.push(plaque(credit.balance), credit.balance >= previous ? 1 : -1, now, false);
       }
       const frame = track.sample(now);
       const text = readout(frame.columns);
-      const shown = shownValue(frame);
       const window = [
         balanceAt(now - ROLL_MS),
         ...credits.filter((c) => c.at > now - ROLL_MS && c.at <= now).map((c) => c.balance),
       ];
-      const context = `at ${now} ms, ${previous} -> ${balanceAt(now)}, showing "${text}"`;
-      expect(text, context).toBe(format(shown));
-      expect(shown, context).toBeGreaterThanOrEqual(Math.min(...window));
-      expect(shown, context).toBeLessThanOrEqual(Math.max(...window));
-      if (rising) expect(shown, context).toBeGreaterThanOrEqual(lastShown);
-      lastShown = shown;
+      const context = `${language} at ${now} ms, ${previous} -> ${balanceAt(now)}, showing "${text}"`;
+      const shown = readBalance(text, language);
+      expect(shown, context).not.toBeNull();
+      if (!shown) continue;
+      expect(shown.high, context).toBeGreaterThanOrEqual(Math.min(...window));
+      expect(shown.low, context).toBeLessThanOrEqual(Math.max(...window));
+      if (rising) expect(shown.value, context).toBeGreaterThanOrEqual(lastShown);
+      lastShown = shown.value;
     }
     const landed = track.sample(end);
     expect(landed.settled).toBe(true);
     expect(isWhole(landed)).toBe(true);
-    expect(readout(landed.columns)).toBe(format(balanceAt(end)));
+    expect(readout(landed.columns)).toBe(plaque(balanceAt(end)));
     return track;
   };
 
@@ -456,16 +493,95 @@ describe('OdometerTrack', () => {
     expect(readout(track.sample(ROLL_MS).columns)).toBe('5,052');
   });
 
-  it('rolls straight to a new compact scale without blanking a column', () => {
+  it.each([
+    ['9.9K', '10K', 1],
+    ['999,990', '1.01M', 1],
+    ['1.01M', '999,990', -1],
+    ['9.99M', '10.0M', 1],
+  ] as const)('swaps the whole readout from %s to the new scale %s', (from, to, direction) => {
     const track = new OdometerTrack();
-    track.jump('9.9K');
-    track.push('10K', 1, 0, false);
-    for (let now = 0; now < ROLL_MS; now += 8) {
-      const text = readout(track.sample(now).columns);
-      expect(text).toMatch(/^\d\dK$/);
+    track.jump(from);
+    track.push(to, direction, 0, false);
+    let lastProgress = -1;
+    for (let now = 0; now < ROLL_MS; now += 4) {
+      const frame = track.sample(now);
+      expect(readout(frame.columns)).toBe(to);
+      expect(isWhole(frame)).toBe(true);
+      expect(frame.settled).toBe(false);
+      expect(frame.swap?.direction).toBe(direction);
+      const progress = frame.swap?.progress ?? -1;
+      expect(progress).toBeGreaterThanOrEqual(lastProgress);
+      expect(progress).toBeLessThan(1);
+      lastProgress = progress;
     }
-    expect(readout(track.sample(ROLL_MS).columns)).toBe('10K');
-    expect(track.sample(ROLL_MS).settled).toBe(true);
+    const landed = track.sample(ROLL_MS);
+    expect(readout(landed.columns)).toBe(to);
+    expect(landed.settled).toBe(true);
+    expect(landed.swap).toBeNull();
+  });
+
+  it('counts again as soon as a change after a swap can count', () => {
+    const track = new OdometerTrack();
+    track.jump('1.00M');
+    track.push('999,740', -1, 0, false);
+    track.push('999,647', -1, 177, false);
+    track.push('999,711', 1, 274, false);
+    for (let now = 0; now <= 274 + ROLL_MS; now++) {
+      const frame = track.sample(now);
+      const text = readout(frame.columns);
+      expectWellFormed(frame);
+      const shown = shownValue(frame);
+      if (now < 177) expect(text, `at ${now}`).toBe('999,740');
+      expect(shown, `at ${now}: ${text}`).toBeGreaterThanOrEqual(999_647);
+      expect(shown, `at ${now}: ${text}`).toBeLessThanOrEqual(999_740);
+    }
+    expect(readout(track.sample(274 + ROLL_MS).columns)).toBe('999,711');
+  });
+
+  it('keeps counting within the compact scale', () => {
+    const track = new OdometerTrack();
+    track.jump('1.01M');
+    track.push('1.03M', 1, 0, false);
+    for (let now = 0; now < ROLL_MS; now += 4) {
+      const frame = track.sample(now);
+      expect(frame.swap).toBeNull();
+      expect(readout(frame.columns)).toMatch(/^1\.0[123]M$/);
+    }
+    expect(readout(track.sample(ROLL_MS).columns)).toBe('1.03M');
+  });
+
+  it.each(LANGUAGES)('stays readable crossing %s compact notation and back', (language) => {
+    playCredits(
+      999_990,
+      [
+        { at: 0, balance: 1_010_000 },
+        { at: 60, balance: 1_010_400 },
+        { at: 300, balance: 999_990 },
+        { at: 340, balance: 999_960 },
+        { at: 700, balance: 1_000_000 },
+        { at: 800, balance: 1_012_000 },
+      ],
+      language,
+    );
+  });
+
+  it.each(
+    LANGUAGES.flatMap((language) => [1, 2, 3, 4, 5, 6].map((seed) => [language, seed] as const)),
+  )('holds up in %s around the compact boundary (seed %i)', (language, seed) => {
+    const rng = createRng(0x1226 * seed + language.charCodeAt(0));
+    const start = COMPACT_BALANCE_FROM - 1 - Math.floor(rng() * 4000);
+    let balance = start;
+    const credits: Credit[] = [];
+    let at = 0;
+    for (let i = 0; i < 40; i++) {
+      at += 1 + Math.floor(rng() ** 2 * 320);
+      const amount = 1 + Math.floor(rng() ** 3 * 9000);
+      const toward = balance < COMPACT_BALANCE_FROM ? 0.65 : 0.4;
+      balance = rng() < toward ? balance + amount : Math.max(0, balance - amount);
+      credits.push({ at, balance });
+    }
+    expect(credits.some((credit) => credit.balance >= COMPACT_BALANCE_FROM)).toBe(true);
+    playCredits(start, credits, language);
   });
 
   it('snaps under reduced motion', () => {

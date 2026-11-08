@@ -15,21 +15,6 @@ export function wrapDigit(position: number): number {
 }
 
 /**
- * A digit column's position is an unbounded count of turns; the shown digit is it mod 10.
- * Rising values always roll forward (9 → 0 passes through the top) and falling values roll
- * backward, the way a mechanical counter does.
- */
-export function rollTarget(from: number, digit: number, direction: 1 | -1): number {
-  if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
-    throw new RangeError(`Odometer digit must be 0..9, got ${digit}`);
-  }
-  const current = wrapDigit(Math.round(from));
-  const base = Math.round(from);
-  if (direction > 0) return base + ((digit - current + 10) % 10);
-  return base - ((current - digit + 10) % 10);
-}
-
-/**
  * Pairs new glyphs with existing columns from the right, so units stay aligned when the
  * number grows a digit. Returns, for each new glyph, the index of the old column it reuses.
  */
@@ -68,9 +53,16 @@ export type OdometerColumn =
       readonly hidden: boolean;
     };
 
+/** A whole readout easing in after a change of scale: 0 just swapped, 1 at rest. */
+export interface OdometerSwap {
+  readonly direction: 1 | -1;
+  readonly progress: number;
+}
+
 export interface OdometerFrame {
   readonly columns: readonly OdometerColumn[];
   readonly settled: boolean;
+  readonly swap: OdometerSwap | null;
 }
 
 interface Slot {
@@ -97,7 +89,6 @@ interface Leg {
  * changes already under way and each one is fully counted in by its own landing.
  */
 interface CountingRoll extends RollTiming {
-  readonly kind: 'counting';
   readonly baseValue: number;
   readonly legs: readonly Leg[];
   readonly ticksBelow: number;
@@ -105,14 +96,16 @@ interface CountingRoll extends RollTiming {
   readonly minPlaces: number;
 }
 
-/** The text changed shape (a new compact suffix, say): each wheel rolls straight to its digit. */
-interface DirectRoll extends RollTiming {
-  readonly kind: 'direct';
-  readonly from: readonly number[];
-  readonly to: readonly number[];
+/**
+ * The text changed scale (a new compact suffix, say), so no wheel's old digit relates to its
+ * new one: rolling them would read as numbers the balance never held. The wheels show the new
+ * text at once and the whole readout eases in instead.
+ */
+interface Swap {
+  readonly direction: 1 | -1;
+  readonly startMs: number;
+  readonly endMs: number;
 }
-
-type Roll = CountingRoll | DirectRoll;
 
 function easeOutQuart(t: number): number {
   const x = 1 - Math.min(1, Math.max(0, t));
@@ -192,12 +185,14 @@ export function readout(columns: readonly OdometerColumn[]): string {
 export class OdometerTrack {
   private slots: Slot[] = [];
   private target: Glyph[] = [];
-  private roll: Roll | null = null;
+  private roll: CountingRoll | null = null;
+  private swap: Swap | null = null;
   private nextId = 0;
 
   /** Shows `text` at once, with no roll. */
   jump(text: string): void {
     this.roll = null;
+    this.swap = null;
     this.target = splitGlyphs(text);
     this.relayout(this.target);
   }
@@ -210,61 +205,51 @@ export class OdometerTrack {
     }
     const glyphs = splitGlyphs(text);
     if (sameGlyphs(glyphs, this.target)) return;
+    if (
+      !canCount(
+        this.slots.map((slot) => slot.glyph),
+        glyphs,
+      )
+    ) {
+      this.roll = null;
+      this.target = glyphs;
+      this.relayout(glyphs);
+      this.swap = { direction, startMs: nowMs, endMs: nowMs + ROLL_MS };
+      return;
+    }
     const joined = this.roll && nowMs - this.roll.batchStartMs < COALESCE_MS ? this.roll : null;
     const timing: RollTiming = {
       startMs: nowMs,
       batchStartMs: joined?.batchStartMs ?? nowMs,
       endMs: joined?.endMs ?? nowMs + ROLL_MS,
     };
-    const counting = this.roll === null || this.roll.kind === 'counting';
-    if (
-      counting &&
-      canCount(
-        this.slots.map((slot) => slot.glyph),
-        glyphs,
-      )
-    ) {
-      const fromValue = this.countedValue(nowMs);
-      const toValue = digitsValue(glyphs);
-      const previous = this.roll?.kind === 'counting' ? this.roll : null;
-      const minPlaces = Math.max(
-        paddedPlaces(this.shownPlaces(nowMs), fromValue),
-        paddedPlaces(digitCount(glyphs), toValue),
-      );
-      if (glyphs.length > this.slots.length) this.relayout(glyphs);
-      const turns = Math.abs(toValue - fromValue);
-      let ticksBelow = previous?.ticksBelow ?? 0;
-      while (turns / 10 ** ticksBelow > SPIN_DIGITS) ticksBelow++;
-      const running = previous?.legs.filter((leg) => leg.endMs > nowMs) ?? [];
-      const baseValue =
-        (previous?.baseValue ?? digitsValue(this.target)) +
-        (previous?.legs ?? []).reduce((sum, leg) => (leg.endMs > nowMs ? sum : sum + leg.delta), 0);
-      const leg = {
-        startMs: nowMs,
-        endMs: timing.endMs,
-        delta: toValue - digitsValue(this.target),
-      };
-      this.roll = {
-        kind: 'counting',
-        baseValue,
-        legs: [...running, leg],
-        ticksBelow,
-        minPlaces,
-        ...timing,
-      };
-    } else {
-      const current = this.positions(nowMs);
-      const reuse = this.relayout(glyphs);
-      const from = glyphs.map((glyph, i) => {
-        const oldIndex = reuse[i];
-        const old = oldIndex === null || oldIndex === undefined ? undefined : current[oldIndex];
-        return glyph.kind === 'digit' ? (old ?? glyph.digit) : 0;
-      });
-      const to = glyphs.map((glyph, i) =>
-        glyph.kind === 'digit' ? rollTarget(from[i] ?? 0, glyph.digit, direction) : 0,
-      );
-      this.roll = { kind: 'direct', from, to, ...timing };
-    }
+    const fromValue = this.countedValue(nowMs);
+    const toValue = digitsValue(glyphs);
+    const previous = this.roll;
+    const minPlaces = Math.max(
+      paddedPlaces(this.shownPlaces(nowMs), fromValue),
+      paddedPlaces(digitCount(glyphs), toValue),
+    );
+    if (glyphs.length > this.slots.length) this.relayout(glyphs);
+    const turns = Math.abs(toValue - fromValue);
+    let ticksBelow = previous?.ticksBelow ?? 0;
+    while (turns / 10 ** ticksBelow > SPIN_DIGITS) ticksBelow++;
+    const running = previous?.legs.filter((leg) => leg.endMs > nowMs) ?? [];
+    const baseValue =
+      (previous?.baseValue ?? digitsValue(this.target)) +
+      (previous?.legs ?? []).reduce((sum, leg) => (leg.endMs > nowMs ? sum : sum + leg.delta), 0);
+    const leg = {
+      startMs: nowMs,
+      endMs: timing.endMs,
+      delta: toValue - digitsValue(this.target),
+    };
+    this.roll = {
+      baseValue,
+      legs: [...running, leg],
+      ticksBelow,
+      minPlaces,
+      ...timing,
+    };
     this.target = glyphs;
   }
 
@@ -277,7 +262,10 @@ export class OdometerTrack {
         ? { id: slot.id, kind: 'static', char: slot.glyph.char, hidden: hidden[i] ?? false }
         : { id: slot.id, kind: 'digit', position: positions[i] ?? 0, hidden: hidden[i] ?? false },
     );
-    return { columns, settled: this.roll === null };
+    const swap = this.swap
+      ? { direction: this.swap.direction, progress: progress(this.swap, nowMs) }
+      : null;
+    return { columns, settled: this.roll === null && swap === null, swap };
   }
 
   /**
@@ -288,7 +276,7 @@ export class OdometerTrack {
   private leadingZeros(nowMs: number): boolean[] {
     const hidden = new Array<boolean>(this.slots.length).fill(false);
     const roll = this.roll;
-    if (roll?.kind !== 'counting') return hidden;
+    if (!roll) return hidden;
     const places = Math.max(
       roll.minPlaces,
       String(Math.max(0, Math.round(this.countedValue(nowMs)))).length,
@@ -313,11 +301,12 @@ export class OdometerTrack {
       this.roll = null;
       this.relayout(this.target);
     }
+    if (this.swap && nowMs >= this.swap.endMs) this.swap = null;
   }
 
   private countedValue(nowMs: number): number {
     const roll = this.roll;
-    if (roll?.kind !== 'counting') return digitsValue(this.target);
+    if (!roll) return digitsValue(this.target);
     return roll.legs.reduce(
       (value, leg) => value + leg.delta * progress(leg, nowMs),
       roll.baseValue,
@@ -328,10 +317,6 @@ export class OdometerTrack {
     const roll = this.roll;
     if (!roll) {
       return this.slots.map((slot) => (slot.glyph.kind === 'digit' ? slot.glyph.digit : 0));
-    }
-    if (roll.kind === 'direct') {
-      const t = progress(roll, nowMs);
-      return roll.from.map((from, i) => from + ((roll.to[i] ?? from) - from) * t);
     }
     const value = this.countedValue(nowMs);
     const positions = new Array<number>(this.slots.length).fill(0);

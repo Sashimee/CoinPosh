@@ -1,7 +1,17 @@
 import { h } from '../dom.ts';
 import { schedule } from '../motion/loop.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
-import { OdometerTrack, wrapDigit, type OdometerColumn } from './odometerMath.ts';
+import {
+  OdometerTrack,
+  wrapDigit,
+  type OdometerColumn,
+  type OdometerSwap,
+} from './odometerMath.ts';
+
+/** How far, in em, a swapped readout rises (or drops) into place. */
+const SWAP_LIFT_EM = 0.35;
+/** A swapped readout's opacity the moment it appears. */
+const SWAP_FROM_OPACITY = 0.2;
 
 interface Cell {
   readonly el: HTMLElement;
@@ -21,7 +31,8 @@ function staticCell(char: string): Cell {
 /**
  * Serif rolling counter. Feed it formatted text; digits roll, separators and suffixes stay.
  * The wheels turn as one mechanical counter, so a mid-roll frame always reads as a number
- * between the old and new values, with no blank or half-faded column.
+ * between the old and new values, with no blank or half-faded column. A change of scale
+ * (into compact notation, say) cannot count, so the whole readout eases in at its new value.
  */
 export class Odometer {
   readonly el = h('span', { class: 'cp-odo', attrs: { 'aria-hidden': 'true' } });
@@ -58,7 +69,7 @@ export class Odometer {
   /** Paints the current frame; returns true once every wheel is at rest. */
   private render(nowMs: number): boolean {
     const frame = this.track.sample(nowMs);
-    for (const column of frame.columns) this.paint(column);
+    for (const column of frame.columns) this.paint(column, frame.swap);
     const ids = frame.columns.map((column) => column.id);
     if (ids.length !== this.order.length || ids.some((id, i) => id !== this.order[i])) {
       const live = new Set(ids);
@@ -69,13 +80,19 @@ export class Odometer {
     return frame.settled;
   }
 
-  private paint(column: OdometerColumn): void {
+  private paint(column: OdometerColumn, swap: OdometerSwap | null): void {
     let cell = this.cells.get(column.id);
     if (!cell) {
       cell = column.kind === 'digit' ? digitCell() : staticCell(column.char);
       this.cells.set(column.id, cell);
     }
     cell.el.style.display = column.hidden ? 'none' : '';
+    cell.el.style.opacity = swap
+      ? String(SWAP_FROM_OPACITY + (1 - SWAP_FROM_OPACITY) * swap.progress)
+      : '';
+    cell.el.style.transform = swap
+      ? `translateY(${(1 - swap.progress) * SWAP_LIFT_EM * swap.direction}em)`
+      : '';
     if (column.kind === 'digit' && cell.strip) {
       cell.strip.style.transform = `translateY(${-wrapDigit(column.position)}em)`;
     }
