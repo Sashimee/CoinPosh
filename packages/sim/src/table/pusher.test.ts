@@ -19,6 +19,11 @@ function offsets(clock: PusherClock, ticks: number): number[] {
   return out;
 }
 
+/** The most an eased half-stroke can move the block in one tick: smoothstep peaks at slope 1.5. */
+function peakStep({ stroke, periodTicks, pushFraction }: PusherMotion): number {
+  return (1.5 * stroke) / (periodTicks * Math.min(pushFraction, 1 - pushFraction));
+}
+
 describe('pusherExtension', () => {
   it('is retracted at phase 0, fully extended at the push fraction and back by the end', () => {
     for (const pushFraction of [0.2, 0.5, 0.6, 0.8]) {
@@ -75,13 +80,18 @@ describe('PusherClock', () => {
     expect(offsets(clock, PUSHER.periodTicks)).toEqual(first);
   });
 
-  it('moves the block less than 1.5 mm in any one tick at the default motion', () => {
+  it('moves the block no further in a tick than its eased peak speed, under 2 mm, at the default motion', () => {
+    const peak = peakStep(DEFAULT_PUSHER_MOTION);
+    expect(peak).toBeLessThan(0.002);
     const steps = offsets(new PusherClock(), PUSHER.periodTicks);
     let previous = 0;
+    let fastest = 0;
     for (const offset of steps) {
-      expect(Math.abs(offset - previous)).toBeLessThan(0.0015);
+      fastest = Math.max(fastest, Math.abs(offset - previous));
       previous = offset;
     }
+    expect(fastest).toBeLessThanOrEqual(peak);
+    expect(fastest).toBeGreaterThan(0.95 * peak);
   });
 
   it('keeps the phase when the speed changes, so the block does not jump', () => {
@@ -114,10 +124,11 @@ describe('PusherClock', () => {
     clock.setMotion(wanted);
     expect(clock.motion).toEqual({ ...DEFAULT_PUSHER_MOTION, periodTicks: 120 });
     expect(clock.pendingMotion).toEqual(wanted);
+    const peak = peakStep({ ...DEFAULT_PUSHER_MOTION, periodTicks: 120 });
     let previous = clock.offset;
     while (clock.cycles === 0) {
       clock.advance();
-      expect(Math.abs(clock.offset - previous)).toBeLessThan(0.003);
+      expect(Math.abs(clock.offset - previous)).toBeLessThanOrEqual(peak);
       previous = clock.offset;
     }
     expect(clock.offset).toBe(0);
