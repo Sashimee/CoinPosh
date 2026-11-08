@@ -19,7 +19,10 @@ import { configureTableWorld } from './tuning.ts';
  * 3.83 ms at the 99th percentile. Rest (P-215) took the tick about a tenth faster, but
  * a second round of runs on the same host, then slower all round, measured the old
  * table at 3.51 to 3.52 ms mean and 4.90 to 4.94 ms at the 99th, the new one at 3.17 to
- * 3.21 ms and 4.63 to 4.72 ms: compare runs taken back to back on one machine. The
+ * 3.21 ms and 4.63 to 4.72 ms. Finding pressed rest coins through a grid of the awake
+ * ones, rather than walking every frozen coin's contact pairs, then measured 2.97 to
+ * 2.99 ms mean and 4.59 to 4.63 ms at the 99th against 3.50 ms and 4.91 to 5.00 ms for
+ * the old table: compare runs taken back to back on one machine. The
  * coin and sleeping counts over the measured ticks are printed after the run, so the
  * result always says what it measured.
  */
