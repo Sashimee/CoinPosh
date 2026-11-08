@@ -135,6 +135,22 @@
   min-height: 0;
 }
 
+.cp-hud-middle.is-waiting {
+  visibility: hidden;
+}
+
+.cp-hud-middle > .cp-side-meter {
+  opacity: clamp(0, var(--cp-meters-in, 1), 1);
+}
+
+.cp-hud-middle > .cp-side-meter:first-child {
+  translate: calc((1 - var(--cp-meters-in, 1)) * -64px) 0;
+}
+
+.cp-hud-middle > .cp-side-meter:last-child {
+  translate: calc((1 - var(--cp-meters-in, 1)) * 64px) 0;
+}
+
 .cp-plaque-wrap {
   display: flex;
   align-items: center;
