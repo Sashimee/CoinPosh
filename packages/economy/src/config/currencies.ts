@@ -5,7 +5,7 @@ export const currencies = [
     id: 'coins',
     kind: 'soft',
     resetsOnAscension: true,
-    sources: ['pushOffLedge', 'offlineVault', 'vaultCrate'],
+    sources: ['pushOffLedge', 'offlineVault', 'vaultCrate', 'stewardAllowance'],
     sinks: ['drop', 'venueUpgrade'],
   },
   {
