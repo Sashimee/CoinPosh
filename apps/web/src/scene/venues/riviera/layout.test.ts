@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Box3, type Mesh, PerspectiveCamera, Raycaster, Vector3 } from 'three/webgpu';
-import {
-  BACKBOARD,
-  GUTTER_START_Z,
-  PLAYFIELD,
-  PUSHER,
-} from '../../../../../../packages/sim/src/table/layout.ts';
+import { BACKBOARD, GUTTER_START_Z, PLAYFIELD, PUSHER } from '@coinposh/sim/layout';
 import { createNoiseTexture } from '../../env/noise-texture.ts';
 import {
   applyCameraPreset,
@@ -28,22 +23,42 @@ interface Viewport {
   /** Bottom of the Vault plaque and top of the dock in Demo Mode, in CSS px. */
   readonly plaqueBottom: number;
   readonly dockTop: number;
+  /** P-154 as amended by P-170: share of the plaque-to-dock band the playfield spans, at least. */
+  readonly minPlayfieldShare: number;
+  /** Lowest share of the height, from the top, at which the payout lip may sit. */
+  readonly minLipDepth: number;
 }
 
-const PORTRAIT: Viewport = { width: 390, height: 844, plaqueBottom: 164, dockTop: 774 };
-const LANDSCAPE: Viewport = { width: 844, height: 390, plaqueBottom: 137, dockTop: 324 };
-const DESKTOP: Viewport = { width: 1440, height: 900, plaqueBottom: 147, dockTop: 830 };
+const PORTRAIT: Viewport = {
+  width: 390,
+  height: 844,
+  plaqueBottom: 164,
+  dockTop: 774,
+  minPlayfieldShare: 0.55,
+  minLipDepth: 0.55,
+};
+const LANDSCAPE: Viewport = {
+  width: 844,
+  height: 390,
+  plaqueBottom: 137,
+  dockTop: 324,
+  minPlayfieldShare: 0.7,
+  minLipDepth: 0.6,
+};
+const DESKTOP: Viewport = {
+  width: 1440,
+  height: 900,
+  plaqueBottom: 147,
+  dockTop: 830,
+  minPlayfieldShare: 0.7,
+  minLipDepth: 0.6,
+};
 
-/** P-154: the playfield spans at least this share of the band between the plaque and the dock. */
-const MIN_PLAYFIELD_SHARE = 0.7;
 /**
- * The Decorum and Cascade meters at 390x844 in Demo Mode, in CSS px (left, top, right, bottom),
- * measured with getBoundingClientRect on `.cp-side-meter`.
+ * P-171: the Decorum and Cascade meters may cover at most 15 CSS px of the coin floor edge, so
+ * the floor stays clear of that strip along both screen edges.
  */
-const PORTRAIT_METERS = [
-  [16, 360, 92, 578],
-  [298, 332, 374, 606],
-] as const;
+const PORTRAIT_METER_STRIP = 15;
 
 function presetCamera(aspect: number): PerspectiveCamera {
   const camera = new PerspectiveCamera(50, aspect, 0.05, 2000);
@@ -279,8 +294,8 @@ describe('rivieraCameraPreset', () => {
       expect(horizon.y).toBeGreaterThan(0.9);
     });
 
-    it(`puts the payout lip in the lower 40 % of the frame at ${label}`, () => {
-      expect(lip / view.height).toBeGreaterThanOrEqual(0.6);
+    it(`puts the payout lip at or below ${view.minLipDepth * 100} % of the height at ${label}`, () => {
+      expect(lip / view.height).toBeGreaterThanOrEqual(view.minLipDepth);
       expect(lip).toBeLessThan(view.dockTop);
     });
 
@@ -311,10 +326,10 @@ describe('rivieraCameraPreset', () => {
       expect(top).toBeGreaterThan(0);
     });
 
-    it(`fills at least ${MIN_PLAYFIELD_SHARE * 100} % of the HUD band with the playfield at ${label}`, () => {
+    it(`fills at least ${view.minPlayfieldShare * 100} % of the HUD band with the playfield at ${label}`, () => {
       const top = Math.max(crestTop(camera, view, table), view.plaqueBottom);
       const bottom = Math.min(lip, view.dockTop);
-      expect((bottom - top) / band).toBeGreaterThanOrEqual(MIN_PLAYFIELD_SHARE);
+      expect((bottom - top) / band).toBeGreaterThanOrEqual(view.minPlayfieldShare);
     });
 
     it(`keeps the empty catch tray to at most 10 % of the height at ${label}`, () => {
@@ -341,7 +356,7 @@ describe('rivieraCameraPreset', () => {
     });
   }
 
-  it('keeps the portrait coin floor out from under the Decorum and Cascade meters', () => {
+  it('keeps the whole portrait coin floor on screen, clear of the slimmed side meter strips', () => {
     const camera = presetCamera(PORTRAIT.width / PORTRAIT.height);
     const floorAt = (x: number, z: number): Vector3 => {
       const behind = (T.fieldFrontZ - z) / (T.fieldFrontZ - T.backboardFrontZ);
@@ -355,13 +370,10 @@ describe('rivieraCameraPreset', () => {
       const x = -T.fieldHalfWidth + (2 * T.fieldHalfWidth * i) / steps;
       outline.push(floorAt(x, T.fieldFrontZ));
     }
-    for (const [left, top, right, bottom] of PORTRAIT_METERS) {
-      for (const p of outline) {
-        const under = p.x > left && p.x < right && p.y > top && p.y < bottom;
-        expect(under, `floor at ${p.x.toFixed(0)},${p.y.toFixed(0)} px is under a meter`).toBe(
-          false,
-        );
-      }
+    for (const p of outline) {
+      const at = `floor at ${p.x.toFixed(0)},${p.y.toFixed(0)} px`;
+      expect(p.x, at).toBeGreaterThanOrEqual(PORTRAIT_METER_STRIP);
+      expect(p.x, at).toBeLessThanOrEqual(PORTRAIT.width - PORTRAIT_METER_STRIP);
     }
     for (const side of [-1, 1]) {
       for (const z of [T.fieldFrontZ, T.backboardFrontZ]) {

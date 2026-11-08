@@ -1,13 +1,6 @@
 import type { PerspectiveCamera } from 'three/webgpu';
 import { Vector3 } from 'three/webgpu';
-// TODO(lead-architect, #20): import from '@coinposh/sim' once it exposes the table layout without
-// pulling Rapier into the main bundle. This module has no imports of its own: constants only.
-import {
-  BACKBOARD,
-  GUTTER_START_Z,
-  PLAYFIELD,
-  PUSHER,
-} from '../../../../../../packages/sim/src/table/layout.ts';
+import { BACKBOARD, GUTTER_START_Z, PLAYFIELD, PUSHER } from '@coinposh/sim/layout';
 
 /** Lacquer side wall height; the glass above it carries the wall up to the sim's wall height. */
 const SIDE_WALL_HEIGHT = 0.07;
@@ -88,21 +81,22 @@ export const HUD_BAND_SHORT = { top: 0.297, bottom: -0.662 } as const;
 /** Clearance kept between the coin floor and the band edges, in NDC. */
 const BAND_MARGIN = 0.025;
 /**
- * Widest NDC x the coin floor may reach on a portrait phone: the edges past it belong to the
- * Decorum and Cascade meters (P-119, P-133).
+ * Widest NDC x the coin floor may reach on a portrait phone: about 15 px of each screen edge,
+ * where the Decorum and Cascade meters slim down over the floor edge (P-170, P-171). Narrower
+ * than this, the width fit pushes the camera back until the table no longer fills the band.
  */
-export const PORTRAIT_FIELD_MAX_X = 0.7;
+export const PORTRAIT_FIELD_MAX_X = 0.92;
 /** Widest NDC x the coin floor may reach on any other screen. */
 const FIELD_MAX_X = 0.96;
 /**
  * NDC y of the backboard crest, and the lowest it may drop to on a portrait phone so the lip
- * reaches the lower 40 %: at most 14 % of the frame shows deck above the backboard, so the
+ * drops low: at most 14 % of the frame shows deck above the backboard, so the
  * table, not the yacht, fills the screen.
  */
 const CREST_NDC_Y = 0.78;
-const CREST_MIN_NDC_Y = 0.72;
-/** Highest NDC y of the payout edge: the lip sits in the lower 40 % of the frame. */
-const LIP_MAX_NDC_Y = -0.22;
+const CREST_MIN_NDC_Y = 0.73;
+/** Highest NDC y of the payout edge: the lip sits at about 65 % of the height or lower. */
+const LIP_MAX_NDC_Y = -0.3;
 /**
  * Share of the HUD band the playfield fills, from the backboard crest (or the band top, if the
  * crest is under the Vault plaque) down to the payout lip, wherever the width allows it.
@@ -172,7 +166,7 @@ const MAX_DISTANCE = 12;
  * crest near the top edge and the payout lip low in the HUD band, so the playfield fills the
  * screen and the sea and sky stay out of it. Where the screen is too narrow for that (a portrait
  * phone) the coin floor's width sets the distance instead, and the frame drops until the lip
- * is in the lower 40 %, as far as the crest allows. The coin floor always stays in the band the
+ * is low in the frame, as far as the crest allows. The coin floor always stays in the band the
  * HUD leaves free, and the stern bulwark hides the sea behind the cabinet.
  */
 export function rivieraCameraPreset(aspect: number): CameraPreset {
