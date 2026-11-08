@@ -1,83 +1,88 @@
 import { h } from '../dom.ts';
-import type { SpringConfig } from '../motion/spring.ts';
-import { SpringValue } from '../motion/value.ts';
-import { alignFromRight, rollTarget, splitGlyphs, wrapDigit, type Glyph } from './odometerMath.ts';
+import { schedule } from '../motion/loop.ts';
+import { isReducedMotion } from '../motion/reduced.ts';
+import { OdometerTrack, wrapDigit, type OdometerColumn } from './odometerMath.ts';
 
-interface Column {
+interface Cell {
   readonly el: HTMLElement;
-  readonly glyph: Glyph;
-  readonly roll: SpringValue | null;
+  readonly strip: HTMLElement | null;
 }
 
-/** Right-hand columns roll faster, like the light wheels of a real counter. */
-function columnSpring(fromRight: number): SpringConfig {
-  const stiffness = 280 - 26 * Math.min(fromRight, 6);
-  return { stiffness, damping: 1.7 * Math.sqrt(stiffness), restDelta: 0.002 };
-}
-
-function digitColumn(start: number, fromRight: number): Column {
+function digitCell(): Cell {
   const strip = h('span', { class: 'cp-odo-strip' });
   for (let d = 0; d <= 10; d++) strip.append(h('span', { text: String(d % 10) }));
-  const el = h('span', { class: 'cp-odo-col' }, strip);
-  const roll = new SpringValue(start, columnSpring(fromRight), (position) => {
-    strip.style.transform = `translateY(${-wrapDigit(position)}em)`;
-  });
-  return { el, glyph: { kind: 'digit', digit: wrapDigit(start) }, roll };
+  return { el: h('span', { class: 'cp-odo-col' }, strip), strip };
 }
 
-function staticColumn(char: string): Column {
-  return {
-    el: h('span', { class: 'cp-odo-static', text: char }),
-    glyph: { kind: 'static', char },
-    roll: null,
-  };
+function staticCell(char: string): Cell {
+  return { el: h('span', { class: 'cp-odo-static', text: char }), strip: null };
 }
 
-/** Serif rolling counter. Feed it formatted text; digits roll, separators and suffixes stay. */
+/**
+ * Serif rolling counter. Feed it formatted text; digits roll, separators and suffixes stay.
+ * The wheels turn as one mechanical counter, so a mid-roll frame always reads as a number
+ * between the old and new values, with no blank or half-faded column.
+ */
 export class Odometer {
   readonly el = h('span', { class: 'cp-odo', attrs: { 'aria-hidden': 'true' } });
-  private columns: Column[] = [];
+  private readonly track = new OdometerTrack();
+  private readonly cells = new Map<number, Cell>();
+  private order: readonly number[] = [];
+  private cancel: (() => void) | null = null;
+
+  constructor(private readonly now: () => number = () => performance.now()) {}
 
   set(text: string, direction: 1 | -1): void {
-    const glyphs = splitGlyphs(text);
-    const previous = this.columns;
-    const reuse = alignFromRight(
-      previous.map((column) => column.glyph),
-      glyphs,
-    );
-    const next: Column[] = glyphs.map((glyph, i) => {
-      const oldIndex = reuse[i];
-      const fromRight = glyphs.length - 1 - i;
-      const old = oldIndex === null || oldIndex === undefined ? undefined : previous[oldIndex];
-      if (glyph.kind === 'static') return old ?? staticColumn(glyph.char);
-      if (old?.roll) {
-        void old.roll.to(rollTarget(old.roll.target, glyph.digit, direction));
-        return { ...old, glyph };
-      }
-      const column = digitColumn(0, fromRight);
-      if (previous.length > 0) column.el.classList.add('cp-odo-enter');
-      void column.roll?.to(rollTarget(0, glyph.digit, 1));
-      return { ...column, glyph };
-    });
-    const kept = new Set(next.map((column) => column.el));
-    for (const column of previous) {
-      if (!kept.has(column.el)) {
-        column.roll?.stop();
-        column.el.remove();
-      }
-    }
-    this.el.replaceChildren(...next.map((column) => column.el));
-    this.columns = next;
+    const now = this.now();
+    this.track.push(text, direction, now, isReducedMotion());
+    if (!this.render(now)) this.run();
   }
 
   /** Shows `text` immediately, with no roll. */
   jump(text: string): void {
-    for (const column of this.columns) column.roll?.stop();
-    this.columns = [];
-    this.el.replaceChildren();
-    this.set(text, 1);
-    for (const column of this.columns) {
-      if (column.glyph.kind === 'digit') column.roll?.jump(column.glyph.digit);
+    this.cancel?.();
+    this.cancel = null;
+    this.track.jump(text);
+    this.render(this.now());
+  }
+
+  private run(): void {
+    if (this.cancel) return;
+    this.cancel = schedule(() => {
+      const settled = this.render(this.now());
+      if (settled) this.cancel = null;
+      return !settled;
+    });
+  }
+
+  /** Paints the current frame; returns true once every wheel is at rest. */
+  private render(nowMs: number): boolean {
+    const frame = this.track.sample(nowMs);
+    for (const column of frame.columns) this.paint(column);
+    const ids = frame.columns.map((column) => column.id);
+    if (ids.length !== this.order.length || ids.some((id, i) => id !== this.order[i])) {
+      const live = new Set(ids);
+      for (const id of this.cells.keys()) if (!live.has(id)) this.cells.delete(id);
+      this.el.replaceChildren(...ids.map((id) => this.cell(id).el));
+      this.order = ids;
     }
+    return frame.settled;
+  }
+
+  private paint(column: OdometerColumn): void {
+    let cell = this.cells.get(column.id);
+    if (!cell) {
+      cell = column.kind === 'digit' ? digitCell() : staticCell(column.char);
+      this.cells.set(column.id, cell);
+    }
+    if (column.kind === 'digit' && cell.strip) {
+      cell.strip.style.transform = `translateY(${-wrapDigit(column.position)}em)`;
+    }
+  }
+
+  private cell(id: number): Cell {
+    const cell = this.cells.get(id);
+    if (!cell) throw new Error(`Odometer: no cell painted for column ${id}`);
+    return cell;
   }
 }
