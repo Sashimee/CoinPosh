@@ -255,6 +255,6 @@ describe('mechanics determinism', () => {
 
   it('pins the session state so a change to the mechanics is noticed', async () => {
     const { digests } = await playSession(SEED);
-    expect(digests.at(-1)).toMatchInlineSnapshot(`"5b133732fd75a28e"`);
+    expect(digests.at(-1)).toMatchInlineSnapshot(`"729f6f15f07d6198"`);
   });
 });

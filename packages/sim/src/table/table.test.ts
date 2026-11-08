@@ -7,8 +7,14 @@ import { Xoshiro128ss } from '../prng.ts';
 import { loadRapier } from '../rapier.ts';
 import { BACKBOARD, GUTTER_START_Z, PLAYFIELD, PUSHER, TABLE_INNER_HALF_WIDTH } from './layout.ts';
 import { DEFAULT_PUSHER_MOTION } from './pusher.ts';
-import { type FallEvent, PusherTable, type TableCoin, type TableOptions } from './table.ts';
-import { COIN_MATERIAL, configureTableWorld, TABLE_SOLVER } from './tuning.ts';
+import {
+  type ContactEvent,
+  type FallEvent,
+  PusherTable,
+  type TableCoin,
+  type TableOptions,
+} from './table.ts';
+import { COIN_MATERIAL, CONTACT_EVENTS, configureTableWorld, TABLE_SOLVER } from './tuning.ts';
 
 const FLAT = { x: 0, y: 0, z: 0, w: 1 } as const;
 const SEED = 0x7ab1e001;
@@ -199,6 +205,163 @@ describe('pusher', () => {
     const coin = onlyCoin(rig.table);
     expect(coin.translation.z).toBeGreaterThan(PUSHER.frontZ + PUSHER.stroke + COIN.radius - 0.002);
     expect(coin.translation.y).toBeCloseTo(COIN.halfThickness, 3);
+  });
+
+  it('sweeps lanes of coins in front of the block forward and over the lip, reporting each fall', async () => {
+    const rig = await createRig();
+    const pitch = 2 * COIN.radius + 0.002;
+    const start = new Map<number, number>();
+    for (const x of [-0.08, 0, 0.08]) {
+      for (let z = PUSHER.frontZ + COIN.radius + 0.004; z < PLAYFIELD.fieldFrontZ; z += pitch) {
+        start.set(rig.table.addCoin({ x, y: COIN.halfThickness + 0.0005, z }, FLAT), z);
+      }
+    }
+    const falls = runTicks(rig, 2 * PUSHER.periodTicks);
+    expect(falls.length).toBeGreaterThanOrEqual(6);
+    for (const fall of falls) {
+      expect(fall.edge).toBe('front');
+      expect(start.has(fall.coinId)).toBe(true);
+    }
+    const left = rig.table.coins();
+    expect(left.length + falls.length).toBe(start.size);
+    for (const coin of left) {
+      expect(coin.translation.z, `coin ${coin.id}`).toBeGreaterThan(
+        (start.get(coin.id) ?? Number.POSITIVE_INFINITY) + 0.03,
+      );
+    }
+  });
+});
+
+describe('nudge', () => {
+  async function restingRig(): Promise<Rig> {
+    const rig = await createRig();
+    rig.table.addCoin({ x: 0, y: COIN.halfThickness, z: 0.02 }, FLAT);
+    rig.table.addCoin({ x: 0, y: PUSHER.height + COIN.halfThickness, z: -0.17 }, FLAT);
+    runTicks(rig, TICK_RATE_HZ);
+    return rig;
+  }
+
+  it('shoves every coin the way the cabinet is jolted, a few millimetres', async () => {
+    for (const [direction, axis, sign] of [
+      ['forward', 'z', 1],
+      ['left', 'x', -1],
+      ['right', 'x', 1],
+    ] as const) {
+      const rig = await restingRig();
+      const control = await restingRig();
+      rig.table.nudge(direction);
+      runTicks(rig, TICK_RATE_HZ / 2);
+      runTicks(control, TICK_RATE_HZ / 2);
+      const still = control.table.coins();
+      const after = rig.table.coins();
+      expect(after).toHaveLength(2);
+      after.forEach((coin, i) => {
+        const moved = sign * (coin.translation[axis] - (still[i]?.translation[axis] ?? 0));
+        expect(moved, `${direction}, coin ${coin.id}`).toBeGreaterThan(0.001);
+        expect(moved, `${direction}, coin ${coin.id}`).toBeLessThan(0.012);
+      });
+    }
+  });
+
+  it('wakes sleeping coins and replays bit for bit', async () => {
+    const a = await restingRig();
+    const b = await restingRig();
+    runTicks(a, 4 * TICK_RATE_HZ);
+    runTicks(b, 4 * TICK_RATE_HZ);
+    const lower = a.table.coins().find((coin) => coin.translation.y < PUSHER.height);
+    expect(lower?.sleeping).toBe(true);
+    a.table.nudge('left');
+    b.table.nudge('left');
+    expect(a.table.coins().every((coin) => !coin.sleeping)).toBe(true);
+    runTicks(a, 30);
+    runTicks(b, 30);
+    expect(tableHash(b)).toBe(tableHash(a));
+    const c = await restingRig();
+    runTicks(c, 4 * TICK_RATE_HZ + 30);
+    expect(tableHash(c)).not.toBe(tableHash(a));
+  });
+
+  it('rejects an unknown direction', async () => {
+    const rig = await createRig();
+    expect(() => {
+      rig.table.nudge('back' as 'left');
+    }).toThrow('PusherTable.nudge: unknown direction "back"');
+  });
+});
+
+describe('contact events', () => {
+  function contactsUntilQuiet(rig: Rig, ticks: number): ContactEvent[] {
+    const contacts: ContactEvent[] = [];
+    for (let i = 0; i < ticks; i++) {
+      rig.step();
+      contacts.push(...rig.table.contacts);
+    }
+    return contacts;
+  }
+
+  it('reports a dropped coin landing on the pusher, scaled by its closing speed', async () => {
+    const rig = await createRig();
+    const id = rig.table.dropCoin(0, rig.rng);
+    const contacts = contactsUntilQuiet(rig, TICK_RATE_HZ);
+    const [first] = contacts;
+    expect(first).toMatchObject({ coinId: id, surface: 'pusher' });
+    expect(first?.speed).toBeGreaterThan(1.2);
+    expect(first?.strength).toBeCloseTo(
+      Math.min(1, (first?.speed ?? 0) / CONTACT_EVENTS.fullSpeed),
+      12,
+    );
+    expect(first?.position.y).toBeLessThan(PUSHER.height + 0.03);
+    for (const [i, contact] of contacts.entries()) {
+      expect(contact.strength).toBeGreaterThan(0);
+      expect(contact.strength).toBeLessThanOrEqual(1);
+      const next = contacts[i + 1];
+      if (next) {
+        expect(next.tick - contact.tick).toBeGreaterThanOrEqual(CONTACT_EVENTS.cooldownTicks);
+      }
+    }
+  });
+
+  it('names the floor and another coin, and reports contacts in coin id order', async () => {
+    const rig = await createRig();
+    const resting = rig.table.addCoin({ x: 0, y: COIN.halfThickness, z: 0.0 }, FLAT);
+    runTicks(rig, 10);
+    const onCoin = rig.table.addCoin({ x: 0, y: 0.05, z: 0.0 }, FLAT);
+    const onFloor = rig.table.addCoin({ x: -0.1, y: 0.05, z: 0.0 }, FLAT);
+    let seen: ContactEvent[] = [];
+    for (let i = 0; i < TICK_RATE_HZ && seen.length === 0; i++) {
+      rig.step();
+      seen = rig.table.contacts.slice();
+    }
+    expect(seen.map(({ coinId, surface }) => ({ coinId, surface }))).toEqual([
+      { coinId: onCoin, surface: 'coin' },
+      { coinId: onFloor, surface: 'floor' },
+    ]);
+    expect(seen.every((contact) => contact.tick === rig.tick)).toBe(true);
+    expect(resting).toBe(0);
+  });
+
+  it('reports nothing for coins at rest', async () => {
+    const rig = await createRig();
+    rig.table.addCoin({ x: 0, y: COIN.halfThickness, z: 0.0 }, FLAT);
+    expect(contactsUntilQuiet(rig, TICK_RATE_HZ)).toEqual([]);
+  });
+});
+
+describe('removeCoin', () => {
+  it('takes a coin off without a fall and refuses an id that is not on the table', async () => {
+    const rig = await createRig();
+    const a = rig.table.addCoin({ x: 0, y: COIN.halfThickness, z: 0.0 }, FLAT);
+    const b = rig.table.addCoin({ x: 0.05, y: COIN.halfThickness, z: 0.0 }, FLAT);
+    rig.table.removeCoin(a);
+    expect(rig.table.coins().map((coin) => coin.id)).toEqual([b]);
+    expect(runTicks(rig, 10)).toEqual([]);
+    expect(rig.table.nextCoinId).toBe(2);
+    expect(() => {
+      rig.table.removeCoin(a);
+    }).toThrow('PusherTable.removeCoin: coin 0 is not on the table');
+    expect(() => {
+      rig.table.removeCoin(7);
+    }).toThrow(RangeError);
   });
 });
 
@@ -595,7 +758,7 @@ describe('determinism', () => {
     const { hashes } = await referenceTo(SESSION_TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"c090d32a142ce2b7"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"a4e6238cc93d4acc"`);
   });
 
   it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
@@ -880,10 +1043,10 @@ describe('contacts', () => {
 
   it('keeps coins in the full, moving pile from sinking into each other, checked every tick', async () => {
     const overlaps = (await referenceTo(SESSION_TICKS)).overlaps;
-    // Every pair on every tick of the minute, over 400 touching pairs a tick once the
-    // table is full. Measured: 0.28 mm deepest.
+    // Every pair on every tick of the minute, over 380 touching pairs a tick once the
+    // table is full. Measured: 0.28 mm deepest, 393 to 395 pairs fewest.
     expect(overlaps.ticks).toBe(SESSION_TICKS);
-    expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
+    expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(380);
     expect(overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
   });
 
@@ -913,7 +1076,7 @@ describe('contacts', () => {
         expect(unconverged).toEqual([]);
         expect(overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
         if (tick > FULL_TABLE_TICKS) {
-          expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(400);
+          expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(380);
         }
       },
     );

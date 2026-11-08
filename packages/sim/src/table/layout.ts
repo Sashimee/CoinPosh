@@ -23,8 +23,8 @@ export const PLAYFIELD = {
   /** Open channel between the floor and each side wall: wider than a coin, so one falls flat in. */
   gutterWidth: 0.032,
   /**
-   * z of the front (payout) edge of the lower tier, 9 cm ahead of the pusher's
-   * default reach. At 11 cm the 250-coin budget filled both tiers without the lower
+   * z of the front (payout) edge of the lower tier, 5 cm ahead of the pusher's
+   * default reach (PUSHER.stroke). At 11 cm the 250-coin budget filled both tiers without the lower
    * pile ever reaching the edge, and the table could settle with nothing paying out.
    */
   fieldFrontZ: 0.05,
@@ -52,8 +52,15 @@ export const PUSHER = {
   height: 0.035,
   /** Front face z at full retraction (extension 0). */
   frontZ: -0.12,
-  /** Default travel of the front face, retracted to extended. */
-  stroke: 0.08,
+  /**
+   * Default travel of the front face, retracted to extended: the full 12 cm the guides
+   * allow, matching the renderer's pusher. At 8 cm the block stopped 9 cm short of the
+   * lip, so the lower tier had to hold some 180 coins before a shove reached the edge:
+   * the opening heap sat still and a centre drop moved nothing. At 12 cm the face
+   * reaches 5 cm from the lip and a single drop onto the opening heap tips coins over
+   * within one or two strokes, while the heap on its own stands.
+   */
+  stroke: 0.12,
   /** Longest stroke a motion may ask for; the guide walls end just ahead of it. */
   maxStroke: 0.12,
   /** Block depth front to back; long enough that its top never clears the backboard. */

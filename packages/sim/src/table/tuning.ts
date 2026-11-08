@@ -90,6 +90,47 @@ export const TABLE_MATERIAL = {
 } as const;
 
 /**
+ * The cabinet nudge: a shove to the whole cabinet that every coin feels at once, as a
+ * change of velocity (m/s) the same for every coin whatever its mass, like the cabinet
+ * jolting under the pile. Each tier's coins are on a surface that moved, so each one
+ * gets the same kick and the pile shifts as one rather than squirting apart.
+ *
+ * - push 0.2 forward, sideways 0.15: on the coin-on-wood friction (about 0.34, so
+ *   3.3 m/s² of braking), a coin sliding free travels 6 mm forward or 3.4 mm sideways.
+ *   A packed pile shifts less, the coins at the lip just enough to tip one that was
+ *   already hanging, so a nudge teases a ledge rather than clearing it. Sideways is
+ *   gentler because the gutters are the house's: a shove toward them should cost the
+ *   player a coin now and then, not a row.
+ * - lift 0.12: a small hop (an airborne 25 ms, 0.7 mm high) that breaks the pile's
+ *   static friction, so the horizontal kick moves coins instead of being swallowed by
+ *   friction on contact. Kept under the impact brake's 0.3 m/s together with the push
+ *   (0.23 m/s), so the brake never fires on a nudge and no contact event is faked.
+ */
+export const NUDGE = {
+  push: 0.2,
+  sideways: 0.15,
+  lift: 0.12,
+} as const;
+
+/**
+ * Contact events for the renderer and audio: a coin striking something at or above
+ * COIN_MATERIAL.impactSpeed (0.3 m/s) is braked by the impact brake (PusherTable),
+ * which knows the closing speed and what was struck, so that is where the event comes
+ * from. Slower contacts (the pusher's shove, coins settling) make no sound worth a
+ * sample and are not reported.
+ *
+ * - fullSpeed 1.5 m/s: a coin dropped down the chute onto the pusher top (12 cm, about
+ *   1.5 m/s) is the hardest hit the table makes, strength 1; a coin falling off the
+ *   upper lip (35 mm, 0.83 m/s) lands at about 0.55.
+ * - cooldownTicks 6 (100 ms): one landing can be braked on two or three substeps in a
+ *   row as the coin settles; one event a coin per 100 ms reads as one clack.
+ */
+export const CONTACT_EVENTS = {
+  fullSpeed: 1.5,
+  cooldownTicks: 6,
+} as const;
+
+/**
  * Solver settings the table is tuned against, measured over a minute of play with
  * an exact minimum-translation overlap check between coin pairs (see table.test.ts),
  * taken on every tick from the first drop to the end of the minute.

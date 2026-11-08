@@ -1,12 +1,21 @@
+import { COIN_TIERS } from '@coinposh/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PerspectiveCamera } from 'three/webgpu';
 import { CoinField, type CoinTierId } from '../../scene/coins/index.ts';
 import { SIM_COIN_DIMENSIONS, SimBridge, type BridgeEndpoint } from './bridge.ts';
-import { FrameView, type CoinPose } from './frame.ts';
+import { frameByteLength, FrameView, type CoinPose } from './frame.ts';
 import type { CoinTransformTarget } from './interpolate.ts';
-import type { MainToWorker, TransportKind, WorkerToMain } from './protocol.ts';
+import type { MainToWorker, SimEventBatch, TransportKind, WorkerToMain } from './protocol.ts';
 import { MAX_CATCH_UP_TICKS, runSimWorker, TICK_MS } from './runtime.ts';
-import { COIN, Sim, type SimInput } from './sim-api.ts';
+import {
+  COIN,
+  Sim,
+  type FallEvent,
+  type MechanicsConfig,
+  type OpeningHeap,
+  type SimInput,
+  type SimOptions,
+} from './sim-api.ts';
 
 const SEED = 0xc0195051;
 
@@ -98,14 +107,35 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const MECHANICS: MechanicsConfig<string> = {
+  tiers: COIN_TIERS,
+  fusion: { inputCount: 3, contactSeconds: 0.4 },
+  tower: null,
+};
+
+interface HarnessOptions {
+  /** Runs the worker's Sim with MECHANICS, as sim.worker.ts does. */
+  readonly mechanics?: boolean;
+  readonly openingHeap?: OpeningHeap;
+}
+
+function simOptions(seed: number, options: HarnessOptions): SimOptions {
+  return {
+    seed,
+    ...(options.mechanics ? { mechanics: MECHANICS } : {}),
+    ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
+  };
+}
+
 /** A real Sim behind runSimWorker, talking to a SimBridge over a MessageChannel. */
-function harness(transport: TransportKind): Harness {
+function harness(transport: TransportKind, options: HarnessOptions = {}): Harness {
   if (transport === 'shared') vi.stubGlobal('crossOriginIsolated', true);
   const channel = new MessageChannel();
   const timers = new ManualTimers();
   let renderAhead = 0;
   runSimWorker(channel.port2, {
-    createSim: (seed) => Sim.create({ seed }),
+    createSim: (hosted) =>
+      Sim.create(options.mechanics ? { ...hosted, mechanics: MECHANICS } : hosted),
     now: () => timers.now,
     setTimer: timers.set,
     clearTimer: timers.clear,
@@ -114,6 +144,7 @@ function harness(transport: TransportKind): Harness {
     seed: SEED,
     transport,
     now: () => timers.now + renderAhead,
+    ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
   });
   const scratch = new RecordingTarget();
   const created: Harness = {
@@ -214,6 +245,53 @@ describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport'
     expect(target.ids('diamond')).toEqual([1]);
   });
 
+  it('draws sim tiers, nudges and pusher stroke exactly as the same log replayed in-thread', async () => {
+    const { bridge, run, poll, newest } = harness(transport, { mechanics: true });
+    const info = await bridge.ready;
+    expect(info.tiers).toEqual(COIN_TIERS);
+    await poll();
+    const log: { tick: number; inputs: SimInput[] }[] = [];
+    const send = async (input: SimInput, ticks: number): Promise<void> => {
+      log.push({ tick: bridge.stats.tick, inputs: [input] });
+      if (input.kind === 'nudge') bridge.nudge(input.direction);
+      else bridge.drop(input.xMm, (input.tier ?? 'copper') as CoinTierId);
+      await settle();
+      await run(ticks);
+    };
+    await send({ kind: 'dropCoin', xMm: -40, tier: 'gold' }, 15);
+    await send({ kind: 'dropCoin', xMm: 0, tier: 'copper' }, 15);
+    await send({ kind: 'dropCoin', xMm: 40, tier: 'heirloom' }, 30);
+    await send({ kind: 'nudge', direction: 'left' }, 20);
+    await send({ kind: 'nudge', direction: 'forward' }, 20);
+    const finalTick = bridge.stats.tick;
+    expect(finalTick).toBe(100);
+
+    const direct = await Sim.create(simOptions(SEED, { mechanics: true }));
+    try {
+      while (direct.tick < finalTick) {
+        direct.step(log.filter((entry) => entry.tick === direct.tick).flatMap((e) => e.inputs));
+      }
+      const target = newest();
+      expect(direct.coins().map((coin) => [coin.id, coin.tier])).toEqual([
+        [0, 'gold'],
+        [1, 'copper'],
+        [2, 'heirloom'],
+      ]);
+      for (const coin of direct.coins()) {
+        const drawn = target.written.get(coin.tier as CoinTierId);
+        const i = drawn?.ids.indexOf(coin.id) ?? -1;
+        expect(i, `coin ${coin.id}`).toBeGreaterThanOrEqual(0);
+        expect(drawn?.positions[i * 3]).toBe(Math.fround(coin.translation.x));
+        expect(drawn?.positions[i * 3 + 2]).toBe(Math.fround(coin.translation.z));
+      }
+      expect(bridge.stats.pusherStroke).toBe(direct.pusher.extension);
+      expect(bridge.stats.pusherPhase).toBe(direct.pusher.phase);
+      expect(bridge.stats.pusherStroke).toBeGreaterThan(0);
+    } finally {
+      direct.dispose();
+    }
+  });
+
   it('catches up at most four ticks after a stall, then starts a new epoch', async () => {
     const { bridge, timers, run, poll } = harness(transport);
     await bridge.ready;
@@ -245,7 +323,138 @@ describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport'
   });
 });
 
+// Each test plays a 110-coin heap for hundreds of ticks twice, through the worker and in-thread.
+describe('SimBridge events', { timeout: 30_000 }, () => {
+  interface Collected {
+    falls: FallEvent[];
+    contacts: SimEventBatch['contacts'][number][];
+    fusions: SimEventBatch['fusions'][number][];
+  }
+
+  const collect = (bridge: SimBridge): Collected => {
+    const all: Collected = { falls: [], contacts: [], fusions: [] };
+    bridge.onEvents((batch) => {
+      expect(batch.falls.length + batch.contacts.length + batch.fusions.length).toBeGreaterThan(0);
+      all.falls.push(...batch.falls);
+      all.contacts.push(...batch.contacts);
+      all.fusions.push(...batch.fusions);
+    });
+    return all;
+  };
+
+  async function replay(options: HarnessOptions, inputs: Map<number, SimInput[]>, ticks: number) {
+    const direct = await Sim.create(simOptions(SEED, options));
+    const all: Collected = { falls: [], contacts: [], fusions: [] };
+    try {
+      while (direct.tick < ticks) {
+        const events = direct.step(inputs.get(direct.tick) ?? []);
+        all.falls.push(...events.falls);
+        all.contacts.push(...events.contacts);
+        for (const event of events.mechanics) {
+          if (event.kind === 'fusion') all.fusions.push(event as Collected['fusions'][number]);
+        }
+      }
+      return { all, coins: direct.coins() };
+    } finally {
+      direct.dispose();
+    }
+  }
+
+  it('forwards the contacts and fusions of a fusing heap, and draws fused coins in their new tier', async () => {
+    const options: HarnessOptions = { mechanics: true, openingHeap: { coins: 110 } };
+    const { bridge, run, poll, newest } = harness('transfer', options);
+    const all = collect(bridge);
+    await bridge.ready;
+    await poll();
+    bridge.drop(0);
+    await settle();
+    await run(90);
+    const drop: SimInput[] = [{ kind: 'dropCoin', xMm: 0, tier: 'copper' }];
+    const expected = await replay(options, new Map([[0, drop]]), bridge.stats.tick);
+    expect(all).toEqual(expected.all);
+    expect(all.contacts.length).toBeGreaterThan(0);
+    expect(all.fusions.length).toBeGreaterThan(0);
+    const target = newest();
+    for (const coin of expected.coins) {
+      expect(target.ids(coin.tier as CoinTierId), `coin ${coin.id}`).toContain(coin.id);
+    }
+    const fused = expected.coins.filter((coin) => coin.tier === 'silver');
+    expect(fused.length).toBeGreaterThan(0);
+    expect(all.fusions.map((fusion) => fusion.fusedId)).toEqual(
+      expect.arrayContaining(fused.map((coin) => coin.id)),
+    );
+  });
+
+  it('forwards the falls a stream of drops pushes over the lip', async () => {
+    const options: HarnessOptions = { openingHeap: { coins: 110 } };
+    const { bridge, run, poll } = harness('transfer', options);
+    const all = collect(bridge);
+    await bridge.ready;
+    await poll();
+    const inputs = new Map<number, SimInput[]>();
+    for (let k = 0; k < 40; k += 1) {
+      inputs.set(bridge.stats.tick, [{ kind: 'dropCoin', xMm: 0 }]);
+      bridge.drop(0);
+      await settle();
+      await run(15);
+    }
+    const expected = await replay(options, inputs, bridge.stats.tick);
+    expect(all).toEqual(expected.all);
+    expect(all.falls.length).toBeGreaterThan(0);
+    expect(all.falls.every((fall) => fall.edge === 'front')).toBe(true);
+  });
+});
+
 describe('SimBridge failures', () => {
+  it('rejects an unknown nudge direction on the page', async () => {
+    const { bridge } = harness('transfer');
+    await bridge.ready;
+    expect(() => {
+      bridge.nudge('up' as never);
+    }).toThrow(/left, right, forward, got up/);
+  });
+
+  it('stops the sim on a drop naming an unknown tier or an init with a bad opening heap', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { bridge } = harness('transfer');
+    await bridge.ready;
+    bridge.drop(0, 'tin' as CoinTierId);
+    await settle();
+    expect(bridge.failure?.message).toMatch(/rejected a message.*optional tier/);
+    expect(errors).toHaveBeenCalledTimes(1);
+
+    const channel = new MessageChannel();
+    runSimWorker(channel.port2, {
+      createSim: (hosted) => Sim.create(hosted),
+      now: () => 0,
+      setTimer: () => 0,
+      clearTimer: () => undefined,
+    });
+    const received: WorkerToMain[] = [];
+    channel.port1.addEventListener('message', (event: MessageEvent<WorkerToMain>) => {
+      received.push(event.data);
+    });
+    channel.port1.start();
+    channel.port1.postMessage({
+      type: 'init',
+      seed: 1,
+      capacity: 8,
+      transport: { kind: 'transfer', buffers: [new ArrayBuffer(frameByteLength(8))] },
+      openingHeap: { coins: -1 },
+    } satisfies MainToWorker);
+    await settle();
+    expect(received).toEqual([
+      {
+        type: 'error',
+        message: expect.stringMatching(
+          /openingHeap\.coins must be a non-negative integer, got -1/,
+        ) as string,
+      },
+    ]);
+    channel.port1.close();
+    channel.port2.close();
+  });
+
   it('rejects an out-of-range or fractional drop on the page, before the worker sees it', async () => {
     const { bridge } = harness('transfer');
     await bridge.ready;
@@ -262,7 +471,7 @@ describe('SimBridge failures', () => {
     const channel = new MessageChannel();
     const timers = new ManualTimers();
     runSimWorker(channel.port2, {
-      createSim: (seed) => Sim.create({ seed }),
+      createSim: (hosted) => Sim.create(hosted),
       now: () => timers.now,
       setTimer: timers.set,
       clearTimer: timers.clear,
@@ -380,6 +589,21 @@ describe('SimBridge on the render thread', () => {
     }
     expect(bridge.stats.frames).toBe(100);
     expect(bridge.stats.tick).toBe(99);
+  });
+
+  it('hands event batches to every listener until it unsubscribes', () => {
+    const worker = new FakeWorker();
+    const bridge = new SimBridge(worker, { seed: 1, transport: 'transfer' });
+    const fall: FallEvent = { coinId: 4, edge: 'front', tick: 9 };
+    const first: SimEventBatch[] = [];
+    const second: SimEventBatch[] = [];
+    const stop = bridge.onEvents((batch) => first.push(batch));
+    bridge.onEvents((batch) => second.push(batch));
+    worker.emit('message', { type: 'events', falls: [fall], contacts: [], fusions: [] });
+    stop();
+    worker.emit('message', { type: 'events', falls: [], contacts: [], fusions: [] });
+    expect(first).toEqual([{ falls: [fall], contacts: [], fusions: [] }]);
+    expect(second).toHaveLength(2);
   });
 
   it('reports a worker that fails to load', async () => {

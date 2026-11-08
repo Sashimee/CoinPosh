@@ -2,7 +2,8 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { COIN } from './coin.ts';
 import { FIXED_DT, SIM_VERSION, SOLVER, TICK_RATE_HZ } from './constants.ts';
 import type { SimInput } from './inputs.ts';
-import { Sim } from './sim.ts';
+import type { FusionEvent, MechanicsConfig } from './mechanics/index.ts';
+import { Sim, type SimEvents } from './sim.ts';
 import { DEFAULT_PUSHER_MOTION, type FallEvent, PUSHER, TABLE_SOLVER } from './table/index.ts';
 
 const TICKS = 3600;
@@ -55,7 +56,7 @@ function advance(replay: Replay, ticks: number): string[] {
     for (const _ of inputs) {
       drops.push(sim.tick);
     }
-    for (const fall of sim.step(inputs)) {
+    for (const fall of sim.step(inputs).falls) {
       expect(fall.tick, `coin ${fall.coinId}`).toBe(sim.tick);
       falls.push(fall);
     }
@@ -187,8 +188,8 @@ describe('determinism', () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate SIM_VERSION bump.
-    expect(SIM_VERSION).toBe(2);
-    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"590da61d0e98c762"`);
+    expect(SIM_VERSION).toBe(3);
+    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"c5b0aeb071b1065b"`);
   });
 
   it('reports the same falls, at the same ticks, on both replays of the minute', async () => {
@@ -225,7 +226,9 @@ describe('determinism', () => {
     const expected = await referenceTo(900);
     const nudged = (tick: number): SimInput[] =>
       scriptedInputs(tick).map((input, i) =>
-        tick === 620 && i === 0 ? { ...input, xMm: input.xMm + 1 } : input,
+        tick === 620 && i === 0 && input.kind === 'dropCoin'
+          ? { ...input, xMm: input.xMm + 1 }
+          : input,
       );
     expect(scriptedInputs(620)).toHaveLength(1);
     const checkpoints = await run(SEED, 900, nudged);
@@ -316,7 +319,15 @@ describe('Sim API', () => {
       ],
       [[{ kind: 'dropCoin', xMm: 0.5 }], /got 0.5/],
       [[{ kind: 'dropCoin', xMm: Number.NaN }], /got NaN/],
-      [[{ kind: 'nudge' } as unknown as SimInput], /unknown sim input kind "nudge"/],
+      [[{ kind: 'tilt' } as unknown as SimInput], /unknown sim input kind "tilt"/],
+      [
+        [{ kind: 'nudge', direction: 'back' } as unknown as SimInput],
+        /Tick 0: nudge.direction must be one of left, right, forward, got "back"/,
+      ],
+      [
+        [{ kind: 'dropCoin', xMm: 0, tier: 'copper' }],
+        /dropCoin.tier needs a Sim created with mechanics/,
+      ],
     ];
     for (const [inputs, error] of attempts) {
       expect(() => {
@@ -341,5 +352,134 @@ describe('Sim API', () => {
       sim.step();
     }).toThrow(/disposed/);
     expect(() => sim.hash()).toThrow(/disposed/);
+  });
+});
+
+const MECHANICS: MechanicsConfig<string> = {
+  tiers: ['copper', 'silver', 'gold'],
+  fusion: { inputCount: 3, contactSeconds: 0.4 },
+  tower: null,
+};
+
+describe('nudge input', () => {
+  /** The scripted minute's drops, with a nudge each way. */
+  function nudgedInputs(tick: number): SimInput[] {
+    const inputs = scriptedInputs(tick);
+    const direction = ({ 400: 'forward', 460: 'left', 520: 'right' } as const)[tick];
+    return direction ? [...inputs, { kind: 'nudge', direction }] : inputs;
+  }
+
+  it('replays bit for bit, diverges from the tick of the first nudge, and pins the hash', async () => {
+    const nudged = await run(SEED, 600, nudgedInputs);
+    expect(await run(SEED, 600, nudgedInputs)).toEqual(nudged);
+    const plain = await referenceTo(600);
+    expect(nudged[0]).toBe(plain[0]);
+    expect(nudged[1]).not.toBe(plain[1]);
+    // Changing this value breaks replay audits of every input log with a nudge in it.
+    expect(nudged[1]).toMatchInlineSnapshot(`"7a25df8d67fb0e94"`);
+  });
+
+  it('shoves the coins forward relative to a sim left alone', async () => {
+    const a = await createSim();
+    const b = await createSim();
+    for (const sim of [a, b]) {
+      for (let tick = 0; tick < 300; tick++) {
+        sim.step(scriptedInputs(tick));
+      }
+    }
+    a.step([{ kind: 'nudge', direction: 'forward' }]);
+    b.step();
+    for (let i = 0; i < 20; i++) {
+      a.step();
+      b.step();
+    }
+    const still = new Map(b.coins().map((coin) => [coin.id, coin.translation.z]));
+    const moved = a.coins().map((coin) => coin.translation.z - (still.get(coin.id) ?? Number.NaN));
+    expect(moved.length).toBeGreaterThan(5);
+    expect(moved.filter((dz) => dz > 0.001).length).toBeGreaterThan(moved.length / 2);
+  });
+});
+
+describe('opening heap and mechanics', () => {
+  it('lays the heap at the lowest tier and gives a drop the tier it asks for', async () => {
+    const sim = await Sim.create({ seed: SEED, mechanics: MECHANICS, openingHeap: { coins: 30 } });
+    live.push(sim);
+    expect(sim.tiers).toEqual(MECHANICS.tiers);
+    expect(sim.coinCount).toBe(30);
+    expect(sim.coins().every((coin) => coin.tier === 'copper')).toBe(true);
+    sim.step([
+      { kind: 'dropCoin', xMm: 0, tier: 'gold' },
+      { kind: 'dropCoin', xMm: 40 },
+    ]);
+    expect(
+      sim
+        .coins()
+        .slice(30)
+        .map((coin) => coin.tier),
+    ).toEqual(['gold', 'copper']);
+    expect(() => sim.step([{ kind: 'dropCoin', xMm: 0, tier: 'tin' }])).toThrow(
+      /Tick 1: dropCoin.tier must be one of copper, silver, gold, got "tin"/,
+    );
+  });
+
+  it('refuses a heap it cannot place or a tier it does not know', async () => {
+    await expect(Sim.create({ seed: 1, openingHeap: { coins: 10_000 } })).rejects.toThrow(
+      /Opening heap: count must be an integer/,
+    );
+    await expect(
+      Sim.create({ seed: 1, openingHeap: { coins: 3, tier: 'copper' } }),
+    ).rejects.toThrow(/openingHeap.tier needs a Sim created with mechanics/);
+    await expect(
+      Sim.create({ seed: 1, mechanics: MECHANICS, openingHeap: { coins: 3, tier: 'tin' } }),
+    ).rejects.toThrow(/"tin" is not in the tier ladder/);
+  });
+
+  it('gives coins no tier and reports no mechanic events without mechanics', async () => {
+    const sim = await createSim();
+    sim.step([{ kind: 'dropCoin', xMm: 0 }]);
+    expect(sim.tiers).toBeNull();
+    expect(sim.coins()[0]?.tier).toBeNull();
+    expect(sim.step().mechanics).toEqual([]);
+  });
+
+  it('fuses packed coins on the heap into the next tier and pins the hash', async () => {
+    const play = async (): Promise<{ sim: Sim; events: SimEvents[] }> => {
+      const sim = await Sim.create({
+        seed: SEED,
+        mechanics: MECHANICS,
+        openingHeap: { coins: 110 },
+      });
+      live.push(sim);
+      const events: SimEvents[] = [];
+      for (let tick = 0; tick < 20 * TICK_RATE_HZ; tick++) {
+        const inputs: SimInput[] =
+          tick % 12 === 0 ? [{ kind: 'dropCoin', xMm: ((tick * 13) % 81) - 40 }] : [];
+        events.push(sim.step(inputs));
+      }
+      return { sim, events };
+    };
+    const { sim, events } = await play();
+    const fusions = events
+      .flatMap((e) => e.mechanics)
+      .filter((e): e is FusionEvent<string> => e.kind === 'fusion');
+    const falls = new Set(events.flatMap((e) => e.falls.map((fall) => fall.coinId)));
+    expect(fusions.length).toBeGreaterThan(0);
+    const onTable = new Map(sim.coins().map((coin) => [coin.id, coin.tier]));
+    for (const fusion of fusions) {
+      expect(fusion.ids).toHaveLength(MECHANICS.fusion.inputCount);
+      expect(fusion.into).toBe(MECHANICS.tiers[MECHANICS.tiers.indexOf(fusion.tier) + 1]);
+      for (const id of fusion.ids) {
+        expect(onTable.has(id), `fused coin ${id}`).toBe(false);
+        expect(falls.has(id), `fused coin ${id}`).toBe(false);
+      }
+      if (onTable.has(fusion.fusedId)) {
+        expect(onTable.get(fusion.fusedId)).toBe(fusion.into);
+      }
+    }
+    const replay = await play();
+    expect(replay.sim.hash()).toBe(sim.hash());
+    expect(replay.events).toEqual(events);
+    // Changing this value breaks replay audits of every input log played with mechanics.
+    expect(sim.hash()).toMatchInlineSnapshot(`"ba80b70edee5f7eb"`);
   });
 });

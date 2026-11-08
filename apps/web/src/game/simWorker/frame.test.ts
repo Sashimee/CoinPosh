@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { frameByteLength, FrameView, POSE_STRIDE, type CoinPose } from './frame.ts';
+import { frameByteLength, FrameView, NO_TIER, POSE_STRIDE, type CoinPose } from './frame.ts';
 import { SharedFrameRing } from './shared-ring.ts';
 
 function coin(id: number, x = id * 0.01): CoinPose {
@@ -21,6 +21,36 @@ describe('FrameView', () => {
     expect(frame.poses[POSE_STRIDE]).toBe(Math.fround(0.07));
     expect(frame.poses[POSE_STRIDE + 2]).toBe(Math.fround(-0.07));
     expect(frame.poses[POSE_STRIDE + 4]).toBe(Math.fround(Math.SQRT1_2));
+  });
+
+  it('round-trips each coin tier and the pusher, and copies them with the coins', () => {
+    const frame = FrameView.allocate(4);
+    frame.write(8, 0, [{ ...coin(1), tier: 'heirloom' }, coin(2), { ...coin(3), tier: null }], {
+      extension: 0.625,
+      phase: 0.3,
+    });
+    expect([0, 1, 2].map((i) => frame.tierAt(i))).toEqual(['heirloom', null, null]);
+    expect(frame.tiers[1]).toBe(NO_TIER);
+    expect(frame.pusherExtension).toBe(0.625);
+    expect(frame.pusherPhase).toBe(0.3);
+    const copy = FrameView.allocate(3);
+    copy.copyFrom(frame);
+    expect(copy.tierAt(0)).toBe('heirloom');
+    expect(copy.pusherExtension).toBe(0.625);
+    expect(copy.pusherPhase).toBe(0.3);
+    frame.write(9, 0, [{ ...coin(1), tier: 'copper' }]);
+    expect(frame.tierAt(0)).toBe('copper');
+    expect(frame.pusherExtension).toBe(0);
+  });
+
+  it('rejects a tier outside COIN_TIERS without writing', () => {
+    const frame = FrameView.allocate(2);
+    frame.write(5, 0, [{ ...coin(1), tier: 'gold' }]);
+    expect(() => {
+      frame.write(6, 0, [coin(1), { ...coin(2), tier: 'tin' }]);
+    }).toThrow(/coin 2 has tier "tin", which is not one of copper, silver/);
+    expect(frame.tick).toBe(5);
+    expect(frame.tierAt(0)).toBe('gold');
   });
 
   it('accepts an empty frame and a frame filled to capacity', () => {
@@ -94,11 +124,16 @@ describe('SharedFrameRing', () => {
   it('shares state between two views of one buffer, as the worker and page see it', () => {
     const writer = SharedFrameRing.create(4, 2);
     const reader = new SharedFrameRing(writer.buffer, 4, 2);
-    writer.publish(42, 3, [coin(1), coin(2)]);
+    writer.publish(42, 3, [coin(1), { ...coin(2), tier: 'silver' }], {
+      extension: 0.5,
+      phase: 0.25,
+    });
     const target = FrameView.allocate(2);
     expect(reader.readInto(reader.latest(), target)).toBe(true);
     expect(target.tick).toBe(42);
     expect(target.epoch).toBe(3);
+    expect(target.tierAt(1)).toBe('silver');
+    expect(target.pusherExtension).toBe(0.5);
   });
 
   it('keeps the slot readable as the previous frame when a publish fails', () => {

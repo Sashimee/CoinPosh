@@ -2,17 +2,30 @@ import type { CoinTierId } from '../../scene/coins/index.ts';
 import { RenderClock } from './clock.ts';
 import { frameByteLength, FrameView } from './frame.ts';
 import { FrameBlender, type CoinTransformTarget } from './interpolate.ts';
-import type { MainToWorker, MessageEndpoint, TransportKind, WorkerToMain } from './protocol.ts';
+import type {
+  MainToWorker,
+  MessageEndpoint,
+  SimEventBatch,
+  TransportKind,
+  WorkerToMain,
+} from './protocol.ts';
 import { TICK_MS } from './runtime.ts';
 import { SharedFrameRing } from './shared-ring.ts';
-import { COIN, MAX_DROP_OFFSET_MM, type EngineInfo, type SimInput } from './sim-api.ts';
+import {
+  COIN,
+  MAX_DROP_OFFSET_MM,
+  NUDGE_DIRECTIONS,
+  type EngineInfo,
+  type NudgeDirection,
+  type OpeningHeap,
+  type SimInput,
+} from './sim-api.ts';
 
 /** The sim's coin, in metres, for sizing the coin field and anything placed against coins. */
 export const SIM_COIN_DIMENSIONS = {
   radius: COIN.radius,
   halfThickness: COIN.halfThickness,
 } as const;
-
 /** One coin more than the sum of CoinField's tier capacities in main.ts, rounded up. */
 export const DEFAULT_FRAME_CAPACITY = 512;
 
@@ -38,6 +51,8 @@ export interface SimBridgeOptions {
   readonly transport?: TransportKind | 'auto';
   /** Look for coins whose drop named no tier. */
   readonly defaultTier?: CoinTierId;
+  /** Coins the sim lays at the brink of the lip before its first tick. */
+  readonly openingHeap?: OpeningHeap;
   /** Render-thread clock in ms; defaults to performance.now. */
   readonly now?: () => number;
 }
@@ -45,6 +60,8 @@ export interface SimBridgeOptions {
 export interface SimReadyInfo {
   readonly engine: EngineInfo;
   readonly tick: number;
+  /** The sim's tier ladder, or null when coin looks come only from `drop` and `setTier`. */
+  readonly tiers: readonly string[] | null;
 }
 
 export interface SimBridgeStats {
@@ -61,7 +78,16 @@ export interface SimBridgeStats {
   readonly snaps: number;
   /** Coins the last `sync` left undrawn because their tier was over the target's capacity. */
   readonly overflowCoins: number;
+  /**
+   * How far the pusher is extended at the render point, 0 retracted to 1 at full stroke and
+   * blended like the coins, for `setPusherStroke`.
+   */
+  readonly pusherStroke: number;
+  /** The pusher's cycle phase, 0 to 1, in the newest frame at or before the render point. */
+  readonly pusherPhase: number;
 }
+
+export type SimEventListener = (events: SimEventBatch) => void;
 
 type MutableStats = { -readonly [K in keyof SimBridgeStats]: SimBridgeStats[K] };
 
@@ -78,8 +104,10 @@ export function isCrossOriginIsolated(): boolean {
  * The render thread's side of the sim worker. Send player inputs with `drop`, then call
  * `sync(stage.coins)` once per animation frame: it collects the frames the worker has published,
  * places the render point on the sim timeline (see RenderClock) and writes every coin, blended
- * between the two sim frames around that point, into the coin field by tier. A coin's tier only
- * picks its look; what a coin is worth only ever comes from the server.
+ * between the two sim frames around that point, into the coin field by tier. A coin's tier comes
+ * from the sim when it tracks tiers (fusion makes new coins), and otherwise from the drop that
+ * made it; either way it only picks the look, since what a coin is worth only ever comes from the
+ * server. `onEvents` hears the falls, contacts and fusions the worker reports.
  */
 export class SimBridge {
   readonly transport: TransportKind;
@@ -97,6 +125,8 @@ export class SimBridge {
   readonly #defaultTier: CoinTierId;
   readonly #tiers = new Map<number, CoinTierId>();
   readonly #pendingTiers: CoinTierId[] = [];
+  readonly #listeners = new Set<SimEventListener>();
+  #simTiers = false;
   readonly #overflowReported = new Set<CoinTierId>();
   readonly #onOverflow = (tier: CoinTierId, count: number, capacity: number): void => {
     if (this.#overflowReported.has(tier)) return;
@@ -141,7 +171,10 @@ export class SimBridge {
       syncMs: 0,
       snaps: 0,
       overflowCoins: 0,
+      pusherStroke: 0,
+      pusherPhase: 0,
     };
+    const openingHeap = options.openingHeap;
     this.ready = new Promise<SimReadyInfo>((resolve, reject) => {
       this.#settleReady = resolve;
       this.#rejectReady = reject;
@@ -169,6 +202,7 @@ export class SimBridge {
         seed: options.seed,
         capacity: this.capacity,
         transport: { kind: 'shared', buffer: this.#ring.buffer, slots: SHARED_SLOTS },
+        ...(openingHeap ? { openingHeap } : {}),
       });
     } else {
       this.#ring = null;
@@ -182,6 +216,7 @@ export class SimBridge {
           seed: options.seed,
           capacity: this.capacity,
           transport: { kind: 'transfer', buffers },
+          ...(openingHeap ? { openingHeap } : {}),
         },
         buffers,
       );
@@ -208,14 +243,41 @@ export class SimBridge {
       );
     }
     this.#assertRunning('drop');
-    const input: SimInput = { kind: 'dropCoin', xMm };
-    this.#pendingTiers.push(tier);
+    const input: SimInput = { kind: 'dropCoin', xMm, tier };
+    if (!this.#simTiers) this.#pendingTiers.push(tier);
     this.#post({ type: 'input', inputs: [input] });
+  }
+
+  /** Jolts the cabinet at the start of the next sim tick, shoving every coin `direction`. */
+  nudge(direction: NudgeDirection): void {
+    if (!NUDGE_DIRECTIONS.includes(direction)) {
+      throw new RangeError(
+        `SimBridge.nudge: direction must be one of ${NUDGE_DIRECTIONS.join(', ')}, got ${direction}`,
+      );
+    }
+    this.#assertRunning('nudge');
+    this.#post({ type: 'input', inputs: [{ kind: 'nudge', direction }] });
   }
 
   /** Changes the look of a coin already on the table. */
   setTier(id: number, tier: CoinTierId): void {
     this.#tiers.set(id, tier);
+  }
+
+  /** The look of coin `id`: its sim tier, the tier its drop named, or the default. */
+  tierOf(id: number): CoinTierId {
+    return this.#tierOf(id);
+  }
+
+  /**
+   * Calls `listener` with every batch of events the worker reports, as they arrive, which is
+   * up to a few ticks ahead of the render point. Returns the unsubscribe function.
+   */
+  onEvents(listener: SimEventListener): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
   }
 
   /** Writes the interpolated coins into `target`; does nothing until the first frame arrives. */
@@ -245,6 +307,8 @@ export class SimBridge {
     stats.snaps = this.#clock.snaps;
     stats.coins = to.count;
     stats.overflowCoins = overflow;
+    stats.pusherStroke = from.pusherExtension + (to.pusherExtension - from.pusherExtension) * alpha;
+    stats.pusherPhase = alpha >= 1 ? to.pusherPhase : from.pusherPhase;
     stats.syncMs = this.#now() - start;
   }
 
@@ -271,13 +335,24 @@ export class SimBridge {
     if (this.#disposed) return;
     switch (message.type) {
       case 'ready':
-        this.#settleReady?.({ engine: message.engine, tick: message.tick });
+        this.#simTiers = message.tiers !== null;
+        if (this.#simTiers) this.#pendingTiers.length = 0;
+        this.#settleReady?.({ engine: message.engine, tick: message.tick, tiers: message.tiers });
         this.#settleReady = null;
         this.#rejectReady = null;
         return;
       case 'frame':
         this.#acceptTransferred(message.buffer);
         return;
+      case 'events': {
+        const batch: SimEventBatch = {
+          falls: message.falls,
+          contacts: message.contacts,
+          fusions: message.fusions,
+        };
+        for (const listener of [...this.#listeners]) listener(batch);
+        return;
+      }
       case 'error':
         this.#fail(message.message);
         return;
@@ -331,8 +406,9 @@ export class SimBridge {
   }
 
   /**
-   * Coin ids grow with every coin the sim creates, and each drop creates exactly one, so coins
-   * newer than any seen before take the queued drop tiers in order.
+   * Coins newer than any seen before take the tier the frame carries. A sim without tiers sends
+   * none; coin ids then grow with every drop, each drop creating exactly one coin, so new coins
+   * take the queued drop tiers in order.
    */
   #assignTiers(frame: FrameView): void {
     const { ids } = frame;
@@ -341,8 +417,8 @@ export class SimBridge {
       const id = ids[i] ?? 0;
       if (id <= this.#highestId) continue;
       this.#highestId = id;
-      const queued = this.#pendingTiers.shift();
-      if (!this.#tiers.has(id)) this.#tiers.set(id, queued ?? this.#defaultTier);
+      const tier = frame.tierAt(i) ?? this.#pendingTiers.shift() ?? this.#defaultTier;
+      if (!this.#tiers.has(id)) this.#tiers.set(id, tier);
     }
     if (this.#tiers.size > count * 2 + 64) {
       const live = new Set(ids.subarray(0, count));

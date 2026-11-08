@@ -1,3 +1,5 @@
+import { NUDGE_DIRECTIONS, type NudgeDirection } from './table/table.ts';
+
 /**
  * Player inputs, replayed tick by tick by the server auditor. Positions are integer
  * millimetres so an input log round-trips through JSON or a binary encoding
@@ -7,15 +9,34 @@ export interface DropCoinInput {
   readonly kind: 'dropCoin';
   /** Lateral drop position from the table centre line, in millimetres. */
   readonly xMm: number;
+  /**
+   * The tier of the dropped coin, from the ladder the Sim was created with; the lowest
+   * when omitted. Only a Sim with mechanics takes one.
+   */
+  readonly tier?: string;
 }
 
-export type SimInput = DropCoinInput;
+/** A jolt to the cabinet that shoves every coin the same way; see NUDGE. */
+export interface NudgeInput {
+  readonly kind: 'nudge';
+  readonly direction: NudgeDirection;
+}
+
+export type SimInput = DropCoinInput | NudgeInput;
 
 export const MAX_DROP_OFFSET_MM = 150;
 
-export function assertValidInput(input: SimInput, tick: number): void {
+/**
+ * Throws unless `input` is well formed. `tiers` is the Sim's tier ladder, or null for
+ * a Sim without mechanics, which takes no tier.
+ */
+export function assertValidInput(
+  input: SimInput,
+  tick: number,
+  tiers: readonly string[] | null,
+): void {
   const kind: string = input.kind;
-  switch (kind) {
+  switch (input.kind) {
     case 'dropCoin':
       if (
         !Number.isInteger(input.xMm) ||
@@ -24,6 +45,20 @@ export function assertValidInput(input: SimInput, tick: number): void {
       ) {
         throw new RangeError(
           `Tick ${tick}: dropCoin.xMm must be an integer in [-${MAX_DROP_OFFSET_MM}, ${MAX_DROP_OFFSET_MM}], got ${input.xMm}`,
+        );
+      }
+      if (input.tier !== undefined && !tiers?.includes(input.tier)) {
+        throw new RangeError(
+          tiers
+            ? `Tick ${tick}: dropCoin.tier must be one of ${tiers.join(', ')}, got ${JSON.stringify(input.tier)}`
+            : `Tick ${tick}: dropCoin.tier needs a Sim created with mechanics, got ${JSON.stringify(input.tier)}`,
+        );
+      }
+      return;
+    case 'nudge':
+      if (!NUDGE_DIRECTIONS.includes(input.direction)) {
+        throw new RangeError(
+          `Tick ${tick}: nudge.direction must be one of ${NUDGE_DIRECTIONS.join(', ')}, got ${JSON.stringify(input.direction)}`,
         );
       }
       return;

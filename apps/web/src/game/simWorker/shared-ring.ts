@@ -1,4 +1,4 @@
-import { frameByteLength, FrameView, type CoinPose } from './frame.ts';
+import { frameByteLength, FrameView, type CoinPose, type FramePusher } from './frame.ts';
 
 const LATEST = 0;
 const CONTROL_HEADER = 2;
@@ -59,7 +59,7 @@ export class SharedFrameRing {
   }
 
   /** Writer side. Returns the published frame number. */
-  publish(tick: number, epoch: number, coins: readonly CoinPose[]): number {
+  publish(tick: number, epoch: number, coins: readonly CoinPose[], pusher?: FramePusher): number {
     const sequence = this.latest() + 1;
     const slot = sequence % this.slots;
     const frame = this.#frames[slot];
@@ -67,7 +67,7 @@ export class SharedFrameRing {
     const index = CONTROL_HEADER + slot;
     const previous = Atomics.exchange(this.#control, index, WRITING);
     try {
-      frame.write(tick, epoch, coins);
+      frame.write(tick, epoch, coins, pusher);
     } catch (error) {
       // FrameView.write validates before it writes, so the slot still holds frame `previous`.
       Atomics.store(this.#control, index, previous);
