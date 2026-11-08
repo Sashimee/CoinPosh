@@ -53,6 +53,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-174 | blocked(review: POLISH.md hunk outside owns with follow-up IDs P-178..P-180 colliding with feat/build-loop; openingHeapCoins = 100 is an economy number outside packages/economy) | task/P-174 (802d971, not merged) | Vault/feedback gate across P-136, P-149/P-169, P-137; follow-ups filed as P-190..P-198 |
 | P-201 | done | task/P-201 (merge dba5125) | Boot poster behind the canvas until the first lit frame instead of a black void; side meters hidden until playable (9d562eb); pnpm check green after merge |
 | P-193 | done | task/P-193 (merge ab0178d) | Opening heap owned by @coinposh/economy as `openingHeap { coins, tier }` (silver) and modelled in the pacing sim (8ff5245); rate-envelope.json regenerated (outside owns, follow-up P-203); follow-ups P-203..P-206; pnpm check green after merge |
+| P-175 | done | task/P-175 (merge 0a8a7e9) | Coins read as lathe-turned metal: reeded rims, capped highlights (peaks 1.4 to 1.9 scene-linear under bloom thresholds 0.92 to 0.95), neutral silver, table lookdev (dfb4ef5); follow-ups P-207..P-208; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
