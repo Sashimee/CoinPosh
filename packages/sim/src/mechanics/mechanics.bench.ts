@@ -21,7 +21,9 @@ import { FUSION_TUNING } from './tuning.ts';
  * reads the coins, finds the slice of contacts due this tick, runs the fusion clock
  * and steps the ChampagneTower, which is what TableMechanics.step does.
  *
- * PusherTable cannot remove a coin yet (the PusherTable.removeCoin follow-up), so:
+ * The bench takes no coin off the table, so the pile stays at the worst-case density
+ * it is meant to measure; a bench that applies fusions and captures through
+ * PusherTable.removeCoin, as TableMechanics does, is P-79. Here:
  *
  * - A fusion is applied to the clock, not to the table: the clock forgets its coins'
  *   contacts, as TableMechanics does, but the coins stay where they are, all copper,

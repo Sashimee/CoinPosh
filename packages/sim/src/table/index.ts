@@ -16,13 +16,33 @@ export {
   pusherExtension,
   type PusherMotion,
 } from './pusher.ts';
+export {
+  HEAP_TUNING,
+  heapCapacity,
+  heapPoses,
+  type HeapGeometry,
+  type HeapKeepClear,
+  type HeapLayout,
+  type HeapPose,
+} from './heap.ts';
 export type { SeparationResult } from './separation.ts';
 export {
+  type ContactEvent,
+  type ContactSurface,
   type FallEdge,
   type FallEvent,
+  NUDGE_DIRECTIONS,
+  type NudgeDirection,
   type PusherState,
   PusherTable,
   type TableCoin,
   type TableOptions,
 } from './table.ts';
-export { COIN_MATERIAL, configureTableWorld, TABLE_MATERIAL, TABLE_SOLVER } from './tuning.ts';
+export {
+  COIN_MATERIAL,
+  configureTableWorld,
+  CONTACT_EVENTS,
+  NUDGE,
+  TABLE_MATERIAL,
+  TABLE_SOLVER,
+} from './tuning.ts';
