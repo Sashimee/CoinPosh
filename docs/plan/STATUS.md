@@ -64,6 +64,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-215 | blocked(review: criteria tested on a 160-coin pour, not the Demo opening heap; falls 0.27-0.50 x drops on the real Demo heap (rest freeze over-damps it); table.bench p99 4.15-4.21 ms vs 4 ms) | task/P-215 (f7d50ee, not merged) | Coin rest/sleep physics; re-test via Sim with economy openingHeap, Demo seed 0xc0196051 and SIM_MECHANICS over several seeds and drop patterns; tune wake propagation / COIN_REST.pusherMargin; bring p99 under 4 ms or get the bench host formally re-baselined |
 | P-238 | blocked(review: heap still 100 silver, both acceptance bands fail (first upgrade at 6-15 s, minute 2 x0.22-0.54 of minute 1); mixed heap needs OpeningHeapConfig change outside owns; rate-envelope.json edited outside owns) | task/P-238 (0be1e5c, not merged) | Mixed opening heap blocked on the composition type request P-242; follow-ups P-242..P-246; branch kept |
 | P-248 | done | task/P-248 (merge da920d6) | Number pops never paint over open sheets: pops held while a sheet is open, then one tally pop on close (486ff04); pnpm check green after merge |
+| P-247 | done | task/P-247 (merge 849be80) | Side meters collapse to slim edge rails outside the coin floor: meterRail + railLayout with box tests, Cascade expands only while a rank is live, Decorum only once it moves, reduced-motion fade (9b3f7cb); follow-up P-251; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
