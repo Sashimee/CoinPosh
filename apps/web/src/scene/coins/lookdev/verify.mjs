@@ -60,6 +60,17 @@ const scenarios = [
   },
 ];
 
+// The real venue at phone size: the front row of copper, silver and gold coins where the player
+// actually looks, rendered through the game's post stack with its bloom.
+const TABLE_VIEWPORT = { width: 390, height: 844 };
+const tableScenarios = [
+  { name: 'table-front-row', query: 'quality=high&t=1' },
+  { name: 'table-front-row-low', query: 'quality=low&t=1' },
+];
+// Scene-linear luminance a coin may reach; diamond and heirloom carry their own sparkle and
+// are allowed a brighter ceiling (see highlightCeiling in tiers.ts).
+const PEAK_LIMIT = { copper: 2, silver: 2, gold: 2, platinum: 2, diamond: 3.5, heirloom: 3.5 };
+
 function fail(scenario, message) {
   throw new Error(`${scenario}: ${message}`);
 }
@@ -90,7 +101,9 @@ async function measure(analysisPage, png) {
         const max = Math.max(r, g, b);
         const min = Math.min(r, g, b);
         lumaSum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        if (max > 235) highlights += 1;
+        // Coin highlights roll off below white on purpose (compressHighlight in materials.ts), so
+        // a glint is a near-white pixel rather than a clipped one.
+        if (max > 215) highlights += 1;
         if (max - min > 40) {
           chromatic += 1;
           const d = max - min;
@@ -113,6 +126,108 @@ async function measure(analysisPage, png) {
     },
     { data: png.toString('base64'), background: BACKGROUND },
   );
+}
+
+async function measureFrontRow(analysisPage, png, rect, tiers) {
+  return analysisPage.evaluate(
+    async ({ data, rect, tiers }) => {
+      const image = new globalThis.Image();
+      image.src = `data:image/png;base64,${data}`;
+      await image.decode();
+      const canvas = new globalThis.OffscreenCanvas(image.width, image.height);
+      const context = canvas.getContext('2d');
+      context.drawImage(image, 0, 0);
+      const { data: px } = context.getImageData(0, 0, image.width, image.height);
+      const out = {};
+      for (const [tier, mask] of Object.entries(tiers)) {
+        const lumas = [];
+        const sum = [0, 0, 0];
+        let index = 0;
+        let inside = false;
+        for (const run of mask) {
+          if (inside) {
+            for (let i = index; i < index + run; i++) {
+              const x = i % image.width;
+              const y = Math.floor(i / image.width);
+              if (x < rect.x || y < rect.y || x >= rect.x + rect.width || y >= rect.y + rect.height)
+                continue;
+              const r = px[i * 4];
+              const g = px[i * 4 + 1];
+              const b = px[i * 4 + 2];
+              sum[0] += r;
+              sum[1] += g;
+              sum[2] += b;
+              lumas.push(0.2126 * r + 0.7152 * g + 0.0722 * b);
+            }
+          }
+          index += run;
+          inside = !inside;
+        }
+        const n = lumas.length;
+        if (n === 0) {
+          out[tier] = { pixels: 0 };
+          continue;
+        }
+        lumas.sort((a, b) => a - b);
+        const [r, g, b] = sum.map((v) => v / n / 255);
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const d = max - min;
+        const light = (max + min) / 2;
+        let hue = 0;
+        if (d > 0) {
+          if (max === r) hue = ((g - b) / d) % 6;
+          else if (max === g) hue = (b - r) / d + 2;
+          else hue = (r - g) / d + 4;
+        }
+        out[tier] = {
+          pixels: n,
+          mean: [r, g, b].map((v) => Math.round(v * 255)),
+          hue: (hue * 60 + 360) % 360,
+          saturation: d === 0 ? 0 : d / (1 - Math.abs(2 * light - 1)),
+          blueOverRed: b / Math.max(r, 1e-3),
+          lumaP10: lumas[Math.floor(n * 0.1)],
+          lumaP98: lumas[Math.floor(n * 0.98)],
+        };
+      }
+      return out;
+    },
+    { data: png.toString('base64'), rect, tiers },
+  );
+}
+
+function checkTable(name, state, report, front) {
+  if (state.failed) fail(name, `table lookdev failed: ${state.failed}`);
+  if (!state.frontRow) fail(name, 'table lookdev did not report a front row');
+  const { bloomThreshold, sunburst } = report;
+  if (!(sunburst.pixels > 0)) fail(name, 'the sunburst emblem is not in view');
+  for (const [tier, stats] of Object.entries(report.tiers)) {
+    if (!stats || stats.pixels === 0) continue;
+    if (stats.peak > PEAK_LIMIT[tier])
+      fail(name, `${tier} peaks at ${stats.peak.toFixed(2)}, limit ${PEAK_LIMIT[tier]}`);
+    if (stats.peak - bloomThreshold > sunburst.peak - bloomThreshold)
+      fail(name, `${tier} blooms harder than the sunburst (${stats.peak} > ${sunburst.peak})`);
+  }
+  for (const tier of ['copper', 'silver', 'gold']) {
+    const f = front[tier];
+    if (!f || f.pixels < 200) fail(name, `front row has only ${f?.pixels ?? 0} ${tier} pixels`);
+    // Rim highlight against the shaded field and recesses: a flat chip has almost no spread.
+    if (f.lumaP98 - f.lumaP10 < 30)
+      fail(
+        name,
+        `${tier} reads flat (luma p10 ${f.lumaP10.toFixed(0)}, p98 ${f.lumaP98.toFixed(0)})`,
+      );
+    if (f.lumaP98 > 250) fail(name, `${tier} front-row coins clip to white`);
+  }
+  const { copper, silver, gold } = front;
+  if (copper.hue < 8 || copper.hue > 30 || copper.saturation < 0.3)
+    fail(name, `copper reads off-hue ${JSON.stringify(copper)}`);
+  if (gold.hue < 30 || gold.hue > 52 || gold.saturation < 0.3)
+    fail(name, `gold reads off-hue or khaki ${JSON.stringify(gold)}`);
+  if (silver.blueOverRed > 1 || silver.saturation > 0.3 || (silver.hue > 180 && silver.hue < 330))
+    fail(name, `silver should read neutral, not blue-grey ${JSON.stringify(silver)}`);
+  if (silver.saturation > gold.saturation * 0.7 || silver.saturation > copper.saturation * 0.7)
+    fail(name, 'silver is nearly as saturated as gold or copper');
 }
 
 const server = await createServer({
@@ -209,6 +324,55 @@ try {
       await page.close();
     }
   }
+
+  for (const scenario of tableScenarios) {
+    const page = await browser.newPage({ viewport: TABLE_VIEWPORT, deviceScaleFactor: 1 });
+    const logs = [];
+    page.on('console', (message) => logs.push({ type: message.type(), text: message.text() }));
+    page.on('pageerror', (error) => logs.push({ type: 'pageerror', text: error.message }));
+    const entry = { name: scenario.name, query: scenario.query, ok: false };
+    report.push(entry);
+    try {
+      await page.goto(`${base}table.html?${scenario.query}`);
+      await page.waitForFunction(
+        () => globalThis.__table?.ready === true || globalThis.__table?.failed,
+        null,
+        { timeout: 90_000 },
+      );
+      await page.waitForTimeout(600);
+      const state = await page.evaluate(() => ({ ...globalThis.__table, measure: undefined }));
+      const png = await page.screenshot();
+      await writeFile(join(outDir, `${scenario.name}.png`), png);
+      if (state.frontRow)
+        await writeFile(
+          join(outDir, `${scenario.name}-crop.png`),
+          await page.screenshot({ clip: state.frontRow }),
+        );
+      const hdr = await page.evaluate(() => globalThis.__table.measure());
+      const masks = Object.fromEntries(
+        ['copper', 'silver', 'gold'].map((tier) => [tier, hdr.tiers[tier]?.mask ?? []]),
+      );
+      const front = await measureFrontRow(analysisPage, png, state.frontRow, masks);
+      const peaks = Object.fromEntries(
+        Object.entries(hdr.tiers).map(([tier, stats]) => [tier, stats.peak]),
+      );
+      Object.assign(entry, { state, peaks, sunburst: hdr.sunburst.peak, front, logs });
+      const errors = logs.filter((l) => l.type === 'error' || l.type === 'pageerror');
+      if (errors.length > 0) fail(scenario.name, `console errors: ${JSON.stringify(errors)}`);
+      checkTable(scenario.name, state, hdr, front);
+      entry.ok = true;
+      console.info(
+        `ok   ${scenario.name.padEnd(22)} ${state.backend} sunburst=${hdr.sunburst.peak.toFixed(1)} coins=${hdr.coins.peak.toFixed(2)} silver b/r=${front.silver.blueOverRed.toFixed(2)}`,
+      );
+    } catch (error) {
+      failures += 1;
+      entry.error = error instanceof Error ? error.message : String(error);
+      entry.logs = logs;
+      console.error(`FAIL ${entry.error}`);
+    } finally {
+      await page.close();
+    }
+  }
 } finally {
   await writeFile(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   await browser.close();
@@ -216,6 +380,6 @@ try {
 }
 
 console.info(
-  `${scenarios.length - failures}/${scenarios.length} scenarios passed; output in ${outDir}`,
+  `${scenarios.length + tableScenarios.length - failures}/${scenarios.length + tableScenarios.length} scenarios passed; output in ${outDir}`,
 );
 process.exitCode = failures > 0 ? 1 : 0;

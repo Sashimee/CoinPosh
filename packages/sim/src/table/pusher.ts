@@ -1,4 +1,5 @@
 import { PUSHER } from './layout.ts';
+import { PUSHER_CAM } from './tuning.ts';
 
 export interface PusherMotion {
   /** Travel of the front face in metres, in (0, MAX_PUSHER_STROKE]. */
@@ -40,19 +41,23 @@ export function assertValidPusherMotion(motion: PusherMotion): void {
 }
 
 /**
- * Smoothstep, 3u² − 2u³. Within 0.6% of a crank's (1 − cos πu) / 2 everywhere, with
- * zero velocity at both ends, so the block eases into each turnaround and coins
- * resting on it are never jerked. Built from + − * only, so V8 and JavaScriptCore
+ * The cam's lift over one half-stroke, u from 0 (retracted) to 1 (full reach): smoothstep
+ * 3u² − 2u³ blended with the ease-in u² by PUSHER_CAM.knock, which is
+ * u² · ((1 − knock)(3 − 2u) + knock). It leaves retraction at zero velocity, so coins
+ * resting on the block are never jerked at the back, and reaches full reach still moving
+ * at 2 · knock times the mean speed of its half-stroke (see PUSHER_CAM for why). It rises
+ * monotonically for any knock in [0, 1]. Built from + − * only, so V8 and JavaScriptCore
  * agree bit for bit.
  */
 function ease(u: number): number {
-  return u * u * (3 - 2 * u);
+  const { knock } = PUSHER_CAM;
+  return u * u * ((1 - knock) * (3 - 2 * u) + knock);
 }
 
 /**
  * Pusher extension in [0, 1] (0 retracted, 1 extended) at cycle phase [0, 1). The
- * push and the return are each one eased half-stroke, so velocity is continuous
- * across the whole cycle.
+ * push and the return are each one cam half-stroke: velocity is continuous through
+ * retraction and reverses at once at full reach, the cam's knock.
  */
 export function pusherExtension(phase: number, pushFraction: number = PUSHER.pushFraction): number {
   if (phase < pushFraction) {

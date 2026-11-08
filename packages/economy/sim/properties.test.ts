@@ -6,7 +6,12 @@ import { economyConfig } from '../src/config/index.ts';
 import { fusionValue } from '../src/formulas.ts';
 import { ODDS_SCALE, formatPercent, oddsRows, oddsTotal, weightToPercent } from '../src/odds.ts';
 import { createRng } from '../src/rng.ts';
-import { RARITY_IDS, RATE_ENVELOPE_METRIC_IDS, type OddsTable } from '../src/types.ts';
+import {
+  RARITY_IDS,
+  RATE_ENVELOPE_METRIC_IDS,
+  type EconomyConfig,
+  type OddsTable,
+} from '../src/types.ts';
 import { buildEnvelopeTable, tableOf } from './envelopeTable.ts';
 import { simModel, type SimModel } from './model.ts';
 import {
@@ -21,25 +26,36 @@ const RUNS = { numRuns: 25 };
 
 function balanceFromLedger(player: PlayerState): number {
   const l = player.ledger;
-  return l.granted + l.won + l.crateIncome + l.offline - l.dropsPaid - l.upgradesPaid - l.forfeited;
+  return (
+    l.granted +
+    l.heap +
+    l.won +
+    l.crateIncome +
+    l.offline -
+    l.dropsPaid -
+    l.upgradesPaid -
+    l.forfeited
+  );
 }
 
 const models: fc.Arbitrary<SimModel> = fc
+  .double({ min: 0.5, max: 2, noNaN: true })
+  .map((baseReturnRatio) => ({ ...simModel, baseReturnRatio }));
+
+/** Any opening heap at any tier, including an empty table and heaps too small to ever pay. */
+const configs: fc.Arbitrary<EconomyConfig> = fc
   .record({
-    baseReturnRatio: fc.double({ min: 0.5, max: 2, noNaN: true }),
-    emptyTable: fc.boolean(),
+    coins: fc.oneof(fc.constant(0), fc.integer({ min: 1, max: 200 })),
+    tier: fc.constantFrom(...economyConfig.coinTiers.map((t) => t.id)),
   })
-  .map(({ baseReturnRatio, emptyTable }) => ({
-    ...simModel,
-    baseReturnRatio,
-    pile: emptyTable ? { ...simModel.pile, startingCoins: 0 } : simModel.pile,
-  }));
+  .map((openingHeap) => ({ ...economyConfig, openingHeap }));
 
 describe('sim coin conservation', () => {
-  it('accounts for every coin: granted + won + crates + offline − drops − upgrades − forfeited', () => {
+  it('accounts for every coin: granted + heap + won + crates + offline − drops − upgrades − forfeited', () => {
     fc.assert(
       fc.property(
         fc.integer(),
+        configs,
         models,
         fc.array(
           fc.oneof(
@@ -48,8 +64,8 @@ describe('sim coin conservation', () => {
           ),
           { maxLength: 6 },
         ),
-        (seed, model, steps) => {
-          const ctx = createContext(economyConfig, model, createRng(seed));
+        (seed, config, model, steps) => {
+          const ctx = createContext(config, model, createRng(seed));
           const player = createPlayer(ctx);
           for (const step of steps) {
             if ('play' in step) for (let i = 0; i < step.play; i += 1) activeTick(ctx, player);
@@ -65,13 +81,43 @@ describe('sim coin conservation', () => {
 
   it('never mints a coin while the table is still building its pile', () => {
     fc.assert(
-      fc.property(fc.integer(), fc.integer({ min: 1, max: 600 }), (seed, ticks) => {
-        const empty = { ...simModel, pile: { ...simModel.pile, startingCoins: 0 } };
-        const ctx = createContext(economyConfig, empty, createRng(seed));
+      fc.property(
+        fc.integer(),
+        fc.integer({ min: 1, max: 600 }),
+        configs,
+        (seed, ticks, config) => {
+          const ctx = createContext(config, simModel, createRng(seed));
+          const player = createPlayer(ctx);
+          for (let i = 0; i < ticks && player.pileDebt > 0; i += 1) activeTick(ctx, player);
+          if (player.pileDebt > 0) {
+            const l = player.ledger;
+            expect(l.heap + l.won + l.crateIncome + l.offline).toBe(0);
+          }
+        },
+      ),
+      RUNS,
+    );
+  });
+
+  it('pays each heap coin out once, at no less than its tier face value', () => {
+    fc.assert(
+      fc.property(fc.integer(), configs, models, (seed, config, model) => {
+        const ctx = createContext(config, model, createRng(seed));
         const player = createPlayer(ctx);
-        for (let i = 0; i < ticks && player.pileDebt > 0; i += 1) activeTick(ctx, player);
-        if (player.pileDebt > 0) {
-          expect(player.ledger.won + player.ledger.crateIncome + player.ledger.offline).toBe(0);
+        const { coins, tier } = config.openingHeap;
+        const face = config.coinTiers.find((t) => t.id === tier)?.value ?? Number.NaN;
+        let left = player.heapCoins;
+        expect(left).toBe(coins);
+        for (let i = 0; i < 1_200 && player.ledger.dropsPaid < 400; i += 1) {
+          activeTick(ctx, player);
+          expect(player.heapCoins).toBeGreaterThanOrEqual(0);
+          expect(player.heapCoins).toBeLessThanOrEqual(left);
+          left = player.heapCoins;
+        }
+        if (player.heapCoins === coins) expect(player.ledger.heap).toBe(0);
+        if (coins > 0 && player.heapCoins === 0) {
+          expect(player.milestones.heapCleared).toBeDefined();
+          expect(player.ledger.heap).toBeGreaterThanOrEqual(coins * face * (1 - 1e-9));
         }
       }),
       RUNS,
@@ -102,7 +148,7 @@ describe('sim trajectories stay inside the server rate envelope', () => {
           const now = {
             at: player.activeSeconds,
             drops: player.ledger.dropsPaid,
-            won: player.ledger.won,
+            won: player.ledger.heap + player.ledger.won,
           };
           history.push(now);
           const limits = rateEnvelopeFor(tableOf(ctx, player));

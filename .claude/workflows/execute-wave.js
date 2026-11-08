@@ -96,7 +96,9 @@ const VERDICT_SCHEMA = {
 
 // ---------- Plan ----------
 phase('Plan')
-const only = A.onlyTasks ? `Restrict the wave to these IDs if unblocked: ${A.onlyTasks.join(', ')}.` : ''
+const only = A.onlyTasks
+  ? `The lead has chosen this wave: schedule ONLY these IDs, in this priority order: ${A.onlyTasks.join(', ')}. A blocked task whose blocker is a review rejection is schedulable (its brief must include the review issues to fix). Do not substitute other tasks; if one cannot run, leave it out and say why in humanBlocked.`
+  : ''
 const plan = await agent(
   `You are planning the next execution wave for CoinPosh.
 Read docs/plan/04-ROADMAP.md, docs/plan/STATUS.md, docs/plan/POLISH.md (if present) and \`git log --oneline -30\`.
@@ -110,7 +112,8 @@ then tasks on the critical path to the current milestone; then everything else.
 POLISH.md items marked "ready" can be scheduled as tasks with id "P-<n>" using the agent named in the item.
 For each task put the COMPLETE task block (and relevant notes) into "brief", and set "simple" honestly.
 List human tasks that currently block progress in humanBlocked. Set allDone=true only if every T-* task is done.
-Do not modify any files.`,
+Do not modify any files.
+${only}`,
   { label: 'planner', phase: 'Plan', schema: PLAN_SCHEMA, agentType: 'lead-architect', effort: 'medium' },
 )
 
@@ -120,6 +123,7 @@ if (!plan.wave.length) return { status: 'NOTHING_UNBLOCKED', humanBlocked: plan.
 // cheap guard against overlapping ownership the planner missed
 const seen = []
 const wave = plan.wave.filter(t => {
+  if (A.onlyTasks && !A.onlyTasks.includes(t.id)) { log(`Dropped ${t.id}: not in onlyTasks`); return false }
   const clash = t.owns.some(p => seen.some(q => p.startsWith(q.replace(/\*+$/, '')) || q.startsWith(p.replace(/\*+$/, ''))))
   if (clash) { log(`Deferred ${t.id}: owns-path overlap`); return false }
   seen.push(...t.owns)
