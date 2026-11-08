@@ -1,5 +1,6 @@
 import type {
   CascadeTier,
+  ClaimRejection,
   CoinId,
   CoinTier,
   FallEdge,
@@ -17,7 +18,7 @@ export interface TablePoint {
 }
 
 export type DropBlockReason = 'frozen' | 'cooldown' | 'empty';
-export type NudgeRejectReason = 'frozen' | 'offline' | 'server';
+export type NudgeRejectReason = 'frozen' | 'offline' | 'server' | 'sim';
 export type PourGrade = 'perfect' | 'early' | 'late';
 export type ContactSurface = 'coin' | 'wood' | 'metal';
 export type NudgeSource = 'swipe' | 'motion' | 'key';
@@ -91,6 +92,8 @@ export interface GameEvents {
   'cascade:end': { readonly count: number; readonly tier: CascadeTier | null };
   /** The server's verdict on a chain: the multiplier it applied lives on its side. */
   'cascade:confirmed': { readonly tier: CascadeTier; readonly coinId: CoinId };
+  /** The server turned down a fall claim, so that coin pays nothing; `null` when it never answered. */
+  'fall:refused': { readonly coinId: CoinId; readonly reason: ClaimRejection | null };
   'value:credited': {
     readonly amount: number;
     readonly coinId: CoinId;

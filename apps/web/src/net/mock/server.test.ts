@@ -1,4 +1,16 @@
-import { cascade, cascadeTierFor, crateSpawn, fusion, fusionValue } from '@coinposh/economy';
+import {
+  cascade,
+  cascadeTierFor,
+  coinTiers,
+  crateSpawn,
+  fusion,
+  fusionValue,
+  offline,
+  offlineRate,
+  offlineVaultCoins,
+  openingHeap,
+  starterVaultCoins,
+} from '@coinposh/economy';
 import {
   ClaimsResponseSchema,
   DropResponseSchema,
@@ -118,6 +130,28 @@ describe('mock server: value is minted and conserved server-side', () => {
     });
     const after = await state();
     expect(after.wallet.coins - before).toBe(coin.value);
+    expectConserved();
+  });
+
+  it('opens the table with the economy opening heap, paid out as soon as it falls', async () => {
+    const { table, wallet } = await state();
+    expect(table.coins).toHaveLength(openingHeap.coins);
+    expect(new Set(table.coins.map((coin) => coin.tier))).toEqual(new Set([openingHeap.tier]));
+    const face = coinTiers.find((tier) => tier.id === openingHeap.tier)?.value;
+    expect(table.coins.every((coin) => coin.value === face)).toBe(true);
+    const [first, second] = table.coins;
+    if (first === undefined || second === undefined) throw new Error('Expected a heap.');
+    time.advance(100);
+    const results = await claimAt([fallAt(first, time.tick())]);
+    expect(results).toEqual([
+      { status: 'accepted', credited: first.value, cascade: null, minted: null },
+    ]);
+    expect((await state()).wallet.coins - wallet.coins).toBe(first.value);
+    expect(await claimAt([fallAt(first, time.tick())])).toEqual([
+      { status: 'rejected', reason: 'already_claimed' },
+    ]);
+    expect((await state()).table.coins.map((coin) => coin.id)).not.toContain(first.id);
+    expect((await state()).table.coins.map((coin) => coin.id)).toContain(second.id);
     expectConserved();
   });
 
@@ -651,6 +685,50 @@ describe('mock server: attacks from a compromised client', () => {
     expect(resumed.offline).toMatchObject({ awayMs });
     expect(resumed.offline?.coins).toBeGreaterThan(0);
     expect((await state()).offline).toBeNull();
+    expectConserved();
+  });
+
+  it('pays a fresh profile that has won nothing, away 2 h, only the documented starter floor', async () => {
+    const { wallet } = await state();
+    time.advance(2 * 3_600_000);
+    const resumed = await state();
+    expect(resumed.offline).toEqual({
+      awayMs: 2 * 3_600_000,
+      creditedMs: 2 * 3_600_000,
+      coins: starterVaultCoins(offline.baseCapHours),
+    });
+    expect(resumed.offline?.coins).toBe(42);
+    expect(resumed.wallet.coins - wallet.coins).toBe(42);
+    expectConserved();
+  });
+
+  it('pays min(h, cap) × 0.35 × the net rate measured over active play, not account age', async () => {
+    await state();
+    time.advance(5 * 3_600_000);
+    expect((await state()).offline?.coins).toBe(starterVaultCoins(offline.baseCapHours));
+    const { table } = await state();
+    const heap = table.coins.slice(0, 12);
+    time.advance(100);
+    let won = 0;
+    for (let i = 0; i < heap.length; i += 3) {
+      const tick = time.tick();
+      const results = await claimAt(heap.slice(i, i + 3).map((coin) => fallAt(coin, tick)));
+      for (const result of results) {
+        if (result.status !== 'accepted') throw new Error(`Heap fall refused: ${result.reason}`);
+        won += result.credited;
+      }
+      time.advance(1_000);
+    }
+    const rate = (won * 3_600_000) / offlineRate.minSpanMs;
+    expect(rate).toBeGreaterThan(offlineRate.starterRatePerHour);
+    time.advance(8 * 3_600_000);
+    const resumed = await state();
+    expect(resumed.offline).toEqual({
+      awayMs: 8 * 3_600_000 + 1_000,
+      creditedMs: 2 * 3_600_000,
+      coins: offlineVaultCoins(8, offline.baseCapHours, rate),
+    });
+    expect(resumed.offline?.coins).toBeCloseTo(2 * offline.activeRateFactor * rate, 6);
     expectConserved();
   });
 

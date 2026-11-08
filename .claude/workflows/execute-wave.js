@@ -27,6 +27,8 @@ Then verify both: git config user.name must print ${GIT_NAME} and git config use
 const SERVERS = `Any dev, preview or static server you start (vite, pnpm dev, pnpm preview, serve, http-server) must be stopped before you return:
 start it in the background, record its PID, and kill that PID when done. Never leave a server running; leftovers from earlier waves exhausted the machine's memory.`
 
+const AGENTS = ['audio-engineer', 'backend-engineer', 'economy-designer', 'gameplay-engineer', 'lead-architect', 'mobile-engineer', 'physics-engineer', 'qa-perf', 'render-artist', 'ui-engineer', 'vfx-juice']
+
 const PLAN_SCHEMA = {
   type: 'object',
   properties: {
@@ -40,7 +42,7 @@ const PLAN_SCHEMA = {
         properties: {
           id: { type: 'string' },
           title: { type: 'string' },
-          agent: { type: 'string' },
+          agent: { type: 'string', enum: AGENTS, description: 'Exactly one project agent; for a POLISH item naming several owners or a role, pick the agent that owns most of its paths' },
           owns: { type: 'array', items: { type: 'string' } },
           brief: { type: 'string', description: 'full task block from the roadmap plus any notes from STATUS/POLISH' },
           simple: { type: 'boolean', description: 'true for mechanical work (deps, docs, CI/config tweaks, small fixes); false for gameplay, physics, rendering, server logic or anything with design judgement' },

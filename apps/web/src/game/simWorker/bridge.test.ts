@@ -8,6 +8,7 @@ import type { CoinTransformTarget } from './interpolate.ts';
 import type { MainToWorker, SimEventBatch, TransportKind, WorkerToMain } from './protocol.ts';
 import { MAX_CATCH_UP_TICKS, runSimWorker, TICK_MS } from './runtime.ts';
 import { COIN, Sim } from '@coinposh/sim';
+import { openingHeap } from '@coinposh/economy';
 import type { FallEvent, MechanicsConfig, OpeningHeap, SimInput, SimOptions } from './sim-api.ts';
 import { OPENING_HEAP_CAPACITY, SIM_MECHANICS } from './table-config.ts';
 
@@ -172,6 +173,12 @@ function harness(transport: TransportKind, options: HarnessOptions = {}): Harnes
   open.push(created);
   return created;
 }
+
+it('lays every coin the economy opens the table with, at its tier', () => {
+  expect(openingHeap.coins).toBeGreaterThan(0);
+  expect(openingHeap.coins).toBeLessThanOrEqual(OPENING_HEAP_CAPACITY);
+  expect(SIM_MECHANICS.tiers).toContain(openingHeap.tier);
+});
 
 describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport', (transport) => {
   it('runs the sim off-thread at 60 Hz and delivers every tick', async () => {
