@@ -256,21 +256,23 @@ function crestTop(camera: PerspectiveCamera, view: Viewport, table: RivieraTable
   throw new Error('no table surface anywhere down the backboard columns');
 }
 
-/** Rows of the centre column below the lip whose first surface is the empty catch tray. */
+/**
+ * Rows of the centre column between the lip and the dock that do not show the coin floor: the
+ * floor's front edge, the velvet, the brass moulding and the gold-framed front panel below it
+ * all read as one empty box under the ledge (P-202), so every one of them counts.
+ */
 function trayRows(camera: PerspectiveCamera, view: Viewport, table: RivieraTable): number {
   const solid = table.meshes.filter((m) => m.name !== 'table-glass');
   for (const mesh of solid) mesh.updateMatrixWorld(true);
   const lip = Math.ceil(toPixels(COIN_FLOOR_FRONT, camera, view).y);
   const raycaster = new Raycaster();
   let rows = 0;
-  for (let y = lip; y < view.height; y += 1) {
+  for (let y = lip; y < Math.min(view.dockTop, view.height); y += 1) {
     const ndc = new Vector3(0, 1 - ((y + 0.5) / view.height) * 2, 0.5);
-    const dir = ndc.unproject(camera).sub(camera.position).normalize();
-    raycaster.set(camera.position, dir);
+    raycaster.set(camera.position, ndc.unproject(camera).sub(camera.position).normalize());
     const hit = raycaster.intersectObjects(solid, false)[0];
-    if (!hit) continue;
-    const inTray = hit.point.z > T.fieldFrontZ && hit.point.z <= T.cabinetFrontZ;
-    if (inTray && hit.point.y < 0) rows += 1;
+    const onCoinFloor = hit !== undefined && hit.point.y > -1e-4 && hit.point.z <= T.fieldFrontZ;
+    if (!onCoinFloor) rows += 1;
   }
   return rows;
 }
@@ -332,7 +334,7 @@ describe('rivieraCameraPreset', () => {
       expect((bottom - top) / band).toBeGreaterThanOrEqual(view.minPlayfieldShare);
     });
 
-    it(`keeps the empty catch tray to at most 10 % of the height at ${label}`, () => {
+    it(`keeps the empty tray and front panel above the dock to at most 10 % of the height at ${label}`, () => {
       const rows = trayRows(camera, view, table);
       expect(rows).toBeGreaterThan(0);
       expect(rows / view.height).toBeLessThanOrEqual(0.1);
