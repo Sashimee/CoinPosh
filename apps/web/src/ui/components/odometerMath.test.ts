@@ -80,6 +80,9 @@ const format = (value: number): string => grouped.format(value);
 const shownValue = (frame: OdometerFrame): number =>
   Number(readout(frame.columns).replace(/\D/g, ''));
 const digitCount = (text: string): number => text.replace(/\D/g, '').length;
+const expectWellFormed = (frame: OdometerFrame): void => {
+  expect(readout(frame.columns)).toBe(format(shownValue(frame)));
+};
 const isWhole = (frame: OdometerFrame): boolean =>
   frame.columns.every((column) => column.kind === 'static' || Number.isInteger(column.position));
 
@@ -139,6 +142,7 @@ describe('OdometerTrack', () => {
       }
       const frame = track.sample(now);
       const shown = shownValue(frame);
+      expectWellFormed(frame);
       expect(shown).toBeGreaterThanOrEqual(lastShown);
       lastShown = shown;
       if (now === next) {
@@ -181,6 +185,7 @@ describe('OdometerTrack', () => {
     for (let now = 0; now < ROLL_MS; now += 8) {
       const frame = track.sample(now);
       expect(frame.columns).toHaveLength(5);
+      expectWellFormed(frame);
       const shown = shownValue(frame);
       expect(shown).toBeGreaterThanOrEqual(998);
       expect(shown).toBeLessThanOrEqual(1003);
@@ -193,13 +198,67 @@ describe('OdometerTrack', () => {
     track.jump('1,004');
     track.push('996', -1, 0, false);
     for (let now = 0; now < ROLL_MS; now += 8) {
-      const shown = shownValue(track.sample(now));
+      const frame = track.sample(now);
+      expectWellFormed(frame);
+      const shown = shownValue(frame);
       expect(shown).toBeGreaterThanOrEqual(996);
       expect(shown).toBeLessThanOrEqual(1004);
     }
     const landed = track.sample(ROLL_MS);
     expect(readout(landed.columns)).toBe('996');
     expect(landed.settled).toBe(true);
+  });
+
+  it.each([
+    [1000, 999],
+    [100, 99],
+    [10_000, 9950],
+    [1000, 5],
+  ])('never shows a leading zero counting down from %i to %i', (from, to) => {
+    const track = new OdometerTrack();
+    track.jump(format(from));
+    const ids = track.sample(0).columns.map((column) => column.id);
+    track.push(format(to), -1, 0, false);
+    expectWellFormed(track.sample(0));
+    for (let now = 0; now < ROLL_MS; now += 4) {
+      const frame = track.sample(now);
+      expect(frame.columns.map((column) => column.id)).toEqual(ids);
+      expectWellFormed(frame);
+      const shown = shownValue(frame);
+      expect(shown).toBeGreaterThanOrEqual(to);
+      expect(shown).toBeLessThanOrEqual(from);
+    }
+    expect(readout(track.sample(ROLL_MS).columns)).toBe(format(to));
+  });
+
+  it.each([
+    [52, 5052],
+    [998, 1003],
+    [999, 1000],
+    [9, 12_345],
+  ])('shows a new leading digit only once it reads non-zero, from %i to %i', (from, to) => {
+    const track = new OdometerTrack();
+    track.jump(format(from));
+    track.push(format(to), 1, 0, false);
+    expect(readout(track.sample(0).columns)).toBe(format(from));
+    for (let now = 0; now < ROLL_MS; now += 4) {
+      const frame = track.sample(now);
+      expectWellFormed(frame);
+      const shown = shownValue(frame);
+      expect(shown).toBeGreaterThanOrEqual(from);
+      expect(shown).toBeLessThanOrEqual(to);
+    }
+    expect(readout(track.sample(ROLL_MS).columns)).toBe(format(to));
+  });
+
+  it('keeps a prefix and inner leading zeros the texts themselves show', () => {
+    const track = new OdometerTrack();
+    track.jump('$0.5K');
+    track.push('$10.5K', 1, 0, false);
+    for (let now = 0; now < ROLL_MS; now += 4) {
+      expect(readout(track.sample(now).columns)).toMatch(/^\$(0|10)\.\dK$/);
+    }
+    expect(readout(track.sample(ROLL_MS).columns)).toBe('$10.5K');
   });
 
   it('coalesces changes inside the window into one landing', () => {

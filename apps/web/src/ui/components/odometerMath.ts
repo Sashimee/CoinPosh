@@ -55,8 +55,18 @@ export const COALESCE_MS = 150;
 const SPIN_DIGITS = 10;
 
 export type OdometerColumn =
-  | { readonly id: number; readonly kind: 'digit'; readonly position: number }
-  | { readonly id: number; readonly kind: 'static'; readonly char: string };
+  | {
+      readonly id: number;
+      readonly kind: 'digit';
+      readonly position: number;
+      readonly hidden: boolean;
+    }
+  | {
+      readonly id: number;
+      readonly kind: 'static';
+      readonly char: string;
+      readonly hidden: boolean;
+    };
 
 export interface OdometerFrame {
   readonly columns: readonly OdometerColumn[];
@@ -80,6 +90,8 @@ interface CountingRoll extends RollTiming {
   readonly fromValue: number;
   readonly toValue: number;
   readonly ticksBelow: number;
+  /** Wheels that always show, even as leading zeros: the fewest digits either end has. */
+  readonly minPlaces: number;
 }
 
 /** The text changed shape (a new compact suffix, say): each wheel rolls straight to its digit. */
@@ -100,6 +112,10 @@ function digitsValue(glyphs: readonly Glyph[]): number {
   let value = 0;
   for (const glyph of glyphs) if (glyph.kind === 'digit') value = value * 10 + glyph.digit;
   return value;
+}
+
+function digitCount(glyphs: readonly Glyph[]): number {
+  return glyphs.filter((glyph) => glyph.kind === 'digit').length;
 }
 
 function sameGlyphs(a: readonly Glyph[], b: readonly Glyph[]): boolean {
@@ -145,6 +161,7 @@ export function wheelPosition(value: number, place: number): number {
 /** The text a frame shows: each wheel reads as the digit filling most of its window. */
 export function readout(columns: readonly OdometerColumn[]): string {
   return columns
+    .filter((column) => !column.hidden)
     .map((column) =>
       column.kind === 'static' ? column.char : String(wrapDigit(Math.round(column.position))),
     )
@@ -193,11 +210,12 @@ export class OdometerTrack {
     ) {
       const fromValue = this.countedValue(nowMs);
       const toValue = digitsValue(glyphs);
+      const minPlaces = Math.min(digitCount(this.target), digitCount(glyphs));
       if (glyphs.length > this.slots.length) this.relayout(glyphs);
       const turns = Math.abs(toValue - fromValue);
       let ticksBelow = 0;
       while (turns / 10 ** ticksBelow > SPIN_DIGITS) ticksBelow++;
-      this.roll = { kind: 'counting', fromValue, toValue, ticksBelow, ...timing };
+      this.roll = { kind: 'counting', fromValue, toValue, ticksBelow, minPlaces, ...timing };
     } else {
       const current = this.positions(nowMs);
       const reuse = this.relayout(glyphs);
@@ -217,12 +235,36 @@ export class OdometerTrack {
   sample(nowMs: number): OdometerFrame {
     this.advance(nowMs);
     const positions = this.positions(nowMs);
+    const hidden = this.leadingZeros(nowMs);
     const columns = this.slots.map((slot, i): OdometerColumn =>
       slot.glyph.kind === 'static'
-        ? { id: slot.id, kind: 'static', char: slot.glyph.char }
-        : { id: slot.id, kind: 'digit', position: positions[i] ?? 0 },
+        ? { id: slot.id, kind: 'static', char: slot.glyph.char, hidden: hidden[i] ?? false }
+        : { id: slot.id, kind: 'digit', position: positions[i] ?? 0, hidden: hidden[i] ?? false },
     );
     return { columns, settled: this.roll === null };
+  }
+
+  /**
+   * How many columns on the left to hide mid-count: a wider layout kept for a shrink, or a
+   * new column added for a grow, would otherwise read as a leading zero. A hidden wheel
+   * shows again once the counted value reaches it, which is exactly when it starts to read 1.
+   */
+  private leadingZeros(nowMs: number): boolean[] {
+    const hidden = new Array<boolean>(this.slots.length).fill(false);
+    const roll = this.roll;
+    if (roll?.kind !== 'counting') return hidden;
+    const places = Math.max(
+      roll.minPlaces,
+      String(Math.max(0, Math.round(this.countedValue(nowMs)))).length,
+    );
+    let hiddenDigits = digitCount(this.slots.map((slot) => slot.glyph)) - places;
+    let index = this.slots.findIndex((slot) => slot.glyph.kind === 'digit');
+    for (; hiddenDigits > 0 && index < this.slots.length; index++) {
+      if (this.slots[index]?.glyph.kind === 'digit') hiddenDigits--;
+      hidden[index] = true;
+    }
+    for (; this.slots[index]?.glyph.kind === 'static'; index++) hidden[index] = true;
+    return hidden;
   }
 
   private advance(nowMs: number): void {

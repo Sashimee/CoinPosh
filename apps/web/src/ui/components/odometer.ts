@@ -75,6 +75,7 @@ export class Odometer {
       cell = column.kind === 'digit' ? digitCell() : staticCell(column.char);
       this.cells.set(column.id, cell);
     }
+    cell.el.style.display = column.hidden ? 'none' : '';
     if (column.kind === 'digit' && cell.strip) {
       cell.strip.style.transform = `translateY(${-wrapDigit(column.position)}em)`;
     }
