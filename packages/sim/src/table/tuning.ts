@@ -79,14 +79,50 @@ export const COIN_MATERIAL = {
  * it and the backboard scrapes coins forward instead of pinning them. The pusher
  * top (0.2, 0.225 against a coin) is slicker than the floor: coins ride it forward,
  * but on the return the ones held by the backboard slip over the retreating block
- * instead of being dragged hard into the board, which is what lets the upper tier
- * creep forward and drain over the lip.
+ * instead of being dragged hard into the board. The backboard only holds coins that
+ * reach it, though: a heap with room in front of it rides the block out and back as
+ * one raft and never meets the board. PUSHER_CAM's knock is what walks such a heap
+ * forward.
  */
 export const TABLE_MATERIAL = {
   floorFriction: 0.42,
   wallFriction: 0.15,
   pusherFriction: 0.2,
   restitution: 0.06,
+} as const;
+
+/**
+ * The pusher's cam (pusherExtension). With a smoothstep that stops at both ends, every
+ * coin on the upper tier rides the block out 12 cm and straight back again: the
+ * accelerations peak at 0.28 m/s², an eighth of what it takes to slide a coin on the top
+ * (0.225 × g, 2.2 m/s²), so nothing ever slips. A heap with room left in front of it
+ * never meets the backboard and stands on the block for good. The Demo's opening pour
+ * (160 coins, seed 0xc0196051) did that: five coins fell, then 155 held still from 16 s
+ * on, 136 of them riding the block as one raft.
+ *
+ * - knock 0.5: the cam reaches full reach still moving, at 2 × knock the mean speed of
+ *   its push (0.05 m/s at the default motion, three quarters of its peak), and the block
+ *   snaps straight into its return (0.075 m/s): a velocity change of 0.125 m/s within a
+ *   substep, the clunk of a follower dropping off its cam lobe. Friction cannot stop the
+ *   coins on top that fast, so they slide on toward the lip while the top reverses
+ *   beneath them, then grip again and ride the return. Each stroke walks a lone coin on
+ *   the upper tier 3.2 mm toward the lip, the whole upper heap with it, so its front
+ *   coins tip one after another onto the lower tier, and the coins lying in front of the
+ *   face coast on a millimetre or two when it pulls away. Retraction stays smooth, so a
+ *   coin is never thrown back at the backboard.
+ *
+ *   The slide grows as knock squared: 0.25 creeps about 0.8 mm a stroke, and the
+ *   opening heap of 110 coins moved two coins in 40 s; 0.75 creeps 7.2 mm and the same
+ *   heap sheds over a third of itself over the lip in 40 s with nobody playing. At 0.5,
+ *   on twelve seeds of the Demo's opening pour with no drops after it, a coin leaves the
+ *   upper tier for the floor in every run of three strokes (at least 6 of them, over the
+ *   first ten strokes), for as long as 160 s were measured, and the first coin falls over
+ *   the front lip 6 to 15 s after the pour starts (creep.test.ts checks the Demo seed).
+ *   The knock wakes no extra coins in the 250-coin bench (table.bench.ts): at most one
+ *   sleeps with or without it, and the mean tick moved by 0.1 ms in a back-to-back run.
+ */
+export const PUSHER_CAM = {
+  knock: 0.5,
 } as const;
 
 /**
