@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { DirectionalLight, Matrix4, PerspectiveCamera, Quaternion, Vector3 } from 'three/webgpu';
+import {
+  Color,
+  DirectionalLight,
+  Matrix4,
+  PerspectiveCamera,
+  Quaternion,
+  Vector3,
+} from 'three/webgpu';
 import { COIN_SHADOW_LAYER, CoinField } from './coin-field.ts';
 import { NEAR_COIN_GEOMETRY } from './geometry.ts';
+import { HIGHLIGHT_KNEE } from './materials.ts';
 import { DEFAULT_LOD_SETTINGS } from './lod.ts';
 import { COIN_LOOKS, COIN_TIER_IDS, isCoinTierId } from './tiers.ts';
 
@@ -30,6 +38,22 @@ describe('tiers', () => {
     expect(isCoinTierId('bronze')).toBe(false);
     expect(COIN_LOOKS.gold.metal).toBe('#D4AF37');
     expect(COIN_TIER_IDS.filter((t) => COIN_LOOKS[t].prismatic)).toEqual(['heirloom']);
+  });
+
+  it('caps highlights above the knee and lets only the sparkle tiers glint brighter', () => {
+    for (const tier of COIN_TIER_IDS)
+      expect(COIN_LOOKS[tier].highlightCeiling).toBeGreaterThan(HIGHLIGHT_KNEE);
+    const bright = COIN_TIER_IDS.filter((t) => COIN_LOOKS[t].highlightCeiling > 2);
+    expect(bright).toEqual(['diamond', 'heirloom']);
+    for (const tier of bright) expect(COIN_LOOKS[tier].sparkle).toBeGreaterThan(0);
+  });
+
+  it('keeps silver neutral rather than blue-grey', () => {
+    const silver = new Color(COIN_LOOKS.silver.metal);
+    expect(silver.b - silver.r).toBeLessThanOrEqual(0.02);
+    expect(
+      Math.max(silver.r, silver.g, silver.b) - Math.min(silver.r, silver.g, silver.b),
+    ).toBeLessThan(0.03);
   });
 });
 
