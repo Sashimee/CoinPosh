@@ -101,7 +101,8 @@ type MetaKey =
   | 'fair_server_seed'
   | 'fair_server_seed_hash'
   | 'fair_client_seed'
-  | 'fair_nonce';
+  | 'fair_nonce'
+  | 'reload_pending';
 
 function startingCoins(): number {
   const line = upgradeLines.find((candidate) => candidate.effect.stat === 'startingCoins');
@@ -151,8 +152,20 @@ export class PlayerDO extends DurableObject<Env> {
   }
 
   /**
-   * The player's snapshot. Hydration also lays the opening heap for a player who signed up
-   * before the server seeded it, and settles the buffer against the wallet.
+   * Marks a sign-in or token refresh. The web client keeps its access token in memory only,
+   * so every page load passes through here before it hydrates; the session's first snapshot
+   * then refunds what the reloaded sim cannot lay again.
+   */
+  signedIn(): void {
+    if (this.meta('player_id') === null) return;
+    this.setMeta('reload_pending', '1');
+  }
+
+  /**
+   * The player's snapshot. The first one after a sign-in, if no drop or claim came between,
+   * refunds the coins a reloaded client cannot lay again (see refundStranded). Every one
+   * lays the opening heap for a player who never had one and settles the buffer against the
+   * wallet.
    */
   async state(): Promise<DoResult<StateResponse>> {
     const playerId = this.meta('player_id');
@@ -160,6 +173,10 @@ export class PlayerDO extends DurableObject<Env> {
     const now = Date.now();
     const committed = this.ctx.storage.transactionSync(() => {
       const before = this.latestSeq();
+      if (this.meta('reload_pending') === '1') {
+        this.refundStranded(now);
+        this.setMeta('reload_pending', '0');
+      }
       this.seedOpeningHeap(now);
       this.reserveBuffer({ at: now, idempotencyKey: null });
       return this.latestSeq() !== before;
@@ -350,6 +367,7 @@ export class PlayerDO extends DurableObject<Env> {
           return { ok: true, replayed: true, body: JSON.parse(previous.response) as T };
         }
         const body = run(now);
+        this.setMeta('reload_pending', '0');
         this.sql.exec(
           'INSERT INTO idempotency (key, fingerprint, response, at) VALUES (?, ?, ?, ?)',
           command.idempotencyKey,
@@ -539,16 +557,66 @@ export class PlayerDO extends DurableObject<Env> {
   }
 
   /**
+   * The client's sim can only lay the opening heap when it boots, so after a reload every
+   * other coin on the table would sit there unclaimable. Mid-session snapshots (a resync or
+   * a tab coming back) must not do this, or coins still in play would stop paying while
+   * their refund buys new drops. Each one goes back: the wallet gets
+   * what it paid for the coin, or for the drops fused into it, and the house takes the rest
+   * of its value. The coin leaves the table for good, so a second hydration finds nothing
+   * to refund and a late claim of it is refused as already claimed.
+   */
+  private refundStranded(now: EpochMs): void {
+    const heap = new Set(
+      this.sql
+        .exec<{ ref: string }>(
+          "SELECT ref FROM ledger WHERE kind = 'grant.heap' AND account = 'table'",
+        )
+        .toArray()
+        .map((row) => row.ref),
+    );
+    const stranded = this.entities.coinsIn('table').filter((coin) => !heap.has(coin.id));
+    if (stranded.length === 0) return;
+    const tx = new LedgerTx('refund.table');
+    for (const coin of stranded) {
+      const paid = this.paidByVault(coin.id);
+      this.entities.settleCoin(coin.id, 'refunded', now);
+      tx.move('table', 'wallet', 'coins', paid, coin.id);
+      tx.move('table', 'house', 'coins', coin.value - paid, coin.id);
+    }
+    commit(this.sql, tx, { at: now, idempotencyKey: null });
+  }
+
+  /** What the wallet paid to drop this coin, or to drop every coin fused into it. */
+  private paidByVault(id: string): number {
+    const dropped = this.sql
+      .exec<{ paid: number | null }>(
+        `SELECT -SUM(delta) AS paid FROM ledger
+         WHERE ref = ? AND kind IN ('drop.mint', 'drop.buffer') AND account IN ('wallet', 'buffer')`,
+        id,
+      )
+      .one().paid;
+    const inputs = this.sql
+      .exec<{ ref: string }>(
+        `SELECT input.ref AS ref FROM ledger AS output
+         JOIN ledger AS input ON input.tx_id = output.tx_id
+         WHERE output.kind = 'claim.fusion' AND output.ref = ? AND output.account = 'table'
+           AND output.delta > 0 AND input.account = 'table' AND input.delta < 0`,
+        id,
+      )
+      .toArray();
+    return inputs.reduce((total, input) => total + this.paidByVault(input.ref), dropped ?? 0);
+  }
+
+  /**
    * Lays the opening heap once per player, staked by the house rather than the wallet. It
    * rests at the front lip, so its coins may fall from tick 0; the client's sim lays them
-   * first, in this order, so they hold sim ids 0..n-1. A player who has dropped or already
-   * has coins on the table is past the opening and never gets one.
+   * first, in this order, so they hold sim ids 0..n-1. Hydration refunds every other table
+   * coin first, so a player who signed up before the heap existed gets theirs too.
    */
   private seedOpeningHeap(now: EpochMs): void {
     const seeded =
       this.sql.exec("SELECT 1 FROM ledger WHERE kind = 'grant.heap' LIMIT 1").toArray().length > 0;
     if (seeded) return;
-    if (Number(this.requireMeta('drop_count')) > 0) return;
     if (this.entities.countCoinsIn('table') > 0) return;
     const value = mintedValue(openingHeap.tier);
     const tx = new LedgerTx('grant.heap');

@@ -28,12 +28,25 @@ describe('openingTableCoins', () => {
   it('lays the heap a live server listed, in its order', async () => {
     const demo = await demoState();
     const heap = Array.from({ length: openingHeap.coins }, (_, i) => coin(i, openingHeap.tier, 5));
-    const dropped = coin(openingHeap.coins, 'copper', 1);
+    const live = StateResponseSchema.parse({ ...demo, table: { ...demo.table, coins: heap } });
+    expect(openingTableCoins(live)).toEqual(heap);
+  });
+
+  it('lays an empty table as no heap', async () => {
+    const demo = await demoState();
+    const live = StateResponseSchema.parse({ ...demo, table: { ...demo.table, coins: [] } });
+    expect(openingTableCoins(live)).toEqual([]);
+  });
+
+  it('refuses a boot snapshot still holding a coin the sim cannot lay', async () => {
+    const demo = await demoState();
+    const heap = Array.from({ length: 3 }, (_, i) => coin(i, openingHeap.tier, 5));
+    const stranded = coin(3, 'copper', 1);
     const live = StateResponseSchema.parse({
       ...demo,
-      table: { ...demo.table, coins: [...heap, dropped] },
+      table: { ...demo.table, coins: [...heap, stranded] },
     });
-    expect(openingTableCoins(live)).toEqual(heap);
+    expect(() => openingTableCoins(live)).toThrow(/copper coin .*refundStranded/);
   });
 
   it('lays the heap the Demo Mode server minted at sign-up', async () => {

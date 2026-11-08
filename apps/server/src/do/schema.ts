@@ -65,6 +65,25 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE coins ADD COLUMN paid INTEGER NOT NULL DEFAULT 0 CHECK (paid >= 0);
   `,
+  `
+  CREATE TABLE coins_v3 (
+    id           TEXT PRIMARY KEY,
+    tier         TEXT NOT NULL,
+    value        INTEGER NOT NULL CHECK (value >= 0),
+    state        TEXT NOT NULL
+                 CHECK (state IN ('buffer', 'table', 'claimed', 'lost', 'fused', 'refunded')),
+    dropped_tick INTEGER,
+    minted_at    INTEGER NOT NULL,
+    settled_at   INTEGER,
+    paid         INTEGER NOT NULL DEFAULT 0 CHECK (paid >= 0)
+  );
+  INSERT INTO coins_v3 (rowid, id, tier, value, state, dropped_tick, minted_at, settled_at, paid)
+    SELECT rowid, id, tier, value, state, dropped_tick, minted_at, settled_at, paid FROM coins;
+  DROP TABLE coins;
+  ALTER TABLE coins_v3 RENAME TO coins;
+  CREATE INDEX coins_state ON coins (state);
+  CREATE INDEX ledger_ref ON ledger (ref);
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {

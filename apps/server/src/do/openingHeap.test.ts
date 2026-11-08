@@ -9,6 +9,7 @@ import {
   dropAsClient,
   expectConserved,
   playerStub,
+  reload,
   state,
   vaultCoins,
 } from '../test/game.ts';
@@ -47,9 +48,15 @@ function heapGrants(stub: DurableObjectStub<PlayerDO>) {
 
 /**
  * A player stored the way sign-up worked before the server seeded the heap: the starting
- * grant, an unpaid buffer of `unpaidBuffer` reservations and no coins on the table.
+ * grant, an unpaid buffer of `unpaidBuffer` reservations, and `stranded` copper drops the
+ * wallet paid for still on the table.
  */
-async function legacyPlayer(options: { unpaidBuffer: number; walletCoins: number; drops: number }) {
+async function legacyPlayer(options: {
+  unpaidBuffer: number;
+  walletCoins: number;
+  drops: number;
+  stranded?: number;
+}) {
   const playerId = PlayerIdSchema.parse(crypto.randomUUID());
   const stub = env.PLAYER.get(env.PLAYER.idFromName(playerId));
   await runInDurableObject(stub, (_instance: PlayerDO, ctx) => {
@@ -78,6 +85,16 @@ async function legacyPlayer(options: { unpaidBuffer: number; walletCoins: number
     const entities = new Entities(sql);
     for (let i = 0; i < options.unpaidBuffer; i++) {
       entities.mintCoin(COPPER.id, mintedValue(COPPER.id), 'buffer', null, 0);
+    }
+    for (let i = 0; i < (options.stranded ?? 0); i++) {
+      const coin = entities.mintCoin(COPPER.id, mintedValue(COPPER.id), 'table', i, 0);
+      commit(
+        sql,
+        new LedgerTx('drop.mint')
+          .move('wallet', 'table', 'coins', COPPER.value, coin.id)
+          .move('mint', 'table', 'coins', coin.value - COPPER.value, coin.id),
+        { at: 0, idempotencyKey: null },
+      );
     }
   });
   return stub;
@@ -252,24 +269,33 @@ describe('opening heap for players who signed up before it was seeded', () => {
     expect(await stub.conservation()).toMatchObject({ conserved: true, bufferPaid: 2 });
   });
 
-  it('gives no heap to a player who has already dropped', async () => {
-    const stub = await legacyPlayer({ unpaidBuffer: 0, walletCoins: 10, drops: 3 });
-    const result = await stub.state();
-    if (!result.ok) throw new Error(result.error.message);
-    expect(result.body.table.coins).toEqual([]);
-    expect(await heapGrants(stub)).toEqual([]);
+  it('refunds the drops stranded on the table, then lays the heap, once', async () => {
+    const stub = await legacyPlayer({ unpaidBuffer: 3, walletCoins: 36, drops: 36, stranded: 36 });
+    await stub.signedIn();
+    const first = await stub.state();
+    if (!first.ok) throw new Error(first.error.message);
+    expect(first.body.table.coins).toHaveLength(openingHeap.coins);
+    expect(first.body.table.coins.every((coin) => coin.tier === openingHeap.tier)).toBe(true);
+    const report = await stub.conservation();
+    expect(report).toMatchObject({ conserved: true });
+    expect(report.walletCoins + report.bufferPaid).toBe(36);
+    expect(report.ledger.house).toBe(-openingHeap.coins * HEAP_VALUE);
+
+    await stub.signedIn();
+    const second = await stub.state();
+    if (!second.ok) throw new Error(second.error.message);
+    expect(second.body.table.coins).toEqual(first.body.table.coins);
+    expect(second.body.wallet).toEqual(first.body.wallet);
+    expect(new Set((await heapGrants(stub)).map((leg) => leg.tx_id)).size).toBe(1);
   });
 
-  it('gives no heap to a player who already has coins on the table', async () => {
+  it('gives a player whose table still holds a heap no second one', async () => {
     const session = await newSession();
-    const [dropped] = await dropAsClient(session, 1);
-    const stub = playerStub(session.tokens.playerId);
-    await runInDurableObject(stub, (_instance: PlayerDO, ctx) => {
-      ctx.storage.sql.exec("UPDATE meta SET value = '0' WHERE key = 'drop_count'");
-    });
-    const heapLegs = (await heapGrants(stub)).length;
-    const coins = (await state(session)).table.coins;
-    expect(coins.map((coin) => coin.id)).toContain(dropped?.coin.id);
-    expect(await heapGrants(stub)).toHaveLength(heapLegs);
+    await dropAsClient(session, 2);
+    await reload(session);
+    expect((await heapOf(session)).every((coin) => coin.tier === openingHeap.tier)).toBe(true);
+    expect(
+      new Set((await heapGrants(playerStub(session.tokens.playerId))).map((l) => l.tx_id)).size,
+    ).toBe(1);
   });
 });

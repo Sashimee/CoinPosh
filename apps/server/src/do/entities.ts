@@ -18,7 +18,7 @@ import { randomBase62 } from '../crypto.ts';
 /** 20 base62 characters ≈ 119 bits, so a forged ID cannot hit a real coin by guessing. */
 const ENTITY_ID_LENGTH = 20;
 
-export type CoinState = 'buffer' | 'table' | 'claimed' | 'lost' | 'fused';
+export type CoinState = 'buffer' | 'table' | 'claimed' | 'lost' | 'fused' | 'refunded';
 export type CrateState = 'table' | 'claimed' | 'lost';
 
 interface CoinRow extends Record<string, SqlStorageValue> {
@@ -164,7 +164,7 @@ export class Entities {
     );
   }
 
-  settleCoin(id: CoinId, state: 'claimed' | 'lost' | 'fused', at: EpochMs): void {
+  settleCoin(id: CoinId, state: 'claimed' | 'lost' | 'fused' | 'refunded', at: EpochMs): void {
     this.sql.exec(
       "UPDATE coins SET state = ?, settled_at = ? WHERE id = ? AND state = 'table'",
       state,

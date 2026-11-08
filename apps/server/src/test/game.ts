@@ -7,7 +7,7 @@ import {
 } from '@coinposh/shared';
 import { env } from 'cloudflare:workers';
 import { expect } from 'vitest';
-import type { Session } from './client.ts';
+import { guestSignIn, type Session } from './client.ts';
 
 export function playerStub(playerId: PlayerId) {
   return env.PLAYER.get(env.PLAYER.idFromName(playerId));
@@ -75,4 +75,10 @@ export async function expectError(response: Response, status: number, code: stri
 export async function expectConserved(session: Session): Promise<void> {
   const report = await playerStub(session.tokens.playerId).conservation();
   expect(report).toMatchObject({ conserved: true });
+}
+
+/** What a page reload does before it hydrates: sign in again, since the access token lived in memory. */
+export async function reload(session: Session): Promise<StateResponse> {
+  expect((await guestSignIn(session.device)).status).toBe(200);
+  return state(session);
 }
