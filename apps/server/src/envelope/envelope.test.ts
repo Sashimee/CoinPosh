@@ -287,16 +287,19 @@ describe('RateEnvelope flags and the shadow pool', () => {
 
   it('keeps flag rows bounded while a fall bot is held at the cap for 60 s', async () => {
     const durationMs = 60_000;
+    const stepMs = 25;
+    const attempts = durationMs / stepMs;
+    const maxAdmitted = LIMITS.falls.max * Math.ceil(durationMs / LIMITS.falls.windowMs);
     const result = await inFreshDo((sql) => {
       const envelope = new RateEnvelope(sql, LIMITS);
       let refused = 0;
-      for (let ms = 0; ms < durationMs; ms += 5) {
+      for (let ms = 0; ms < durationMs; ms += stepMs) {
         if (!envelope.admit(fall(1), T0 + ms, `fall_${ms}`).admitted) refused++;
       }
       const rows = sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM envelope_flags').one().n;
       return { refused, rows, flags: envelope.flags(), unranked: envelope.unranked() };
     });
-    expect(result.refused).toBeGreaterThan(10_000);
+    expect(result.refused).toBeGreaterThanOrEqual(attempts - maxAdmitted);
     expect(result.rows).toBeLessThanOrEqual(Math.ceil(durationMs / LIMITS.falls.windowMs));
     expect(result.flags.every(({ metric }) => metric === 'falls')).toBe(true);
     expect(result.flags.reduce((sum, flag) => sum + flag.count, 0)).toBe(result.refused);
