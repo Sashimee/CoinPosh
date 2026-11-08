@@ -49,6 +49,7 @@ function table(headers: readonly string[], rows: readonly (readonly string[])[])
 
 const MILESTONE_LABELS: Readonly<Record<MilestoneId, string>> = {
   heapCleared: 'Opening heap cleared',
+  firstUpgradeAffordable: 'First upgrade affordable',
   firstUpgrade: 'First upgrade',
   firstCrate: 'First Vault Crate',
   firstCharm: 'First Charm',
@@ -97,6 +98,22 @@ function openingHeapLine({ openingHeap: heap }: SimResult): string {
   );
 }
 
+function openingMinutesLine({ openingMinutes }: SimResult): string {
+  const spread = (d: Distribution, f: (v: number) => string): string =>
+    [d.p10, d.p50, d.p90].map(f).join(' / ');
+  const coins = (v: number): string => (Number.isFinite(v) ? v.toFixed(0) : '—');
+  const gains = openingMinutes.gains
+    .map((d, minute) => `minute ${minute + 1} +${spread(d, coins)}`)
+    .join(' · ');
+  const ratio = spread(openingMinutes.lastOverFirst, (v) =>
+    Number.isFinite(v) ? `×${v.toFixed(2)}` : '—',
+  );
+  return (
+    `Opening minutes, Vault gain before purchases (p10 / p50 / p90): ${gains} · ` +
+    `minute ${openingMinutes.gains.length} / minute 1 ${ratio}`
+  );
+}
+
 export function formatSummary(result: SimResult): string {
   const { options } = result;
   const out: string[] = [];
@@ -111,6 +128,7 @@ export function formatSummary(result: SimResult): string {
     targetTable(result.ftue),
     '',
     openingHeapLine(result),
+    openingMinutesLine(result),
     '',
     `Active-play milestones (continuous play, capped at ${result.activeCapHours} h)`,
     table(

@@ -31,16 +31,18 @@ export interface SimModel {
  * table pays nothing until 130 to 158 coins sit on it and settles at 165 to 212 coins.
  *
  * The table a player first sits at holds `economyConfig.openingHeap` instead, laid at the
- * brink, so it starts paying far sooner than its coin count suggests (P-193, the same
- * table without fusion or tower, as the game's worker runs it, seeds 1 to 3 at 0.8 and
- * 2.4 drops/s, 120 s each):
+ * brink, so it starts paying far sooner than its coin count suggests. Re-measured for P-238
+ * on sim version 4 (the P-176 cam knock walks a small heap to the lip sooner than P-193
+ * measured): the same table without fusion or tower, as the game's worker runs it, centre
+ * drops, seeds 1 to 3 at 0.8 and 2.4 drops/s, 120 s each:
  *
  * | Heap | First front fall after (drops) | Front coins per drop over 120 s |
  * | ---- | ------------------------------ | ------------------------------- |
  * | 0    | 130 – 158 (T-1.01)              | 0.90 once steady                |
- * | 25   | 40 – 72, mean 56                | 0.20 – 0.65, still building     |
- * | 50   | 17 – 43, mean 33                | 0.41 – 0.70                     |
- * | 100  | 5 – 15, mean 10                 | 0.82 – 0.93, steady from start  |
+ * | 25   | 11 – 43, mean 24                | 0.72 – 0.79, still building     |
+ * | 50   | 11 – 15, mean 13                | 0.79 – 0.97                     |
+ * | 60   | 5 – 15, mean 10                 | 0.81 – 1.02                     |
+ * | 100  | 5 – 15, mean 10                 | 0.92 – 1.40, steady from start  |
  */
 export interface TablePile {
   /** Coins a table holds once returns are steady. */
@@ -98,8 +100,9 @@ export const simModel = {
     steadyCoins: 195,
     firstFallAfterDrops: 145,
     firstFallOnHeap: [
-      [25, 56],
-      [50, 33],
+      [25, 24],
+      [50, 13],
+      [60, 10],
       [100, 10],
     ],
   },

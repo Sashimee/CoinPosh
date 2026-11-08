@@ -22,6 +22,7 @@ import {
 import { dropsBeforeFirstFall, type SimModel } from './model.ts';
 
 export type MilestoneId =
+  | 'firstUpgradeAffordable'
   | 'firstUpgrade'
   | 'heapCleared'
   | 'firstCrate'
@@ -47,6 +48,14 @@ export interface CoinLedger {
 
 export type IncomeSource = 'heap' | 'won' | 'crateIncome' | 'offline';
 
+/** Opening minutes of play whose Vault gain the sim records, to show the curve has no cliff. */
+export const OPENING_MINUTES = 2;
+
+/** What play has put in the Vault: everything earned less the drops paid, before any purchase. */
+export function playEarnings(ledger: CoinLedger): number {
+  return ledger.heap + ledger.won + ledger.crateIncome + ledger.offline - ledger.dropsPaid;
+}
+
 export interface PlayerState {
   activeSeconds: number;
   venueIndex: number;
@@ -71,6 +80,8 @@ export interface PlayerState {
   /** Drops still needed to build the pile up to where the front edge starts paying. */
   pileDebt: number;
   ledger: CoinLedger;
+  /** Vault gain in each of the first OPENING_MINUTES minutes of active play (playEarnings). */
+  openingGains: number[];
   milestones: Partial<Record<MilestoneId, number>>;
   /**
    * Rates derived from levels, venue, charms and album bonus. Cleared whenever one of
@@ -211,6 +222,7 @@ export function createPlayer(ctx: PlayerContext): PlayerState {
       upgradesPaid: 0,
       forfeited: 0,
     },
+    openingGains: [],
     milestones: {},
     rates: null,
   };
@@ -448,6 +460,13 @@ function tryAscend(ctx: PlayerContext, player: PlayerState): void {
   grant(ctx, player);
 }
 
+function recordOpeningMinute(player: PlayerState): void {
+  const minute = player.openingGains.length;
+  if (minute >= OPENING_MINUTES || player.activeSeconds < (minute + 1) * 60) return;
+  const before = player.openingGains.reduce((sum, gain) => sum + gain, 0);
+  player.openingGains.push(playEarnings(player.ledger) - before);
+}
+
 /** Advance one active tick: drops, returns, crates, purchases, ascension. */
 export function activeTick(ctx: PlayerContext, player: PlayerState): void {
   const { model, config } = ctx;
@@ -475,6 +494,9 @@ export function activeTick(ctx: PlayerContext, player: PlayerState): void {
   }
   player.dropCarry = Math.min(player.dropCarry, 1);
   player.activeSeconds += dt;
+  recordOpeningMinute(player);
+  const cheapest = rates(ctx, player).cheapestVenueUpgrade;
+  if (cheapest !== null && player.coins >= cheapest.cost) mark(player, 'firstUpgradeAffordable');
   buyUpgrades(ctx, player);
   tryAscend(ctx, player);
   if (player.stars >= ctx.seasonStars) mark(player, 'seasonFreeTrack');

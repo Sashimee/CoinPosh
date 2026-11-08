@@ -17,8 +17,12 @@ export const fusion = {
 
 // Silver, not copper: at the front-edge return measured on the physics table (0.82 to 0.93
 // coins per drop) a copper heap pays no more than the pile it stands in for, and first
-// upgrade lands at 2 min 55 s p90; silver lands it at 20 s. Under about 75 coins the heap
-// eats the 20-coin trust fund before anything falls. Evidence: `sim --heap-tier copper --return-ratio 0.9` (P-193).
+// upgrade lands at 2 min 55 s p90; silver lands it at 20 s. Evidence: `sim --heap-tier copper
+// --return-ratio 0.9` (P-193). Kept at 100 although it front-loads minute 1 on the physics
+// table: a 40 to 75 coin silver heap runs dry inside minute 1 (minute 2 earns ×0.3 to ×0.6
+// of it in the sim) and on seeded physics can starve the Vault for 30 to 75 s. Flattening
+// the curve needs a copper heap with a few silver tension coins, which this config cannot
+// yet express (P-238).
 export const openingHeap = {
   coins: 100,
   tier: 'silver',

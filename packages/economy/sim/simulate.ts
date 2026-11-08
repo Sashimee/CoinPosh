@@ -13,6 +13,7 @@ import {
   createContext,
   createPlayer,
   currentVenue,
+  OPENING_MINUTES,
   venueBullion,
   type MilestoneId,
   type PlayerContext,
@@ -65,9 +66,21 @@ export interface OpeningHeapResult extends OpeningHeapConfig {
   readonly paid: Distribution;
 }
 
+/**
+ * Vault gain over the opening minutes of active play, before purchases, so a heap that pays
+ * out in a rush and then leaves the table flat shows up as a cliff between the minutes.
+ */
+export interface OpeningMinutesResult {
+  /** One distribution per opening minute, in order. */
+  readonly gains: readonly Distribution[];
+  /** Each player's last opening minute over their first; unreached when the first gained nothing. */
+  readonly lastOverFirst: Distribution;
+}
+
 export interface SimResult {
   readonly options: SimOptions;
   readonly openingHeap: OpeningHeapResult;
+  readonly openingMinutes: OpeningMinutesResult;
   readonly targets: readonly TargetResult[];
   readonly ftue: readonly TargetResult[];
   readonly active: Readonly<Record<MilestoneId, Distribution>>;
@@ -77,6 +90,7 @@ export interface SimResult {
 
 const MILESTONES: readonly MilestoneId[] = [
   'heapCleared',
+  'firstUpgradeAffordable',
   'firstUpgrade',
   'firstCrate',
   'firstCharm',
@@ -106,6 +120,20 @@ function distribution(values: readonly (number | undefined)[]): Distribution {
     p90: percentile(filled, 90),
     unreached: values.filter((v) => v === undefined).length,
   };
+}
+
+function openingMinutes(players: readonly PlayerState[]): OpeningMinutesResult {
+  const gains = Array.from({ length: OPENING_MINUTES }, (_, minute) =>
+    distribution(players.map((p) => p.openingGains[minute])),
+  );
+  const lastOverFirst = distribution(
+    players.map((p) => {
+      const first = p.openingGains[0];
+      const last = p.openingGains[OPENING_MINUTES - 1];
+      return first === undefined || last === undefined || first <= 0 ? undefined : last / first;
+    }),
+  );
+  return { gains, lastOverFirst };
 }
 
 function runActivePlayer(ctx: PlayerContext): PlayerState {
@@ -267,6 +295,7 @@ export function runSimulation(
       dropsBeforeFirstFall: dropsBeforeFirstFall(model.pile, config.openingHeap.coins),
       paid: distribution(activeRuns.map((p) => p.ledger.heap)),
     },
+    openingMinutes: openingMinutes(activeRuns),
     targets: config.pacing.map((target) => evaluate(target, valuesFor[target.id])),
     ftue: ftueTargets.map((target) =>
       evaluate(

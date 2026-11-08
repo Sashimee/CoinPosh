@@ -15,10 +15,12 @@ import {
 import { buildEnvelopeTable, tableOf } from './envelopeTable.ts';
 import { simModel, type SimModel } from './model.ts';
 import {
+  OPENING_MINUTES,
   activeTick,
   claimOffline,
   createContext,
   createPlayer,
+  playEarnings,
   type PlayerState,
 } from './player.ts';
 
@@ -75,6 +77,25 @@ describe('sim coin conservation', () => {
           }
         },
       ),
+      RUNS,
+    );
+  });
+
+  it('splits the opening minutes so their Vault gains add up to what play earned by then', () => {
+    fc.assert(
+      fc.property(fc.integer(), configs, models, (seed, config, model) => {
+        const ctx = createContext(config, model, createRng(seed));
+        const player = createPlayer(ctx);
+        const end = OPENING_MINUTES * 60;
+        while (player.activeSeconds < end) {
+          activeTick(ctx, player);
+          expect(player.openingGains).toHaveLength(Math.floor(player.activeSeconds / 60));
+        }
+        const total = player.openingGains.reduce((sum, gain) => sum + gain, 0);
+        expect(total).toBeCloseTo(playEarnings(player.ledger), 6);
+        for (let i = 0; i < 120; i += 1) activeTick(ctx, player);
+        expect(player.openingGains).toHaveLength(OPENING_MINUTES);
+      }),
       RUNS,
     );
   });

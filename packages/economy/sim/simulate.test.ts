@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { economyConfig } from '../src/config/index.ts';
 import { runCli } from './cli.ts';
 import { dropsBeforeFirstFall, simModel, type TablePile } from './model.ts';
+import { OPENING_MINUTES } from './player.ts';
 import { formatMetric, formatSummary } from './report.ts';
 import { percentile, runSimulation } from './simulate.ts';
 
@@ -116,6 +117,38 @@ describe('runSimulation', () => {
     expect(d3?.seasonTier).toBeGreaterThanOrEqual(d1?.seasonTier ?? Number.POSITIVE_INFINITY);
   });
 
+  it('finds the first upgrade affordable no later than it is bought', () => {
+    const { firstUpgradeAffordable: affordable, firstUpgrade: bought } = result.active;
+    expect(affordable.unreached).toBe(0);
+    expect(affordable.p10).toBeLessThanOrEqual(bought.p10);
+    expect(affordable.p90).toBeLessThanOrEqual(bought.p90);
+  });
+
+  it('records the Vault gain of every opening minute for every player', () => {
+    expect(result.openingMinutes.gains).toHaveLength(OPENING_MINUTES);
+    for (const minute of result.openingMinutes.gains) expect(minute.unreached).toBe(0);
+  });
+
+  it('reads a heap that runs dry inside the opening minutes as a cliff', () => {
+    const ratio = (coins: number) =>
+      runSimulation(
+        { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, coins } },
+        simModel,
+        { days: 1, players: 4, seed: 5 },
+      ).openingMinutes.lastOverFirst;
+    const shipped = ratio(economyConfig.openingHeap.coins);
+    const small = ratio(40);
+    expect(small.p50).toBeLessThan(0.65);
+    expect(shipped.p50).toBeGreaterThan(0.65);
+  });
+
+  it('leaves the minute ratio unreached when minute 1 earned nothing back', () => {
+    const empty = { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, coins: 0 } };
+    const run = runSimulation(empty, simModel, { days: 1, players: 3, seed: 5 });
+    expect(run.openingMinutes.gains[0]?.p90).toBeLessThan(0);
+    expect(run.openingMinutes.lastOverFirst.unreached).toBe(3);
+  });
+
   it('rejects nonsense options', () => {
     expect(() => runSimulation(economyConfig, simModel, { ...options, days: 0 })).toThrow(/--days/);
     expect(() => runSimulation(economyConfig, simModel, { ...options, players: 1.5 })).toThrow(
@@ -129,6 +162,10 @@ describe('runSimulation', () => {
       /Opening heap: 100 silver coins on the house · first fall after 10 drops · paid \d+ \/ \d+ \/ \d+ coins/,
     );
     expect(summary).toMatch(/Opening heap cleared {2}/);
+    expect(summary).toMatch(/First upgrade affordable {2}/);
+    expect(summary).toMatch(
+      /Opening minutes, Vault gain before purchases \(p10 \/ p50 \/ p90\): minute 1 \+-?\d+ \/ -?\d+ \/ -?\d+ · minute 2 \+-?\d+ \/ -?\d+ \/ -?\d+ · minute 2 \/ minute 1 ×\d+\.\d{2} \/ ×\d+\.\d{2} \/ ×\d+\.\d{2}/,
+    );
     expect(summary).toContain('Pacing targets (02-ECONOMY.md): 7/7 on target');
     expect(summary).toContain('FTUE targets (00-VISION.md): 1/1 on target');
     expect(summary).toMatch(/PASS {2}Ascend Venue 1 \(active\)/);
@@ -227,7 +264,7 @@ describe('sim CLI', () => {
     expect(heap('--heap-coins', '50', '--heap-tier', 'copper')).toMatchObject({
       coins: 50,
       tier: 'copper',
-      dropsBeforeFirstFall: 33,
+      dropsBeforeFirstFall: 13,
     });
     expect(heap('--empty-table')).toMatchObject({ coins: 0, dropsBeforeFirstFall: 145 });
   });
