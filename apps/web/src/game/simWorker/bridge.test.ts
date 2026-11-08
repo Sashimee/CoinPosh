@@ -152,7 +152,7 @@ describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport'
     expect(bridge.transport).toBe(transport);
     const info = await bridge.ready;
     expect(info.tick).toBe(0);
-    expect(info.engine.timestep).toBeCloseTo(1 / 60, 6);
+    expect(info.engine.substepTimestep * info.engine.substeps).toBeCloseTo(1 / 60, 6);
     await poll();
     await run(120);
     expect(bridge.stats.tick).toBe(120);

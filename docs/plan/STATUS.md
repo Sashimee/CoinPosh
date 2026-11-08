@@ -35,7 +35,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-1.02 | done | task/T-1.02 (merge 6913afd) | Contact Fusion + Champagne Tower sim (f1fc84a); table/sim wiring queued as P-73..P-79 (sim.ts in P-75); pnpm check green after merge |
 | T-1.03 | done | task/T-1.03 (merge 0bd0754) | Physics worker bridge + interpolation (bd21e9e); web sim dep P-80, main.ts bridge switch P-81 (folds P-70); pnpm check green after merge |
 | T-1.15 | done | task/T-1.15 (merge 241fdcd) | Upgrades v1 + Velvet Vault offline earnings (44420ad); server/web wiring queued as P-83..P-93; pnpm check green after merge |
-| P-42 | blocked(integration: renamed EngineInfo.timestep to substepTimestep/substeps, breaking apps/web simWorker/bridge.test.ts:155 typecheck and test after T-1.03) | task/P-42 (a30023f) | Merged as d6ba702, reverted in a2aaaa3; turbo cache hid the break (web imports sim by relative path, see P-80); retry from task/P-42 updating bridge.test.ts to the new EngineInfo |
+| P-42 | done | task/P-42 (merge cfb7596) | Sim drives the pusher table once per tick (2c6171f); folds P-43, P-50 and the web dep/import part of P-80 (turbo ^dependsOn split out to P-104); earlier attempt d6ba702 reverted in a2aaaa3; pnpm check green after merge, also with --force (no cache) |
 | P-53 | done | task/P-53 (merge e52bafa) | HUD mounted at boot, audio attached to settings; folds P-28; pnpm check green after merge |
 | P-60 | done | task/P-60 (merge 04edd4a) | rateEnvelope required in economy config and validated; folds P-61, P-62, P-64; pnpm check green after merge |
 
