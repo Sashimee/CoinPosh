@@ -47,7 +47,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-108 | blocked(review: Vault omits drop-buffer value (reads 8 not 20, P-122); opening heap 150@90/s stalls short of lip, P-120 fails; feedback wired after audioReady drops early juice) | task/P-108 (7372a7c, not merged) | Gameplay systems wiring in main.ts; folds P-122 and main.ts half of P-120; follow-ups P-140..P-151 |
 | P-152 | done | task/P-152 (merge fc34966) | Rapier ships once: Rapier-free @coinposh/sim layout/constants entry, Rapier kept inside the worker (67c22cf); folds sim side of P-132 and P-142; follow-ups P-159..P-162; pnpm check green after merge (uncached) |
 | P-153 | done | task/P-153 (merge 079d6fb) | main.ts binds the input surface to the sim bridge (drop, pour, nudge, aim reticle) and hydrates the Vault on boot (589bf7e); folds P-122; follow-ups P-163..P-169; pnpm check green after merge |
-| P-154 | blocked(review: pnpm check red at 820a49c; 3 failing riviera layout.test.ts tests: portrait field fills 0.44 of HUD band (needs 0.70), payout lip at 0.51 of height (needs 0.60); needs lead decision on portrait acceptance) | task/P-154 (820a49c, not merged) | Riviera camera preset portrait reframe; follow-ups P-170..P-173 |
+| P-154 | done | task/P-154 (merge 5de973d) | Riviera camera presets reframed to the P-170 amended targets (oblique view, sky <= 5 %, portrait 55 % / landscape and desktop 70 %), layout imported from @coinposh/sim/layout (f3b2172); follow-ups P-171..P-173, P-178; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
