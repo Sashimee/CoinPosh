@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { isRetryable } from './errors.ts';
 import {
   TURNSTILE_SCRIPT_ID,
   TURNSTILE_SCRIPT_URL,
@@ -326,5 +327,96 @@ describe('createTurnstile in live mode', () => {
     expect(host.dispose).toHaveBeenCalledTimes(1);
     expect(host.failed).not.toHaveBeenCalled();
     await expect(turnstile.token()).rejects.toThrow(/after dispose/);
+  });
+});
+
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the token request to reject');
+}
+
+async function heldToken(callback: (params: TurnstileRenderParams) => void): Promise<unknown> {
+  const { api, turnstile } = setup();
+  api.next = 'hold';
+  const pending = turnstile.token();
+  await vi.waitFor(() => {
+    expect(api.executions).toBe(1);
+  });
+  if (api.params === null) throw new Error('fake turnstile: widget was not rendered');
+  callback(api.params);
+  return rejectionOf(pending);
+}
+
+describe('createTurnstile failures and retry', () => {
+  it.each([
+    [
+      'error-callback',
+      (params: TurnstileRenderParams) => {
+        params['error-callback']('300030');
+      },
+    ],
+    [
+      'expired-callback',
+      (params: TurnstileRenderParams) => {
+        params['expired-callback']();
+      },
+    ],
+    [
+      'timeout-callback',
+      (params: TurnstileRenderParams) => {
+        params['timeout-callback']();
+      },
+    ],
+  ])('treats %s as transient so the queued request backs off', async (_name, fire) => {
+    expect(isRetryable(await heldToken(fire))).toBe(true);
+  });
+
+  it('treats the token watchdog as transient', async () => {
+    vi.useFakeTimers();
+    const { api, turnstile } = setup({ tokenTimeoutMs: 3000 });
+    api.next = 'hold';
+    const rejection = rejectionOf(turnstile.token());
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(isRetryable(await rejection)).toBe(true);
+  });
+
+  it('treats a script load error as transient', async () => {
+    const { dom, turnstile } = setup({ loaded: false });
+    const rejection = rejectionOf(turnstile.token());
+    await vi.waitFor(() => {
+      expect(dom.head.children).toHaveLength(1);
+    });
+    dom.head.children[0]?.fire('error');
+    expect(isRetryable(await rejection)).toBe(true);
+  });
+
+  it('treats a script load timeout as transient', async () => {
+    vi.useFakeTimers();
+    const { turnstile } = setup({ loaded: false });
+    const rejection = rejectionOf(turnstile.token());
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(isRetryable(await rejection)).toBe(true);
+  });
+
+  it('does not retry an unsupported browser', async () => {
+    const error = await heldToken((params) => {
+      params['unsupported-callback']();
+    });
+    expect(error).toBeInstanceOf(Error);
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  it('does not retry when Cloudflare renders no widget', async () => {
+    const { api, turnstile } = setup();
+    const asApi: TurnstileApi = api;
+    vi.spyOn(asApi, 'render').mockReturnValue(null);
+    const error = await rejectionOf(turnstile.token());
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toMatch(/did not render a widget/);
+    expect(isRetryable(error)).toBe(false);
   });
 });

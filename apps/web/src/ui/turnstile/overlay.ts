@@ -187,7 +187,7 @@ export function mountTurnstileOverlay(options: TurnstileOverlayOptions): Turnsti
     clearTimeout(failedTimer);
     root.dataset.state = state;
     const open = state === 'challenge';
-    root.inert = !open;
+    root.inert = state === 'hidden';
     if (open) root.removeAttribute('aria-hidden');
     else root.setAttribute('aria-hidden', state === 'hidden' ? 'true' : 'false');
   };

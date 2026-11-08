@@ -19,9 +19,9 @@ import {
   NET_I18N_SOURCE,
   type DemoBannerColors,
   type Net,
+  type NetMode,
 } from './net/index.ts';
 import { currentTurnstileSiteKey } from './net/env.ts';
-import { createTurnstile } from './net/turnstile.ts';
 import type { CoinField, CoinTierId } from './scene/coins/index.ts';
 import { rivieraTokens } from './scene/venues/riviera/palette.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
@@ -29,7 +29,6 @@ import type { RivieraVenue } from './scene/venues/riviera/index.ts';
 import type { Stage } from './stage.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
-import { mountTurnstileOverlay } from './ui/turnstile/overlay.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
 
@@ -207,28 +206,11 @@ async function bootAudio(app: UiApp): Promise<void> {
 async function bootNet(app: UiApp): Promise<Net> {
   registerNetStrings(app.i18n);
   const mode = currentNetMode();
-  // In Demo Mode createTurnstile is a stub that never touches the DOM, so Pages requests no Cloudflare script.
-  const turnstile = createTurnstile({
-    mode,
-    siteKey: mode.kind === 'live' ? currentTurnstileSiteKey() : undefined,
-    language: () => app.i18n.language,
-    host: () =>
-      mountTurnstileOverlay({
-        document,
-        translate: (key) => app.i18n.t(key),
-        onLanguageChanged: (relabel) => app.i18n.onLanguageChanged(relabel),
-        feedback: (kind) => {
-          app.bus.emit('ui:feedback', { kind });
-        },
-      }),
-  });
-  teardown.push(() => {
-    turnstile.dispose();
-  });
+  const turnstileToken = await bootTurnstile(app, mode);
   const net = await createNet({
     mode,
     locale: () => app.i18n.language,
-    turnstileToken: () => turnstile.token(),
+    turnstileToken,
     onError: (error) => {
       console.error('CoinPosh net error.', error);
     },
@@ -246,6 +228,43 @@ async function bootNet(app: UiApp): Promise<Net> {
     removeBanner();
   });
   return net;
+}
+
+/**
+ * Demo Mode never asks for a Turnstile token, so the loader and its overlay are imported only in
+ * live mode and stay out of the Pages bundle.
+ */
+async function bootTurnstile(app: UiApp, mode: NetMode): Promise<() => Promise<string>> {
+  if (mode.kind !== 'live') {
+    return () =>
+      Promise.reject(
+        new Error(
+          'CoinPosh net: Turnstile was asked for a token in Demo Mode. Demo sign-up uses local tokens; this is a wiring bug.',
+        ),
+      );
+  }
+  const [{ createTurnstile }, { mountTurnstileOverlay }] = await Promise.all([
+    import('./net/turnstile.ts'),
+    import('./ui/turnstile/overlay.ts'),
+  ]);
+  const turnstile = createTurnstile({
+    mode,
+    siteKey: currentTurnstileSiteKey(),
+    language: () => app.i18n.language,
+    host: () =>
+      mountTurnstileOverlay({
+        document,
+        translate: (key) => app.i18n.t(key),
+        onLanguageChanged: (relabel) => app.i18n.onLanguageChanged(relabel),
+        feedback: (kind) => {
+          app.bus.emit('ui:feedback', { kind });
+        },
+      }),
+  });
+  teardown.push(() => {
+    turnstile.dispose();
+  });
+  return () => turnstile.token();
 }
 
 /** The net layer once the player's table snapshot has been adopted. */

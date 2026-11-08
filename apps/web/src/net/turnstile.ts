@@ -1,4 +1,5 @@
 import type { NetMode } from './env.ts';
+import { NetworkError } from './errors.ts';
 
 export const TURNSTILE_SCRIPT_URL =
   'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
@@ -118,7 +119,7 @@ export function createTurnstile(options: TurnstileOptions): TurnstileTokens {
     stopWatchdog();
     watchdog = setTimeout(() => {
       settle(
-        new Error(
+        new NetworkError(
           `CoinPosh net: Cloudflare Turnstile gave no token within ${tokenTimeoutMs} ms; guest sign-up will retry.`,
         ),
       );
@@ -155,7 +156,7 @@ export function createTurnstile(options: TurnstileOptions): TurnstileTokens {
         script.remove();
         api = null;
         reject(
-          new Error(
+          new NetworkError(
             `CoinPosh net: the Cloudflare Turnstile script ${reason} (${TURNSTILE_SCRIPT_URL}). Check the network or a content blocker; guest sign-up will retry.`,
           ),
         );
@@ -199,7 +200,7 @@ export function createTurnstile(options: TurnstileOptions): TurnstileTokens {
       // Returning true tells Turnstile the error is handled, so it neither retries nor logs it.
       'error-callback': (code) => {
         settle(
-          new Error(
+          new NetworkError(
             `CoinPosh net: Cloudflare Turnstile failed with error ${code} (${ERROR_CODES_URL}); guest sign-up will retry.`,
           ),
         );
@@ -207,14 +208,14 @@ export function createTurnstile(options: TurnstileOptions): TurnstileTokens {
       },
       'expired-callback': () => {
         settle(
-          new Error(
+          new NetworkError(
             'CoinPosh net: the Cloudflare Turnstile token expired before sign-up used it; guest sign-up will retry.',
           ),
         );
       },
       'timeout-callback': () => {
         settle(
-          new Error(
+          new NetworkError(
             'CoinPosh net: the Cloudflare Turnstile challenge timed out before it was solved; guest sign-up will retry.',
           ),
         );
