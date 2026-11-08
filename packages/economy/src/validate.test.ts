@@ -6,10 +6,14 @@ import { EconomyConfigError, assertValidEconomyConfig, validateEconomyConfig } f
 import {
   DROP_SOURCE_IDS,
   RARITY_IDS,
+  RATE_ENVELOPE_METRIC_IDS,
   type DropTableDef,
   type EconomyConfig,
   type OddsTable,
   type RarityId,
+  type RateEnvelopeConfig,
+  type RateEnvelopeMetricDef,
+  type RateEnvelopeMetricId,
 } from './types.ts';
 
 function withOdds(source: DropTableDef['source'], odds: OddsTable): EconomyConfig {
@@ -215,6 +219,78 @@ describe('validateEconomyConfig: pity, upgrades, ladders', () => {
       album: [first, duplicate, ...rest],
     }).map((i) => i.message);
     expect(messages).toContain(`item "${first.items[0].id}" appears in more than one set`);
+  });
+});
+
+describe('validateEconomyConfig: rate envelope', () => {
+  function withMetric(
+    metric: RateEnvelopeMetricId,
+    patch: Partial<RateEnvelopeMetricDef>,
+  ): EconomyConfig {
+    const rateEnvelope: Record<RateEnvelopeMetricId, RateEnvelopeMetricDef> = {
+      ...economyConfig.rateEnvelope,
+    };
+    rateEnvelope[metric] = { ...rateEnvelope[metric], ...patch };
+    return { ...economyConfig, rateEnvelope };
+  }
+
+  it('ships the envelope inside the config', () => {
+    expect(Object.keys(economyConfig.rateEnvelope)).toEqual([...RATE_ENVELOPE_METRIC_IDS]);
+    expect(validateEconomyConfig(economyConfig)).toEqual([]);
+  });
+
+  it('rejects every metric whose window or max is not a positive integer', () => {
+    const bad = fc.oneof(
+      fc.integer({ max: 0 }),
+      fc.double({ noInteger: true }),
+      fc.constantFrom(Number.NaN, Number.POSITIVE_INFINITY),
+    );
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...RATE_ENVELOPE_METRIC_IDS),
+        fc.constantFrom('windowMs' as const, 'max' as const),
+        bad,
+        (metric, field, value) => {
+          const issues = validateEconomyConfig(withMetric(metric, { [field]: value }));
+          expect(issues).toEqual([
+            {
+              path: `rateEnvelope.${metric}`,
+              message: `${field} must be a positive integer, got ${value}`,
+            },
+          ]);
+        },
+      ),
+    );
+  });
+
+  it('rejects a scaleBy weight outside [0, 1] and an unknown stat', () => {
+    const issues = validateEconomyConfig(
+      withMetric('falls', {
+        scaleBy: { dropRate: 1.5, sparkle: 1 } as RateEnvelopeMetricDef['scaleBy'],
+      }),
+    );
+    expect(issues.map((i) => i.message)).toEqual([
+      'scaleBy.dropRate must be an elasticity in [0, 1], got 1.5',
+      'scaleBy names unknown stat "sparkle"',
+    ]);
+  });
+
+  it('reports a missing metric and an unknown one without crashing', () => {
+    const { crates: _crates, ...rest } = economyConfig.rateEnvelope;
+    const rateEnvelope = {
+      ...rest,
+      jackpots: economyConfig.rateEnvelope.drops,
+    } as unknown as RateEnvelopeConfig;
+    expect(validateEconomyConfig({ ...economyConfig, rateEnvelope })).toEqual([
+      { path: 'rateEnvelope', message: 'missing "crates"' },
+      { path: 'rateEnvelope', message: 'unknown id "jackpots"' },
+    ]);
+  });
+
+  it('fails assertValidEconomyConfig on an invalid envelope', () => {
+    expect(() => {
+      assertValidEconomyConfig(withMetric('fusions', { max: 0 }));
+    }).toThrow('rateEnvelope.fusions: max must be a positive integer, got 0');
   });
 });
 
