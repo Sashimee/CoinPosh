@@ -20,26 +20,72 @@ import {
   roundedRectPath,
   sweepProfile,
 } from './geometry.ts';
-import { RIVIERA_TABLE as T } from './layout.ts';
+import { RIVIERA_TABLE, type RivieraTableLayout } from './layout.ts';
 import type { RivieraMaterials } from './materials.ts';
 
 const X = new Vector3(1, 0, 0);
 const Y = new Vector3(0, 1, 0);
 const Z = new Vector3(0, 0, 1);
 
-const FIELD_X = T.fieldHalfWidth;
-const GUTTER_X = FIELD_X + T.gutterWidth;
-const OUTER_X = GUTTER_X + T.wallThickness;
-const WALL_X = (GUTTER_X + OUTER_X) / 2;
-const BACK_Z = T.backboardFrontZ - T.backboardDepth;
-const BODY_TOP = -T.gutterDepth - 0.005;
-const TRAY_FLOOR = -0.12;
-const PLINTH_TOP = T.deckY + 0.07;
-const BOARD_BOTTOM = T.pusherHeight + 0.004;
-const BOARD_TOP = BOARD_BOTTOM + T.backboardHeight;
-const EMBLEM = new Vector3(0, BOARD_BOTTOM + T.backboardHeight * 0.52, T.backboardFrontZ);
-const GLASS_TOP = T.wallHeight + T.glassHeight;
-const GLASS_FRONT_Z = 0.3;
+/** The backboard sunburst, its frames and medallion were drawn for a board this tall. */
+const EMBLEM_DESIGN_HEIGHT = 0.36;
+/** Depth of the catch tray's front lip, and how far its top sits down the tray, as a fraction. */
+const LIP_DEPTH = 0.026;
+const LIP_TOP_FRACTION = 0.3;
+/** Overlap that seats the tray box under the body so no seam opens at the payout edge. */
+const TRAY_SEAT = 0.03;
+/** The backboard crest: a lacquer moulding under a varnished teak cap rail, as on the yacht. */
+const CREST_CAP_BOTTOM = 0.014;
+const CREST_TOP = 0.026;
+/** The body front sits a hair behind the teak so the two never fight over one plane. */
+const BODY_FRONT_INSET = 0.002;
+
+interface Dimensions {
+  readonly t: RivieraTableLayout;
+  readonly fieldX: number;
+  readonly gutterX: number;
+  readonly outerX: number;
+  readonly wallX: number;
+  readonly backZ: number;
+  readonly boardBackZ: number;
+  readonly bodyTop: number;
+  readonly trayFloor: number;
+  readonly lipTop: number;
+  readonly plinthTop: number;
+  readonly boardBottom: number;
+  readonly boardTop: number;
+  readonly emblem: Vector3;
+  readonly emblemScale: number;
+  readonly glassTop: number;
+  readonly glassFrontZ: number;
+}
+
+function dimensions(t: RivieraTableLayout): Dimensions {
+  const fieldX = t.fieldHalfWidth;
+  const gutterX = fieldX + t.gutterWidth;
+  const outerX = gutterX + t.wallThickness;
+  const boardBottom = t.pusherHeight + 0.004;
+  const trayFloor = -t.trayDepth;
+  return {
+    t,
+    fieldX,
+    gutterX,
+    outerX,
+    wallX: (gutterX + outerX) / 2,
+    backZ: t.cabinetBackZ,
+    boardBackZ: t.backboardFrontZ - t.backboardDepth,
+    bodyTop: -t.gutterDepth - 0.005,
+    trayFloor,
+    lipTop: trayFloor * LIP_TOP_FRACTION,
+    plinthTop: t.deckY + 0.07,
+    boardBottom,
+    boardTop: boardBottom + t.backboardHeight,
+    emblem: new Vector3(0, boardBottom + t.backboardHeight * 0.52, t.backboardFrontZ),
+    emblemScale: t.backboardHeight / EMBLEM_DESIGN_HEIGHT,
+    glassTop: t.wallHeight + t.glassHeight,
+    glassFrontZ: t.fieldFrontZ,
+  };
+}
 
 export interface RivieraTable {
   readonly group: Group;
@@ -70,102 +116,121 @@ function ball(centre: Vector3, radius: number): BufferGeometry {
   return g;
 }
 
-function lacquerPieces(): BufferGeometry[] {
+function lacquerPieces(d: Dimensions): BufferGeometry[] {
+  const { t } = d;
   return [
     box(
-      new Vector3(-OUTER_X - 0.01, PLINTH_TOP, BACK_Z),
-      new Vector3(OUTER_X + 0.01, BODY_TOP, 0.36),
-      0.022,
+      new Vector3(-d.outerX - 0.01, d.plinthTop, d.backZ),
+      new Vector3(d.outerX + 0.01, d.bodyTop, t.fieldFrontZ - BODY_FRONT_INSET),
+      0.02,
     ),
     box(
-      new Vector3(-OUTER_X - 0.01, PLINTH_TOP, 0.33),
-      new Vector3(OUTER_X + 0.01, TRAY_FLOOR, T.cabinetFrontZ),
-      0.022,
+      new Vector3(-d.outerX - 0.01, d.plinthTop, t.fieldFrontZ - TRAY_SEAT),
+      new Vector3(d.outerX + 0.01, d.trayFloor, t.cabinetFrontZ),
+      0.02,
     ),
     box(
-      new Vector3(-GUTTER_X, TRAY_FLOOR - 0.01, T.cabinetFrontZ - 0.035),
-      new Vector3(GUTTER_X, -0.035, T.cabinetFrontZ),
+      new Vector3(-d.gutterX, d.trayFloor - 0.01, t.cabinetFrontZ - LIP_DEPTH),
+      new Vector3(d.gutterX, d.lipTop, t.cabinetFrontZ),
+      0.008,
+    ),
+    box(
+      new Vector3(-d.outerX + 0.012, t.deckY, d.backZ + 0.015),
+      new Vector3(d.outerX - 0.012, d.plinthTop + 0.01, t.cabinetFrontZ - 0.015),
       0.01,
     ),
-    box(
-      new Vector3(-OUTER_X + 0.012, T.deckY, BACK_Z + 0.015),
-      new Vector3(OUTER_X - 0.012, PLINTH_TOP + 0.01, T.cabinetFrontZ - 0.015),
-      0.01,
-    ),
-    ...[-1, 1].map((side) =>
+    ...[-1, 1].flatMap((side) => [
       box(
-        new Vector3(side < 0 ? -OUTER_X : GUTTER_X, BODY_TOP - 0.01, BACK_Z),
-        new Vector3(side < 0 ? -GUTTER_X : OUTER_X, T.wallHeight, T.cabinetFrontZ),
-        0.012,
+        new Vector3(side < 0 ? -d.outerX : d.gutterX, d.trayFloor - 0.005, d.backZ),
+        new Vector3(side < 0 ? -d.gutterX : d.outerX, t.wallHeight, t.cabinetFrontZ),
+        0.01,
       ),
-    ),
+      box(
+        new Vector3(side < 0 ? -d.gutterX - 0.004 : d.fieldX, d.bodyTop - 0.01, d.backZ),
+        new Vector3(side < 0 ? -d.fieldX : d.gutterX + 0.004, t.wallHeight, t.gutterStartZ),
+        0.005,
+      ),
+    ]),
     box(
-      new Vector3(-OUTER_X, BOARD_BOTTOM, BACK_Z),
-      new Vector3(OUTER_X, BOARD_TOP, T.backboardFrontZ),
-      0.016,
-    ),
-    box(
-      new Vector3(-OUTER_X - 0.012, BOARD_TOP - 0.004, BACK_Z - 0.01),
-      new Vector3(OUTER_X + 0.012, BOARD_TOP + 0.03, T.backboardFrontZ + 0.016),
+      new Vector3(-d.outerX, d.boardBottom, d.boardBackZ),
+      new Vector3(d.outerX, d.boardTop, t.backboardFrontZ),
       0.012,
+    ),
+    box(
+      new Vector3(-d.outerX, d.bodyTop - 0.01, d.backZ),
+      new Vector3(d.outerX, t.wallHeight, d.boardBackZ + 0.01),
+      0.01,
+    ),
+    box(
+      new Vector3(-d.outerX - 0.01, d.boardTop - 0.004, d.boardBackZ - 0.008),
+      new Vector3(d.outerX + 0.01, d.boardTop + CREST_CAP_BOTTOM, t.backboardFrontZ + 0.013),
+      0.008,
     ),
   ];
 }
 
-function teakPieces(): BufferGeometry[] {
+function teakPieces(d: Dimensions): BufferGeometry[] {
   return [
     box(
-      new Vector3(-FIELD_X, BODY_TOP - 0.01, BACK_Z),
-      new Vector3(FIELD_X, 0, T.fieldFrontZ),
+      new Vector3(-d.fieldX, d.bodyTop - 0.01, d.backZ),
+      new Vector3(d.fieldX, 0, d.t.fieldFrontZ),
+      0.003,
+      2,
+    ),
+    box(
+      new Vector3(-d.outerX - 0.004, d.boardTop + CREST_CAP_BOTTOM - 0.002, d.boardBackZ - 0.003),
+      new Vector3(d.outerX + 0.004, d.boardTop + CREST_TOP, d.t.backboardFrontZ + 0.008),
       0.004,
       2,
     ),
   ];
 }
 
-function velvetPieces(): BufferGeometry[] {
+function velvetPieces(d: Dimensions): BufferGeometry[] {
+  const { t } = d;
   return [
     ...[-1, 1].map((side) =>
       box(
-        new Vector3(side < 0 ? -GUTTER_X : FIELD_X, BODY_TOP - 0.005, BACK_Z),
-        new Vector3(side < 0 ? -FIELD_X : GUTTER_X, BODY_TOP + 0.006, T.fieldFrontZ + 0.01),
+        new Vector3(side < 0 ? -d.gutterX : d.fieldX, d.bodyTop - 0.005, t.gutterStartZ - 0.01),
+        new Vector3(side < 0 ? -d.fieldX : d.gutterX, d.bodyTop + 0.006, t.fieldFrontZ + 0.01),
         0.003,
         2,
       ),
     ),
     box(
-      new Vector3(-GUTTER_X, TRAY_FLOOR - 0.005, T.fieldFrontZ - 0.01),
-      new Vector3(GUTTER_X, TRAY_FLOOR + 0.008, T.cabinetFrontZ - 0.03),
-      0.004,
+      new Vector3(-d.gutterX, d.trayFloor - 0.005, t.fieldFrontZ - 0.01),
+      new Vector3(d.gutterX, d.trayFloor + 0.006, t.cabinetFrontZ - LIP_DEPTH + 0.004),
+      0.003,
       2,
     ),
   ];
 }
 
-function sunburstRays(): BufferGeometry[] {
+function sunburstRays(d: Dimensions): BufferGeometry[] {
+  const k = d.emblemScale;
   const rays: BufferGeometry[] = [];
   const count = 32;
   for (let i = 0; i < count; i += 1) {
     const long = i % 2 === 0;
-    const length = long ? 0.095 : 0.07;
-    const ray = new BoxGeometry(0.009, length, 0.003, 1, 4, 1);
+    const length = (long ? 0.095 : 0.07) * k;
+    const ray = new BoxGeometry(0.009 * k, length, 0.003 * k, 1, 4, 1);
     const pos = ray.getAttribute('position');
     for (let v = 0; v < pos.count; v += 1) {
-      const t = (pos.getY(v) + length / 2) / length;
-      pos.setX(v, pos.getX(v) * (1 - 0.85 * t));
-      pos.setZ(v, pos.getZ(v) * (1 - 0.6 * t));
+      const s = (pos.getY(v) + length / 2) / length;
+      pos.setX(v, pos.getX(v) * (1 - 0.85 * s));
+      pos.setZ(v, pos.getZ(v) * (1 - 0.6 * s));
     }
     ray.computeVertexNormals();
-    ray.translate(0, 0.052 + length / 2, 0.0035);
+    ray.translate(0, 0.052 * k + length / 2, 0.0035 * k);
     ray.rotateZ((i / count) * Math.PI * 2);
-    ray.translate(EMBLEM.x, EMBLEM.y, EMBLEM.z);
+    ray.translate(d.emblem.x, d.emblem.y, d.emblem.z);
     rays.push(ray);
   }
   return rays;
 }
 
-function medallion(): BufferGeometry {
-  const steps = [
+function medallion(d: Dimensions): BufferGeometry {
+  const steps: readonly (readonly [number, number])[] = [
     [0, 0.012],
     [0.01, 0.012],
     [0.012, 0.009],
@@ -176,96 +241,101 @@ function medallion(): BufferGeometry {
     [0.04, 0.004],
     [0.04, 0],
   ];
-  const lathe = new LatheGeometry(steps.map(([r, h]) => new Vector2(r, h)).reverse(), 48);
+  const k = d.emblemScale;
+  const lathe = new LatheGeometry(steps.map(([r, h]) => new Vector2(r * k, h * k)).reverse(), 48);
   lathe.rotateX(Math.PI / 2);
-  lathe.translate(EMBLEM.x, EMBLEM.y, EMBLEM.z);
+  lathe.translate(d.emblem.x, d.emblem.y, d.emblem.z);
   return lathe;
 }
 
-function goldPieces(): BufferGeometry[] {
+function goldPieces(d: Dimensions): BufferGeometry[] {
+  const { t } = d;
+  const k = d.emblemScale;
   const pieces: BufferGeometry[] = [];
   for (const side of [-1, 1]) {
     pieces.push(
       sweepProfile(
         line(
-          new Vector3(side * WALL_X, T.wallHeight, T.cabinetFrontZ),
-          new Vector3(side * WALL_X, T.wallHeight, BACK_Z),
+          new Vector3(side * d.wallX, t.wallHeight, t.cabinetFrontZ),
+          new Vector3(side * d.wallX, t.wallHeight, d.backZ),
         ),
-        halfRoundProfile(T.wallThickness / 2 + 0.002, 16),
+        halfRoundProfile(t.wallThickness / 2 + 0.002, 16),
         { up: Y },
       ),
     );
     pieces.push(
       rod(
-        new Vector3(side * (OUTER_X + 0.008), PLINTH_TOP, T.cabinetFrontZ + 0.008),
-        new Vector3(side * (OUTER_X + 0.008), TRAY_FLOOR + 0.005, T.cabinetFrontZ + 0.008),
-        0.009,
+        new Vector3(side * (d.outerX + 0.007), d.plinthTop, t.cabinetFrontZ + 0.007),
+        new Vector3(side * (d.outerX + 0.007), d.trayFloor + 0.004, t.cabinetFrontZ + 0.007),
+        0.0075,
         Z,
       ),
     );
   }
   pieces.push(
     rod(
-      new Vector3(-FIELD_X - T.gutterWidth, -0.0095, T.fieldFrontZ + 0.006),
-      new Vector3(FIELD_X + T.gutterWidth, -0.0095, T.fieldFrontZ + 0.006),
-      0.0085,
+      new Vector3(-d.gutterX, -0.0078, t.fieldFrontZ + 0.005),
+      new Vector3(d.gutterX, -0.0078, t.fieldFrontZ + 0.005),
+      0.007,
     ),
     rod(
-      new Vector3(-GUTTER_X, -0.035, T.cabinetFrontZ - 0.012),
-      new Vector3(GUTTER_X, -0.035, T.cabinetFrontZ - 0.012),
-      0.011,
+      new Vector3(-d.gutterX, d.lipTop, t.cabinetFrontZ - LIP_DEPTH * 0.35),
+      new Vector3(d.gutterX, d.lipTop, t.cabinetFrontZ - LIP_DEPTH * 0.35),
+      0.009,
+    ),
+    ...[t.backboardFrontZ + 0.013, d.boardBackZ - 0.008].map((z) =>
+      rod(
+        new Vector3(-d.outerX - 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
+        new Vector3(d.outerX + 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
+        0.0055,
+      ),
     ),
     rod(
-      new Vector3(-OUTER_X - 0.012, BOARD_TOP + 0.03, T.backboardFrontZ + 0.016),
-      new Vector3(OUTER_X + 0.012, BOARD_TOP + 0.03, T.backboardFrontZ + 0.016),
-      0.008,
-    ),
-    rod(
-      new Vector3(-OUTER_X - 0.012, BOARD_TOP - 0.004, T.backboardFrontZ + 0.016),
-      new Vector3(OUTER_X + 0.012, BOARD_TOP - 0.004, T.backboardFrontZ + 0.016),
-      0.005,
+      new Vector3(-d.outerX - 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
+      new Vector3(d.outerX + 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
+      0.004,
     ),
     sweepProfile(
       roundedRectPath(
-        new Vector3(0, PLINTH_TOP + 0.004, (BACK_Z + T.cabinetFrontZ) / 2),
+        new Vector3(0, d.plinthTop + 0.004, (d.backZ + t.cabinetFrontZ) / 2),
         X,
         Z,
-        (OUTER_X + 0.012) * 2,
-        T.cabinetFrontZ - BACK_Z + 0.004,
-        0.024,
+        (d.outerX + 0.012) * 2,
+        t.cabinetFrontZ - d.backZ + 0.004,
+        0.02,
       ),
-      roundProfile(0.007, 14),
+      roundProfile(0.006, 14),
       { up: Y, closed: true },
     ),
     sweepProfile(
       roundedRectPath(
-        new Vector3(0, BOARD_BOTTOM + T.backboardHeight / 2, T.backboardFrontZ),
+        new Vector3(0, d.boardBottom + t.backboardHeight / 2, t.backboardFrontZ),
         X,
         Y,
-        OUTER_X * 2 - 0.05,
-        T.backboardHeight - 0.05,
-        0.03,
+        d.outerX * 2 - 0.05 * k,
+        t.backboardHeight - 0.05 * k,
+        0.03 * k,
       ),
-      beadAndCoveProfile(0.016, 0.008),
+      beadAndCoveProfile(0.016 * k, 0.008 * k),
       { up: Z, closed: true },
     ),
-    ...sunburstRays(),
-    medallion(),
+    ...sunburstRays(d),
+    medallion(d),
   );
-  const panelHeight = TRAY_FLOOR - PLINTH_TOP;
+  const panelHeight = d.trayFloor - d.plinthTop;
   for (const [inset, radius] of [
-    [0.05, 0.0032],
-    [0.068, 0.0016],
+    [0.04, 0.0028],
+    [0.055, 0.0014],
   ] as const) {
     pieces.push(
       sweepProfile(
         roundedRectPath(
-          new Vector3(0, PLINTH_TOP + panelHeight / 2, T.cabinetFrontZ),
+          new Vector3(0, d.plinthTop + panelHeight / 2, t.cabinetFrontZ),
           X,
           Y,
-          (OUTER_X - inset) * 2,
+          (d.outerX - inset) * 2,
           panelHeight - inset * 2,
-          0.028,
+          0.022,
         ),
         halfRoundProfile(radius, 8),
         { up: Z, closed: true },
@@ -275,92 +345,98 @@ function goldPieces(): BufferGeometry[] {
   return pieces;
 }
 
-function polishedGoldPieces(): BufferGeometry[] {
+function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
+  const { t } = d;
+  const k = d.emblemScale;
   const pieces: BufferGeometry[] = [];
   for (const side of [-1, 1]) {
     pieces.push(
-      ball(new Vector3(side * WALL_X, T.wallHeight + 0.004, T.cabinetFrontZ + 0.002), 0.03),
-    );
-    pieces.push(
+      ball(new Vector3(side * d.wallX, t.wallHeight + 0.004, t.cabinetFrontZ + 0.002), 0.022),
       ball(
-        new Vector3(side * (OUTER_X + 0.008), TRAY_FLOOR + 0.012, T.cabinetFrontZ + 0.008),
-        0.014,
+        new Vector3(side * (d.outerX + 0.007), d.trayFloor + 0.01, t.cabinetFrontZ + 0.007),
+        0.011,
       ),
-    );
-    pieces.push(
       rod(
-        new Vector3(side * WALL_X, T.wallHeight + 0.02, GLASS_FRONT_Z),
-        new Vector3(side * WALL_X, GLASS_TOP, GLASS_FRONT_Z),
-        0.007,
+        new Vector3(side * d.wallX, t.wallHeight + 0.016, d.glassFrontZ),
+        new Vector3(side * d.wallX, d.glassTop, d.glassFrontZ),
+        0.0055,
         Z,
       ),
+      ball(new Vector3(side * d.wallX, d.glassTop + 0.005, d.glassFrontZ), 0.0095),
+      rod(
+        new Vector3(side * (d.fieldX + 0.0035), t.wallHeight, t.backboardFrontZ),
+        new Vector3(side * (d.fieldX + 0.0035), t.wallHeight, t.gutterStartZ - 0.004),
+        0.0035,
+        Z,
+      ),
+      ball(new Vector3(side * (d.fieldX + 0.0035), t.wallHeight, t.gutterStartZ - 0.004), 0.0062),
     );
-    pieces.push(ball(new Vector3(side * WALL_X, GLASS_TOP + 0.006, GLASS_FRONT_Z), 0.012));
   }
-  const ring = new TorusGeometry(0.047, 0.0045, 12, 64);
-  ring.translate(EMBLEM.x, EMBLEM.y, EMBLEM.z + 0.006);
+  const ring = new TorusGeometry(0.047 * k, 0.0045 * k, 12, 64);
+  ring.translate(d.emblem.x, d.emblem.y, d.emblem.z + 0.006 * k);
   pieces.push(ring);
   pieces.push(
     sweepProfile(
       roundedRectPath(
-        new Vector3(0, BOARD_BOTTOM + T.backboardHeight / 2, T.backboardFrontZ),
+        new Vector3(0, d.boardBottom + t.backboardHeight / 2, t.backboardFrontZ),
         X,
         Y,
-        OUTER_X * 2 - 0.1,
-        T.backboardHeight - 0.1,
-        0.02,
+        d.outerX * 2 - 0.1 * k,
+        t.backboardHeight - 0.1 * k,
+        0.02 * k,
       ),
-      halfRoundProfile(0.0035, 8),
+      halfRoundProfile(0.0035 * k, 8),
       { up: Z, closed: true },
     ),
   );
   return pieces;
 }
 
-function glassPieces(): BufferGeometry[] {
+function glassPieces(d: Dimensions): BufferGeometry[] {
   return [-1, 1].map((side) =>
     box(
-      new Vector3(side * WALL_X - 0.003, T.wallHeight + 0.01, T.backboardFrontZ),
-      new Vector3(side * WALL_X + 0.003, GLASS_TOP, GLASS_FRONT_Z),
+      new Vector3(side * d.wallX - 0.003, d.t.wallHeight + 0.008, d.t.backboardFrontZ),
+      new Vector3(side * d.wallX + 0.003, d.glassTop, d.glassFrontZ),
       0.0029,
       2,
     ),
   );
 }
 
-function pusherPieces(): {
+function pusherPieces(d: Dimensions): {
   lacquer: BufferGeometry[];
   teak: BufferGeometry[];
   gold: BufferGeometry[];
 } {
-  const front = T.pusherFrontZ;
-  const back = front - T.pusherDepth;
+  const { t, fieldX } = d;
+  const front = t.pusherFrontZ;
+  const back = front - t.pusherDepth;
   const inset = 0.004;
   return {
     lacquer: [
       box(
-        new Vector3(-FIELD_X + inset, 0.0005, back),
-        new Vector3(FIELD_X - inset, T.pusherHeight - 0.008, front),
+        new Vector3(-fieldX + inset, 0.0005, back),
+        new Vector3(fieldX - inset, t.pusherHeight - 0.008, front),
         0.008,
       ),
     ],
     teak: [
       box(
-        new Vector3(-FIELD_X + inset, T.pusherHeight - 0.012, back),
-        new Vector3(FIELD_X - inset, T.pusherHeight, front - 0.004),
+        new Vector3(-fieldX + inset, t.pusherHeight - 0.012, back),
+        new Vector3(fieldX - inset, t.pusherHeight, front - 0.004),
         0.003,
         2,
       ),
     ],
     gold: [
       rod(
-        new Vector3(-FIELD_X + inset, T.pusherHeight - 0.006, front - 0.002),
-        new Vector3(FIELD_X - inset, T.pusherHeight - 0.006, front - 0.002),
+        new Vector3(-fieldX + inset, t.pusherHeight - 0.006, front - 0.002),
+        new Vector3(fieldX - inset, t.pusherHeight - 0.006, front - 0.002),
         0.006,
       ),
       box(
-        new Vector3(-FIELD_X + inset + 0.002, 0.001, front - 0.004),
-        new Vector3(FIELD_X - inset - 0.002, 0.02, front + 0.0015),
+        new Vector3(-fieldX + inset + 0.002, 0.001, front - 0.004),
+        new Vector3(fieldX - inset - 0.002, 0.016, front + 0.0015),
         0.0015,
         2,
       ),
@@ -376,28 +452,42 @@ function mesh(geometry: BufferGeometry, material: Material, name: string, shadow
   return m;
 }
 
-export function createRivieraTable(materials: RivieraMaterials, shadows: boolean): RivieraTable {
+/**
+ * Builds the cabinet around `layout` (the Riviera table unless a test reshapes it): every
+ * position, from the payout edge and tray to the glass and guide walls, derives from it.
+ */
+export function createRivieraTable(
+  materials: RivieraMaterials,
+  shadows: boolean,
+  layout: RivieraTableLayout = RIVIERA_TABLE,
+): RivieraTable {
+  const d = dimensions(layout);
   const group = new Group();
   group.name = 'riviera-table';
   const pusher = new Group();
   pusher.name = 'riviera-pusher';
 
   const statics = [
-    mesh(mergeAll(lacquerPieces(), 'table/lacquer'), materials.lacquer, 'table-lacquer', shadows),
-    mesh(mergeAll(teakPieces(), 'table/teak'), materials.teak, 'table-teak', shadows),
-    mesh(mergeAll(velvetPieces(), 'table/velvet'), materials.velvet, 'table-velvet', shadows),
-    mesh(mergeAll(goldPieces(), 'table/gold'), materials.gold, 'table-gold', shadows),
+    mesh(mergeAll(lacquerPieces(d), 'table/lacquer'), materials.lacquer, 'table-lacquer', shadows),
+    mesh(mergeAll(teakPieces(d), 'table/teak'), materials.teak, 'table-teak', shadows),
+    mesh(mergeAll(velvetPieces(d), 'table/velvet'), materials.velvet, 'table-velvet', shadows),
+    mesh(mergeAll(goldPieces(d), 'table/gold'), materials.gold, 'table-gold', shadows),
     mesh(
-      mergeAll(polishedGoldPieces(), 'table/gold-polished'),
+      mergeAll(polishedGoldPieces(d), 'table/gold-polished'),
       materials.goldPolished,
       'table-gold-polished',
       shadows,
     ),
   ];
-  const glass = mesh(mergeAll(glassPieces(), 'table/glass'), materials.glass, 'table-glass', false);
+  const glass = mesh(
+    mergeAll(glassPieces(d), 'table/glass'),
+    materials.glass,
+    'table-glass',
+    false,
+  );
   glass.renderOrder = 2;
 
-  const parts = pusherPieces();
+  const parts = pusherPieces(d);
   const pusherMeshes = [
     mesh(mergeAll(parts.lacquer, 'pusher/lacquer'), materials.lacquer, 'pusher-lacquer', shadows),
     mesh(mergeAll(parts.teak, 'pusher/teak'), materials.teak, 'pusher-teak', shadows),
@@ -416,7 +506,7 @@ export function createRivieraTable(materials: RivieraMaterials, shadows: boolean
         throw new RangeError(`Pusher stroke must be a finite number, got ${stroke01}`);
       }
       const k = Math.min(Math.max(stroke01, 0), 1);
-      pusher.position.z = k * T.pusherStroke;
+      pusher.position.z = k * layout.pusherStroke;
     },
     dispose() {
       for (const m of meshes) m.geometry.dispose();
@@ -424,10 +514,13 @@ export function createRivieraTable(materials: RivieraMaterials, shadows: boolean
   };
 }
 
+const RIVIERA = dimensions(RIVIERA_TABLE);
+
 export const TABLE_BOUNDS = {
-  halfWidth: OUTER_X + 0.012,
-  frontZ: T.cabinetFrontZ + 0.032,
-  backZ: BACK_Z,
-  top: BOARD_TOP + 0.03,
-  emblem: EMBLEM,
+  halfWidth: RIVIERA.outerX + 0.012,
+  frontZ: RIVIERA_TABLE.cabinetFrontZ + 0.03,
+  backZ: RIVIERA.backZ,
+  top: RIVIERA.boardTop + CREST_TOP,
+  trayFloor: RIVIERA.trayFloor,
+  emblem: RIVIERA.emblem,
 } as const;
