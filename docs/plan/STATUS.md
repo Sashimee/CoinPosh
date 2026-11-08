@@ -40,8 +40,9 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-60 | done | task/P-60 (merge 04edd4a) | rateEnvelope required in economy config and validated; folds P-61, P-62, P-64; pnpm check green after merge |
 | P-81 | done | task/P-81 (merge 1099563) | main.ts draws coins from the worker sim bridge with sim coin dimensions, Demo Mode net + banner at boot (42d85d2); folds P-70, P-19, P-52; follow-ups P-105..P-107; pnpm check green after merge |
 | T-1.10 | done | task/T-1.10 (merge be9be9f) | Gameplay glue: aim, drop, pour, nudge, combo (c8bb9c0); wiring and follow-ups queued as P-108..P-113; pnpm check green after merge |
-| P-39 | blocked(review: portrait playfield share measured crest-to-tray not playfield (20.5 % at 390x844, needs 55 %); backboardHeight 0.36 and cabinetFrontZ 0.375 not rescaled to the smaller table) | task/P-39 (8526220) | Not merged; needs table.ts owner to derive cabinet front from RIVIERA_TABLE (P-115) before reframing; follow-ups P-114..P-119 |
+| P-39 | done | task/P-39 (8526220, not merged) | Folded into P-115 (merge 76bf51a) |
 | T-1.16 | done | task/T-1.16 (merge 47815f5) | Balancing pass for the slice (665465a): sim evidence, rate-envelope table, economy property tests; follow-ups P-125..P-130; pnpm check green after merge (uncached) |
+| P-115 | done | task/P-115 (merge 76bf51a) | Riviera table derives cabinet/tray from RIVIERA_TABLE + portrait reframe (de8c672); folds P-39, P-99, P-114; follow-ups P-131..P-134; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
