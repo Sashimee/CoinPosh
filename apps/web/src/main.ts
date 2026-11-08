@@ -13,12 +13,15 @@ import type {
 import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
 import {
   createNet,
+  currentNetMode,
   mountDemoBanner,
   NET_I18N_KEYS,
   NET_I18N_SOURCE,
   type DemoBannerColors,
   type Net,
 } from './net/index.ts';
+import { currentTurnstileSiteKey } from './net/env.ts';
+import { createTurnstile } from './net/turnstile.ts';
 import type { CoinField, CoinTierId } from './scene/coins/index.ts';
 import { rivieraTokens } from './scene/venues/riviera/palette.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
@@ -26,6 +29,7 @@ import type { RivieraVenue } from './scene/venues/riviera/index.ts';
 import type { Stage } from './stage.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
+import { mountTurnstileOverlay } from './ui/turnstile/overlay.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
 
@@ -202,14 +206,29 @@ async function bootAudio(app: UiApp): Promise<void> {
  */
 async function bootNet(app: UiApp): Promise<Net> {
   registerNetStrings(app.i18n);
+  const mode = currentNetMode();
+  // In Demo Mode createTurnstile is a stub that never touches the DOM, so Pages requests no Cloudflare script.
+  const turnstile = createTurnstile({
+    mode,
+    siteKey: mode.kind === 'live' ? currentTurnstileSiteKey() : undefined,
+    language: () => app.i18n.language,
+    host: () =>
+      mountTurnstileOverlay({
+        document,
+        translate: (key) => app.i18n.t(key),
+        onLanguageChanged: (relabel) => app.i18n.onLanguageChanged(relabel),
+        feedback: (kind) => {
+          app.bus.emit('ui:feedback', { kind });
+        },
+      }),
+  });
+  teardown.push(() => {
+    turnstile.dispose();
+  });
   const net = await createNet({
+    mode,
     locale: () => app.i18n.language,
-    turnstileToken: () =>
-      Promise.reject(
-        new Error(
-          'CoinPosh net: Cloudflare Turnstile is not wired into the web app yet, so live guest sign-up cannot run; build without VITE_API_URL for Demo Mode.',
-        ),
-      ),
+    turnstileToken: () => turnstile.token(),
     onError: (error) => {
       console.error('CoinPosh net error.', error);
     },
