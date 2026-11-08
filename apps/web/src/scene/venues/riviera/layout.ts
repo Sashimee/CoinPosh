@@ -14,10 +14,10 @@ const SIDE_WALL_HEIGHT = 0.07;
 /** Rear clearance between the fully retracted pusher block and the back of the cabinet. */
 const PUSHER_REAR_CLEARANCE = 0.01;
 /**
- * Catch tray length ahead of the payout edge: one coin lands flat behind the front moulding.
- * Any longer and the empty velvet reads as a dark box under the lip at the game camera.
+ * Catch tray length ahead of the payout edge: the front moulding (26 mm) plus a coin's width of
+ * flat velvet and a little play, so a coin pushed off the lip lands flat behind the moulding.
  */
-const TRAY_LENGTH = 0.05;
+const TRAY_LENGTH = 0.065;
 /** How far the backboard face rises above the sim's back wall, to seat the gold crest. */
 const BACKBOARD_HEADROOM = 0.016;
 
@@ -88,22 +88,19 @@ export const HUD_BAND_SHORT = { top: 0.297, bottom: -0.662 } as const;
 /** Clearance kept between the coin floor and the band edges, in NDC. */
 const BAND_MARGIN = 0.025;
 /**
- * Widest NDC x the coin floor may reach on a portrait phone. P-131 settles it at 0.92, not the
- * 0.7 agreed with P-119 nor the 0.85 P-99 needed: a portrait frame is width-bound, and below
- * 0.92 the 36 cm floor is too narrow on screen for the cabinet to run from the backboard crest
- * at the top down to a lip in the lower 40 % of the frame; bare deck fills the gap above. The
- * side meters keep to the 4 % left at each edge beside the lip, or go translucent (P-133).
+ * Widest NDC x the coin floor may reach on a portrait phone: the edges past it belong to the
+ * Decorum and Cascade meters (P-119, P-133).
  */
-export const PORTRAIT_FIELD_MAX_X = 0.92;
+export const PORTRAIT_FIELD_MAX_X = 0.7;
 /** Widest NDC x the coin floor may reach on any other screen. */
 const FIELD_MAX_X = 0.96;
 /**
  * NDC y of the backboard crest, and the lowest it may drop to on a portrait phone so the lip
- * reaches the lower 40 %: at most 13 % of the frame shows deck above the backboard, so the
+ * reaches the lower 40 %: at most 14 % of the frame shows deck above the backboard, so the
  * table, not the yacht, fills the screen.
  */
 const CREST_NDC_Y = 0.78;
-const CREST_MIN_NDC_Y = 0.74;
+const CREST_MIN_NDC_Y = 0.72;
 /** Highest NDC y of the payout edge: the lip sits in the lower 40 % of the frame. */
 const LIP_MAX_NDC_Y = -0.22;
 /**
@@ -163,7 +160,7 @@ const DEGREES = Math.PI / 180;
  * line.
  */
 const PITCH_WIDE = 40 * DEGREES;
-const PITCH_TALL = 43 * DEGREES;
+const PITCH_TALL = 45 * DEGREES;
 const PITCH_SHORT = 38 * DEGREES;
 /** A long lens keeps the backboard nearly as large as the lip, so the cabinet fills the frame. */
 const VERTICAL_FOV = 35;

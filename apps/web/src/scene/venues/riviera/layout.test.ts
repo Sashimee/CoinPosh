@@ -16,7 +16,7 @@ import {
   rivieraCameraPreset,
 } from './layout.ts';
 import { createRivieraMaterials } from './materials.ts';
-import { createRivieraTable, TABLE_BOUNDS, type RivieraTable } from './table.ts';
+import { createRivieraTable, type RivieraTable } from './table.ts';
 
 const COIN_RADIUS = 0.0135;
 const COIN_THICKNESS = 0.0026;
@@ -34,19 +34,16 @@ const PORTRAIT: Viewport = { width: 390, height: 844, plaqueBottom: 164, dockTop
 const LANDSCAPE: Viewport = { width: 844, height: 390, plaqueBottom: 137, dockTop: 324 };
 const DESKTOP: Viewport = { width: 1440, height: 900, plaqueBottom: 147, dockTop: 830 };
 
+/** P-154: the playfield spans at least this share of the band between the plaque and the dock. */
+const MIN_PLAYFIELD_SHARE = 0.7;
 /**
- * Share of the band between the plaque and the dock that the playfield (backboard crest down to
- * the payout lip) fills. Portrait cannot reach P-154's 70 %: the frame is width-bound, so with
- * the floor's front corners inside |NDC x| <= PORTRAIT_FIELD_MAX_X the crest-to-lip height is
- * at most about 1.15 times the field width on screen, about 58 % of the band, unless the frame
- * crops the coin floor or shows more than 15 % deck above the backboard. The lead decides the
- * portrait target (P-154 follow-up); this pins what the preset reaches.
+ * The Decorum and Cascade meters at 390x844 in Demo Mode, in CSS px (left, top, right, bottom),
+ * measured with getBoundingClientRect on `.cp-side-meter`.
  */
-const MIN_PLAYFIELD_SHARE = new Map<Viewport, number>([
-  [PORTRAIT, 0.55],
-  [LANDSCAPE, 0.7],
-  [DESKTOP, 0.7],
-]);
+const PORTRAIT_METERS = [
+  [16, 360, 92, 578],
+  [298, 332, 374, 606],
+] as const;
 
 function presetCamera(aspect: number): PerspectiveCamera {
   const camera = new PerspectiveCamera(50, aspect, 0.05, 2000);
@@ -145,6 +142,22 @@ describe('createRivieraTable on the sim layout', () => {
     }
   });
 
+  it("leaves a coin's width of flat velvet behind the front moulding", () => {
+    const velvet = staticMesh(table, 'table-velvet');
+    const solid = table.meshes.filter((m) => m.name !== 'table-glass');
+    for (const mesh of solid) mesh.updateMatrixWorld(true);
+    const floorY = firstHit(velvet, new Vector3(0, -0.01, T.fieldFrontZ + 0.002), down).y;
+    const run = 2 * COIN_RADIUS + 0.004;
+    for (let i = 0; i <= 10; i += 1) {
+      const z = T.fieldFrontZ + 0.002 + (run * i) / 10;
+      for (const x of [-(T.fieldHalfWidth - COIN_RADIUS), 0, T.fieldHalfWidth - COIN_RADIUS]) {
+        const hit = new Raycaster(new Vector3(x, -0.01, z), down).intersectObjects(solid, false)[0];
+        expect(hit?.object.name, `first surface at x ${x}, z ${z}`).toBe('table-velvet');
+        expect(hit?.point.y, `velvet height at x ${x}, z ${z}`).toBeCloseTo(floorY, 6);
+      }
+    }
+  });
+
   it('moves the body front and the tray with cabinetFrontZ', () => {
     const shift = 0.05;
     const moved = createRivieraTable(materials, false, {
@@ -204,15 +217,28 @@ function skyFraction(camera: PerspectiveCamera, samples = 60): number {
   return sky / (samples * samples);
 }
 
-/** Highest screen point of the backboard crest, in CSS px from the top. */
-function crestTop(camera: PerspectiveCamera, view: Viewport): number {
-  let top = Infinity;
-  for (const x of [-TABLE_BOUNDS.halfWidth, 0, TABLE_BOUNDS.halfWidth]) {
-    for (const z of [TABLE_BOUNDS.backZ, T.backboardFrontZ]) {
-      top = Math.min(top, toPixels(new Vector3(x, TABLE_BOUNDS.top, z), camera, view).y);
+/**
+ * First row from the top, in CSS px, where any of a few columns across the backboard meets the
+ * table: everything above it is deck.
+ */
+function crestTop(camera: PerspectiveCamera, view: Viewport, table: RivieraTable): number {
+  for (const mesh of table.meshes) mesh.updateMatrixWorld(true);
+  const columns = [-0.5, -0.25, 0, 0.25, 0.5].map((f) =>
+    toPixels(new Vector3(f * T.fieldHalfWidth, 0, T.backboardFrontZ), camera, view),
+  );
+  const raycaster = new Raycaster();
+  for (let y = 0; y < view.height; y += 1) {
+    for (const column of columns) {
+      const ndc = new Vector3(
+        (column.x / view.width) * 2 - 1,
+        1 - ((y + 0.5) / view.height) * 2,
+        0.5,
+      );
+      raycaster.set(camera.position, ndc.unproject(camera).sub(camera.position).normalize());
+      if (raycaster.intersectObjects([...table.meshes], false).length > 0) return y;
     }
   }
-  return top;
+  throw new Error('no table surface anywhere down the backboard columns');
 }
 
 /** Rows of the centre column below the lip whose first surface is the empty catch tray. */
@@ -280,15 +306,15 @@ describe('rivieraCameraPreset', () => {
     });
 
     it(`shows at most 15 % deck above the backboard at ${label}`, () => {
-      const top = crestTop(camera, view);
+      const top = crestTop(camera, view, table);
       expect(top / view.height).toBeLessThanOrEqual(0.15);
       expect(top).toBeGreaterThan(0);
     });
 
-    it(`fills at least ${(MIN_PLAYFIELD_SHARE.get(view) ?? 1) * 100} % of the HUD band with the playfield at ${label}`, () => {
-      const top = Math.max(crestTop(camera, view), view.plaqueBottom);
+    it(`fills at least ${MIN_PLAYFIELD_SHARE * 100} % of the HUD band with the playfield at ${label}`, () => {
+      const top = Math.max(crestTop(camera, view, table), view.plaqueBottom);
       const bottom = Math.min(lip, view.dockTop);
-      expect((bottom - top) / band).toBeGreaterThanOrEqual(MIN_PLAYFIELD_SHARE.get(view) ?? 1);
+      expect((bottom - top) / band).toBeGreaterThanOrEqual(MIN_PLAYFIELD_SHARE);
     });
 
     it(`keeps the empty catch tray to at most 10 % of the height at ${label}`, () => {
@@ -315,8 +341,28 @@ describe('rivieraCameraPreset', () => {
     });
   }
 
-  it('keeps the portrait coin floor clear of the Decorum and Cascade meters at the edges', () => {
+  it('keeps the portrait coin floor out from under the Decorum and Cascade meters', () => {
     const camera = presetCamera(PORTRAIT.width / PORTRAIT.height);
+    const floorAt = (x: number, z: number): Vector3 => {
+      const behind = (T.fieldFrontZ - z) / (T.fieldFrontZ - T.backboardFrontZ);
+      return toPixels(new Vector3(x, behind * T.pusherHeight, z), camera, PORTRAIT);
+    };
+    const steps = 64;
+    const outline: Vector3[] = [];
+    for (let i = 0; i <= steps; i += 1) {
+      const z = T.backboardFrontZ + ((T.fieldFrontZ - T.backboardFrontZ) * i) / steps;
+      outline.push(floorAt(-T.fieldHalfWidth, z), floorAt(T.fieldHalfWidth, z));
+      const x = -T.fieldHalfWidth + (2 * T.fieldHalfWidth * i) / steps;
+      outline.push(floorAt(x, T.fieldFrontZ));
+    }
+    for (const [left, top, right, bottom] of PORTRAIT_METERS) {
+      for (const p of outline) {
+        const under = p.x > left && p.x < right && p.y > top && p.y < bottom;
+        expect(under, `floor at ${p.x.toFixed(0)},${p.y.toFixed(0)} px is under a meter`).toBe(
+          false,
+        );
+      }
+    }
     for (const side of [-1, 1]) {
       for (const z of [T.fieldFrontZ, T.backboardFrontZ]) {
         const ndc = new Vector3(side * T.fieldHalfWidth, 0, z).project(camera);
@@ -355,6 +401,24 @@ describe('rivieraCameraPreset', () => {
         const ndc = point.clone().project(camera);
         expect(Math.abs(ndc.x), `x of ${point.toArray().join(',')}`).toBeLessThanOrEqual(1);
         expect(Math.abs(ndc.y), `y of ${point.toArray().join(',')}`).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it(`keeps the payout lip and the landing in the tray on screen on ${label}`, () => {
+      const camera = presetCamera(aspect);
+      const landingZ = T.fieldFrontZ + COIN_RADIUS;
+      for (const point of [
+        new Vector3(-T.fieldHalfWidth, 0, T.fieldFrontZ),
+        new Vector3(T.fieldHalfWidth, 0, T.fieldFrontZ),
+        new Vector3(-T.fieldHalfWidth, -T.trayDepth, landingZ),
+        new Vector3(0, -T.trayDepth, landingZ),
+        new Vector3(T.fieldHalfWidth, -T.trayDepth, landingZ),
+      ]) {
+        const ndc = point.clone().project(camera);
+        const at = point.toArray().join(',');
+        expect(Math.abs(ndc.x), `x of ${at}`).toBeLessThanOrEqual(0.98);
+        expect(ndc.y, `y of ${at}`).toBeGreaterThanOrEqual(-0.95);
+        expect(ndc.y, `y of ${at}`).toBeLessThanOrEqual(1);
       }
     });
   }
