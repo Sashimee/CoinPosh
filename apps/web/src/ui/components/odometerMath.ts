@@ -84,13 +84,24 @@ interface RollTiming {
   readonly endMs: number;
 }
 
-/** The counter turns as one number: each wheel follows the value, carries included. */
+/** One change's share of a count, eased in over its own window. */
+interface Leg {
+  readonly startMs: number;
+  readonly endMs: number;
+  readonly delta: number;
+}
+
+/**
+ * The counter turns as one number: each wheel follows the value, carries included. The value
+ * is the sum of every change's own eased leg, so a change pushed mid-roll never slows the
+ * changes already under way and each one is fully counted in by its own landing.
+ */
 interface CountingRoll extends RollTiming {
   readonly kind: 'counting';
-  readonly fromValue: number;
-  readonly toValue: number;
+  readonly baseValue: number;
+  readonly legs: readonly Leg[];
   readonly ticksBelow: number;
-  /** Wheels that always show, even as leading zeros: the fewest digits either end has. */
+  /** Wheels that always show: more than the value needs only when a text shows leading zeros. */
   readonly minPlaces: number;
 }
 
@@ -116,6 +127,11 @@ function digitsValue(glyphs: readonly Glyph[]): number {
 
 function digitCount(glyphs: readonly Glyph[]): number {
   return glyphs.filter((glyph) => glyph.kind === 'digit').length;
+}
+
+/** The wheels a reading of `places` digits keeps for `value`: all of them only if it pads with zeros. */
+function paddedPlaces(places: number, value: number): number {
+  return String(Math.max(0, Math.round(value))).length < places ? places : 1;
 }
 
 function sameGlyphs(a: readonly Glyph[], b: readonly Glyph[]): boolean {
@@ -210,12 +226,32 @@ export class OdometerTrack {
     ) {
       const fromValue = this.countedValue(nowMs);
       const toValue = digitsValue(glyphs);
-      const minPlaces = Math.min(digitCount(this.target), digitCount(glyphs));
+      const previous = this.roll?.kind === 'counting' ? this.roll : null;
+      const minPlaces = Math.max(
+        paddedPlaces(this.shownPlaces(nowMs), fromValue),
+        paddedPlaces(digitCount(glyphs), toValue),
+      );
       if (glyphs.length > this.slots.length) this.relayout(glyphs);
       const turns = Math.abs(toValue - fromValue);
-      let ticksBelow = 0;
+      let ticksBelow = previous?.ticksBelow ?? 0;
       while (turns / 10 ** ticksBelow > SPIN_DIGITS) ticksBelow++;
-      this.roll = { kind: 'counting', fromValue, toValue, ticksBelow, minPlaces, ...timing };
+      const running = previous?.legs.filter((leg) => leg.endMs > nowMs) ?? [];
+      const baseValue =
+        (previous?.baseValue ?? digitsValue(this.target)) +
+        (previous?.legs ?? []).reduce((sum, leg) => (leg.endMs > nowMs ? sum : sum + leg.delta), 0);
+      const leg = {
+        startMs: nowMs,
+        endMs: timing.endMs,
+        delta: toValue - digitsValue(this.target),
+      };
+      this.roll = {
+        kind: 'counting',
+        baseValue,
+        legs: [...running, leg],
+        ticksBelow,
+        minPlaces,
+        ...timing,
+      };
     } else {
       const current = this.positions(nowMs);
       const reuse = this.relayout(glyphs);
@@ -267,6 +303,11 @@ export class OdometerTrack {
     return hidden;
   }
 
+  private shownPlaces(nowMs: number): number {
+    const hidden = this.leadingZeros(nowMs);
+    return this.slots.filter((slot, i) => slot.glyph.kind === 'digit' && !hidden[i]).length;
+  }
+
   private advance(nowMs: number): void {
     if (this.roll && nowMs >= this.roll.endMs) {
       this.roll = null;
@@ -277,7 +318,10 @@ export class OdometerTrack {
   private countedValue(nowMs: number): number {
     const roll = this.roll;
     if (roll?.kind !== 'counting') return digitsValue(this.target);
-    return roll.fromValue + (roll.toValue - roll.fromValue) * progress(roll, nowMs);
+    return roll.legs.reduce(
+      (value, leg) => value + leg.delta * progress(leg, nowMs),
+      roll.baseValue,
+    );
   }
 
   private positions(nowMs: number): number[] {
@@ -316,6 +360,9 @@ export class OdometerTrack {
   }
 }
 
-function progress(roll: RollTiming, nowMs: number): number {
-  return easeOutQuart((nowMs - roll.startMs) / (roll.endMs - roll.startMs));
+function progress(
+  span: { readonly startMs: number; readonly endMs: number },
+  nowMs: number,
+): number {
+  return easeOutQuart((nowMs - span.startMs) / (span.endMs - span.startMs));
 }

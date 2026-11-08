@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createRng } from '../../audio/rng.ts';
 import {
   alignFromRight,
   canCount,
@@ -178,13 +179,18 @@ describe('OdometerTrack', () => {
     expect(readout(track.sample(ROLL_MS).columns)).toBe('1,057');
   });
 
-  it('keeps a growing leading digit visible and in place', () => {
+  it('lays out the grown width up front and hides the new leading wheel until it reads 1', () => {
     const track = new OdometerTrack();
     track.jump('998');
     track.push('1,003', 1, 0, false);
     for (let now = 0; now < ROLL_MS; now += 8) {
       const frame = track.sample(now);
       expect(frame.columns).toHaveLength(5);
+      expect(frame.columns.map((column) => column.hidden)).toEqual(
+        shownValue(frame) < 1000
+          ? [true, true, false, false, false]
+          : [false, false, false, false, false],
+      );
       expectWellFormed(frame);
       const shown = shownValue(frame);
       expect(shown).toBeGreaterThanOrEqual(998);
@@ -249,6 +255,161 @@ describe('OdometerTrack', () => {
       expect(shown).toBeLessThanOrEqual(to);
     }
     expect(readout(track.sample(ROLL_MS).columns)).toBe(format(to));
+  });
+
+  interface Credit {
+    readonly at: number;
+    readonly balance: number;
+  }
+
+  /**
+   * Plays `credits` (absolute balances at integer ms) through a track one ms at a time and
+   * checks every frame: it reads as a whole formatted number (no missing digit, no leading
+   * zero) and stays between the balances of the last ROLL_MS, so it never runs ahead of the
+   * balance nor lags more than ROLL_MS behind it. A rising stream must also never roll back.
+   */
+  const playCredits = (start: number, credits: readonly Credit[]): OdometerTrack => {
+    const track = new OdometerTrack();
+    track.jump(format(start));
+    const history: Credit[] = [{ at: -Infinity, balance: start }, ...credits];
+    const balanceAt = (ms: number): number =>
+      history.filter((entry) => entry.at <= ms).at(-1)?.balance ?? start;
+    const end = (credits.at(-1)?.at ?? 0) + ROLL_MS;
+    const rising = credits.every(
+      (credit, i) => credit.balance >= (credits[i - 1]?.balance ?? start),
+    );
+    let lastShown = start;
+    for (let now = 0; now <= end; now++) {
+      const previous = balanceAt(now - 1);
+      for (const credit of credits) {
+        if (credit.at !== now) continue;
+        track.push(format(credit.balance), credit.balance >= previous ? 1 : -1, now, false);
+      }
+      const frame = track.sample(now);
+      const text = readout(frame.columns);
+      const shown = shownValue(frame);
+      const window = [
+        balanceAt(now - ROLL_MS),
+        ...credits.filter((c) => c.at > now - ROLL_MS && c.at <= now).map((c) => c.balance),
+      ];
+      const context = `at ${now} ms, ${previous} -> ${balanceAt(now)}, showing "${text}"`;
+      expect(text, context).toBe(format(shown));
+      expect(shown, context).toBeGreaterThanOrEqual(Math.min(...window));
+      expect(shown, context).toBeLessThanOrEqual(Math.max(...window));
+      if (rising) expect(shown, context).toBeGreaterThanOrEqual(lastShown);
+      lastShown = shown;
+    }
+    const landed = track.sample(end);
+    expect(landed.settled).toBe(true);
+    expect(isWhole(landed)).toBe(true);
+    expect(readout(landed.columns)).toBe(format(balanceAt(end)));
+    return track;
+  };
+
+  it.each([
+    [
+      'a credit joins a roll that is about to cross 1,000',
+      990,
+      [
+        [0, 999],
+        [60, 1500],
+        [120, 1600],
+      ],
+    ],
+    [
+      'a credit lands before the roll reaches 1,000',
+      990,
+      [
+        [0, 1500],
+        [40, 1501],
+      ],
+    ],
+    [
+      'credits keep a roll across 10,000 going',
+      9380,
+      [
+        [0, 9416],
+        [90, 9999],
+        [140, 12_416],
+        [260, 12_420],
+      ],
+    ],
+    [
+      'a fresh roll starts just under 10,000',
+      9416,
+      [
+        [0, 10_416],
+        [200, 10_420],
+      ],
+    ],
+    [
+      'a big win is followed by a coin',
+      52,
+      [
+        [0, 5052],
+        [180, 5053],
+      ],
+    ],
+    [
+      'credits arrive every frame across 100',
+      90,
+      Array.from({ length: 12 }, (_, i) => [i * 16, 95 + i]),
+    ],
+  ] as const)('stays well formed when %s', (_, start, credits) => {
+    playCredits(
+      start,
+      credits.map(([at, balance]) => ({ at, balance })),
+    );
+  });
+
+  it.each([
+    ['990', '1,000', '1,010'],
+    ['9,380', '10,000', '10,416'],
+  ])(
+    'never pads with a zero when a credit joins a roll from %s across a power of ten',
+    (start, first, second) => {
+      const track = new OdometerTrack();
+      track.jump(start);
+      track.push(first, 1, 0, false);
+      track.push(second, 1, 20, false);
+      for (let now = 20; now <= ROLL_MS; now++) {
+        const frame = track.sample(now);
+        expect(readout(frame.columns)).not.toMatch(/^0/);
+        expectWellFormed(frame);
+      }
+      expect(readout(track.sample(ROLL_MS).columns)).toBe(second);
+    },
+  );
+
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])('holds up under a random credit stream (seed %i)', (seed) => {
+    const rng = createRng(0x226 * seed);
+    const starts = [0, 7, 95, 990, 9380, 99_950, 52, 999_990];
+    let balance = starts[Math.floor(rng() * starts.length)] ?? 0;
+    const start = balance;
+    const credits: Credit[] = [];
+    let at = 0;
+    for (let i = 0; i < 40; i++) {
+      at += Math.floor(rng() ** 2 * 320);
+      if (credits.at(-1)?.at === at) at++;
+      balance += 1 + Math.floor(rng() ** 4 * 6000);
+      credits.push({ at, balance });
+    }
+    playCredits(start, credits);
+  });
+
+  it.each([11, 12, 13, 14])('holds up when spends mix into the stream (seed %i)', (seed) => {
+    const rng = createRng(0x226 * seed);
+    const start = [1004, 10_020, 100_010, 52][seed % 4] ?? 0;
+    let balance = start;
+    const credits: Credit[] = [];
+    let at = 0;
+    for (let i = 0; i < 40; i++) {
+      at += 1 + Math.floor(rng() ** 2 * 320);
+      const amount = 1 + Math.floor(rng() ** 4 * 6000);
+      balance = rng() < 0.35 ? Math.max(0, balance - amount) : balance + amount;
+      credits.push({ at, balance });
+    }
+    playCredits(start, credits);
   });
 
   it('keeps a prefix and inner leading zeros the texts themselves show', () => {
