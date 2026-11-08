@@ -61,6 +61,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-107 | done | task/P-107 (merge 3a8f775) | Live-mode guest sign-up obtains a Cloudflare Turnstile token (apps/web/src/net/turnstile.ts, ui/turnstile/overlay.ts) and sends it as turnstileToken; Demo Mode skips Turnstile (4fb47c9, f0ee693); follow-up P-230; pnpm check green after merge |
 | T-1.17 | blocked(review: boot.perf.ts red, firstDropMs 3366 vs 3000 ms budget with playable at 3197 ms (boot path, P-231); LoAF blocking gate inert under SwiftShader; frame floors calibrated on dev box not CI) | task/T-1.17 (214fe2c, not merged) | E2E + perf gates; keep the 3 s budget; re-review once boot.perf.ts passes on the Demo build; follow-ups P-231..P-237 |
 | P-226 | done | task/P-226 (merge 396836f) | Vault odometer settle/coalesce: minPlaces follows the shown value so mid-roll credits across a power of ten show no leading zero; mid-roll and seeded-fuzz tests (afe029c); pnpm check green after merge |
+| P-215 | blocked(review: criteria tested on a 160-coin pour, not the Demo opening heap; falls 0.27-0.50 x drops on the real Demo heap (rest freeze over-damps it); table.bench p99 4.15-4.21 ms vs 4 ms) | task/P-215 (f7d50ee, not merged) | Coin rest/sleep physics; re-test via Sim with economy openingHeap, Demo seed 0xc0196051 and SIM_MECHANICS over several seeds and drop patterns; tune wake propagation / COIN_REST.pusherMargin; bring p99 under 4 ms or get the bench host formally re-baselined |
+| P-238 | blocked(review: heap still 100 silver, both acceptance bands fail (first upgrade at 6-15 s, minute 2 x0.22-0.54 of minute 1); mixed heap needs OpeningHeapConfig change outside owns; rate-envelope.json edited outside owns) | task/P-238 (0be1e5c, not merged) | Mixed opening heap blocked on the composition type request P-242; follow-ups P-242..P-246; branch kept |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
@@ -79,3 +81,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 11 · 2026-11-08 · P-193 P-201 P-202 P-175 · merged P-201 (dba5125), P-193 (ab0178d), P-175 (0a8a7e9); 1 rejected (P-202)
 - wave 12 · 2026-11-08 · P-209 P-200 P-174 · merged P-209 (4fc23ba), P-200 (5159d30), P-174 (9a10455); 0 rejected
 - wave 13 · 2026-11-08 · P-179 P-107 T-1.17 P-226 · merged P-179 (6789df8), P-107 (3a8f775); 2 rejected (T-1.17, P-226)
+- wave 14 · 2026-11-08 · P-215 P-238 P-226 · merged P-226 (396836f); 2 rejected (P-215, P-238)
