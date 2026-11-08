@@ -1,13 +1,23 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { economyConfig } from '../src/config/index.ts';
+import { runCli } from './cli.ts';
 import { simModel } from './model.ts';
 import { formatMetric, formatSummary } from './report.ts';
 import { percentile, runSimulation } from './simulate.ts';
 
-const cli = fileURLToPath(new URL('./cli.ts', import.meta.url));
+function cli(...argv: string[]): { code: number; out: string; err: string } {
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = runCli(argv, { out: (t) => out.push(t), err: (t) => err.push(t) });
+  return { code, out: out.join('\n'), err: err.join('\n') };
+}
+
+function misses(targets: ReturnType<typeof runSimulation>['targets']): string[] {
+  return targets
+    .filter((t) => !t.pass)
+    .map((t) => `${t.target.label}: ${formatMetric(t.target.metric, t.value)}`);
+}
 
 describe('percentile', () => {
   it('uses nearest rank and treats missing values as never reached', () => {
@@ -49,11 +59,23 @@ describe('runSimulation', () => {
     expect(result.targets.map((t) => t.target.id)).toEqual(economyConfig.pacing.map((t) => t.id));
   });
 
-  it('hits every pacing target with the shipped numbers', () => {
-    const misses = result.targets
-      .filter((t) => !t.pass)
-      .map((t) => `${t.target.label}: ${formatMetric(t.target.metric, t.value)}`);
-    expect(misses).toEqual([]);
+  it('hits every pacing and FTUE target with the shipped numbers', () => {
+    expect(misses(result.targets)).toEqual([]);
+    expect(misses(result.ftue)).toEqual([]);
+  });
+
+  it('still hits every pacing target at the front-edge return measured on the physics table', () => {
+    // packages/sim measured 0.87 to 0.94 coins off the front per coin dropped (balance
+    // report T-1.16); the shipped tuning must hold across that whole range, not only at 1.25.
+    const measured = runSimulation(economyConfig, { ...simModel, baseReturnRatio: 0.9 }, options);
+    expect(misses(measured.targets)).toEqual([]);
+  });
+
+  it('never reaches the first upgrade from an empty table on 20 starting coins', () => {
+    const empty = { ...simModel, pile: { ...simModel.pile, startingCoins: 0 } };
+    const run = runSimulation(economyConfig, empty, { days: 1, players: 2, seed: 5 });
+    expect(run.active.firstUpgrade.p50).toBe(Number.POSITIVE_INFINITY);
+    expect(run.targets.find((t) => t.target.id === 'firstUpgrade')?.pass).toBe(false);
   });
 
   it('reports one median snapshot per casual day with steady progress', () => {
@@ -74,6 +96,7 @@ describe('runSimulation', () => {
   it('formats a readable summary', () => {
     const summary = formatSummary(result);
     expect(summary).toContain('Pacing targets (02-ECONOMY.md): 7/7 on target');
+    expect(summary).toContain('FTUE targets (00-VISION.md): 1/1 on target');
     expect(summary).toMatch(/PASS {2}Ascend Venue 1 \(active\)/);
     expect(summary).toContain('Casual player, median at end of each day');
   });
@@ -93,26 +116,54 @@ describe('formatMetric', () => {
 
 describe('sim CLI', () => {
   it('prints a pacing summary', () => {
-    const out = execFileSync(process.execPath, [cli, '--days', '2', '--players', '3'], {
-      encoding: 'utf8',
-    });
-    expect(out).toContain('CoinPosh balancing sim · 3 players · seed 1 · 2 casual days');
-    expect(out).toContain('Pacing targets (02-ECONOMY.md)');
+    const run = cli('--days', '2', '--players', '3');
+    expect(run.code).toBe(0);
+    expect(run.out).toContain('CoinPosh balancing sim · 3 players · seed 1 · 2 casual days');
+    expect(run.out).toContain('Pacing targets (02-ECONOMY.md)');
+    expect(run.err).toBe('');
   });
 
-  it('prints JSON on request', () => {
-    const out = execFileSync(process.execPath, [cli, '--days', '1', '--players', '2', '--json'], {
-      encoding: 'utf8',
-    });
-    const parsed = JSON.parse(out) as { options: unknown; targets: unknown[] };
+  it('prints usage on --help', () => {
+    const run = cli('--help');
+    expect(run.code).toBe(0);
+    expect(run.out).toContain('Usage: pnpm --filter economy sim');
+  });
+
+  it('prints JSON on request, ignoring a pnpm "--" separator', () => {
+    const run = cli('--', '--days', '1', '--players', '2', '--json');
+    const parsed = JSON.parse(run.out) as { options: unknown; targets: unknown[]; ftue: unknown[] };
     expect(parsed.options).toEqual({ days: 1, players: 2, seed: 1 });
     expect(parsed.targets).toHaveLength(economyConfig.pacing.length);
+    expect(parsed.ftue).toHaveLength(1);
   });
 
-  it('fails loudly with usage on bad arguments', () => {
-    const run = spawnSync(process.execPath, [cli, '--days', 'seven'], { encoding: 'utf8' });
-    expect(run.status).toBe(2);
-    expect(run.stderr).toContain('--days expects an integer, got "seven"');
-    expect(run.stderr).toContain('Usage: pnpm --filter economy sim');
+  it('exits 1 under --strict only when a target misses', () => {
+    expect(cli('--days', '1', '--players', '2', '--empty-table', '--strict').code).toBe(1);
+    expect(cli('--days', '1', '--players', '2', '--empty-table').code).toBe(0);
+  });
+
+  it('applies the --return-ratio what-if', () => {
+    const run = cli('--days', '1', '--players', '1', '--return-ratio', '0.9', '--json');
+    const shipped = cli('--days', '1', '--players', '1', '--json');
+    expect(run.out).not.toEqual(shipped.out);
+  });
+
+  it('prints the rate-envelope table', () => {
+    const run = cli('--envelope', '--seed', '3');
+    const table = JSON.parse(run.out) as { seed: number; rows: { label: string }[] };
+    expect(table.seed).toBe(3);
+    expect(table.rows[0]?.label).toBe('Fresh table');
+  });
+
+  it.each([
+    [['--days', 'seven'], '--days expects an integer, got "seven"'],
+    [['--return-ratio', '0'], '--return-ratio expects a positive number, got "0"'],
+    [['--bogus'], "Unknown option '--bogus'"],
+  ])('fails loudly with usage on %j', (argv, message) => {
+    const run = cli(...argv);
+    expect(run.code).toBe(2);
+    expect(run.out).toBe('');
+    expect(run.err).toContain(message);
+    expect(run.err).toContain('Usage: pnpm --filter economy sim');
   });
 });
