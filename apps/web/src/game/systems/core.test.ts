@@ -14,6 +14,7 @@ import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
 import type { SimEventBatch } from '../simWorker/protocol.ts';
 import type { ContactEvent } from '../simWorker/sim-api.ts';
 import { createSystemsCore, type SystemsCore, type TablePort } from './core.ts';
+import { followSurface } from './follow.ts';
 import type { GameEventType, GameEvents } from './events.ts';
 import { SYSTEMS_NAMESPACE, SYSTEMS_STRINGS, registerSystemsStrings, systemsKey } from './i18n.ts';
 import {
@@ -554,6 +555,7 @@ describe('systems core: the sim event stream', () => {
     const { sim, table, sync } = setup({ heap });
     sim.layHeap(heap.length);
     sync();
+    sim.stats.tick = 400;
     sim.stats.renderTick = 300;
     sim.emit({ falls: [{ coinId: 0, edge: 'front', tick: 300 }] });
     sim.bodies.delete(0);
@@ -571,6 +573,34 @@ describe('systems core: the sim event stream', () => {
     expect(Math.max(...perTick.values())).toBeLessThanOrEqual(FALL_CLAIMS_PER_TICK);
     expect(ticks[0]).toBe(300);
     expect(ticks.at(-1)).toBe(300 + Math.ceil(heap.length / FALL_CLAIMS_PER_TICK) - 1);
+  });
+
+  it('holds spilled falls until the sim tick reaches them, so no claim runs ahead of the clock', () => {
+    const heap = Array.from({ length: 10 }, (_, i) => coin(101 + i));
+    const { core, sim, table, sync } = setup({ heap });
+    const fell = record(core, 'coin:fell');
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.tick = 300;
+    sim.stats.renderTick = 300;
+    sim.emit({
+      falls: heap.map((_, coinId) => ({ coinId, edge: 'front' as const, tick: 300 })),
+    });
+    for (let id = 0; id < heap.length; id += 1) sim.bodies.delete(id);
+    sync();
+    expect(table.falls.map((f) => f.tick)).toEqual([300, 300, 300]);
+    expect(fell).toHaveLength(FALL_CLAIMS_PER_TICK);
+
+    sim.stats.tick = 301;
+    core.update();
+    expect(table.falls.map((f) => f.tick)).toEqual([300, 300, 300, 301, 301, 301]);
+
+    sim.stats.tick = 310;
+    sync();
+    const ticks = table.falls.map((f) => f.tick);
+    expect(ticks).toEqual([300, 300, 300, 301, 301, 301, 302, 302, 302, 303]);
+    expect(new Set(table.falls.map((f) => f.coinId)).size).toBe(heap.length);
+    expect(fell.map((f) => f.tick)).toEqual(ticks);
   });
 
   it('claims a fall the sim reports after a fusion claim no earlier than that claim', () => {
@@ -871,6 +901,65 @@ describe('systems core: fusion, contacts and lifetime', () => {
     const { core, sim } = setup();
     expect(() => core.drop(Number.NaN)).toThrow(RangeError);
     expect(sim.drops).toEqual([]);
+  });
+});
+
+describe('systems: the input surface follows the stage canvas', () => {
+  class FakeCanvas {
+    tap: ((aim: number) => void) | null = null;
+  }
+
+  const bindTaps = (core: SystemsCore) => (canvas: FakeCanvas) => {
+    canvas.tap = (aim) => {
+      core.drop(aim);
+    };
+    return {
+      dispose() {
+        canvas.tap = null;
+      },
+    };
+  };
+
+  it('a tap still drops after the stage swaps its canvas mid-session', () => {
+    const { core, sim, advance } = setup();
+    const stage = { canvas: new FakeCanvas() };
+    const surface = followSurface(() => stage.canvas, bindTaps(core));
+    const first = stage.canvas;
+    first.tap?.(0);
+    expect(sim.drops).toHaveLength(1);
+
+    advance(MIN_TICKS_BETWEEN_DROPS);
+    stage.canvas = new FakeCanvas();
+    expect(surface.follow()).toBe(true);
+    expect(first.tap).toBeNull();
+    expect(surface.surface).toBe(stage.canvas);
+    stage.canvas.tap?.(0.5);
+    expect(sim.drops).toEqual([
+      { xMm: 0, tier: 'copper' },
+      { xMm: 75, tier: 'copper' },
+    ]);
+  });
+
+  it('keeps the binding while the canvas is unchanged and lets go of it on dispose', () => {
+    const { core } = setup();
+    const stage = { canvas: new FakeCanvas() };
+    const bind = bindTaps(core);
+    let binds = 0;
+    const surface = followSurface(
+      () => stage.canvas,
+      (canvas: FakeCanvas) => {
+        binds += 1;
+        return bind(canvas);
+      },
+    );
+    expect(surface.follow()).toBe(false);
+    expect(surface.follow()).toBe(false);
+    expect(binds).toBe(1);
+    surface.dispose();
+    expect(stage.canvas.tap).toBeNull();
+    stage.canvas = new FakeCanvas();
+    expect(surface.follow()).toBe(false);
+    expect(stage.canvas.tap).toBeNull();
   });
 });
 

@@ -666,7 +666,7 @@ function startPlay(
     bridge,
     net: { table: boot.net.table, clock: boot.net.clock },
     ui,
-    canvas: stage.canvas,
+    canvas: () => stage.canvas,
     upgradeLevels: boot.state.venue.upgrades,
     simBacklog: start.simBacklog,
     openingHeap: start.heap,
@@ -681,7 +681,6 @@ function startPlay(
       vault,
     }),
   );
-  focusForKeys(stage.canvas);
   systems.hydrate(boot.state);
   const { counts } = probe;
   const offs = [
@@ -709,25 +708,6 @@ function startPlay(
     for (const off of offs) off();
   });
   return systems;
-}
-
-/**
- * The input surface listens for keys on the canvas, and its pointerdown calls preventDefault,
- * which in Chromium stops a click from focusing it; so Space and W would go nowhere.
- * TODO(input owner): focus the canvas in game/input/surface.ts's pointerdown, then drop this.
- */
-function focusForKeys(canvas: HTMLCanvasElement): void {
-  const focus = (): void => {
-    canvas.focus({ preventScroll: true });
-  };
-  const onPointerDown = (event: PointerEvent): void => {
-    if (event.isPrimary) focus();
-  };
-  canvas.addEventListener('pointerdown', onPointerDown);
-  teardown.push(() => {
-    canvas.removeEventListener('pointerdown', onPointerDown);
-  });
-  focus();
 }
 
 /** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */

@@ -150,6 +150,15 @@ interface SimFall {
   readonly tick: Tick;
 }
 
+interface HeldFall {
+  readonly coin: MintedCoin | null;
+  readonly edge: FallEdge;
+  readonly position: TablePoint;
+  readonly seen: Tick;
+}
+
+const NOTHING_GONE: ReadonlyMap<number, TablePoint> = new Map();
+
 export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const { sim, table, clock, ui, now } = options;
   const events = createBus<GameEvents>();
@@ -169,6 +178,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     { readonly tier: CoinTier; readonly position: TablePoint }
   >();
   const simFalls = new Map<number, SimFall>();
+  const heldFalls: HeldFall[] = [];
   const fusedAway = new Set<number>();
   const settledIds = new Set<number>();
   let lastClaimTick = 0;
@@ -350,11 +360,13 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
    * The server refuses a claim older than the last one, so a fall the table noticed late is
    * claimed no earlier than the claims already sent. It also refuses more than
    * FALL_CLAIMS_PER_TICK falls on one tick, so late falls held at the last claim's tick spill
-   * over onto the ticks after it.
+   * over onto the ticks after it, but never past the sim's own tick: the server refuses a tick
+   * ahead of its clock, so a fall with no room yet waits (null) for the sim to catch up.
    */
-  const fallClaimTick = (seen: Tick): Tick => {
+  const fallClaimTick = (seen: Tick): Tick | null => {
     let at = Math.max(seen, lastClaimTick);
     if (at === lastClaimTick && fallsAtLastClaimTick >= FALL_CLAIMS_PER_TICK) at += 1;
+    if (at > Math.max(seen, lastClaimTick, tick())) return null;
     if (at !== lastClaimTick) {
       lastClaimTick = at;
       fallsAtLastClaimTick = 0;
@@ -372,12 +384,8 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     return at;
   };
 
-  const fell = (simId: number, edge: FallEdge, position: TablePoint, seen: Tick = tick()): void => {
-    const at = fallClaimTick(seen);
-    settledIds.add(simId);
-    simFalls.delete(simId);
-    const coin = ledger.claimable(simId);
-    ledger.release(simId);
+  const announceFall = (held: HeldFall, at: Tick): void => {
+    const { coin, edge, position } = held;
     events.emit('coin:fell', { coin, edge, position, tick: at });
     if (!coin) return;
     claimedFalls.set(coin.id, { tier: coin.tier, position });
@@ -390,6 +398,25 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       events.emit('cascade:tier', { ...step.tierUp, count: step.count });
     }
     ui.setCascade(step.count);
+  };
+
+  /** Claims held falls in the order they fell, as far as the sim's tick leaves room. */
+  const flushFalls = (): void => {
+    for (let held = heldFalls[0]; held !== undefined; held = heldFalls[0]) {
+      const at = fallClaimTick(held.seen);
+      if (at === null) return;
+      heldFalls.shift();
+      announceFall(held, at);
+    }
+  };
+
+  const fell = (simId: number, edge: FallEdge, position: TablePoint, seen: Tick = tick()): void => {
+    settledIds.add(simId);
+    simFalls.delete(simId);
+    const coin = ledger.claimable(simId);
+    ledger.release(simId);
+    heldFalls.push({ coin, edge, position, seen });
+    flushFalls();
   };
 
   const fuse = (fusion: FusionReport, fusedId: number | null): void => {
@@ -445,7 +472,6 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
    * settled at the lip.
    */
   const settleSimFalls = (gone: ReadonlyMap<number, TablePoint>): void => {
-    if (simFalls.size === 0) return;
     let horizon = sim.stats.renderTick;
     for (const id of gone.keys()) horizon = Math.max(horizon, simFalls.get(id)?.tick ?? horizon);
     const due = [...simFalls].filter(([, fall]) => fall.tick <= horizon);
@@ -565,7 +591,14 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
         const coin = ledger.assign(body.id);
         events.emit('coin:spawned', { coin, position: body.position });
       }
-      settleSimFalls(new Map(vanished.map((body) => [body.id, body.position])));
+      flushFalls();
+      if (simFalls.size > 0) {
+        settleSimFalls(
+          vanished.length === 0
+            ? NOTHING_GONE
+            : new Map(vanished.map((body) => [body.id, body.position])),
+        );
+      }
       for (const body of vanished) {
         if (settledIds.has(body.id)) continue;
         if (fusedAway.delete(body.id) || body.edge === null) {
@@ -578,6 +611,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     update() {
       if (disposed) return;
       const at = now();
+      flushFalls();
       endCombo(combo.update(tick()));
       if (decorum.thawIfDue(at)) {
         events.emit('concierge:thaw', {});

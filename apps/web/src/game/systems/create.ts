@@ -2,7 +2,7 @@ import type { MintedCoin, StateResponse } from '@coinposh/shared';
 import type { Bus } from '../../app/bus.ts';
 import type { UiApp } from '../../app/index.ts';
 import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
-import { bindInputSurface, linearAimMap, type AimMap } from '../input/index.ts';
+import { bindInputSurface, linearAimMap, type AimMap, type InputHandlers } from '../input/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
 import type { SimEventBatch } from '../simWorker/protocol.ts';
 import {
@@ -15,6 +15,7 @@ import {
 } from './core.ts';
 import type { GameEvents } from './events.ts';
 import { registerSystemsStrings, systemsKey } from './i18n.ts';
+import { followSurface } from './follow.ts';
 import { createSystemsOverlay } from './overlay.ts';
 import type { TableBounds } from './tableWatch.ts';
 
@@ -27,8 +28,11 @@ export interface GameSystemsOptions {
   readonly openingHeap?: readonly MintedCoin[];
   readonly net: { readonly table: TablePort; readonly clock: ClockPort };
   readonly ui: Pick<UiApp, 'setCascade' | 'setDecorum' | 'bus' | 'i18n' | 'bannerSlot'>;
-  /** The surface the player touches; the WebGL canvas. */
-  readonly canvas: HTMLCanvasElement;
+  /**
+   * The surface the player touches: the stage's current canvas. Read every frame, since the
+   * stage swaps in a new canvas when it rebuilds its renderer.
+   */
+  readonly canvas: () => HTMLCanvasElement;
   readonly bounds?: TableBounds;
   readonly aimMap?: AimMap;
   readonly now?: () => number;
@@ -39,7 +43,7 @@ export interface GameSystemsOptions {
  * The gameplay glue, ready for main.ts. Wire it as the coin source and subscribe effects to
  * `events`:
  *
- *   const systems = createGameSystems({ bridge, net, ui, canvas });
+ *   const systems = createGameSystems({ bridge, net, ui, canvas: () => stage.canvas });
  *   systems.hydrate(state);
  *   stage.onFrame(() => systems.sync(stage.coins));
  *   systems.events.on('cascade:tier', ({ rank }) => audio.setComboTier(rank));
@@ -93,34 +97,59 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
   });
 
   const overlay = createSystemsOverlay(host, { aim: t('aim.label'), gauge: t('pour.gauge') });
-  const previousLabel = canvas.getAttribute('aria-label');
-  canvas.setAttribute('aria-label', t('surface.label'));
-
-  const input = bindInputSurface(
-    canvas,
-    {
-      aim: (aim) => {
-        core.setAim(aim);
-      },
-      drop: (aim) => {
-        core.drop(aim);
-      },
-      pourStart: (aim) => {
-        core.startPour(aim);
-      },
-      pourEnd: (aim) => {
-        core.setAim(aim);
-        core.endPour();
-      },
-      pourCancel: () => {
-        core.cancelPour();
-      },
-      nudge: (direction, strength, source) => {
-        core.nudge(direction, strength, source);
-      },
+  const handlers: InputHandlers = {
+    aim: (aim) => {
+      core.setAim(aim);
     },
-    { aimMap, currentAim: () => core.aim, now },
-  );
+    drop: (aim) => {
+      core.drop(aim);
+    },
+    pourStart: (aim) => {
+      core.startPour(aim);
+    },
+    pourEnd: (aim) => {
+      core.setAim(aim);
+      core.endPour();
+    },
+    pourCancel: () => {
+      core.cancelPour();
+    },
+    nudge: (direction, strength, source) => {
+      core.nudge(direction, strength, source);
+    },
+  };
+
+  const bindCanvas = (surface: HTMLCanvasElement) => {
+    const previousLabel = surface.getAttribute('aria-label');
+    surface.setAttribute('aria-label', t('surface.label'));
+    const input = bindInputSurface(surface, handlers, {
+      aimMap,
+      currentAim: () => core.aim,
+      now,
+    });
+    // The input surface listens for keys on the canvas, and its pointerdown calls
+    // preventDefault, which in Chromium stops a click from focusing it; so Space and W would go
+    // nowhere. TODO(input owner): focus the canvas in game/input/surface.ts's pointerdown.
+    const focus = (): void => {
+      surface.focus({ preventScroll: true });
+    };
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.isPrimary) focus();
+    };
+    surface.addEventListener('pointerdown', onPointerDown);
+    return {
+      input,
+      focus,
+      dispose() {
+        surface.removeEventListener('pointerdown', onPointerDown);
+        input.dispose();
+        if (previousLabel === null) surface.removeAttribute('aria-label');
+        else surface.setAttribute('aria-label', previousLabel);
+      },
+    };
+  };
+  const surface = followSurface(canvas, bindCanvas);
+  surface.binding.focus();
 
   const offs = [
     core.events.on('pour:end', ({ grade }) => {
@@ -139,11 +168,17 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     events: core.events,
     sync(field) {
       if (disposed) return;
-      input.tick();
+      if (surface.follow()) {
+        core.cancelPour();
+        if (document.activeElement === null || document.activeElement === document.body) {
+          surface.binding.focus();
+        }
+      }
+      surface.binding.input.tick();
       core.sync(field);
       core.update();
-      const width = canvas.getBoundingClientRect().width;
-      overlay.render(aimMap.toPx(core.aim, width), input.pressed, core.pourView());
+      const width = surface.surface.getBoundingClientRect().width;
+      overlay.render(aimMap.toPx(core.aim, width), surface.binding.input.pressed, core.pourView());
     },
     hydrate: (state) => {
       core.hydrate(state);
@@ -161,11 +196,9 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
       if (disposed) return;
       disposed = true;
       for (const off of offs) off();
-      input.dispose();
+      surface.dispose();
       overlay.dispose();
       core.dispose();
-      if (previousLabel === null) canvas.removeAttribute('aria-label');
-      else canvas.setAttribute('aria-label', previousLabel);
     },
   };
 }
