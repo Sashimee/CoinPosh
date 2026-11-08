@@ -1,4 +1,10 @@
-import { offline, offlineEarnings } from '@coinposh/economy';
+import {
+  measuredActiveRatePerHour,
+  offline,
+  offlineRate,
+  offlineVaultCoins,
+  playWindowStart,
+} from '@coinposh/economy';
 import type { EpochMs, OfflineSettlement } from '@coinposh/shared';
 import type { TxKind } from '../do/ledger.ts';
 
@@ -7,14 +13,6 @@ export const OFFLINE_TX_KIND = 'offline.vault';
 
 /** Shorter absences are a tab switch, not a return; GET /v1/state then settles nothing. */
 export const OFFLINE_MIN_AWAY_MS = 5 * 60_000;
-/** The active rate is measured over the last stretch of play before the player left. */
-export const ACTIVE_RATE_WINDOW_MS = 30 * 60_000;
-/**
- * A lucky cascade seconds before leaving must not read as a sustained rate, so the measured
- * span is never shorter than this.
- */
-export const ACTIVE_RATE_MIN_SPAN_MS = 10 * 60_000;
-
 const HOUR_MS = 3_600_000;
 const PLAY_KINDS = ['drop.mint', 'drop.buffer', 'claim.fall'] as const satisfies readonly TxKind[];
 const PLAY_KIND_PLACEHOLDERS = PLAY_KINDS.map(() => '?').join(', ');
@@ -42,8 +40,9 @@ function settledThrough(sql: SqlStorage): number | null {
 
 /**
  * Net coins per hour the wallet gained from play (falls won minus drops paid) during the
- * last stretch of play, matching the balancing sim's net rate. Vault payouts are not play,
- * so they never compound into the rate.
+ * last stretch of play (`offlineRate.windowMs`), matching the balancing sim's net rate and
+ * the Demo mock. Vault payouts, crate loot and allowances are not play, so they never
+ * compound into the rate.
  */
 export function measuredActiveRate(sql: SqlStorage): number {
   const end = maxAt(
@@ -52,7 +51,7 @@ export function measuredActiveRate(sql: SqlStorage): number {
     ...PLAY_KINDS,
   );
   if (end === null) return 0;
-  const windowStart = end - ACTIVE_RATE_WINDOW_MS;
+  const windowStart = playWindowStart(end, offlineRate);
   const row = sql
     .exec<{ first: number | null; won: number | null }>(
       `SELECT
@@ -67,16 +66,18 @@ export function measuredActiveRate(sql: SqlStorage): number {
       ...PLAY_KINDS,
     )
     .one();
-  const won = row.won ?? 0;
-  if (won <= 0) return 0;
-  const span = Math.max(end - (row.first ?? end), ACTIVE_RATE_MIN_SPAN_MS);
-  return (won * HOUR_MS) / span;
+  return measuredActiveRatePerHour(
+    { netCoins: row.won ?? 0, firstAt: row.first ?? end, lastAt: end },
+    offlineRate,
+  );
 }
 
 /**
  * What the Velvet Vault owes on return, from server time only: `now` is the DO's clock,
- * never a client timestamp. Returns null when nothing is owed, so repeated state reads
- * during play stay free; once recorded, a settlement marks everything before it as paid.
+ * never a client timestamp. A measured rate below `offlineRate.starterRatePerHour` (a fresh
+ * profile, or play that lost coins) pays on that starter floor instead. Returns null when
+ * nothing is owed, so repeated state reads during play stay free; once recorded, a
+ * settlement marks everything before it as paid.
  */
 export function quoteOffline(
   sql: SqlStorage,
@@ -89,8 +90,12 @@ export function quoteOffline(
   if (awayMs < OFFLINE_MIN_AWAY_MS) return null;
   const cap = Math.min(Math.max(capHours, offline.baseCapHours), offline.maxCapHours);
   const creditedMs = Math.min(awayMs, cap * HOUR_MS);
-  const coins = Math.floor(
-    offlineEarnings(awayMs / HOUR_MS, cap, measuredActiveRate(sql), offline),
+  const coins = offlineVaultCoins(
+    awayMs / HOUR_MS,
+    cap,
+    measuredActiveRate(sql),
+    offlineRate,
+    offline,
   );
   if (coins < 1) return null;
   return { awayMs, creditedMs, coins };
