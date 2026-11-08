@@ -9,6 +9,7 @@ import {
   pusherExtension,
   type PusherMotion,
 } from './pusher.ts';
+import { PUSHER_CAM } from './tuning.ts';
 
 function offsets(clock: PusherClock, ticks: number): number[] {
   const out: number[] = [];
@@ -19,9 +20,16 @@ function offsets(clock: PusherClock, ticks: number): number[] {
   return out;
 }
 
-/** The most an eased half-stroke can move the block in one tick: smoothstep peaks at slope 1.5. */
+/** The cam's steepest slope over a half-stroke, where its second derivative crosses zero. */
+function peakSlope(): number {
+  const { knock } = PUSHER_CAM;
+  const u = Math.min(1, (3 - 2 * knock) / (6 - 6 * knock));
+  return (1 - knock) * 6 * u * (1 - u) + 2 * knock * u;
+}
+
+/** The most a cam half-stroke can move the block in one tick. */
 function peakStep({ stroke, periodTicks, pushFraction }: PusherMotion): number {
-  return (1.5 * stroke) / (periodTicks * Math.min(pushFraction, 1 - pushFraction));
+  return (peakSlope() * stroke) / (periodTicks * Math.min(pushFraction, 1 - pushFraction));
 }
 
 describe('pusherExtension', () => {
@@ -48,15 +56,34 @@ describe('pusherExtension', () => {
     }
   });
 
-  it('eases into both turnarounds so coins on the block are never jerked', () => {
+  it('eases out of and back into retraction, and knocks at full reach', () => {
+    const { knock } = PUSHER_CAM;
+    expect(knock).toBeGreaterThan(0);
+    expect(knock).toBeLessThanOrEqual(1);
     const pf = PUSHER.pushFraction;
-    const du = 1e-6;
+    const du = 1e-7;
     const slope = (phase: number): number =>
       (pusherExtension(phase + du, pf) - pusherExtension(phase, pf)) / du;
-    expect(Math.abs(slope(0))).toBeLessThan(1e-3);
-    expect(Math.abs(slope(pf - du))).toBeLessThan(1e-3);
-    expect(Math.abs(slope(1 - 2 * du))).toBeLessThan(1e-3);
-    expect(slope(pf / 2)).toBeCloseTo(1.5 / pf, 3);
+    expect(Math.abs(slope(0))).toBeLessThan(1e-5);
+    expect(Math.abs(slope(1 - 2 * du))).toBeLessThan(1e-5);
+    expect(slope(pf - 2 * du)).toBeCloseTo((2 * knock) / pf, 4);
+    expect(slope(pf + du)).toBeCloseTo((-2 * knock) / (1 - pf), 4);
+    expect(slope(pf / 2)).toBeCloseTo((1.5 - 0.5 * knock) / pf, 4);
+  });
+
+  it('peaks no steeper than smoothstep, so the knock does not fling coins mid-stroke', () => {
+    expect(peakSlope()).toBeLessThanOrEqual(1.5);
+    const pf = PUSHER.pushFraction;
+    const du = 1e-5;
+    let steepest = 0;
+    for (let i = 0; i < 1000; i++) {
+      const phase = (pf * i) / 1000;
+      steepest = Math.max(
+        steepest,
+        (pusherExtension(phase + du, pf) - pusherExtension(phase, pf)) / du,
+      );
+    }
+    expect(steepest * pf).toBeCloseTo(peakSlope(), 3);
   });
 
   it('pushes slower than it returns with the default motion', () => {
