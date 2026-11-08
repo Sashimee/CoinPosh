@@ -123,6 +123,10 @@ export const TABLE_MATERIAL = {
  *   it comes within `pusherMargin` of the backboard, which then scrapes it;
  * - the separation pass moves it (CoinSeparator reports it in `loosened`);
  * - the cabinet is nudged, or a coin it may lean on is taken off the table.
+ *
+ * The idle Demo heap (rest.test.ts) drops exactly 2 coins over the front lip after it
+ * settles, at ticks 1087 and 1339 of the pinned run, which is the whole allowance that
+ * test gives: any retune here that loosens rest even slightly will fail it, with no margin.
  */
 export const COIN_REST = {
   drift: 0.001,

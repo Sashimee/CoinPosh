@@ -1,11 +1,9 @@
-import type {
-  RigidBody,
-  Rotation,
-  Shape,
-  ShapeContact,
-  Vector,
-} from '@dimforge/rapier3d-deterministic-compat';
+import type { RigidBody, Rotation, Shape, Vector } from '@dimforge/rapier3d-deterministic-compat';
 import type { Rapier } from '../rapier.ts';
+
+type RawShape = ReturnType<Shape['intoRaw']>;
+type RawVector = ReturnType<Rapier['VectorOps']['intoRaw']>;
+type RawRotation = ReturnType<Rapier['RotationOps']['intoRaw']>;
 
 /** A coin collider's dimensions, in world units: a cylinder core swept by a sphere of radius `rim`. */
 export interface CoinGeometry {
@@ -43,6 +41,8 @@ interface Slot extends Axis {
   /** A frozen coin that has not been moved yet. */
   fixed: boolean;
   rotation: Rotation;
+  /** The rotation in WASM memory, made the first time a call queries the coin and freed when it returns. */
+  rawRotation: RawRotation | undefined;
   x: number;
   y: number;
   z: number;
@@ -88,7 +88,6 @@ const ASLEEP = -3;
 const AWAKE = -1;
 const FIRST_SINCE = -2;
 
-const IDENTITY = { x: 0, y: 0, z: 0, w: 1 } as const;
 /** Local search over directions: first and last step, in radians near enough. */
 const SEARCH_FIRST_STEP = 0.2;
 const SEARCH_LAST_STEP = 0.01;
@@ -99,7 +98,7 @@ const NUDGES = [
   [0, -1],
 ] as const;
 
-function entry<T>(items: readonly T[], i: number): T {
+function entry<T>(items: ArrayLike<T>, i: number): T {
   const item = items[i];
   if (item === undefined) {
     throw new Error(`CoinSeparator: no coin at index ${i} of ${items.length}`);
@@ -126,11 +125,22 @@ function entry<T>(items: readonly T[], i: number): T {
  * first pass only coins that moved in the pass before are looked at again.
  */
 export class CoinSeparator {
-  readonly #shape: Shape;
   readonly #geometry: CoinGeometry;
   readonly #obstacles: readonly Obstacle[];
   readonly #settings: SeparationSettings;
-  readonly #contact: ShapeContact;
+  /**
+   * Contact queries go to the WASM shapes directly: Shape.contactShape copies both
+   * shapes, both poses and the result into and out of WASM memory on every call,
+   * about a quarter of what a query costs.
+   */
+  readonly #rapier: Rapier;
+  readonly #rawShape: RawShape;
+  readonly #rawObstacles: readonly RawShape[];
+  readonly #rawIdentity: RawRotation;
+  readonly #rawA: RawVector;
+  readonly #rawB: RawVector;
+  /** distance, point1, point2, normal1, normal2: RawShapeContact.getComponents' layout. */
+  readonly #hit = new Float32Array(13);
   /** Squared distance between centres beyond which two coins cannot touch. */
   readonly #touchSq: number;
   /** Distance between centres within which two coins are candidates: touch plus the margin. */
@@ -140,6 +150,8 @@ export class CoinSeparator {
   readonly #driftSq: number;
   /** One slot per coin, reused from call to call. */
   readonly #slots: Slot[] = [];
+  /** Pose reads and writes that nothing keeps past the call making them. */
+  readonly #scratch: Vector = { x: 0, y: 0, z: 0 };
   /** Coin indices sorted along x, kept between calls. */
   readonly #order: number[] = [];
   readonly #sorted: Slot[] = [];
@@ -157,13 +169,15 @@ export class CoinSeparator {
     obstacles: readonly Obstacle[],
     settings: SeparationSettings,
   ) {
-    this.#shape = shape;
     this.#geometry = geometry;
     this.#obstacles = obstacles;
     this.#settings = settings;
-    // fromBuffer writes into these, so each must be its own object.
-    const zero = (): Vector => ({ x: 0, y: 0, z: 0 });
-    this.#contact = new rapier.ShapeContact(0, zero(), zero(), zero(), zero());
+    this.#rapier = rapier;
+    this.#rawShape = shape.intoRaw();
+    this.#rawObstacles = obstacles.map((obstacle) => obstacle.shape.intoRaw());
+    this.#rawIdentity = rapier.RotationOps.intoRaw({ x: 0, y: 0, z: 0, w: 1 });
+    this.#rawA = rapier.VectorOps.intoRaw({ x: 0, y: 0, z: 0 });
+    this.#rawB = rapier.VectorOps.intoRaw({ x: 0, y: 0, z: 0 });
     const { coreHalfHeight, coreRadius, rim } = geometry;
     const bound = Math.sqrt(coreHalfHeight * coreHalfHeight + coreRadius * coreRadius) + rim;
     const margin = 2 * rim;
@@ -179,12 +193,42 @@ export class CoinSeparator {
    */
   separate(bodies: Iterable<RigidBody>): SeparationResult {
     const coins = this.#load(bodies);
+    try {
+      return this.#separate(coins);
+    } finally {
+      for (const coin of coins) {
+        coin.rawRotation?.free();
+        coin.rawRotation = undefined;
+      }
+    }
+  }
+
+  #separate(coins: readonly Slot[]): SeparationResult {
     const { slop, passes } = this.#settings;
-    const contact = this.#contact;
-    const shape = this.#shape;
-    const posA = { x: 0, y: 0, z: 0 };
-    const posB = { x: 0, y: 0, z: 0 };
-    const obstacles = this.#obstacles.map((obstacle) => ({ obstacle, centre: obstacle.centre() }));
+    const rawShape = this.#rawShape;
+    const rawA = this.#rawA;
+    const rawB = this.#rawB;
+    const hit = this.#hit;
+    const rotations = this.#rapier.RotationOps;
+    const rawRotation = (c: Slot): RawRotation => (c.rawRotation ??= rotations.intoRaw(c.rotation));
+    /** Whether `shape1` at (`pos1`, `rot1`) touches coin `c`; the contact is then in `hit`. */
+    const query = (shape1: RawShape, pos1: RawVector, rot1: RawRotation, c: Slot): boolean => {
+      rawB.x = c.x;
+      rawB.y = c.y;
+      rawB.z = c.z;
+      const contact = shape1.contactShape(pos1, rot1, rawShape, rawB, rawRotation(c), 0);
+      if (contact === undefined) {
+        return false;
+      }
+      contact.getComponents(hit);
+      contact.free();
+      return true;
+    };
+    const obstacles = this.#obstacles.map((obstacle, i) => ({
+      obstacle,
+      raw: entry(this.#rawObstacles, i),
+      centre: obstacle.centre(),
+    }));
     let pass = 0;
     /** Moves `c` by `amount` along unit (x, y, z), less any part into its slab. Returns how far it went along (x, y, z). */
     const shift = (c: Slot, x: number, y: number, z: number, amount: number): number => {
@@ -239,18 +283,16 @@ export class CoinSeparator {
         if (bound <= slop) {
           continue;
         }
-        posA.x = a.x;
-        posA.y = a.y;
-        posA.z = a.z;
-        posB.x = b.x;
-        posB.y = b.y;
-        posB.z = b.z;
-        const hit = shape.contactShape(posA, a.rotation, shape, posB, b.rotation, 0, contact);
-        if (!hit) {
+        rawA.x = a.x;
+        rawA.y = a.y;
+        rawA.z = a.z;
+        if (!query(rawShape, rawA, rawRotation(a), b)) {
           continue;
         }
-        let depth = -hit.distance;
-        let { x, y, z } = hit.normal1;
+        let depth = -entry(hit, 0);
+        let x = entry(hit, 7);
+        let y = entry(hit, 8);
+        let z = entry(hit, 9);
         if (Math.abs(this.#overlap(dx, dy, dz, a, b, x, y, z) - depth) > slop / 2) {
           // The true depth is the overlap along its own normal. Rapier misses that for
           // some near-parallel pairs: two flat coins side by side, one a hair lower,
@@ -284,8 +326,11 @@ export class CoinSeparator {
         }
         pushed = true;
       }
-      for (const { obstacle, centre } of obstacles) {
+      for (const { obstacle, raw, centre } of obstacles) {
         const h = obstacle.half;
+        rawA.x = centre.x;
+        rawA.y = centre.y;
+        rawA.z = centre.z;
         for (const coin of coins) {
           if (coin.movedIn < since) {
             continue;
@@ -300,23 +345,13 @@ export class CoinSeparator {
           ) {
             continue;
           }
-          posA.x = coin.x;
-          posA.y = coin.y;
-          posA.z = coin.z;
-          const hit = obstacle.shape.contactShape(
-            centre,
-            IDENTITY,
-            shape,
-            posA,
-            coin.rotation,
-            0,
-            contact,
-          );
-          if (!hit || hit.distance >= -slop) {
+          if (!query(raw, rawA, this.#rawIdentity, coin) || entry(hit, 0) >= -slop) {
             continue;
           }
-          const depth = -hit.distance - slop / 2;
-          const { x, y, z } = hit.normal1;
+          const depth = -entry(hit, 0) - slop / 2;
+          const x = entry(hit, 7);
+          const y = entry(hit, 8);
+          const z = entry(hit, 9);
           coin.x += x * depth;
           coin.y += y * depth;
           coin.z += z * depth;
@@ -344,7 +379,11 @@ export class CoinSeparator {
     let moved = 0;
     for (const coin of coins) {
       if (coin.movedIn >= 0) {
-        coin.body.setTranslation({ x: coin.x, y: coin.y, z: coin.z }, true);
+        const to = this.#scratch;
+        to.x = coin.x;
+        to.y = coin.y;
+        to.z = coin.z;
+        coin.body.setTranslation(to, true);
         moved += 1;
       }
     }
@@ -356,8 +395,9 @@ export class CoinSeparator {
     const slots = this.#slots;
     let n = 0;
     for (const body of bodies) {
-      const t = body.translation();
-      const q = body.rotation();
+      const slot = slots[n];
+      const t = body.translation(this.#scratch);
+      const q = body.rotation(slot?.rotation);
       const ax = 2 * (q.x * q.y - q.w * q.z);
       const ay = 1 - 2 * (q.x * q.x + q.z * q.z);
       const az = 2 * (q.y * q.z + q.w * q.x);
@@ -366,13 +406,13 @@ export class CoinSeparator {
       const ex = this.#halfExtent(ax);
       const ey = this.#halfExtent(ay);
       const ez = this.#halfExtent(az);
-      const slot = slots[n];
       if (slot === undefined) {
         slots.push({
           index: n,
           body,
           fixed,
           rotation: q,
+          rawRotation: undefined,
           x: t.x,
           y: t.y,
           z: t.z,

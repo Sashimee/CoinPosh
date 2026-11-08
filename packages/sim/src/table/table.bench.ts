@@ -22,7 +22,13 @@ import { configureTableWorld } from './tuning.ts';
  * 3.21 ms and 4.63 to 4.72 ms. Finding pressed rest coins through a grid of the awake
  * ones, rather than walking every frozen coin's contact pairs, then measured 2.97 to
  * 2.99 ms mean and 4.59 to 4.63 ms at the 99th against 3.50 ms and 4.91 to 5.00 ms for
- * the old table: compare runs taken back to back on one machine. The
+ * the old table: compare runs taken back to back on one machine. Shape queries made
+ * straight on the WASM shapes in the separation pass (CoinSeparator), on a host that
+ * measured the old table at 3.5 ms mean, then gave 2.82 to 2.83 ms mean, 4.18 to 4.22
+ * ms at the 99th and 4.45 to 4.52 ms at the 99.5th: the 99th is still over the 4 ms
+ * budget there. The tail is the world step on late-return ticks (3.6 to 3.9 ms, with
+ * some 150 upper-tier coins held awake by the backboard as the block slides under
+ * them) and separation ticks of 20 to 37 passes (1.3 to 3 ms). The
  * coin and sleeping counts over the measured ticks are printed after the run, so the
  * result always says what it measured.
  */
@@ -55,9 +61,15 @@ function measuredStep(): void {
   measured.ticks += 1;
   measured.minCoins = Math.min(measured.minCoins, table.coinCount);
   if (measured.ticks % TICK_RATE_HZ === 0) {
-    const sleeping = table.coins().filter((c) => c.sleeping).length;
-    measured.maxSleeping = Math.max(measured.maxSleeping, sleeping);
+    // tinybench stops the clock when this synchronous call returns, so the count
+    // runs untimed in a microtask before the next sample starts.
+    queueMicrotask(countSleeping);
   }
+}
+
+function countSleeping(): void {
+  const sleeping = table.coins().filter((c) => c.sleeping).length;
+  measured.maxSleeping = Math.max(measured.maxSleeping, sleeping);
 }
 
 afterAll(() => {

@@ -20,6 +20,12 @@ const DROP_COUNT = 60;
 const FLAT = { x: 0, y: 0, z: 0, w: 1 };
 /** Forward slip over the block, in metres, that counts a coin as scraped by the backboard. */
 const SCRAPED = 0.0005;
+/**
+ * How far ahead of the pusher's face, in metres, a coin on the lower tier is out of its
+ * reach: the face only wakes coins within COIN_REST.pusherMargin of it, and a coin
+ * further ahead is moved only through the ones in between.
+ */
+const BEYOND_FACE = 0.04;
 
 const live: World[] = [];
 
@@ -93,6 +99,12 @@ interface PourRun {
   readonly coinsAt90s: number;
   /** The most a coin frozen through a second moved in it, summed tick by tick. */
   readonly restingWorst: Motion;
+  /**
+   * From 60 to 90 s, for awake coins on the lower tier BEYOND_FACE ahead of the face:
+   * the longest they stayed awake there, in ticks, and the most one moved there in a
+   * second, in millimetres.
+   */
+  readonly loose: { readonly ticks: number; readonly mm: number };
   readonly hashes: string[];
 }
 
@@ -112,6 +124,9 @@ async function demoPour(ticks: number, drops: number): Promise<PourRun> {
   const scraped = new Map<number, number>();
   const returnStart = new Map<number, number>();
   let restingWorst: Motion = { mm: 0, deg: 0 };
+  const awakeFor = new Map<number, number>();
+  const looseMm = new Map<number, number>();
+  let loose = { ticks: 0, mm: 0 };
   let coinsAt90s = 0;
   let last = new Map<number, TableCoin>();
   let path = new Map<number, Motion>();
@@ -171,7 +186,20 @@ async function demoPour(ticks: number, drops: number): Promise<PourRun> {
         }
       }
       path = next;
+      for (const coin of coins) {
+        const before = last.get(coin.id);
+        if (!before || high(coin) || coin.sleeping || coin.translation.z - front < BEYOND_FACE) {
+          awakeFor.delete(coin.id);
+          continue;
+        }
+        const ticksAwake = (awakeFor.get(coin.id) ?? 0) + 1;
+        awakeFor.set(coin.id, ticksAwake);
+        looseMm.set(coin.id, (looseMm.get(coin.id) ?? 0) + shift(before, coin, 0));
+        loose = { ticks: Math.max(loose.ticks, ticksAwake), mm: loose.mm };
+      }
       if (tick % TICK_RATE_HZ === 0) {
+        loose = { ticks: loose.ticks, mm: Math.max(loose.mm, ...looseMm.values()) };
+        looseMm.clear();
         resting.push(path.size);
         for (const motion of path.values()) {
           restingWorst = {
@@ -189,7 +217,7 @@ async function demoPour(ticks: number, drops: number): Promise<PourRun> {
       hashes.push(table.hashInto(new StateHasher().int(tick)).digest());
     }
   }
-  return { frontFallTicks, departures, resting, coinsAt90s, restingWorst, hashes };
+  return { frontFallTicks, departures, resting, coinsAt90s, restingWorst, loose, hashes };
 }
 
 let idle: Promise<PourRun> | undefined;
@@ -223,9 +251,7 @@ describe('the Demo opening heap with nobody playing, for ten minutes', () => {
     { timeout: 180_000 },
     async () => {
       const { departures } = await idleTable();
-      const unscraped = departures.filter(
-        (d) => d.phase < PUSHER.pushFraction && d.scraped <= SCRAPED,
-      );
+      const unscraped = departures.filter((d) => d.scraped <= SCRAPED);
       expect(unscraped, JSON.stringify(departures)).toEqual([]);
     },
   );
@@ -243,6 +269,18 @@ describe('the Demo opening heap with nobody playing, for ten minutes', () => {
       expect(Math.min(...resting), perSecond).toBeGreaterThan(coinsAt90s / 4);
       expect(restingWorst.mm).toBeLessThan(0.2);
       expect(restingWorst.deg).toBeLessThan(1);
+    },
+  );
+
+  it(
+    "lets an awake coin out of the pusher's reach on the lower tier freeze within a second, barely moving",
+    { timeout: 180_000 },
+    async () => {
+      // The upper tier is left out: a coin there past the face never freezes, by design
+      // (COIN_REST), and one on the block is moved by the backboard.
+      const { loose } = await idleTable();
+      expect(loose.ticks, JSON.stringify(loose)).toBeLessThanOrEqual(TICK_RATE_HZ);
+      expect(loose.mm, JSON.stringify(loose)).toBeLessThan(2);
     },
   );
 
@@ -281,6 +319,57 @@ describe('the Demo opening heap with a coin dropped every 2 s for 2 minutes', ()
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
     expect(hashes.at(-1)).toMatchInlineSnapshot(`"d12afc06736517d7"`);
+  });
+});
+
+describe('waking the coins in a region', () => {
+  /** Two lone coins on the lower tier, 10 cm apart, stepped until both are frozen. */
+  async function twoFrozen(): Promise<{ table: PusherTable; left: number; right: number }> {
+    const table = await createTable();
+    const y = COIN.halfThickness + COIN_MATERIAL.contactSkin;
+    const left = table.addCoin({ x: -0.05, y, z: 0.03 }, FLAT);
+    const right = table.addCoin({ x: 0.05, y, z: 0.03 }, FLAT);
+    for (let tick = 1; tick <= 2 * TICK_RATE_HZ; tick++) {
+      table.step(tick);
+    }
+    expect(table.coins().map((c) => c.sleeping)).toEqual([true, true]);
+    return { table, left, right };
+  }
+
+  const sleepingOf = (table: PusherTable) =>
+    new Map(table.coins().map((coin) => [coin.id, coin.sleeping]));
+
+  it('wakes the frozen coins whose centres lie in the box, and only those', async () => {
+    const { table, left, right } = await twoFrozen();
+    table.wakeRegion({ x: -0.1, y: -0.01, z: 0 }, { x: 0, y: 0.05, z: 0.06 });
+    const sleeping = sleepingOf(table);
+    expect(sleeping.get(left)).toBe(false);
+    expect(sleeping.get(right)).toBe(true);
+  });
+
+  it('wakes nothing for a box that holds no coin centre', async () => {
+    const { table } = await twoFrozen();
+    table.wakeRegion({ x: -0.04, y: -0.01, z: 0 }, { x: 0.04, y: 0.05, z: 0.06 });
+    expect([...sleepingOf(table).values()]).toEqual([true, true]);
+  });
+
+  it('throws for a box whose min exceeds its max', async () => {
+    const { table } = await twoFrozen();
+    expect(() => {
+      table.wakeRegion({ x: 0, y: 0, z: 0.1 }, { x: 0.1, y: 0.1, z: 0 });
+    }).toThrow(RangeError);
+  });
+
+  it('replays a wake to the same hash', async () => {
+    const run = async () => {
+      const { table } = await twoFrozen();
+      table.wakeRegion({ x: -0.1, y: -0.01, z: 0 }, { x: 0.1, y: 0.05, z: 0.06 });
+      for (let tick = 2 * TICK_RATE_HZ + 1; tick <= 3 * TICK_RATE_HZ; tick++) {
+        table.step(tick);
+      }
+      return table.hashInto(new StateHasher()).digest();
+    };
+    expect(await run()).toBe(await run());
   });
 });
 
