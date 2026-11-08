@@ -46,6 +46,8 @@ export type WorkerToMain =
       readonly tick: number;
       /** The sim's tier ladder; null when it tracks no tiers and the page picks the looks. */
       readonly tiers: readonly string[] | null;
+      /** The most coins an init's `openingHeap` may ask for. */
+      readonly heapCapacity: number;
     }
   | { readonly type: 'frame'; readonly buffer: ArrayBuffer }
   | ({ readonly type: 'events' } & SimEventBatch)

@@ -17,25 +17,29 @@ import { COIN_MATERIAL } from './tuning.ts';
  * 2. The upper tier, from the pusher lip back to the backboard, its front row
  *    overhanging the lip the same way, so the block carries it to the edge of spilling.
  * 3. A second layer over the upper tier, then over the lower sheet, each coin over the
- *    hollow between three below it, so a pile reads as heaped rather than tiled.
+ *    hollow between three below it, so a pile reads as heaped rather than tiled. Those
+ *    coins rest on the ones below and so touch them from the first tick; a table that
+ *    fuses lays the heap without this layer (`secondLayer: false`).
  *
  * Values, in metres:
  *
- * - gap 1.5 mm between neighbours in a layer: wider than Contact Fusion's 1 mm touch
- *   gap, so a freshly laid heap does not start fusing until the pusher packs it.
+ * - gap 1.5 mm between neighbours in a layer: with the jitter below, two neighbours
+ *   stay more than Contact Fusion's 1 mm touch gap apart, so a single-layer heap does
+ *   not start fusing until the pusher packs it.
  * - lipInset 5 mm: the front rows' centres sit this far inside their lip, overhanging
  *   it by 8.5 mm. Closer and the separation pass or a neighbour's nudge tips them early.
  * - reachClearance 6 mm: between the sheet's back row and the front of the block at
  *   full reach, so the opening strokes leave the sheet standing until a coin falls into
  *   the gap.
- * - jitter 0.4 mm: each coin is moved a little off its lattice point, and turned to a
- *   random heading, so the rows read as poured and the coin faces do not all line up.
+ * - jitter 0.15 mm: each coin is moved a little off its lattice point, and turned to a
+ *   random heading, so the coin faces do not all line up. At most (gap − 1 mm) / (2√2),
+ *   or two neighbours jittered towards each other could start inside the touch gap.
  */
 export const HEAP_TUNING = {
   gap: 0.0015,
   lipInset: 0.005,
   reachClearance: 0.006,
-  jitter: 0.0004,
+  jitter: 0.00015,
 } as const;
 
 /** A spot that the heap leaves bare, such as the Champagne Tower's pedestal. */
@@ -44,6 +48,9 @@ export interface HeapKeepClear {
   readonly z: number;
   readonly radius: number;
 }
+
+/** The parts of the heap's geometry its caller chooses; the table supplies the rest. */
+export type HeapLayout = Pick<HeapGeometry, 'keepClear' | 'secondLayer'>;
 
 export interface HeapPose {
   readonly translation: Vector;
@@ -58,6 +65,11 @@ export interface HeapGeometry {
   /** Height of the upper tier above the lower. */
   readonly upperY: number;
   readonly keepClear?: readonly HeapKeepClear[];
+  /**
+   * Whether to lay the second layer (step 3 above); true when omitted. A table that
+   * fuses leaves it off: each of its coins rests on three below, already touching them.
+   */
+  readonly secondLayer?: boolean;
 }
 
 const PITCH = 2 * COIN.radius + HEAP_TUNING.gap;
@@ -107,9 +119,13 @@ function lattice(geometry: HeapGeometry): Vector[] {
   const layers: [readonly Row[], number][] = [
     [lower, LIE_Y],
     [upper, upperY + LIE_Y],
-    [hollows(upper), upperY + LIE_Y + LAYER_RISE],
-    [hollows(lower), LIE_Y + LAYER_RISE],
   ];
+  if (geometry.secondLayer ?? true) {
+    layers.push(
+      [hollows(upper), upperY + LIE_Y + LAYER_RISE],
+      [hollows(lower), LIE_Y + LAYER_RISE],
+    );
+  }
   const clear = geometry.keepClear ?? [];
   const points: Vector[] = [];
   for (const [rows, y] of layers) {

@@ -609,6 +609,8 @@ class OverlapLog {
   deepest = 0;
   /** Fewest touching pairs on any tick from FULL_TABLE_TICKS on. */
   fewestNearOnFullTable = Number.POSITIVE_INFINITY;
+  /** Fewest coins on the table on any tick from FULL_TABLE_TICKS on. */
+  fewestCoinsOnFullTable = Number.POSITIVE_INFINITY;
 
   record(coins: readonly TableCoin[], tick: number): void {
     const pairs = touchingPairs(coins);
@@ -618,6 +620,7 @@ class OverlapLog {
     }
     if (tick >= FULL_TABLE_TICKS) {
       this.fewestNearOnFullTable = Math.min(this.fewestNearOnFullTable, pairs.length);
+      this.fewestCoinsOnFullTable = Math.min(this.fewestCoinsOnFullTable, coins.length);
     }
   }
 }
@@ -1044,9 +1047,15 @@ describe('contacts', () => {
   it('keeps coins in the full, moving pile from sinking into each other, checked every tick', async () => {
     const overlaps = (await referenceTo(SESSION_TICKS)).overlaps;
     // Every pair on every tick of the minute, over 380 touching pairs a tick once the
-    // table is full. Measured: 0.28 mm deepest, 393 to 395 pairs fewest.
+    // table is full. The 12 cm stroke pushes more coins over the lip than the 8 cm one
+    // did, so the script levels off near 190 coins rather than more, and the pile holds
+    // fewer pairs than the 400 it used to; but at over two touching pairs per coin every
+    // coin still rests against its neighbours. Measured over this seed and EXTRA_SEEDS:
+    // 0.29 mm deepest, 393 to 444 pairs and 188 to 198 coins fewest.
     expect(overlaps.ticks).toBe(SESSION_TICKS);
+    expect(overlaps.fewestCoinsOnFullTable).toBeGreaterThan(180);
     expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(380);
+    expect(overlaps.fewestNearOnFullTable / overlaps.fewestCoinsOnFullTable).toBeGreaterThan(2);
     expect(overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
   });
 
@@ -1076,7 +1085,11 @@ describe('contacts', () => {
         expect(unconverged).toEqual([]);
         expect(overlaps.deepest).toBeLessThan(OVERLAP_TOLERANCE);
         if (tick > FULL_TABLE_TICKS) {
+          expect(overlaps.fewestCoinsOnFullTable).toBeGreaterThan(180);
           expect(overlaps.fewestNearOnFullTable).toBeGreaterThan(380);
+          expect(overlaps.fewestNearOnFullTable / overlaps.fewestCoinsOnFullTable).toBeGreaterThan(
+            2,
+          );
         }
       },
     );

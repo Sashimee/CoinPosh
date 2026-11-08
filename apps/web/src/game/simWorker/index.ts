@@ -24,3 +24,4 @@ export {
   type NudgeDirection,
   type OpeningHeap,
 } from './sim-api.ts';
+export { OPENING_HEAP_CAPACITY } from './table-config.ts';

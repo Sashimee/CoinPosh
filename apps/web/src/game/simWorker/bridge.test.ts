@@ -16,6 +16,7 @@ import {
   type SimInput,
   type SimOptions,
 } from './sim-api.ts';
+import { OPENING_HEAP_CAPACITY, SIM_MECHANICS } from './table-config.ts';
 
 const SEED = 0xc0195051;
 
@@ -107,22 +108,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const MECHANICS: MechanicsConfig<string> = {
+/** The worker's mechanics with Contact Fusion on, as the economy's rules have it. */
+const FUSING: MechanicsConfig<string> = {
   tiers: COIN_TIERS,
   fusion: { inputCount: 3, contactSeconds: 0.4 },
   tower: null,
 };
 
 interface HarnessOptions {
-  /** Runs the worker's Sim with MECHANICS, as sim.worker.ts does. */
-  readonly mechanics?: boolean;
+  /** Runs the worker's Sim with these; SIM_MECHANICS is what sim.worker.ts uses. */
+  readonly mechanics?: MechanicsConfig<string>;
   readonly openingHeap?: OpeningHeap;
 }
 
 function simOptions(seed: number, options: HarnessOptions): SimOptions {
   return {
     seed,
-    ...(options.mechanics ? { mechanics: MECHANICS } : {}),
+    ...(options.mechanics ? { mechanics: options.mechanics } : {}),
     ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
   };
 }
@@ -135,7 +137,8 @@ function harness(transport: TransportKind, options: HarnessOptions = {}): Harnes
   let renderAhead = 0;
   runSimWorker(channel.port2, {
     createSim: (hosted) =>
-      Sim.create(options.mechanics ? { ...hosted, mechanics: MECHANICS } : hosted),
+      Sim.create(options.mechanics ? { ...hosted, mechanics: options.mechanics } : hosted),
+    heapCapacity: Sim.heapCapacity(options.mechanics),
     now: () => timers.now,
     setTimer: timers.set,
     clearTimer: timers.clear,
@@ -246,9 +249,11 @@ describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport'
   });
 
   it('draws sim tiers, nudges and pusher stroke exactly as the same log replayed in-thread', async () => {
-    const { bridge, run, poll, newest } = harness(transport, { mechanics: true });
+    const { bridge, run, poll, newest } = harness(transport, { mechanics: SIM_MECHANICS });
     const info = await bridge.ready;
     expect(info.tiers).toEqual(COIN_TIERS);
+    expect(info.heapCapacity).toBe(OPENING_HEAP_CAPACITY);
+    expect(OPENING_HEAP_CAPACITY).toBeGreaterThan(100);
     await poll();
     const log: { tick: number; inputs: SimInput[] }[] = [];
     const send = async (input: SimInput, ticks: number): Promise<void> => {
@@ -266,7 +271,7 @@ describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport'
     const finalTick = bridge.stats.tick;
     expect(finalTick).toBe(100);
 
-    const direct = await Sim.create(simOptions(SEED, { mechanics: true }));
+    const direct = await Sim.create(simOptions(SEED, { mechanics: SIM_MECHANICS }));
     try {
       while (direct.tick < finalTick) {
         direct.step(log.filter((entry) => entry.tick === direct.tick).flatMap((e) => e.inputs));
@@ -361,7 +366,7 @@ describe('SimBridge events', { timeout: 30_000 }, () => {
   }
 
   it('forwards the contacts and fusions of a fusing heap, and draws fused coins in their new tier', async () => {
-    const options: HarnessOptions = { mechanics: true, openingHeap: { coins: 110 } };
+    const options: HarnessOptions = { mechanics: FUSING, openingHeap: { coins: 60 } };
     const { bridge, run, poll, newest } = harness('transfer', options);
     const all = collect(bridge);
     await bridge.ready;
@@ -385,8 +390,11 @@ describe('SimBridge events', { timeout: 30_000 }, () => {
     );
   });
 
-  it('forwards the falls a stream of drops pushes over the lip', async () => {
-    const options: HarnessOptions = { openingHeap: { coins: 110 } };
+  it("forwards the falls a stream of drops pushes over the lip, with the worker's mechanics", async () => {
+    const options: HarnessOptions = {
+      mechanics: SIM_MECHANICS,
+      openingHeap: { coins: OPENING_HEAP_CAPACITY },
+    };
     const { bridge, run, poll } = harness('transfer', options);
     const all = collect(bridge);
     await bridge.ready;
@@ -423,36 +431,47 @@ describe('SimBridge failures', () => {
     expect(bridge.failure?.message).toMatch(/rejected a message.*optional tier/);
     expect(errors).toHaveBeenCalledTimes(1);
 
-    const channel = new MessageChannel();
-    runSimWorker(channel.port2, {
-      createSim: (hosted) => Sim.create(hosted),
-      now: () => 0,
-      setTimer: () => 0,
-      clearTimer: () => undefined,
-    });
-    const received: WorkerToMain[] = [];
-    channel.port1.addEventListener('message', (event: MessageEvent<WorkerToMain>) => {
-      received.push(event.data);
-    });
-    channel.port1.start();
-    channel.port1.postMessage({
-      type: 'init',
-      seed: 1,
-      capacity: 8,
-      transport: { kind: 'transfer', buffers: [new ArrayBuffer(frameByteLength(8))] },
-      openingHeap: { coins: -1 },
-    } satisfies MainToWorker);
-    await settle();
-    expect(received).toEqual([
-      {
-        type: 'error',
-        message: expect.stringMatching(
-          /openingHeap\.coins must be a non-negative integer, got -1/,
-        ) as string,
-      },
-    ]);
-    channel.port1.close();
-    channel.port2.close();
+    const created: number[] = [];
+    const capacity = Sim.heapCapacity();
+    const rejections: [number, RegExp][] = [
+      [-1, /openingHeap\.coins must be a non-negative integer, got -1/],
+      [
+        capacity + 1,
+        new RegExp(`openingHeap\\.coins must be at most ${capacity}.*got ${capacity + 1}`),
+      ],
+    ];
+    for (const [coins, error] of rejections) {
+      const channel = new MessageChannel();
+      runSimWorker(channel.port2, {
+        createSim: (hosted) => {
+          created.push(hosted.seed);
+          return Sim.create(hosted);
+        },
+        heapCapacity: capacity,
+        now: () => 0,
+        setTimer: () => 0,
+        clearTimer: () => undefined,
+      });
+      const received: WorkerToMain[] = [];
+      channel.port1.addEventListener('message', (event: MessageEvent<WorkerToMain>) => {
+        received.push(event.data);
+      });
+      channel.port1.start();
+      channel.port1.postMessage({
+        type: 'init',
+        seed: 1,
+        capacity: 8,
+        transport: { kind: 'transfer', buffers: [new ArrayBuffer(frameByteLength(8))] },
+        openingHeap: { coins },
+      } satisfies MainToWorker);
+      await settle();
+      expect(received).toEqual([
+        { type: 'error', message: expect.stringMatching(error) as string },
+      ]);
+      channel.port1.close();
+      channel.port2.close();
+    }
+    expect(created).toEqual([]);
   });
 
   it('rejects an out-of-range or fractional drop on the page, before the worker sees it', async () => {
@@ -472,6 +491,7 @@ describe('SimBridge failures', () => {
     const timers = new ManualTimers();
     runSimWorker(channel.port2, {
       createSim: (hosted) => Sim.create(hosted),
+      heapCapacity: Sim.heapCapacity(),
       now: () => timers.now,
       setTimer: timers.set,
       clearTimer: timers.clear,
@@ -502,6 +522,7 @@ describe('SimBridge failures', () => {
     const channel = new MessageChannel();
     runSimWorker(channel.port2, {
       createSim: () => Promise.reject(new Error('WASM blocked')),
+      heapCapacity: 0,
       now: () => 0,
       setTimer: () => 0,
       clearTimer: () => undefined,

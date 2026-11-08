@@ -11,6 +11,7 @@ import {
   type ContactEvent,
   type FallEvent,
   type HeapKeepClear,
+  type HeapLayout,
   PusherTable,
   type PusherState,
   TABLE_SOLVER,
@@ -92,6 +93,14 @@ export class Sim {
     return new Sim(await loadRapier(), options);
   }
 
+  /**
+   * The most coins `openingHeap` can ask for on a Sim made with `mechanics`. A Sim that
+   * fuses lays a single layer, and a tower keeps its pedestal bare, so both hold fewer.
+   */
+  static heapCapacity(mechanics?: MechanicsConfig<string>): number {
+    return PusherTable.heapCapacity(heapLayout(mechanics));
+  }
+
   private constructor(rapier: Rapier, options: SimOptions) {
     this.seed = options.seed;
     this.#rng = Xoshiro128ss.fromSeed(options.seed);
@@ -154,12 +163,22 @@ export class Sim {
   /**
    * Applies `inputs` in array order, then advances the table by exactly one fixed
    * tick and runs the mechanics. Returns what happened, each event stamped with the
-   * new `tick`. Throws, applying nothing, if any input is malformed.
+   * new `tick`. Throws, applying nothing, if any input is malformed or more than one
+   * is a nudge.
    */
   step(inputs: readonly SimInput[] = []): SimEvents {
     this.#assertLive();
+    let nudges = 0;
     for (const input of inputs) {
       assertValidInput(input, this.#tick, this.#tiers);
+      if (input.kind === 'nudge') {
+        nudges += 1;
+      }
+    }
+    // Nudges stack velocity on every coin, so one per tick keeps a replayed log within
+    // the kick NUDGE is tuned for; how often a player may nudge is an economy rule.
+    if (nudges > 1) {
+      throw new RangeError(`Tick ${this.#tick}: at most one nudge per step, got ${nudges}`);
     }
     for (const input of inputs) {
       switch (input.kind) {
@@ -216,12 +235,7 @@ export class Sim {
     if (tier !== null && !config?.tiers.includes(tier)) {
       throw new RangeError(`Sim: openingHeap.tier "${tier}" is not in the tier ladder`);
     }
-    const keepClear: HeapKeepClear[] = [];
-    if (config && config.tower !== null) {
-      const { x, z } = config.tower ?? TOWER_TUNING.placement;
-      keepClear.push({ x, z, radius: TOWER_TUNING.pedestalRadius });
-    }
-    for (const id of this.#table.placeHeap(heap.coins, this.#rng, keepClear)) {
+    for (const id of this.#table.placeHeap(heap.coins, this.#rng, heapLayout(config))) {
       this.#register(id, tier);
     }
   }
@@ -247,4 +261,14 @@ export class Sim {
       throw new Error('Sim has been disposed; create a new one with Sim.create()');
     }
   }
+}
+
+/** Where the opening heap goes on a Sim made with `config`; see Sim.heapCapacity. */
+function heapLayout(config: MechanicsConfig<string> | undefined): HeapLayout {
+  const keepClear: HeapKeepClear[] = [];
+  if (config && config.tower !== null) {
+    const { x, z } = config.tower ?? TOWER_TUNING.placement;
+    keepClear.push({ x, z, radius: TOWER_TUNING.pedestalRadius });
+  }
+  return { keepClear, secondLayer: !config?.fusion };
 }

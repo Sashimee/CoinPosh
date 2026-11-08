@@ -5,6 +5,7 @@ import { GRAVITY, TICK_RATE_HZ } from '../constants.ts';
 import { StateHasher } from '../hash.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { loadRapier } from '../rapier.ts';
+import { FUSION_TUNING } from '../mechanics/tuning.ts';
 import { HEAP_TUNING, type HeapGeometry, heapCapacity, heapPoses } from './heap.ts';
 import { BACKBOARD, PLAYFIELD, PUSHER } from './layout.ts';
 import { type FallEvent, PusherTable } from './table.ts';
@@ -83,6 +84,22 @@ describe('opening heap layout', () => {
     }
   });
 
+  it("keeps neighbours in a layer outside Contact Fusion's touch gap, however they are jittered", () => {
+    expect(HEAP_TUNING.gap - 2 * Math.SQRT2 * HEAP_TUNING.jitter).toBeGreaterThan(
+      FUSION_TUNING.touchGap,
+    );
+  });
+
+  it("lays only the two tiers' first layer without the second layer", () => {
+    const single = { ...GEOMETRY, secondLayer: false };
+    const poses = heapPoses(heapCapacity(single), single, Xoshiro128ss.fromSeed(SEED));
+    const heights = new Set(poses.map((p) => p.translation.y));
+    expect(heights.size).toBe(2);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeCloseTo(PUSHER.height, 9);
+    expect(poses.length).toBeLessThan(capacity);
+    expect(heapPoses(poses.length, GEOMETRY, Xoshiro128ss.fromSeed(SEED))).toEqual(poses);
+  });
+
   it('leaves the keep-clear spots bare', () => {
     const spot = { x: 0.1, z: -0.17, radius: 0.016 };
     const poses = heapPoses(
@@ -145,6 +162,6 @@ describe('opening heap on the table', () => {
     const hash = await play();
     expect(await play()).toBe(hash);
     // Changing this value breaks replay audits of input logs that open with a heap.
-    expect(hash).toMatchInlineSnapshot(`"29853bd30503c9cf"`);
+    expect(hash).toMatchInlineSnapshot(`"0fc753f7a3ec127f"`);
   });
 });

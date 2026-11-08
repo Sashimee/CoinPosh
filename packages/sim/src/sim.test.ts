@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { COIN } from './coin.ts';
 import { FIXED_DT, SIM_VERSION, SOLVER, TICK_RATE_HZ } from './constants.ts';
 import type { SimInput } from './inputs.ts';
-import type { FusionEvent, MechanicsConfig } from './mechanics/index.ts';
+import type { FusionEvent, FusionRules, MechanicsConfig } from './mechanics/index.ts';
 import { Sim, type SimEvents } from './sim.ts';
 import { DEFAULT_PUSHER_MOTION, type FallEvent, PUSHER, TABLE_SOLVER } from './table/index.ts';
 
@@ -355,11 +355,25 @@ describe('Sim API', () => {
   });
 });
 
+const FUSION: FusionRules = { inputCount: 3, contactSeconds: 0.4 };
+
 const MECHANICS: MechanicsConfig<string> = {
   tiers: ['copper', 'silver', 'gold'],
-  fusion: { inputCount: 3, contactSeconds: 0.4 },
+  fusion: FUSION,
   tower: null,
 };
+
+/** What apps/web's sim worker runs (SIM_MECHANICS there): tiers, no fusion, no tower. */
+const WORKER_MECHANICS: MechanicsConfig<string> = {
+  tiers: ['copper', 'silver', 'gold', 'platinum', 'diamond', 'heirloom'],
+  fusion: null,
+  tower: null,
+};
+
+/** A drop every 12 ticks, wandering across the middle 80 mm of the table. */
+function steadyDrops(tick: number): SimInput[] {
+  return tick % 12 === 0 ? [{ kind: 'dropCoin', xMm: ((tick * 13) % 81) - 40 }] : [];
+}
 
 describe('nudge input', () => {
   /** The scripted minute's drops, with a nudge each way. */
@@ -397,6 +411,33 @@ describe('nudge input', () => {
     const moved = a.coins().map((coin) => coin.translation.z - (still.get(coin.id) ?? Number.NaN));
     expect(moved.length).toBeGreaterThan(5);
     expect(moved.filter((dz) => dz > 0.001).length).toBeGreaterThan(moved.length / 2);
+  });
+
+  it('refuses a second nudge in one step, applying nothing', async () => {
+    const sim = await createSim();
+    sim.step([{ kind: 'dropCoin', xMm: 0 }]);
+    const before = sim.hash();
+    for (const inputs of [
+      [
+        { kind: 'nudge', direction: 'forward' },
+        { kind: 'nudge', direction: 'forward' },
+      ],
+      [
+        { kind: 'nudge', direction: 'left' },
+        { kind: 'dropCoin', xMm: 10 },
+        { kind: 'nudge', direction: 'right' },
+      ],
+    ] satisfies SimInput[][]) {
+      expect(() => sim.step(inputs)).toThrow(/Tick 1: at most one nudge per step, got 2/);
+    }
+    expect(sim.tick).toBe(1);
+    expect(sim.coinCount).toBe(1);
+    expect(sim.hash()).toBe(before);
+    sim.step([
+      { kind: 'nudge', direction: 'forward' },
+      { kind: 'dropCoin', xMm: 10 },
+    ]);
+    expect(sim.tick).toBe(2);
   });
 });
 
@@ -442,19 +483,56 @@ describe('opening heap and mechanics', () => {
     expect(sim.step().mechanics).toEqual([]);
   });
 
+  it('lays a single-layer heap on a table that fuses, and a full one on a table that does not', () => {
+    const full = Sim.heapCapacity();
+    expect(full).toBeGreaterThanOrEqual(110);
+    expect(Sim.heapCapacity(WORKER_MECHANICS)).toBe(full);
+    expect(Sim.heapCapacity(MECHANICS)).toBeGreaterThan(50);
+    expect(Sim.heapCapacity(MECHANICS)).toBeLessThan(full);
+    expect(Sim.heapCapacity({ tiers: MECHANICS.tiers, fusion: FUSION })).toBeLessThan(
+      Sim.heapCapacity(MECHANICS),
+    );
+  });
+
+  it('leaves a fresh heap on a table that fuses unfused until the pusher packs it', async () => {
+    const coins = Sim.heapCapacity(MECHANICS);
+    const sim = await Sim.create({ seed: SEED, mechanics: MECHANICS, openingHeap: { coins } });
+    live.push(sim);
+    for (let tick = 0; tick < 3 * TICK_RATE_HZ; tick++) {
+      expect(sim.step().mechanics, `tick ${sim.tick}`).toEqual([]);
+    }
+    expect(sim.coinCount).toBe(coins);
+  });
+
+  it("tips coins over the front within 10 s of steady drops onto the worker's 110-coin heap", async () => {
+    for (const seed of [SEED, 0x1234]) {
+      const sim = await Sim.create({
+        seed,
+        mechanics: WORKER_MECHANICS,
+        openingHeap: { coins: 110 },
+      });
+      live.push(sim);
+      const falls: FallEvent[] = [];
+      for (let tick = 0; tick < 10 * TICK_RATE_HZ; tick++) {
+        falls.push(...sim.step(steadyDrops(tick)).falls);
+      }
+      expect(falls.filter((fall) => fall.edge === 'front').length, `seed ${seed}`).toBeGreaterThan(
+        0,
+      );
+    }
+  });
+
   it('fuses packed coins on the heap into the next tier and pins the hash', async () => {
     const play = async (): Promise<{ sim: Sim; events: SimEvents[] }> => {
       const sim = await Sim.create({
         seed: SEED,
         mechanics: MECHANICS,
-        openingHeap: { coins: 110 },
+        openingHeap: { coins: Sim.heapCapacity(MECHANICS) },
       });
       live.push(sim);
       const events: SimEvents[] = [];
       for (let tick = 0; tick < 20 * TICK_RATE_HZ; tick++) {
-        const inputs: SimInput[] =
-          tick % 12 === 0 ? [{ kind: 'dropCoin', xMm: ((tick * 13) % 81) - 40 }] : [];
-        events.push(sim.step(inputs));
+        events.push(sim.step(steadyDrops(tick)));
       }
       return { sim, events };
     };
@@ -466,7 +544,7 @@ describe('opening heap and mechanics', () => {
     expect(fusions.length).toBeGreaterThan(0);
     const onTable = new Map(sim.coins().map((coin) => [coin.id, coin.tier]));
     for (const fusion of fusions) {
-      expect(fusion.ids).toHaveLength(MECHANICS.fusion.inputCount);
+      expect(fusion.ids).toHaveLength(FUSION.inputCount);
       expect(fusion.into).toBe(MECHANICS.tiers[MECHANICS.tiers.indexOf(fusion.tier) + 1]);
       for (const id of fusion.ids) {
         expect(onTable.has(id), `fused coin ${id}`).toBe(false);
@@ -480,6 +558,6 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"ba80b70edee5f7eb"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"b8430bea8bc8a20d"`);
   });
 });

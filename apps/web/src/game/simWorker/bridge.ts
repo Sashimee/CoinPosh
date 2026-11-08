@@ -62,6 +62,8 @@ export interface SimReadyInfo {
   readonly tick: number;
   /** The sim's tier ladder, or null when coin looks come only from `drop` and `setTier`. */
   readonly tiers: readonly string[] | null;
+  /** The most coins `openingHeap` may ask for; OPENING_HEAP_CAPACITY for the game's worker. */
+  readonly heapCapacity: number;
 }
 
 export interface SimBridgeStats {
@@ -337,7 +339,12 @@ export class SimBridge {
       case 'ready':
         this.#simTiers = message.tiers !== null;
         if (this.#simTiers) this.#pendingTiers.length = 0;
-        this.#settleReady?.({ engine: message.engine, tick: message.tick, tiers: message.tiers });
+        this.#settleReady?.({
+          engine: message.engine,
+          tick: message.tick,
+          tiers: message.tiers,
+          heapCapacity: message.heapCapacity,
+        });
         this.#settleReady = null;
         this.#rejectReady = null;
         return;

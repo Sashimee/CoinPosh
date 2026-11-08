@@ -17,7 +17,7 @@ import {
   PUSHER,
   TABLE_INNER_HALF_WIDTH,
 } from './layout.ts';
-import { type HeapKeepClear, heapPoses } from './heap.ts';
+import { type HeapGeometry, type HeapLayout, heapCapacity, heapPoses } from './heap.ts';
 import { DEFAULT_PUSHER_MOTION, PusherClock, type PusherMotion } from './pusher.ts';
 import { CoinSeparator, type Obstacle, type SeparationResult } from './separation.ts';
 import { COIN_MATERIAL, CONTACT_EVENTS, NUDGE, TABLE_MATERIAL, TABLE_SOLVER } from './tuning.ts';
@@ -202,21 +202,17 @@ export class PusherTable {
   /**
    * Lays the first `count` coins of the opening heap (see HEAP_TUNING) against the
    * pusher where it stands now and the stroke it is set to, with jitter and headings
-   * drawn from `rng`, and returns their ids in laying order. Spots in `keepClear` are
-   * left bare. Throws, placing nothing, if the heap cannot hold `count` coins.
+   * drawn from `rng`, and returns their ids in laying order. Spots in `layout.keepClear`
+   * are left bare. Throws, placing nothing, if the heap cannot hold `count` coins.
    */
-  placeHeap(count: number, rng: Xoshiro128ss, keepClear: readonly HeapKeepClear[] = []): number[] {
-    const poses = heapPoses(
-      count,
-      {
-        upperLipZ: PUSHER.frontZ + this.#clock.offset,
-        reachZ: PUSHER.frontZ + this.#clock.motion.stroke,
-        upperY: PUSHER.height,
-        keepClear,
-      },
-      rng,
-    );
+  placeHeap(count: number, rng: Xoshiro128ss, layout: HeapLayout = {}): number[] {
+    const poses = heapPoses(count, heapGeometry(this.#clock, layout), rng);
     return poses.map(({ translation, rotation }) => this.addCoin(translation, rotation));
+  }
+
+  /** How many coins placeHeap can lay with `layout` on a new table driven by `motion`. */
+  static heapCapacity(layout: HeapLayout = {}, motion = DEFAULT_PUSHER_MOTION): number {
+    return heapCapacity(heapGeometry(new PusherClock(motion), layout));
   }
 
   /**
@@ -583,6 +579,16 @@ export class PusherTable {
 }
 
 const ZERO: Readonly<Vector> = { x: 0, y: 0, z: 0 };
+
+/** The heap laid against a pusher where `clock` has it now, reaching to its full stroke. */
+function heapGeometry(clock: PusherClock, layout: HeapLayout): HeapGeometry {
+  return {
+    upperLipZ: PUSHER.frontZ + clock.offset,
+    reachZ: PUSHER.frontZ + clock.motion.stroke,
+    upperY: PUSHER.height,
+    ...layout,
+  };
+}
 
 function toMetres(v: Readonly<Vector>): Vector {
   return { x: v.x / SCALE, y: v.y / SCALE, z: v.z / SCALE };

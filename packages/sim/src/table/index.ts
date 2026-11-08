@@ -22,6 +22,7 @@ export {
   heapPoses,
   type HeapGeometry,
   type HeapKeepClear,
+  type HeapLayout,
   type HeapPose,
 } from './heap.ts';
 export type { SeparationResult } from './separation.ts';

@@ -41,6 +41,8 @@ export interface HostedSimOptions {
 /** Everything the worker runtime takes from its environment, so tests can drive it by hand. */
 export interface SimWorkerHost {
   createSim(options: HostedSimOptions): Promise<HostedSim>;
+  /** The most coins an init's `openingHeap` may ask createSim for (Sim.heapCapacity). */
+  readonly heapCapacity: number;
   now(): number;
   setTimer(callback: () => void, delayMs: number): unknown;
   clearTimer(handle: unknown): void;
@@ -165,6 +167,7 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
             engine: created.engine,
             tick: created.tick,
             tiers: created.tiers,
+            heapCapacity: host.heapCapacity,
           });
           rebase(host.now(), 0);
           publish();
@@ -183,7 +186,7 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
     switch (message.type) {
       case 'init':
         if (state !== 'idle') throw new Error('init was sent twice');
-        assertInit(message);
+        assertInit(message, host.heapCapacity);
         start(message);
         return;
       case 'input':
@@ -323,7 +326,7 @@ function isCoinTier(tier: string): tier is CoinTier {
   return (COIN_TIERS as readonly string[]).includes(tier);
 }
 
-function assertInit(message: Extract<MainToWorker, { type: 'init' }>): void {
+function assertInit(message: Extract<MainToWorker, { type: 'init' }>, heapCapacity: number): void {
   const { seed, capacity, transport, openingHeap } = message;
   if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
     throw new RangeError(`init.seed must be a uint32, got ${seed}`);
@@ -342,6 +345,11 @@ function assertInit(message: Extract<MainToWorker, { type: 'init' }>): void {
   if (typeof coins !== 'number' || !Number.isInteger(coins) || coins < 0) {
     throw new RangeError(
       `init.openingHeap.coins must be a non-negative integer, got ${JSON.stringify(coins)}`,
+    );
+  }
+  if (coins > heapCapacity) {
+    throw new RangeError(
+      `init.openingHeap.coins must be at most ${heapCapacity} (OPENING_HEAP_CAPACITY), got ${coins}`,
     );
   }
   if (tier !== undefined && (typeof tier !== 'string' || !isCoinTier(tier))) {
