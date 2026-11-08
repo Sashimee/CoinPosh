@@ -43,6 +43,15 @@ export interface FusionConfig {
   readonly bonusMultiplier: number;
 }
 
+/**
+ * Coins a new player's table opens with, laid at the brink before the first drop and minted
+ * on the house: they are not the player's, but every one pushed off the front pays out.
+ */
+export interface OpeningHeapConfig {
+  readonly coins: number;
+  readonly tier: CoinTierId;
+}
+
 export const CASCADE_TIER_IDS = CASCADE_TIERS;
 export type CascadeTierId = CascadeTier;
 
@@ -214,6 +223,7 @@ export interface EconomyConfig {
   readonly currencies: readonly CurrencyDef[];
   readonly coinTiers: readonly CoinTierDef[];
   readonly fusion: FusionConfig;
+  readonly openingHeap: OpeningHeapConfig;
   readonly cascade: CascadeConfig;
   readonly upgradeCostRule: UpgradeCostRule;
   readonly upgradeLines: readonly UpgradeLineDef[];

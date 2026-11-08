@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util';
 import { economyConfig } from '../src/config/index.ts';
+import type { CoinTierId, EconomyConfig } from '../src/types.ts';
 import { assertValidEconomyConfig } from '../src/validate.ts';
 import { buildEnvelopeTable } from './envelopeTable.ts';
 import { simModel, type SimModel } from './model.ts';
@@ -7,7 +8,8 @@ import { formatSummary } from './report.ts';
 import { runSimulation } from './simulate.ts';
 
 export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] [--seed N] [--json] [--strict]
-                                [--envelope] [--empty-table] [--return-ratio X]
+                                [--envelope] [--empty-table] [--heap-coins N]
+                                [--heap-tier T] [--return-ratio X]
 
   --days          casual calendar days to simulate (default 7)
   --players       simulated players per cohort (default 100)
@@ -15,7 +17,9 @@ export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] 
   --json          print the raw result as JSON instead of the summary
   --strict        exit with code 1 when any pacing or FTUE target misses
   --envelope      print the server rate-envelope table (JSON) the sim's tables need
-  --empty-table   what-if: the table starts with no coins on it instead of a seeded pile
+  --empty-table   what-if: the table starts with no coins on it (same as --heap-coins 0)
+  --heap-coins    what-if: opening-heap coins instead of the shipped ${economyConfig.openingHeap.coins}
+  --heap-tier     what-if: opening-heap coin tier instead of the shipped ${economyConfig.openingHeap.tier}
   --return-ratio  what-if: front-edge value per coin dropped (shipped model: ${simModel.baseReturnRatio})`;
 
 export interface CliIo {
@@ -27,6 +31,23 @@ function parseInteger(name: string, raw: string): number {
   const value = Number(raw);
   if (!Number.isInteger(value)) throw new RangeError(`--${name} expects an integer, got "${raw}"`);
   return value;
+}
+
+function parseNonNegative(name: string, raw: string): number {
+  const value = Number(raw);
+  if (!(raw.trim() !== '' && Number.isInteger(value) && value >= 0)) {
+    throw new RangeError(`--${name} expects a whole number ≥ 0, got "${raw}"`);
+  }
+  return value;
+}
+
+function parseTier(raw: string): CoinTierId {
+  const tier = economyConfig.coinTiers.find((t) => t.id === raw);
+  if (tier === undefined) {
+    const ids = economyConfig.coinTiers.map((t) => t.id).join(', ');
+    throw new RangeError(`--heap-tier expects one of ${ids}, got "${raw}"`);
+  }
+  return tier.id;
 }
 
 function parsePositive(name: string, raw: string): number {
@@ -56,6 +77,8 @@ function run(argv: readonly string[], io: CliIo): number {
       strict: { type: 'boolean', default: false },
       envelope: { type: 'boolean', default: false },
       'empty-table': { type: 'boolean', default: false },
+      'heap-coins': { type: 'string' },
+      'heap-tier': { type: 'string' },
       'return-ratio': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -74,15 +97,29 @@ function run(argv: readonly string[], io: CliIo): number {
       values['return-ratio'] === undefined
         ? simModel.baseReturnRatio
         : parsePositive('return-ratio', values['return-ratio']),
-    pile: values['empty-table'] ? { ...simModel.pile, startingCoins: 0 } : simModel.pile,
+  };
+  const heapCoins = values['empty-table']
+    ? 0
+    : values['heap-coins'] === undefined
+      ? economyConfig.openingHeap.coins
+      : parseNonNegative('heap-coins', values['heap-coins']);
+  const config: EconomyConfig = {
+    ...economyConfig,
+    openingHeap: {
+      coins: heapCoins,
+      tier:
+        values['heap-tier'] === undefined
+          ? economyConfig.openingHeap.tier
+          : parseTier(values['heap-tier']),
+    },
   };
 
   if (values.envelope) {
-    io.out(finiteJson(buildEnvelopeTable(economyConfig, model, seed)));
+    io.out(finiteJson(buildEnvelopeTable(config, model, seed)));
     return 0;
   }
 
-  const result = runSimulation(economyConfig, model, {
+  const result = runSimulation(config, model, {
     days: parseInteger('days', values.days),
     players: parseInteger('players', values.players),
     seed,
