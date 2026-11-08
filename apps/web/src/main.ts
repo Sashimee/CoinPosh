@@ -2,9 +2,14 @@ import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported } from './audio/index.ts';
 import type * as SimWorkerModule from './game/simWorker/index.ts';
 import type { SimBridge } from './game/simWorker/index.ts';
-import { MAX_DROP_OFFSET_MM } from './game/simWorker/sim-api.ts';
 import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
-import { createNet, mountDemoBanner, NET_I18N_SOURCE, type DemoBannerColors } from './net/index.ts';
+import {
+  createNet,
+  mountDemoBanner,
+  NET_I18N_SOURCE,
+  type DemoBannerColors,
+  type NetMode,
+} from './net/index.ts';
 import type { CoinField, CoinTierId } from './scene/coins/index.ts';
 import { rivieraTokens } from './scene/venues/riviera/palette.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
@@ -24,20 +29,31 @@ const COIN_CAPACITY: Readonly<Record<CoinTierId, number>> = {
   heirloom: 8,
 };
 
-/** Same seed, same physics on every boot, until a server table session hands one out. */
+/**
+ * A fixed local seed. The server hands out no table seed yet, so in live mode the drawn table is
+ * not the server's table.
+ * TODO(lead-architect): seed the sim from the server table session once the API exposes one.
+ */
 const TABLE_SEED = 0xc0196051;
 
 /**
- * The heap poured onto an empty table at boot, so the pusher has coins to shove before the
- * player's first drop. Every coin goes through `SimBridge.drop`, exactly like a player's.
+ * The heap poured onto an empty Demo Mode table at boot, so the pusher has coins to shove before
+ * the player's first drop. Every coin goes through `SimBridge.drop`, exactly like a player's.
+ * Drops are released on render frames, so the tick each one lands on, and the heap's final
+ * shape, differ a little between devices; nothing is paid from it. Live mode pours no heap,
+ * since the server's table never saw these coins.
  */
 const OPENING_HEAP = {
   coins: 160,
   perSecond: 40,
   /** Most drops released in one frame after a hitch, so coins never spawn inside each other. */
   maxBurst: 3,
-  /** Share of the sim's drop range the heap spans, keeping coins off the side guides. */
-  spread: 0.9,
+  /**
+   * Lateral reach from the centre line, inside the sim's ±150 mm drop range so coins stay off
+   * the side guides. `SimBridge.drop` rejects anything outside that range.
+   * TODO(simWorker owner): read the range from a public export of game/simWorker/index.ts.
+   */
+  spreadMm: 135,
 } as const;
 
 /** Copper-heavy with a sprinkle of the rarer metals, so every coin material shows on boot. */
@@ -54,6 +70,22 @@ const OPENING_TIER_WEIGHTS: readonly (readonly [CoinTierId, number])[] = [
 // consecutive drops land far apart across the table.
 const GOLDEN_FRACTION = 0.6180339887498949;
 const SQRT2_FRACTION = 0.41421356237309515;
+
+/**
+ * mountDemoBanner pins the banner `position: fixed` over the balance plaque, so main.ts moves it
+ * into the HUD's banner slot and lays it out in flow. Only the opacity fade is kept, because the
+ * slide-in keyframes animate the fixed-position centring transform.
+ * TODO(net owner): give mountDemoBanner a parent element and an in-flow style, then drop this.
+ */
+const IN_FLOW_BANNER_STYLE: Partial<CSSStyleDeclaration> = {
+  position: 'static',
+  transform: 'none',
+  margin: '0 auto',
+  width: 'fit-content',
+  animationName: 'coinposh-demo-banner-fade',
+  animationDuration: '200ms',
+  animationTimingFunction: 'ease-out',
+};
 
 const DEMO_BANNER_COLORS: DemoBannerColors = {
   border: `rgb(${hexToRgbChannels(rivieraTokens.champagne)} / 0.38)`,
@@ -84,11 +116,12 @@ bootAudio(ui).catch((error: unknown) => {
   console.error('CoinPosh audio failed to start; the game continues without sound.', error);
 });
 
-bootNet(ui).catch((error: unknown) => {
+const netMode = bootNet(ui).catch((error: unknown) => {
   console.error('CoinPosh net failed to start; balances will not sync this session.', error);
+  return null;
 });
 
-void bootScene(canvas);
+void bootScene(canvas, netMode);
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
 // unlock the context and the track starts without a render hitch.
@@ -108,7 +141,7 @@ async function bootAudio(app: UiApp): Promise<void> {
  * Without `VITE_API_URL` (the GitHub Pages build) the net layer runs Demo Mode against its
  * in-browser server, and the banner tells the player their progress is unranked and local.
  */
-async function bootNet(app: UiApp): Promise<void> {
+async function bootNet(app: UiApp): Promise<NetMode> {
   registerNetStrings(app.i18n);
   const net = await createNet({
     locale: () => app.i18n.language,
@@ -125,19 +158,30 @@ async function bootNet(app: UiApp): Promise<void> {
   teardown.push(() => {
     net.table.close();
   });
-  if (net.mode.kind !== 'demo') return;
-  let removeBanner = showDemoBanner(app.i18n);
+  if (net.mode.kind !== 'demo') return net.mode;
+  let removeBanner = showDemoBanner(app);
   const stopRelabel = app.i18n.onLanguageChanged(() => {
-    removeBanner = showDemoBanner(app.i18n);
+    removeBanner = showDemoBanner(app);
   });
   teardown.push(() => {
     stopRelabel();
     removeBanner();
   });
+  return net.mode;
 }
 
-function showDemoBanner(i18n: I18n): () => void {
-  return mountDemoBanner(document, (key) => i18n.t(key), DEMO_BANNER_COLORS);
+function showDemoBanner(app: UiApp): () => void {
+  const remove = mountDemoBanner(document, (key) => app.i18n.t(key), DEMO_BANNER_COLORS);
+  const banner = document.body.lastElementChild;
+  if (!(banner instanceof HTMLElement) || banner.getAttribute('role') !== 'status') {
+    remove();
+    throw new Error(
+      'CoinPosh net: mountDemoBanner no longer appends its banner last to <body>, so main.ts cannot move it into the HUD banner slot. Mount it through the slot instead.',
+    );
+  }
+  Object.assign(banner.style, IN_FLOW_BANNER_STYLE);
+  app.bannerSlot.append(banner);
+  return remove;
 }
 
 /** Net keys are dotted paths in the default namespace, so they nest like the `ui` catalogs. */
@@ -162,7 +206,10 @@ function registerNetStrings(i18n: I18n): void {
   }
 }
 
-async function bootScene(target: HTMLCanvasElement): Promise<void> {
+async function bootScene(
+  target: HTMLCanvasElement,
+  netMode: Promise<NetMode | null>,
+): Promise<void> {
   let stage: Stage;
   let riviera: typeof RivieraModule;
   let bridge: SimBridge | undefined;
@@ -179,6 +226,7 @@ async function bootScene(target: HTMLCanvasElement): Promise<void> {
       vignetteTint: riviera.RIVIERA_VIGNETTE_TINT,
       coins: { capacity: COIN_CAPACITY, radius: bridge.coin.radius },
     });
+    teardownStage(stage);
   } catch (error) {
     bridge?.dispose();
     console.error('CoinPosh boot failed: the renderer could not start.', error);
@@ -202,7 +250,16 @@ async function bootScene(target: HTMLCanvasElement): Promise<void> {
     venue.setReducedMotion(reduced);
     stage.coins.setReducedMotion(reduced);
   });
-  await pourOpeningHeapWhenEmpty(stage, bridge);
+  if ((await netMode)?.kind === 'demo') await pourOpeningHeapWhenEmpty(stage, bridge);
+}
+
+/** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */
+function teardownStage(stage: Stage): void {
+  teardown.push(() => {
+    stage.dispose().catch((error: unknown) => {
+      console.error('CoinPosh teardown: the stage did not dispose cleanly.', error);
+    });
+  });
 }
 
 /** Started before the renderer, so the worker loads Rapier while the GPU initialises. */
@@ -252,7 +309,6 @@ async function pourOpeningHeapWhenEmpty(stage: Stage, bridge: SimBridge): Promis
     return;
   }
   if (bridge.stats.coins > 0) return;
-  const spreadMm = Math.floor(MAX_DROP_OFFSET_MM * OPENING_HEAP.spread);
   let poured = 0;
   let due = 0;
   const stop = stage.onFrame((deltaSeconds) => {
@@ -261,16 +317,22 @@ async function pourOpeningHeapWhenEmpty(stage: Stage, bridge: SimBridge): Promis
       return;
     }
     due = Math.min(due + deltaSeconds * OPENING_HEAP.perSecond, OPENING_HEAP.maxBurst);
-    for (; due >= 1 && poured < OPENING_HEAP.coins; due -= 1, poured += 1) {
-      bridge.drop(openingDropOffsetMm(poured, spreadMm), openingDropTier(poured));
+    try {
+      for (; due >= 1 && poured < OPENING_HEAP.coins; due -= 1, poured += 1) {
+        bridge.drop(openingDropOffsetMm(poured), openingDropTier(poured));
+      }
+    } catch (error) {
+      stop();
+      console.error('CoinPosh opening heap stopped: the sim rejected a drop.', error);
+      return;
     }
     if (poured >= OPENING_HEAP.coins) stop();
   });
   teardown.push(stop);
 }
 
-function openingDropOffsetMm(index: number, spreadMm: number): number {
-  return Math.round((fraction(index * GOLDEN_FRACTION) * 2 - 1) * spreadMm);
+function openingDropOffsetMm(index: number): number {
+  return Math.round((fraction(index * GOLDEN_FRACTION) * 2 - 1) * OPENING_HEAP.spreadMm);
 }
 
 function openingDropTier(index: number): CoinTierId {
