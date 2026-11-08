@@ -39,6 +39,7 @@ const CREST_CAP_BOTTOM = 0.014;
 const CREST_TOP = 0.026;
 /** The body front sits a hair behind the teak so the two never fight over one plane. */
 const BODY_FRONT_INSET = 0.002;
+const GLASS_THICKNESS = 0.006;
 
 interface Dimensions {
   readonly t: RivieraTableLayout;
@@ -370,6 +371,13 @@ function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
         Z,
       ),
       ball(new Vector3(side * (d.fieldX + 0.0035), t.wallHeight, t.gutterStartZ - 0.004), 0.0062),
+      rod(
+        new Vector3(side * (d.fieldX + 0.0045), t.wallHeight, t.gutterStartZ),
+        new Vector3(side * (d.fieldX + 0.0045), d.glassTop, t.gutterStartZ),
+        0.0045,
+        Z,
+      ),
+      ball(new Vector3(side * (d.fieldX + 0.0045), d.glassTop + 0.004, t.gutterStartZ), 0.008),
     );
   }
   const ring = new TorusGeometry(0.047 * k, 0.0045 * k, 12, 64);
@@ -392,15 +400,30 @@ function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
   return pieces;
 }
 
+/**
+ * The glass carries every sim wall up to its full height: over the guide walls at
+ * ±fieldHalfWidth behind the gutter start, and over the outer walls ahead of it.
+ */
 function glassPieces(d: Dimensions): BufferGeometry[] {
-  return [-1, 1].map((side) =>
+  const { t } = d;
+  return [-1, 1].flatMap((side) => [
     box(
-      new Vector3(side * d.wallX - 0.003, d.t.wallHeight + 0.008, d.t.backboardFrontZ),
-      new Vector3(side * d.wallX + 0.003, d.glassTop, d.glassFrontZ),
+      new Vector3(
+        side < 0 ? -d.fieldX - GLASS_THICKNESS : d.fieldX,
+        t.wallHeight + 0.004,
+        t.backboardFrontZ,
+      ),
+      new Vector3(side < 0 ? -d.fieldX : d.fieldX + GLASS_THICKNESS, d.glassTop, t.gutterStartZ),
       0.0029,
       2,
     ),
-  );
+    box(
+      new Vector3(side * d.wallX - GLASS_THICKNESS / 2, t.wallHeight + 0.008, t.gutterStartZ),
+      new Vector3(side * d.wallX + GLASS_THICKNESS / 2, d.glassTop, d.glassFrontZ),
+      0.0029,
+      2,
+    ),
+  ]);
 }
 
 function pusherPieces(d: Dimensions): {

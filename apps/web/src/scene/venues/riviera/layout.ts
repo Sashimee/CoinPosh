@@ -107,16 +107,18 @@ const FINIAL_TOP_Y = T.wallHeight + 0.036;
 const TRAY_FLOOR_Y = -T.trayDepth;
 
 /**
- * The play area: the coin floor's front corners, the back of the upper tier where it meets the
- * backboard, and the top of the sim's back wall, the highest anything in play can reach.
+ * The coin floor, along the centre line: from the back of the upper tier, where it meets the
+ * backboard, down to the payout edge.
  */
-export const PLAYFIELD_FRONT = new Vector3(0, 0, T.fieldFrontZ);
-export const PLAYFIELD_TOP = new Vector3(0, PLAYFIELD.wallHeight, T.backboardFrontZ);
-const UPPER_TIER_REAR = new Vector3(0, T.pusherHeight, T.backboardFrontZ);
+export const COIN_FLOOR_REAR = new Vector3(0, T.pusherHeight, T.backboardFrontZ);
+export const COIN_FLOOR_FRONT = new Vector3(0, 0, T.fieldFrontZ);
+/** Top of the sim's back wall: empty air above the upper tier that stacked coins can reach. */
+const BACK_WALL_TOP = new Vector3(0, PLAYFIELD.wallHeight, T.backboardFrontZ);
 /** Where paid-out coins land: the catch tray floor just ahead of the payout edge. */
 const PAYOUT_LANDING = new Vector3(0, TRAY_FLOOR_Y, T.fieldFrontZ + 0.03);
-/** Top of the front panel's gold frame; desktop frames keep it clear of the bottom edge. */
+/** Top of the front panel's gold frame; desktop frames keep it above FRONT_FRAME_MIN_Y. */
 const FRONT_FRAME = new Vector3(0, TRAY_FLOOR_Y - 0.05, CABINET_FRONT_Z);
+const FRONT_FRAME_MIN_Y = -0.9;
 
 interface Band {
   readonly top: number;
@@ -156,9 +158,9 @@ function framePoints(band: Band, tall: number, short: number, relax: number): Fr
     maxY: floor.maxY + OFF_SCREEN * short,
   };
   const points: FramePoint[] = [
-    { at: FRONT_FRAME, ...cabinet, minY: -0.9 - off },
+    { at: FRONT_FRAME, ...cabinet, minY: FRONT_FRAME_MIN_Y - off },
     { at: PAYOUT_LANDING, ...reach },
-    { at: PLAYFIELD_TOP, ...reach },
+    { at: BACK_WALL_TOP, ...reach },
   ];
   for (const side of [-1, 1]) {
     const outer = side * CABINET_HALF_WIDTH;
@@ -244,8 +246,8 @@ export function rivieraCameraPreset(aspect: number): CameraPreset {
   }
   const distance = far;
   const { low, high } = liftRange(distance);
-  const top = new Vector3().lerpVectors(PLAYFIELD_TOP, UPPER_TIER_REAR, short);
-  const bottom = new Vector3().lerpVectors(PAYOUT_LANDING, PLAYFIELD_FRONT, short);
+  const top = new Vector3().lerpVectors(BACK_WALL_TOP, COIN_FLOOR_REAR, short);
+  const bottom = new Vector3().lerpVectors(PAYOUT_LANDING, COIN_FLOOR_FRONT, short);
   const centred = centredLift([top, bottom], distance, tanV, forward, up, band);
   const lift = Math.min(Math.max(centred, low), high);
 
