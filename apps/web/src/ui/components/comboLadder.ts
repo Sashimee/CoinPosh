@@ -6,6 +6,7 @@ import { tr, type UiContext } from '../context.ts';
 import { fromMarkup, h } from '../dom.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
+import { createMeterRail, type MeterRail } from './meterRail.ts';
 
 const BOWL_TOP = 8;
 const BOWL_BOTTOM = 112;
@@ -28,7 +29,7 @@ function fluteMarkup(id: string, tiers: number): string {
     (b) =>
       `<circle class="cp-flute-bubble" cx="${b.x}" cy="${BOWL_BOTTOM - 4}" r="${b.r}" style="animation-delay:${b.delay}s"/>`,
   ).join('');
-  return `<svg class="cp-flute" viewBox="0 0 48 168" aria-hidden="true" focusable="false">
+  return `<svg class="cp-flute" viewBox="6 4 36 158" aria-hidden="true" focusable="false">
   <defs>
     <clipPath id="${id}-bowl"><path d="${BOWL_PATH}"/></clipPath>
     <linearGradient id="${id}-wine" x1="0" y1="1" x2="0" y2="0">
@@ -56,8 +57,10 @@ function fluteMarkup(id: string, tiers: number): string {
 }
 
 let fluteIds = 0;
+/** A spent cascade keeps its card up this long, so the drain reads before it folds away. */
+const RANK_LINGER_MS = 1500;
 
-export function createComboLadder(ctx: UiContext): HTMLElement {
+export function createComboLadder(ctx: UiContext): MeterRail {
   const id = `cp-flute-${++fluteIds}`;
   const flute = fromMarkup(fluteMarkup(id, cascade.tiers.length));
   const wine = flute.querySelector<SVGRectElement>('.cp-flute-wine');
@@ -70,15 +73,22 @@ export function createComboLadder(ctx: UiContext): HTMLElement {
   const multiplier = h('span', { class: 'cp-combo-mult' });
   const hint = h('span', { class: 'cp-combo-hint' });
   const spoken = h('span', { class: 'cp-sr-only', attrs: { 'aria-live': 'polite' } });
-  const root = h(
-    'div',
-    { class: 'cp-combo cp-side-meter', attrs: { 'data-testid': 'hud-combo', 'data-rank': '0' } },
-    heading,
-    flute,
-    h('span', { class: 'cp-combo-caption' }, tierName, multiplier),
-    hint,
-    spoken,
-  );
+  const rail = createMeterRail(ctx, {
+    side: 'right',
+    className: 'cp-combo',
+    testId: 'hud-combo',
+    spine: flute,
+    card: h(
+      'span',
+      { class: 'cp-rail-text' },
+      heading,
+      h('span', { class: 'cp-combo-caption' }, tierName, multiplier),
+      hint,
+    ),
+  });
+  const root = rail.root;
+  root.dataset.rank = '0';
+  root.append(spoken);
 
   const fill = new SpringValue(0, SPRINGS.bouncy, (value) => {
     const level = Math.min(1.04, Math.max(0, value));
@@ -93,12 +103,13 @@ export function createComboLadder(ctx: UiContext): HTMLElement {
 
   ctx.loc.text(heading, () => tr(ctx, 'combo.label'));
 
-  const describe = (view: ComboView): void => {
+  let lastLive: ComboView | null = null;
+  const caption = (view: ComboView): void => {
     const language = ctx.i18n.language;
-    const tier = view.tier ? tr(ctx, `combo.tier.${view.tier.id}`) : '';
-    const mult = tr(ctx, 'combo.multiplier', { value: formatDecimal(view.multiplier, language) });
-    tierName.textContent = view.tier ? tier : '—';
-    multiplier.textContent = view.tier ? mult : '';
+    tierName.textContent = view.tier ? tr(ctx, `combo.tier.${view.tier.id}`) : '—';
+    multiplier.textContent = view.tier
+      ? tr(ctx, 'combo.multiplier', { value: formatDecimal(view.multiplier, language) })
+      : '';
     if (view.next && view.count > 0) {
       hint.textContent = tr(ctx, 'combo.next', {
         count: view.toNext,
@@ -109,6 +120,15 @@ export function createComboLadder(ctx: UiContext): HTMLElement {
     } else {
       hint.textContent = tr(ctx, 'combo.idle');
     }
+  };
+  const describe = (view: ComboView): void => {
+    const language = ctx.i18n.language;
+    if (view.tier) lastLive = view;
+    // A spent cascade's card folds away still naming the rank it reached, not an idle dash.
+    caption(view.tier ? view : (lastLive ?? view));
+    root.classList.toggle('is-spent', !view.tier && lastLive !== null);
+    const tier = view.tier ? tr(ctx, `combo.tier.${view.tier.id}`) : '';
+    const mult = tr(ctx, 'combo.multiplier', { value: formatDecimal(view.multiplier, language) });
     spoken.textContent = view.tier
       ? tr(ctx, 'combo.aria', {
           tier,
@@ -133,6 +153,7 @@ export function createComboLadder(ctx: UiContext): HTMLElement {
         const draining = previous !== undefined && view.count < previous.count;
         void fill.to(view.fill, draining ? SPRINGS.gentle : SPRINGS.bouncy);
         if (previous && view.rank > previous.rank) swell.kick(6);
+        rail.setOpen(view.rank > 0, RANK_LINGER_MS);
         describe(view);
       },
       (a, b) => a.count === b.count,
@@ -143,5 +164,5 @@ export function createComboLadder(ctx: UiContext): HTMLElement {
       describe(comboView(ctx.store.getState().cascadeCount, cascade));
     }),
   );
-  return root;
+  return rail;
 }
