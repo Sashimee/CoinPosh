@@ -103,7 +103,7 @@ interface CoinRecord {
   coin: MintedCoin;
   place: 'buffer' | 'table';
   spawnTick: number | null;
-  origin: 'drop' | 'fusion';
+  origin: 'drop' | 'fusion' | 'heap';
 }
 
 interface TickAnchor {
@@ -185,6 +185,7 @@ const CASCADE_WINDOW_TICKS = ticksFor(cascade.windowMs);
 const MIN_FALL_TICKS = {
   drop: ticksFor(MOCK_RULES.minFallMsAfterDrop),
   fusion: ticksFor(MOCK_RULES.minFallMsAfterFusion),
+  heap: 0,
 } as const;
 const MIN_FUSION_TICKS = ticksFor(MOCK_RULES.minFusionMsAfterSpawn);
 const FALL_WINDOW_TICKS = ticksFor(MOCK_RULES.fallEnvelope.windowMs);
@@ -349,6 +350,7 @@ export class MockWorld {
     this.#credit(player, now, 'signup.startingCoins', {
       coins: Math.floor(stat(player, 'startingCoins')),
     });
+    this.#seedOpeningHeap(player);
     this.#refillBuffer(player, now);
     return player;
   }
@@ -437,6 +439,14 @@ export class MockWorld {
     return [...player.coins.values()]
       .filter((record) => record.place === 'table')
       .map((record) => record.coin);
+  }
+
+  /** The opening heap already rests at the front lip, so its coins may fall from tick 0. */
+  #seedOpeningHeap(player: MockPlayer): void {
+    const value = this.#coinValue(player, DROP_TIER.id);
+    for (let i = 0; i < MOCK_RULES.openingHeapCoins; i++) {
+      this.#mint(player, DROP_TIER.id, value, 'table', 0, 'heap');
+    }
   }
 
   /** Tops the buffer up with coins paid for now, so an offline drop never creates value later. */

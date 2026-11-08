@@ -10,6 +10,7 @@ import { MAX_CATCH_UP_TICKS, runSimWorker, TICK_MS } from './runtime.ts';
 import { COIN, Sim } from '@coinposh/sim';
 import type { FallEvent, MechanicsConfig, OpeningHeap, SimInput, SimOptions } from './sim-api.ts';
 import { OPENING_HEAP_CAPACITY, SIM_MECHANICS } from './table-config.ts';
+import { MOCK_RULES } from '../../net/mock/rules.ts';
 
 const SEED = 0xc0195051;
 
@@ -172,6 +173,11 @@ function harness(transport: TransportKind, options: HarnessOptions = {}): Harnes
   open.push(created);
   return created;
 }
+
+it('lays every coin the Demo server mints for the opening heap', () => {
+  expect(MOCK_RULES.openingHeapCoins).toBeGreaterThan(0);
+  expect(MOCK_RULES.openingHeapCoins).toBeLessThanOrEqual(OPENING_HEAP_CAPACITY);
+});
 
 describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport', (transport) => {
   it('runs the sim off-thread at 60 Hz and delivers every tick', async () => {

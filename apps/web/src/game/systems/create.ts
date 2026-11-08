@@ -1,9 +1,10 @@
-import type { StateResponse } from '@coinposh/shared';
+import type { MintedCoin, StateResponse } from '@coinposh/shared';
 import type { Bus } from '../../app/bus.ts';
 import type { UiApp } from '../../app/index.ts';
 import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
 import { bindInputSurface, linearAimMap, type AimMap } from '../input/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
+import type { SimEventBatch } from '../simWorker/protocol.ts';
 import {
   createSystemsCore,
   type ClockPort,
@@ -18,8 +19,10 @@ import { createSystemsOverlay } from './overlay.ts';
 import type { TableBounds } from './tableWatch.ts';
 
 export interface GameSystemsOptions {
-  /** The sim worker bridge (`SimBridge`). */
+  /** The sim worker bridge (`SimBridge`); the systems hear its events and send its nudges. */
   readonly bridge: SimPort;
+  /** Sim event batches the bridge delivered before the systems existed, oldest first. */
+  readonly simBacklog?: readonly SimEventBatch[];
   readonly net: { readonly table: TablePort; readonly clock: ClockPort };
   readonly ui: Pick<UiApp, 'setCascade' | 'setDecorum' | 'bus' | 'i18n' | 'bannerSlot'>;
   /** The surface the player touches; the WebGL canvas. */
@@ -44,10 +47,12 @@ export interface GameSystems {
   /** Once per frame: reads input, writes the sim's coins into `field`, runs the timers. */
   sync(field: CoinTransformTarget): void;
   hydrate(state: StateResponse): void;
+  /** The server's coins for the sim's opening heap, in sim id order from 0. */
+  adoptOpeningHeap(coins: readonly MintedCoin[]): void;
   setUpgradeLevels(levels: Readonly<Record<string, number>>): void;
-  /** For the sim's contact stream once the worker forwards it. */
+  /** A contact from outside the sim's own stream, which the systems already hear. */
   reportContact(contact: ContactReport): void;
-  /** For the sim's fusion stream once the worker forwards it. */
+  /** A fusion from outside the sim's own stream, which the systems already hear. */
   reportFusion(fusion: FusionReport): void;
   dispose(): void;
 }
@@ -83,6 +88,7 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     bounds: options.bounds ?? RIVIERA_TABLE,
     now,
     ...(options.upgradeLevels ? { upgradeLevels: options.upgradeLevels } : {}),
+    ...(options.simBacklog ? { simBacklog: options.simBacklog } : {}),
   });
 
   const overlay = createSystemsOverlay(host, { aim: t('aim.label'), gauge: t('pour.gauge') });
@@ -140,6 +146,9 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     },
     hydrate: (state) => {
       core.hydrate(state);
+    },
+    adoptOpeningHeap: (coins) => {
+      core.adoptOpeningHeap(coins);
     },
     setUpgradeLevels: (levels) => {
       core.setUpgradeLevels(levels);

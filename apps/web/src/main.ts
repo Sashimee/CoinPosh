@@ -1,10 +1,15 @@
 import type { MintedCoin, StateResponse } from '@coinposh/shared';
 import { mountUi, type UiApp } from './app/index.ts';
-import { createAudioEngine, isAudioSupported } from './audio/index.ts';
+import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
 import type * as SimWorkerModule from './game/simWorker/index.ts';
-import type { SimBridge, SimBridgeStats } from './game/simWorker/index.ts';
+import type {
+  OpeningHeap,
+  SimBridge,
+  SimBridgeStats,
+  SimEventBatch,
+} from './game/simWorker/index.ts';
 import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
 import {
   createNet,
@@ -19,7 +24,10 @@ import { rivieraTokens } from './scene/venues/riviera/palette.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
 import type { RivieraVenue } from './scene/venues/riviera/index.ts';
 import type { Stage } from './stage.ts';
+import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
+import type * as VfxModule from './vfx/index.ts';
+import type { Vfx } from './vfx/index.ts';
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
@@ -40,51 +48,8 @@ const COIN_CAPACITY: Readonly<Record<CoinTierId, number>> = {
  */
 const TABLE_SEED = 0xc0196051;
 
-/**
- * The heap poured onto an empty Demo Mode table at boot, so the pusher has coins to shove before
- * the player's first drop. Every coin goes through `SimBridge.drop`, exactly like a player's.
- * Drops are released on render frames, so the tick each one lands on, and the heap's final
- * shape, differ a little between devices; nothing is paid from it. Live mode pours no heap,
- * since the server's table never saw these coins.
- */
-const OPENING_HEAP = {
-  coins: 160,
-  perSecond: 40,
-  /** Most drops released in one frame after a hitch, so coins never spawn inside each other. */
-  maxBurst: 3,
-  /**
-   * Lateral reach from the centre line, inside the sim's ±150 mm drop range so coins stay off
-   * the side guides. `SimBridge.drop` rejects anything outside that range.
-   * TODO(simWorker owner): read the range from a public export of game/simWorker/index.ts.
-   */
-  spreadMm: 135,
-} as const;
-
-/**
- * Sim ticks drawn past the last heap drop before the game systems take the table. They pair each
- * new sim coin with the next minted one in drop order, so a heap coin appearing after the
- * player's first drop would be taken for it. The margin covers the worker applying a drop a few
- * ticks after the newest frame the render thread has seen.
- */
-const HEAP_SETTLE_TICKS = 15;
-
 /** Waits between attempts to load the player's table at boot, doubling up to the ceiling. */
 const STATE_RETRY = { firstDelayMs: 1000, maxDelayMs: 30_000 } as const;
-
-/** Copper-heavy with a sprinkle of the rarer metals, so every coin material shows on boot. */
-const OPENING_TIER_WEIGHTS: readonly (readonly [CoinTierId, number])[] = [
-  ['copper', 0.6],
-  ['silver', 0.21],
-  ['gold', 0.12],
-  ['platinum', 0.04],
-  ['diamond', 0.025],
-  ['heirloom', 0.005],
-];
-
-// Low-discrepancy (Weyl) sequences: deterministic, evenly spread drops with no RNG, and
-// consecutive drops land far apart across the table.
-const GOLDEN_FRACTION = 0.6180339887498949;
-const SQRT2_FRACTION = 0.41421356237309515;
 
 /**
  * mountDemoBanner pins the banner `position: fixed` over the balance plaque, so main.ts moves it
@@ -130,6 +95,18 @@ interface CoinPoshProbe {
   readonly sim: SimBridgeStats | null;
   /** True once taps, holds and keys drive the table. */
   readonly playable: boolean;
+  /** What the sim reported since boot, and what the game systems made of it once playable. */
+  readonly counts: Readonly<ProbeCounts>;
+}
+
+interface ProbeCounts {
+  simFalls: number;
+  simFusions: number;
+  falls: number;
+  frontFalls: number;
+  fusions: number;
+  credits: number;
+  creditedCoins: number;
 }
 
 declare global {
@@ -138,13 +115,28 @@ declare global {
   }
 }
 
-const probe: { bridge: SimBridge | null; playable: boolean } = { bridge: null, playable: false };
+const probe: { bridge: SimBridge | null; playable: boolean; counts: ProbeCounts } = {
+  bridge: null,
+  playable: false,
+  counts: {
+    simFalls: 0,
+    simFusions: 0,
+    falls: 0,
+    frontFalls: 0,
+    fusions: 0,
+    credits: 0,
+    creditedCoins: 0,
+  },
+};
 window.__coinposh = {
   get sim() {
     return probe.bridge?.stats ?? null;
   },
   get playable() {
     return probe.playable;
+  },
+  get counts() {
+    return { ...probe.counts };
   },
 };
 
@@ -156,6 +148,8 @@ if (!canvas) {
 const uiRoot = document.createElement('div');
 document.body.append(uiRoot);
 const ui = mountUi(uiRoot);
+
+let audio: AudioEngine | null = null;
 
 const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
@@ -193,9 +187,10 @@ async function bootAudio(app: UiApp): Promise<void> {
     console.warn('[CoinPosh] Web Audio is unavailable in this browser; playing without sound.');
     return;
   }
-  const audio = createAudioEngine();
-  app.attachAudio(audio);
-  await audio.startMusic();
+  const engine = createAudioEngine();
+  app.attachAudio(engine);
+  audio = engine;
+  await engine.startMusic();
 }
 
 /**
@@ -432,8 +427,9 @@ function registerNetStrings(i18n: I18n): void {
 }
 
 /**
- * Play starts once the table is hydrated and, in Demo Mode, the opening heap is on screen. Until
- * then the bridge draws the coins and a tap on the table answers with the tap cue.
+ * Play starts once the table is hydrated and the first frame is drawn. In Demo Mode the sim opens
+ * on the heap the server minted, so it pays out from the first shove. Until play starts the
+ * bridge draws the coins and a tap on the table answers with the tap cue.
  */
 async function bootScene(
   target: HTMLCanvasElement,
@@ -443,18 +439,25 @@ async function bootScene(
   let stage: Stage;
   let riviera: typeof RivieraModule;
   let systemsModule: typeof SystemsModule;
+  let vfxModule: typeof VfxModule;
   let bridge: SimBridge | undefined;
+  let takeEarlyEvents: () => readonly SimEventBatch[];
   const stopEarlyTaps = answerEarlyTaps(target.id);
+  const modules = Promise.all([
+    import('./stage.ts'),
+    import('./scene/venues/riviera/index.ts'),
+    import('./game/simWorker/index.ts'),
+    import('./game/systems/index.ts'),
+    import('./vfx/index.ts'),
+  ]);
+  const heap = await openingTable(netReady, hydrated);
   try {
-    const [stageModule, venueModule, simModule, gameSystems] = await Promise.all([
-      import('./stage.ts'),
-      import('./scene/venues/riviera/index.ts'),
-      import('./game/simWorker/index.ts'),
-      import('./game/systems/index.ts'),
-    ]);
+    const [stageModule, venueModule, simModule, gameSystems, effects] = await modules;
     riviera = venueModule;
     systemsModule = gameSystems;
-    bridge = startSim(simModule);
+    vfxModule = effects;
+    bridge = startSim(simModule, openingHeapOf(heap));
+    takeEarlyEvents = holdEarlyEvents(bridge);
     stage = await stageModule.createStage(target, {
       look: riviera.RIVIERA_RENDER_LOOK,
       vignetteTint: riviera.RIVIERA_VIGNETTE_TINT,
@@ -484,15 +487,113 @@ async function bootScene(
     venue.setReducedMotion(reduced);
     stage.coins.setReducedMotion(reduced);
   });
-  if ((await netReady)?.mode.kind === 'demo') {
-    const lastHeapTick = await pourOpeningHeapWhenEmpty(stage, bridge);
-    if (lastHeapTick !== null) await drawnPast(stage, bridge, lastHeapTick + HEAP_SETTLE_TICKS);
-  }
+  // The renderer checks its clock against the first frame's timestamp, so the effects' first,
+  // slowest update must not run inside that frame.
+  await frameDrawn(stage);
+  const vfx = attachVfx(stage, vfxModule);
   const boot = await hydrated;
+  const simBacklog = takeEarlyEvents();
   if (!boot || bridge.failure) return;
   stopEarlyTaps();
-  table.use(startPlay(systemsModule, stage, bridge, boot));
+  table.use(startPlay(systemsModule, stage, bridge, boot, { heap, simBacklog, vfx }));
   probe.playable = true;
+}
+
+/**
+ * The coins the server says are already on the table. Demo Mode's server mints the opening heap
+ * there; live mode opens on an empty sim table, since nothing seeds the sim from the server's.
+ * TODO(lead-architect): lay the live table's coins too once the API hands out a table seed.
+ */
+async function openingTable(
+  netReady: Promise<Net | null>,
+  hydrated: Promise<NetBoot | null>,
+): Promise<readonly MintedCoin[]> {
+  if ((await netReady)?.mode.kind !== 'demo') return [];
+  return (await hydrated)?.state.table.coins ?? [];
+}
+
+function openingHeapOf(coins: readonly MintedCoin[]): OpeningHeap | null {
+  const tier = coins[0]?.tier;
+  if (tier === undefined) return null;
+  const mixed = coins.find((coin) => coin.tier !== tier);
+  if (mixed) {
+    throw new Error(
+      `CoinPosh boot: the opening table holds ${tier} and ${mixed.tier} coins, but the sim lays its heap in one tier; mint the Demo heap in a single tier (net/mock/world.ts).`,
+    );
+  }
+  return { coins: coins.length, tier };
+}
+
+/**
+ * Keeps the sim's falls and fusions from before the game systems exist, so a heap coin shoved
+ * off while the scene loads is still paid. Contacts are dropped: their clinks are long past.
+ * The returned function stops collecting and hands over what was kept.
+ */
+function holdEarlyEvents(bridge: SimBridge): () => readonly SimEventBatch[] {
+  const kept: SimEventBatch[] = [];
+  const stop = bridge.onEvents(({ falls, fusions }) => {
+    if (falls.length > 0 || fusions.length > 0) kept.push({ falls, contacts: [], fusions });
+  });
+  teardown.push(stop);
+  return () => {
+    stop();
+    return kept.splice(0);
+  };
+}
+
+/** Resolves once the next frame has been drawn: promise callbacks run after the frame callback. */
+function frameDrawn(stage: Stage): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = stage.onFrame(() => {
+      stop();
+      resolve();
+    });
+    teardown.push(stop);
+  });
+}
+
+/**
+ * Follows the stage's renderer through device-loss rebuilds, its quality tier and the motion
+ * setting. Without effects the game still plays, so a failure here is logged, not fatal.
+ */
+function attachVfx(stage: Stage, vfxModule: typeof VfxModule): Vfx | null {
+  let vfx: Vfx;
+  try {
+    vfx = vfxModule.createVfx({
+      scene: stage.scene,
+      camera: stage.camera,
+      renderer: stage.renderer,
+      backend: stage.backend,
+      overlay: uiRoot,
+      i18n: ui.i18n.instance,
+      quality: stage.profile.tier,
+      reducedMotion: isReducedMotion(),
+    });
+  } catch (error) {
+    console.error('CoinPosh effects failed to start; the game continues without them.', error);
+    return null;
+  }
+  let renderer = stage.renderer;
+  const stopFrame = stage.onFrame((deltaSeconds) => {
+    if (stage.renderer !== renderer) {
+      renderer = stage.renderer;
+      vfx.setRenderer(renderer, stage.backend);
+    }
+    vfx.update(deltaSeconds);
+  });
+  const stopTier = stage.onTierChange((profile) => {
+    vfx.setQuality(profile.tier);
+  });
+  const stopMotion = onReducedMotionChange((reduced) => {
+    vfx.setReducedMotion(reduced);
+  });
+  teardown.push(() => {
+    stopFrame();
+    stopTier();
+    stopMotion();
+    vfx.dispose();
+  });
+  return vfx;
 }
 
 /**
@@ -515,37 +616,70 @@ function answerEarlyTaps(canvasId: string): () => void {
   return stop;
 }
 
+interface PlayStart {
+  /** The coins the sim's opening heap stands for, in sim id order. */
+  readonly heap: readonly MintedCoin[];
+  readonly simBacklog: readonly SimEventBatch[];
+  readonly vfx: Vfx | null;
+}
+
 /**
  * Hands the canvas to the gameplay glue: taps drop, a hold pours, Space drops or pours from the
  * keyboard, A/D/W and two-finger swipes nudge, and the aim reticle rides the drop rail. Each
  * drop spends a server-minted coin before the sim sees it, and each nudge jolts the sim cabinet.
- * TODO(P-108): subscribe the audio and vfx juice to `systems.events`.
+ * The juice listens from the first event on, and hears audio as soon as it is up.
  */
 function startPlay(
   systemsModule: typeof SystemsModule,
   stage: Stage,
   bridge: SimBridge,
   boot: NetBoot,
+  start: PlayStart,
 ): GameSystems {
+  // TODO(ui owner): take the number-pop target from a UiApp vault anchor instead of the DOM.
+  const vault = uiRoot.querySelector('.cp-plaque');
+  if (!vault) {
+    throw new Error(
+      'CoinPosh boot: the HUD balance plaque (.cp-plaque) is missing, so credited coins have nowhere to fly to; mount the UI before the scene.',
+    );
+  }
   const systems = systemsModule.createGameSystems({
     bridge,
     net: { table: boot.net.table, clock: boot.net.clock },
     ui,
     canvas: stage.canvas,
     upgradeLevels: boot.state.venue.upgrades,
+    simBacklog: start.simBacklog,
   });
   teardown.push(() => {
     systems.dispose();
   });
+  systems.adoptOpeningHeap(start.heap);
+  teardown.push(
+    systemsModule.wireFeedback(systems.events, {
+      vfx: () => start.vfx,
+      audio: () => audio,
+      vault,
+    }),
+  );
   focusForKeys(stage.canvas);
   systems.hydrate(boot.state);
+  const { counts } = probe;
   const offs = [
     systems.events.on('drop:requested', ({ coin, poured }) => {
       boot.vault.spent(coin);
       ui.bus.emit('ui:feedback', { kind: poured ? 'tick' : 'tap' });
     }),
-    systems.events.on('nudge', ({ direction }) => {
-      if (!bridge.failure) bridge.nudge(direction);
+    systems.events.on('coin:fell', ({ edge }) => {
+      counts.falls += 1;
+      if (edge === 'front') counts.frontFalls += 1;
+    }),
+    systems.events.on('coin:fusion', () => {
+      counts.fusions += 1;
+    }),
+    systems.events.on('value:credited', ({ amount }) => {
+      counts.credits += 1;
+      counts.creditedCoins += amount;
     }),
   ];
   teardown.push(() => {
@@ -583,10 +717,18 @@ function teardownStage(stage: Stage): void {
 }
 
 /** Started before the renderer, so the worker loads Rapier while the GPU initialises. */
-function startSim(simModule: typeof SimWorkerModule): SimBridge {
-  const bridge = simModule.createSimBridge({ seed: TABLE_SEED });
+function startSim(simModule: typeof SimWorkerModule, openingHeap: OpeningHeap | null): SimBridge {
+  const bridge = simModule.createSimBridge({
+    seed: TABLE_SEED,
+    ...(openingHeap ? { openingHeap } : {}),
+  });
   probe.bridge = bridge;
+  const stopCounting = bridge.onEvents(({ falls, fusions }) => {
+    probe.counts.simFalls += falls.length;
+    probe.counts.simFusions += fusions.length;
+  });
   teardown.push(() => {
+    stopCounting();
     probe.bridge = null;
     bridge.dispose();
   });
@@ -634,75 +776,6 @@ function attachTable(stage: Stage, venue: RivieraVenue, bridge: SimBridge): Tabl
       source = next;
     },
   };
-}
-
-/**
- * Pours the heap onto an empty table. Resolves with the newest sim tick seen when the last coin
- * was released, or null when no heap was poured.
- */
-async function pourOpeningHeapWhenEmpty(stage: Stage, bridge: SimBridge): Promise<number | null> {
-  try {
-    await bridge.ready;
-  } catch {
-    // The bridge already logged why the sim stopped; there is no table to pour onto.
-    return null;
-  }
-  if (bridge.stats.coins > 0) return null;
-  return new Promise((resolve) => {
-    let poured = 0;
-    let due = 0;
-    const finish = (): void => {
-      stop();
-      resolve(poured > 0 ? bridge.stats.tick : null);
-    };
-    const stop = stage.onFrame((deltaSeconds) => {
-      if (bridge.failure) {
-        finish();
-        return;
-      }
-      due = Math.min(due + deltaSeconds * OPENING_HEAP.perSecond, OPENING_HEAP.maxBurst);
-      try {
-        for (; due >= 1 && poured < OPENING_HEAP.coins; due -= 1, poured += 1) {
-          bridge.drop(openingDropOffsetMm(poured), openingDropTier(poured));
-        }
-      } catch (error) {
-        console.error('CoinPosh opening heap stopped: the sim rejected a drop.', error);
-        finish();
-        return;
-      }
-      if (poured >= OPENING_HEAP.coins) finish();
-    });
-    teardown.push(stop);
-  });
-}
-
-/** Resolves on the first frame drawn at or past sim tick `tick`, or once the sim has stopped. */
-function drawnPast(stage: Stage, bridge: SimBridge, tick: number): Promise<void> {
-  return new Promise((resolve) => {
-    const stop = stage.onFrame(() => {
-      if (bridge.stats.renderTick < tick && !bridge.failure) return;
-      stop();
-      resolve();
-    });
-    teardown.push(stop);
-  });
-}
-
-function openingDropOffsetMm(index: number): number {
-  return Math.round((fraction(index * GOLDEN_FRACTION) * 2 - 1) * OPENING_HEAP.spreadMm);
-}
-
-function openingDropTier(index: number): CoinTierId {
-  let roll = fraction(index * SQRT2_FRACTION + 0.5);
-  for (const [tier, weight] of OPENING_TIER_WEIGHTS) {
-    roll -= weight;
-    if (roll < 0) return tier;
-  }
-  return 'copper';
-}
-
-function fraction(value: number): number {
-  return value - Math.floor(value);
 }
 
 function watchReducedMotion(apply: (reduced: boolean) => void): void {

@@ -1,4 +1,11 @@
-import { cascade, cascadeTierFor, crateSpawn, fusion, fusionValue } from '@coinposh/economy';
+import {
+  cascade,
+  cascadeTierFor,
+  coinTiers,
+  crateSpawn,
+  fusion,
+  fusionValue,
+} from '@coinposh/economy';
 import {
   ClaimsResponseSchema,
   DropResponseSchema,
@@ -118,6 +125,26 @@ describe('mock server: value is minted and conserved server-side', () => {
     });
     const after = await state();
     expect(after.wallet.coins - before).toBe(coin.value);
+    expectConserved();
+  });
+
+  it('opens the table with a heap of lowest-tier coins that pay out as soon as they fall', async () => {
+    const { table, wallet } = await state();
+    expect(table.coins).toHaveLength(MOCK_RULES.openingHeapCoins);
+    expect(new Set(table.coins.map((coin) => coin.tier))).toEqual(new Set([coinTiers[0].id]));
+    const [first, second] = table.coins;
+    if (first === undefined || second === undefined) throw new Error('Expected a heap.');
+    time.advance(100);
+    const results = await claimAt([fallAt(first, time.tick())]);
+    expect(results).toEqual([
+      { status: 'accepted', credited: first.value, cascade: null, minted: null },
+    ]);
+    expect((await state()).wallet.coins - wallet.coins).toBe(first.value);
+    expect(await claimAt([fallAt(first, time.tick())])).toEqual([
+      { status: 'rejected', reason: 'already_claimed' },
+    ]);
+    expect((await state()).table.coins.map((coin) => coin.id)).not.toContain(first.id);
+    expect((await state()).table.coins.map((coin) => coin.id)).toContain(second.id);
     expectConserved();
   });
 
