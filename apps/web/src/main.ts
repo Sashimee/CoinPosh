@@ -1,5 +1,5 @@
-import { coinTiers } from '@coinposh/economy';
 import type { StateResponse } from '@coinposh/shared';
+import { COIN_DROP_HEIGHT, GRAVITY } from '@coinposh/sim';
 import type * as Three from 'three/webgpu';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
@@ -11,6 +11,7 @@ import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
 import {
   createNet,
   mountDemoBanner,
+  NET_I18N_KEYS,
   NET_I18N_SOURCE,
   type DemoBannerColors,
   type Net,
@@ -51,29 +52,27 @@ const TABLE_SEED = 0xc0196051;
 const SIM_FIELD_BOUNDS = { fieldHalfWidth: 0.18, fieldFrontZ: 0.05 } as const;
 
 /**
- * How far a dropped coin falls from its spawn point onto the pusher: the sim's DROP_ZONE.height,
- * which @coinposh/sim does not export. The drop trail follows the coin this far.
- */
-const DROP_FALL_METRES = 0.12;
-const GRAVITY_METRES_PER_S2 = 9.81;
-
-/**
  * The closing speed the impact synth plays at full force (audio's IMPACT_VELOCITY_CEIL, which
  * audio/index.ts does not export); a contact's 0..1 strength is scaled onto it.
+ * TODO(audio owner): export IMPACT_VELOCITY_CEIL from audio/index.ts and read it here.
  */
 const HARDEST_IMPACT_METRES_PER_S = 2.8;
 
 /**
- * The heap poured onto the empty Demo Mode table at boot, so coins already hang over the front
- * lip when the table first lights up. Every coin goes through `SimBridge.drop`, exactly like a
- * player's. Drops are released on a wall-clock timer from the moment the sim is ready, not on
- * render frames, so most of the pour happens while the renderer is still starting; the tick each
- * coin lands on, and the heap's final shape, differ a little between devices. Nothing is paid
- * from it: the server never minted these coins. Live mode pours no heap.
+ * The heap poured onto the empty Demo Mode table at boot, so the table is not bare when it first
+ * lights up. Every coin goes through `SimBridge.drop`, exactly like a player's. Drops are released
+ * on a wall-clock timer from the moment the sim is ready, not on render frames, so most of the
+ * pour happens while the renderer is still starting; the tick each coin lands on, and the heap's
+ * final shape, differ a little between devices. Nothing is paid from it: the server never minted
+ * these coins. Live mode pours no heap.
+ *
+ * 150 coins leaves 100 of the 250-coin table budget the sim and renderer are benchmarked at for
+ * the player's own drops, and at 90 a second the pour is over within about 1.7 s of the sim
+ * starting, so play starts close to the first lit frame.
  */
 const OPENING_HEAP = {
-  coins: 250,
-  perSecond: 60,
+  coins: 150,
+  perSecond: 90,
   intervalMs: 16,
   /** Most drops released in one timer tick after a hitch, so coins never spawn inside each other. */
   maxBurst: 3,
@@ -106,6 +105,9 @@ const OPENING_TIER_WEIGHTS: readonly (readonly [CoinTierId, number])[] = [
 const GOLDEN_FRACTION = 0.6180339887498949;
 const SQRT2_FRACTION = 0.41421356237309515;
 
+/** Waits between attempts to load the player's table at boot, doubling up to the ceiling. */
+const STATE_RETRY = { firstDelayMs: 1000, maxDelayMs: 30_000 } as const;
+
 /**
  * mountDemoBanner pins the banner `position: fixed` over the balance plaque, so main.ts moves it
  * into the HUD's banner slot and lays it out in flow. Only the opacity fade is kept, because the
@@ -127,6 +129,19 @@ const DEMO_BANNER_COLORS: DemoBannerColors = {
   surface: rivieraTokens['navy-lacquer'],
   text: rivieraTokens.ivory,
   accent: rivieraTokens['gold-brushed'],
+};
+
+const OFFLINE_BANNER_STYLE: Partial<CSSStyleDeclaration> = {
+  margin: '0 auto',
+  width: 'fit-content',
+  maxWidth: 'min(560px, calc(100vw - 32px))',
+  padding: '8px 16px',
+  border: `1px solid ${DEMO_BANNER_COLORS.border}`,
+  borderRadius: '16px',
+  background: DEMO_BANNER_COLORS.surface,
+  color: DEMO_BANNER_COLORS.text,
+  font: '500 13px/1.35 system-ui, sans-serif',
+  pointerEvents: 'none',
 };
 
 const canvas = document.querySelector<HTMLCanvasElement>('#stage');
@@ -217,7 +232,7 @@ async function bootNet(app: UiApp): Promise<NetBoot> {
       if (event.type === 'balance') showVault(app, net.table);
     }),
   );
-  const state = await net.client.call('state');
+  const state = await loadState(net, app);
   net.table.hydrate(state);
   app.setUpgradeLevels(state.venue.upgrades);
   const resyncWhenShown = (): void => {
@@ -234,17 +249,62 @@ async function bootNet(app: UiApp): Promise<NetBoot> {
 }
 
 /**
- * The coins the player holds: the server's wallet, the coins it already took from that wallet to
- * fill the drop buffer but the player has not dropped yet, and the winnings still waiting for its
- * answer, shimmering while any are. The server fills the buffer with its first coin tier only.
+ * The player's table snapshot. Without it there is nothing to play, so a failed load shows the
+ * offline notice and keeps retrying with backoff until the server answers or the page goes away.
+ */
+async function loadState(net: Net, app: UiApp): Promise<StateResponse> {
+  const stopped = new AbortController();
+  teardown.push(() => {
+    stopped.abort();
+  });
+  let hideOffline: (() => void) | null = null;
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await net.client.call('state');
+      } catch (error) {
+        if (stopped.signal.aborted) throw error;
+        const delayMs = Math.min(STATE_RETRY.firstDelayMs * 2 ** attempt, STATE_RETRY.maxDelayMs);
+        console.warn(
+          `CoinPosh net: the table did not load; retrying in ${delayMs} ms. Play starts once the server answers.`,
+          error,
+        );
+        hideOffline ??= showOfflineBanner(app);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  } finally {
+    hideOffline?.();
+  }
+}
+
+function showOfflineBanner(app: UiApp): () => void {
+  const banner = document.createElement('p');
+  banner.setAttribute('role', 'status');
+  banner.dataset.testid = 'net-offline';
+  Object.assign(banner.style, OFFLINE_BANNER_STYLE);
+  const label = (): void => {
+    banner.textContent = app.i18n.t(NET_I18N_KEYS.offline);
+  };
+  label();
+  const stopRelabel = app.i18n.onLanguageChanged(label);
+  app.bannerSlot.append(banner);
+  return () => {
+    stopRelabel();
+    banner.remove();
+  };
+}
+
+/**
+ * The coins the player holds, as the server reported them: its wallet plus the winnings still
+ * waiting for its answer, shimmering while any are.
  */
 function showVault(app: UiApp, table: Net['table']): void {
   const balance = table.balance;
   if (!balance) return;
-  const buffered = table.bufferSize * coinTiers[0].value;
   app.setWallet({
     ...balance.wallet,
-    coins: balance.wallet.coins + buffered + balance.provisionalCoins,
+    coins: balance.wallet.coins + balance.provisionalCoins,
     provisional: balance.provisionalCoins > 0,
   });
 }
@@ -302,6 +362,7 @@ async function bootScene(
   let three: typeof Three;
   let bridge: SimBridge | undefined;
   let heapPoured: Promise<number | null>;
+  const stopEarlyTaps = answerEarlyTaps(target.id);
   try {
     const [stageModule, venueModule, simModule, gameSystems, effects, threeModule] =
       await Promise.all([
@@ -343,12 +404,14 @@ async function bootScene(
   attachVenue(stage, venue, riviera.applyCameraPreset);
   stage.castCoinShadowsFrom(venue.lighting.key);
   const detachBridgeCoins = attachCoins(stage, bridge);
-  const vfx = attachVfx(stage, vfxModule);
   watchReducedMotion((reduced) => {
     venue.setReducedMotion(reduced);
     stage.coins.setReducedMotion(reduced);
-    vfx.setReducedMotion(reduced);
   });
+  // The renderer checks its clock against the first frame's timestamp, so the effects' first,
+  // slowest update must not run inside that frame.
+  await frameDrawn(stage);
+  const vfx = attachVfx(stage, vfxModule);
 
   const [boot, lastHeapTick] = await Promise.all([netReady, heapPoured]);
   if (!boot) return;
@@ -357,6 +420,7 @@ async function bootScene(
   }
   if (bridge.failure) return;
   detachBridgeCoins();
+  stopEarlyTaps();
   const systems = systemsModule.createGameSystems({
     bridge,
     net: { table: boot.net.table, clock: boot.net.clock },
@@ -369,14 +433,29 @@ async function bootScene(
     systems.dispose();
   });
   systems.hydrate(boot.state);
-  // Taking a coin from the buffer emits no balance event; the Vault should still tick down.
-  teardown.push(
-    systems.events.on('drop:requested', () => {
-      showVault(ui, boot.net.table);
-    }),
-  );
   attachCoins(stage, systems);
   wireFeedback(systems, { stage, vfx, audio: await audioReady, three });
+}
+
+/**
+ * Until the game systems take over the canvas (renderer up, net hydrated, opening heap settled),
+ * a tap on the table still answers with the UI's tap sound and haptic instead of nothing. It
+ * listens on the document because the stage swaps in a fresh canvas, same id, when it falls
+ * back to WebGL2.
+ */
+function answerEarlyTaps(canvasId: string): () => void {
+  const onPointerDown = (event: PointerEvent): void => {
+    if (!event.isPrimary) return;
+    if (event.target instanceof HTMLCanvasElement && event.target.id === canvasId) {
+      ui.bus.emit('ui:feedback', { kind: 'tap' });
+    }
+  };
+  document.addEventListener('pointerdown', onPointerDown);
+  const stop = (): void => {
+    document.removeEventListener('pointerdown', onPointerDown);
+  };
+  teardown.push(stop);
+  return stop;
 }
 
 /** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */
@@ -454,9 +533,13 @@ function attachVfx(stage: Stage, vfxModule: typeof VfxModule): Vfx {
   const stopTier = stage.onTierChange((profile) => {
     vfx.setQuality(profile.tier);
   });
+  const stopMotion = onReducedMotionChange((reduced) => {
+    vfx.setReducedMotion(reduced);
+  });
   teardown.push(() => {
     stopFrame();
     stopTier();
+    stopMotion();
     vfx.dispose();
   });
   return vfx;
@@ -475,6 +558,13 @@ interface FeedbackTargets {
  * TODO(P-103): dismiss the coach mark on the first `drop:requested` once the coach mark exists.
  */
 function wireFeedback(systems: GameSystems, { stage, vfx, audio, three }: FeedbackTargets): void {
+  // TODO(ui owner): take the number-pop target from a UiApp vault anchor instead of the DOM.
+  const vaultAnchor = uiRoot.querySelector('.cp-plaque');
+  if (!vaultAnchor) {
+    throw new Error(
+      'CoinPosh boot: the HUD balance plaque (.cp-plaque) is missing, so credited coins have nowhere to fly to; mount the UI before the scene.',
+    );
+  }
   const at = (point: TablePoint): Three.Vector3 => new three.Vector3(point.x, point.y, point.z);
   const pan = (x: number): number => x / SIM_FIELD_BOUNDS.fieldHalfWidth;
   const lip: TablePoint = { x: 0, y: 0, z: SIM_FIELD_BOUNDS.fieldFrontZ };
@@ -523,9 +613,7 @@ function wireFeedback(systems: GameSystems, { stage, vfx, audio, three }: Feedba
       audio?.setComboTier(0);
     }),
     systems.events.on('value:credited', ({ amount, tier, position }) => {
-      const vault = document.querySelector('[data-testid="hud-balance"]');
-      if (!vault) return;
-      vfx.numberPop(amount, at(position ?? lip), vault, tier ? { tier } : {});
+      vfx.numberPop(amount, at(position ?? lip), vaultAnchor, tier ? { tier } : {});
     }),
     systems.events.on('nudge', ({ strength }) => {
       audio?.playImpact({
@@ -558,9 +646,9 @@ function followDrop(
   let elapsed = 0;
   const stop = stage.onFrame((deltaSeconds) => {
     elapsed += deltaSeconds;
-    const fallen = Math.min(0.5 * GRAVITY_METRES_PER_S2 * elapsed * elapsed, DROP_FALL_METRES);
+    const fallen = Math.min(-0.5 * GRAVITY.y * elapsed * elapsed, COIN_DROP_HEIGHT);
     trail.moveTo(at({ x: start.x, y: start.y - fallen, z: start.z }));
-    if (fallen < DROP_FALL_METRES) return;
+    if (fallen < COIN_DROP_HEIGHT) return;
     stop();
     trail.end();
   });
@@ -610,6 +698,19 @@ async function pourOpeningHeapInDemo(
     }, OPENING_HEAP.intervalMs);
     teardown.push(() => {
       clearInterval(timer);
+    });
+  });
+}
+
+/** Resolves once the next frame has been drawn: promise callbacks run after the frame callback. */
+function frameDrawn(stage: Stage): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = stage.onFrame(() => {
+      stop();
+      resolve();
+    });
+    teardown.push(() => {
+      stop();
     });
   });
 }
