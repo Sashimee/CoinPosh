@@ -18,7 +18,11 @@
     "vault": "Coffre",
     "balanceAria": "Solde du coffre : {{value}}",
     "goldBarsAria": "Lingots d'or : {{value}}",
-    "provisional": "En attente de la maison"
+    "provisional": "En attente de la maison",
+    "vaultEmpty": {
+      "title": "Coffre vide",
+      "hint": "Vos pièces au bord sont encore en jeu. Regardez-les tomber."
+    }
   },
   "combo": {
     "label": "Cascade",

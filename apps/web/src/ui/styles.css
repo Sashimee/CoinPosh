@@ -238,6 +238,111 @@
   }
 }
 
+.cp-plaque-wrap .cp-plaque-label,
+.cp-plaque-wrap .cp-plaque-amount {
+  transition:
+    color 320ms ease,
+    opacity 320ms ease,
+    filter 320ms ease;
+}
+
+.cp-plaque-wrap.is-empty .cp-plaque {
+  border-color: var(--cp-hairline-soft);
+  box-shadow: var(--cp-shadow);
+}
+
+.cp-plaque-wrap.is-empty .cp-plaque-label {
+  color: var(--cp-ink-muted);
+}
+
+.cp-plaque-wrap.is-empty .cp-plaque-amount {
+  opacity: 0.55;
+  filter: saturate(0.3) brightness(0.85);
+}
+
+.cp-vault-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 10px 18px;
+  max-width: min(100%, 340px);
+  border-radius: var(--cp-radius-md);
+  border-color: var(--cp-hairline-soft);
+  transition:
+    border-color 220ms ease,
+    box-shadow 220ms ease;
+}
+
+.cp-vault-empty[hidden] {
+  display: none;
+}
+
+.cp-vault-empty.is-asked {
+  border-color: var(--cp-gold-brushed);
+  box-shadow:
+    var(--cp-shadow),
+    var(--cp-glow-inner),
+    0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.45);
+}
+
+.cp-vault-empty.is-nudged {
+  animation: cp-vault-nudge 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+.cp-vault-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cp-vault-empty-title {
+  font-family: var(--cp-font-display);
+  font-size: 18px;
+  font-weight: 700;
+  font-style: italic;
+  color: var(--cp-champagne);
+}
+
+.cp-vault-empty-hint {
+  font-size: 12px;
+  color: var(--cp-ink-muted);
+}
+
+.cp-vault-empty-pointer {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-hairline);
+  color: var(--cp-gold-brushed);
+}
+
+.cp-vault-empty-pointer .cp-icon {
+  width: 18px;
+  height: 18px;
+  animation: cp-vault-point 1400ms ease-in-out infinite;
+}
+
+@keyframes cp-vault-nudge {
+  20%,
+  60% {
+    translate: -5px 0;
+  }
+  40%,
+  80% {
+    translate: 5px 0;
+  }
+}
+
+@keyframes cp-vault-point {
+  50% {
+    translate: 0 3px;
+  }
+}
+
 .cp-chip {
   pointer-events: auto;
   display: inline-flex;
@@ -1258,6 +1363,12 @@
 
 .cp-sheet-layer.is-reduced.is-open .cp-sheet {
   opacity: 1;
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-vault-empty,
+.cp-ui-host[data-motion='reduced'] .cp-vault-empty-pointer .cp-icon {
+  animation: none;
+  translate: none;
 }
 
 .cp-stamp.is-reduced .cp-stamp-card {

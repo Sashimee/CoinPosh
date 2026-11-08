@@ -50,12 +50,13 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-154 | done | task/P-154 (merge 5de973d) | Riviera camera presets reframed to the P-170 amended targets (oblique view, sky <= 5 %, portrait 55 % / landscape and desktop 70 %), layout imported from @coinposh/sim/layout (f3b2172); follow-ups P-171..P-173, P-178; pnpm check green after merge |
 | T-1.14 | done | task/T-1.14 (merge 30d9991) | Vault Crates end-to-end + unbox cinematic (f9b2839); main.ts wiring and follow-ups queued as P-180..P-184; pnpm check green after merge |
 | P-176 | done | task/P-176 (merge f7a2cfd) | Pusher actually pushes: rigid raft behind the pusher broken so coins creep forward and fall over the lip (c1dffa1); SIM_VERSION 3 -> 4 with determinism hashes re-pinned (sim.test.ts, mechanics.test.ts edited outside owns, acknowledged by lead); follow-ups P-185..P-189; pnpm check green after merge |
-| P-174 | blocked(review: POLISH.md hunk outside owns with follow-up IDs P-178..P-180 colliding with feat/build-loop; openingHeapCoins = 100 is an economy number outside packages/economy) | task/P-174 (802d971, not merged) | Vault/feedback gate across P-136, P-149/P-169, P-137; follow-ups filed as P-190..P-198 |
+| P-174 | done | task/P-174 (merge 9a10455) | Vault/feedback gate: sim falls, fusions and contacts wired to pops, Vault rise, audio and the Cascade flute; the Demo server mints and pays economyConfig.openingHeap (100 silver), refused falls counted on window.__coinposh.counts (dbd065b); folds P-136, P-149, P-169, P-137, P-204 and P-212; follow-ups P-190..P-198, P-221; pnpm check green after merge |
 | P-201 | done | task/P-201 (merge dba5125) | Boot poster behind the canvas until the first lit frame instead of a black void; side meters hidden until playable (9d562eb); pnpm check green after merge |
 | P-193 | done | task/P-193 (merge ab0178d) | Opening heap owned by @coinposh/economy as `openingHeap { coins, tier }` (silver) and modelled in the pacing sim (8ff5245); rate-envelope.json regenerated (outside owns, follow-up P-203); follow-ups P-203..P-206; pnpm check green after merge |
 | P-175 | done | task/P-175 (merge 0a8a7e9) | Coins read as lathe-turned metal: reeded rims, capped highlights (peaks 1.4 to 1.9 scene-linear under bloom thresholds 0.92 to 0.95), neutral silver, table lookdev (dfb4ef5); follow-ups P-207..P-208; pnpm check green after merge |
 | P-202 | blocked(review: layout.ts unchanged; lip-to-dock non-floor share 29.4 % at 390x844 vs 10 % limit, unreachable from the camera under P-154/P-170; layout.test.ts red) | task/P-202 (9a7354e, not merged) | Tray reclaim needs the table.ts cabinet front redesign or an amended acceptance; follow-ups P-209..P-211 |
 | P-209 | done | task/P-209 (merge 4fc23ba) | Riviera cabinet front redesigned: reeded lacquer front under a thin brass tray lip (a8ae1ad); pnpm check green after merge |
+| P-200 | done | task/P-200 (merge 5159d30) | Empty-Vault dead end: Steward's allowance rule for a broke player in packages/economy/src/config/allowance.ts and 02-ECONOMY.md, plus an empty-Vault HUD state with EN/FR/DE strings (bb14f4d); mock/server crediting queued as P-216..P-220; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
@@ -72,3 +73,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 9 · 2026-11-08 · P-153 P-154 P-152 · merged P-152 (fc34966), P-153 (079d6fb); 1 rejected (P-154)
 - wave 10 · 2026-11-08 · P-176 P-174 P-154 T-1.14 · merged P-154 (5de973d), T-1.14 (30d9991), P-176 (f7a2cfd); 1 rejected (P-174)
 - wave 11 · 2026-11-08 · P-193 P-201 P-202 P-175 · merged P-201 (dba5125), P-193 (ab0178d), P-175 (0a8a7e9); 1 rejected (P-202)
+- wave 12 · 2026-11-08 · P-209 P-200 P-174 · merged P-209 (4fc23ba), P-200 (5159d30), P-174 (9a10455); 0 rejected
