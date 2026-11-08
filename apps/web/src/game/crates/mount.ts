@@ -9,6 +9,7 @@ import type { GameEvents } from '../systems/events.ts';
 import { bindCrateAudio, type CrateAudioPort } from './audio.ts';
 import { CrateController, type CrateControllerOptions, type CrateSimPort } from './controller.ts';
 import type { CrateEvents } from './events.ts';
+import { bindArrivalHint, mountArrivalHint } from './hint.ts';
 import { registerCratesStrings } from './i18n.ts';
 import { mountCrateReveal } from './revealCard.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
@@ -85,6 +86,11 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     onStart: (crateId) => {
       table.remove(crateId);
     },
+  });
+
+  const hint = mountArrivalHint({ ui: options.ui, host: options.host, reducedMotion });
+  disposers.push(bindArrivalHint(events, hint), () => {
+    hint.dispose();
   });
 
   const audio = options.audio;

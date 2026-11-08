@@ -15,7 +15,7 @@ import {
   unboxPose,
   type UnboxBeat,
 } from './plan.ts';
-import { UnboxStage } from './stage.ts';
+import { UnboxAssets, UnboxStage } from './stage.ts';
 
 const FRAMING = {
   position: new Vector3(0, 0.5, 0.6),
@@ -44,9 +44,11 @@ function cinematic(rarity: Rarity, reducedMotion: boolean) {
   const pulses: HapticPattern[] = [];
   const beats: UnboxBeat[] = [];
   const parent = new Group();
+  const assets = new UnboxAssets(parent);
   const camera = new PerspectiveCamera(40, 9 / 16);
   const unbox = new UnboxCinematic({
     parent,
+    assets,
     camera,
     framing: () => FRAMING,
     at: new Vector3(0, -0.075, 0.085),
@@ -57,7 +59,7 @@ function cinematic(rarity: Rarity, reducedMotion: boolean) {
     haptics: { pulse: (pattern) => pulses.push(pattern) > 0 },
     onBeat: (beat) => beats.push(beat),
   });
-  return { unbox, calls, pulses, beats, parent, camera };
+  return { unbox, calls, pulses, beats, parent, camera, assets };
 }
 
 function play(unbox: UnboxCinematic, seconds: number, fps = 60): void {
@@ -155,7 +157,7 @@ describe('rarity god-rays and burst', () => {
 
 describe('UnboxStage', () => {
   it('fans one ray per style slot and lights them only once they leak', () => {
-    const stage = new UnboxStage('legendary', 'coins');
+    const stage = new UnboxStage('legendary', 'coins', new UnboxAssets(new Group()));
     expect(stage.rayCount).toBe(rayStyle('legendary').count);
     stage.apply(unboxPose(0, FULL_UNBOX, false));
     expect(stage.rayStrength).toBe(0);
@@ -167,7 +169,7 @@ describe('UnboxStage', () => {
   });
 
   it('squashes the crate on the landing and raises the pedestal after the burst', () => {
-    const stage = new UnboxStage('fine', 'charm');
+    const stage = new UnboxStage('fine', 'charm', new UnboxAssets(new Group()));
     stage.apply(unboxPose(FULL_UNBOX.landMs + 100, FULL_UNBOX, false));
     expect(stage.crateScaleY).toBeLessThan(1);
     expect(stage.pedestalScale).toBeLessThan(0.01);
@@ -179,8 +181,8 @@ describe('UnboxStage', () => {
 
 describe('UnboxCinematic', () => {
   it('plays every beat once with its juice, then holds on the reveal until Collect', () => {
-    const { unbox, calls, pulses, beats, parent } = cinematic('legendary', false);
-    expect(parent.children).toHaveLength(1);
+    const { unbox, calls, pulses, beats, parent, assets } = cinematic('legendary', false);
+    expect(parent.children).toEqual([assets.light, unbox.stage.root]);
     play(unbox, 3);
     expect(beats.map((beat) => beat.kind)).toEqual(unboxBeats(FULL_UNBOX).map((b) => b.kind));
     expect(unbox.revealed).toBe(true);
@@ -195,6 +197,53 @@ describe('UnboxCinematic', () => {
     play(unbox, FULL_UNBOX.flyMs / 1000 + 0.05);
     expect(unbox.done).toBe(true);
     unbox.dispose();
+    expect(parent.children).toEqual([assets.light]);
+    expect(assets.light.intensity).toBe(0);
+  });
+
+  it('reuses one light, geometry and material set across unboxes, so the light count never changes', () => {
+    const parent = new Group();
+    const assets = new UnboxAssets(parent);
+    const camera = new PerspectiveCamera(40, 9 / 16);
+    const materials = new Set<unknown>();
+    const geometries = new Set<unknown>();
+    for (const rarity of ['common', 'heirloom', 'rare'] as const) {
+      const unbox = new UnboxCinematic({
+        parent,
+        assets,
+        camera,
+        framing: () => FRAMING,
+        at: new Vector3(0.02, -0.075, 0.085),
+        rarity,
+        hero: rarity === 'rare' ? 'pearls' : 'coins',
+        reducedMotion: false,
+      });
+      expect(parent.children.filter((child) => child === assets.light)).toHaveLength(1);
+      play(unbox, 2);
+      expect(assets.light.intensity).toBeGreaterThan(0);
+      expect(assets.light.position.x).toBeCloseTo(0.02);
+      unbox.stage.root.traverse((object) => {
+        if (!('material' in object) || !('geometry' in object)) return;
+        materials.add(object.material);
+        geometries.add(object.geometry);
+      });
+      unbox.collect();
+      play(unbox, FULL_UNBOX.flyMs / 1000 + 0.05);
+      unbox.dispose();
+      expect(assets.light.intensity).toBe(0);
+      expect(parent.children).toEqual([assets.light]);
+    }
+    const shared = [
+      assets.lacquer,
+      assets.gold,
+      assets.velvet,
+      assets.seamMaterial,
+      assets.heroMaterial,
+      assets.rayMaterial,
+    ];
+    expect([...materials].every((material) => shared.includes(material as never))).toBe(true);
+    expect(geometries.size).toBeLessThanOrEqual(10);
+    assets.dispose();
     expect(parent.children).toHaveLength(0);
   });
 

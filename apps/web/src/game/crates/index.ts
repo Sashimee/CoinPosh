@@ -4,6 +4,8 @@ export { CrateController } from './controller.ts';
 export type { CrateControllerOptions, CrateSimPort } from './controller.ts';
 export type { CrateEvents, CrateStingerCue } from './events.ts';
 export { CRATES_NAMESPACE, CRATES_STRINGS, cratesKey, registerCratesStrings } from './i18n.ts';
+export { ARRIVAL_HINT_MS, bindArrivalHint, mountArrivalHint } from './hint.ts';
+export type { ArrivalHintDom, ArrivalHintView, HintClock } from './hint.ts';
 export { heroOf, pityOutlook, rewardLines } from './loot.ts';
 export type { PityOutlook, RewardLine } from './loot.ts';
 export { mountCrates } from './mount.ts';

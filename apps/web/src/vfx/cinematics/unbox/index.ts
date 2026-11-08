@@ -18,5 +18,5 @@ export type {
   UnboxPose,
   UnboxTimeline,
 } from './plan.ts';
-export { CRATE_SIZE, UnboxStage } from './stage.ts';
+export { CRATE_SIZE, UnboxAssets, UnboxStage } from './stage.ts';
 export type { UnboxHero } from './stage.ts';

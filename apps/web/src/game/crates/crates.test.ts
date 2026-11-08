@@ -1,12 +1,15 @@
 import { crateSpawn, pity as pityConfig } from '@coinposh/economy';
 import {
   RARITIES,
+  RollSchema,
+  WalletSchema,
   type CoinId,
   type CrateId,
   type PlayerId,
   type Reward,
   type Roll,
 } from '@coinposh/shared';
+import { Group, PerspectiveCamera, Vector3 } from 'three/webgpu';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createBus } from '../../app/bus.ts';
 import type { ImpactEvent } from '../../audio/index.ts';
@@ -29,9 +32,11 @@ import {
 import { bindCrateAudio, stingerDuck } from './audio.ts';
 import { CrateController } from './controller.ts';
 import type { CrateEvents } from './events.ts';
+import { ARRIVAL_HINT_MS, bindArrivalHint, type HintClock } from './hint.ts';
 import { CRATES_STRINGS, cratesKey, registerCratesStrings } from './i18n.ts';
 import { heroOf, pityOutlook, rewardLines } from './loot.ts';
 import { CRATE_RIDE_SECONDS, CrateRide } from './ride.ts';
+import { UnboxDirector, type OpenedCrate, type UnboxCard } from './view.ts';
 
 const manualScheduler: Scheduler = { setTimeout: () => ({}), clearTimeout: () => undefined };
 const offlineNever: Connectivity = { onOnline: () => () => undefined };
@@ -229,6 +234,181 @@ describe('crate audio', () => {
     off();
     events.emit('crate:stinger', { cue: 'burst', rarity: 'rare', step: 1, duckSeconds: 2 });
     expect(ducks).toHaveLength(1);
+  });
+});
+
+describe('arrival hint', () => {
+  function fakeClock() {
+    const timers = new Map<number, () => void>();
+    let next = 0;
+    const clock: HintClock = {
+      setTimeout: (callback, ms) => {
+        expect(ms).toBe(ARRIVAL_HINT_MS);
+        timers.set(++next, callback);
+        return next;
+      },
+      clearTimeout: (handle) => {
+        timers.delete(handle as number);
+      },
+    };
+    const fire = () => {
+      for (const [id, callback] of [...timers]) {
+        timers.delete(id);
+        callback();
+      }
+    };
+    return { clock, timers, fire };
+  }
+
+  function bound() {
+    const events = createBus<CrateEvents>();
+    const log: string[] = [];
+    const { clock, timers, fire } = fakeClock();
+    const off = bindArrivalHint(
+      events,
+      { show: () => log.push('show'), hide: () => log.push('hide') },
+      clock,
+    );
+    const spawn = (id: string) => {
+      events.emit('crate:spawned', {
+        crateId: id as CrateId,
+        kind: 'vault',
+        position: { x: 0, y: 0, z: 0 },
+      });
+    };
+    return { events, log, timers, fire, off, spawn };
+  }
+
+  it('prompts on the first crate only and clears itself after the read time', () => {
+    const { log, timers, fire, spawn } = bound();
+    spawn('crate_AAAAAAAAAAAAAAAA');
+    expect(log).toEqual(['show']);
+    spawn('crate_BBBBBBBBBBBBBBBB');
+    expect(log).toEqual(['show']);
+    fire();
+    expect(log).toEqual(['show', 'hide']);
+    expect(timers.size).toBe(0);
+  });
+
+  it('clears as soon as that crate goes over, and ignores other crates falling', () => {
+    const { events, log, timers, spawn } = bound();
+    spawn('crate_AAAAAAAAAAAAAAAA');
+    const position = { x: 0, y: 0, z: 0 };
+    events.emit('crate:fell', { crateId: 'crate_BBBBBBBBBBBBBBBB' as CrateId, tick: 1, position });
+    expect(log).toEqual(['show']);
+    events.emit('crate:fell', { crateId: 'crate_AAAAAAAAAAAAAAAA' as CrateId, tick: 2, position });
+    expect(log).toEqual(['show', 'hide']);
+    expect(timers.size).toBe(0);
+    events.emit('crate:failed', { crateId: 'crate_AAAAAAAAAAAAAAAA' as CrateId, error: null });
+    expect(log).toEqual(['show', 'hide']);
+  });
+
+  it('hides on unbind and stops listening', () => {
+    const { log, timers, off, spawn } = bound();
+    spawn('crate_AAAAAAAAAAAAAAAA');
+    off();
+    expect(log).toEqual(['show', 'hide']);
+    expect(timers.size).toBe(0);
+    spawn('crate_BBBBBBBBBBBBBBBB');
+    expect(log).toEqual(['show', 'hide']);
+  });
+});
+
+describe('UnboxDirector', () => {
+  const FRAMING = { position: new Vector3(0, 0.5, 0.6), target: new Vector3(0, 0, -0.05), fov: 40 };
+  const roll = (rarity: Roll['rarity']): Roll =>
+    RollSchema.parse({
+      rarity,
+      rewards: [{ kind: 'currency', currency: 'pearls', amount: 25 }],
+      proof: { serverSeedHash: 'a'.repeat(64), clientSeed: 'velvet', nonce: 1 },
+      pity: { rare: 0, exquisite: 0, legendary: 0 },
+    });
+  const wallet = WalletSchema.parse({
+    coins: 10,
+    bullion: 0,
+    goldBars: 0,
+    pearls: 25,
+    keys: 0,
+    tickets: 0,
+    stars: 0,
+  });
+  const opened = (id: string): OpenedCrate => ({
+    crateId: id as CrateId,
+    roll: roll('fine'),
+    wallet,
+    at: new Vector3(0, -0.075, 0.085),
+  });
+
+  function director(refuse: ReadonlySet<string>) {
+    const parent = new Group();
+    const cards: string[] = [];
+    const disposedCards: string[] = [];
+    const started: string[] = [];
+    const unbox = new UnboxDirector({
+      parent,
+      camera: new PerspectiveCamera(40, 9 / 16),
+      framing: () => FRAMING,
+      events: createBus<CrateEvents>(),
+      reducedMotion: () => true,
+      onStart: (crateId) => started.push(crateId),
+      card: (crate): UnboxCard => {
+        if (refuse.has(crate.crateId)) throw new RangeError(`card refused ${crate.crateId}`);
+        cards.push(crate.crateId);
+        let shown = false;
+        return {
+          get shown() {
+            return shown;
+          },
+          show: () => {
+            shown = true;
+          },
+          dispose: () => disposedCards.push(crate.crateId),
+        };
+      },
+    });
+    return { unbox, parent, cards, disposedCards, started };
+  }
+
+  const BAD = 'crate_BBBBBBBBBBBBBBBB';
+
+  it('keeps one light in the scene from mount to dispose, whatever plays', () => {
+    const { unbox, parent } = director(new Set());
+    expect(parent.children).toHaveLength(1);
+    const light = parent.children[0];
+    unbox.enqueue(opened('crate_AAAAAAAAAAAAAAAA'));
+    expect(parent.children).toHaveLength(2);
+    unbox.update(1.2);
+    unbox.collect();
+    unbox.update(1);
+    expect(unbox.active).toBeNull();
+    expect(parent.children).toEqual([light]);
+    unbox.dispose();
+    expect(parent.children).toHaveLength(0);
+  });
+
+  it('leaves no stage behind when the card refuses a roll, and plays the next crate', () => {
+    const { unbox, parent, cards, started } = director(new Set([BAD]));
+    expect(() => {
+      unbox.enqueue(opened(BAD));
+    }).toThrow(RangeError);
+    expect(unbox.active).toBeNull();
+    expect(parent.children).toHaveLength(1);
+
+    unbox.enqueue(opened('crate_AAAAAAAAAAAAAAAA'));
+    unbox.enqueue(opened(BAD));
+    unbox.enqueue(opened('crate_CCCCCCCCCCCCCCCC'));
+    unbox.update(1.2);
+    unbox.collect();
+    expect(() => {
+      unbox.update(1);
+    }).toThrow(RangeError);
+    expect(unbox.active).toBe('crate_CCCCCCCCCCCCCCCC');
+    expect(unbox.waiting).toBe(0);
+    expect(parent.children).toHaveLength(2);
+    expect(cards).toEqual(['crate_AAAAAAAAAAAAAAAA', 'crate_CCCCCCCCCCCCCCCC']);
+    expect(started).toEqual([BAD, 'crate_AAAAAAAAAAAAAAAA', BAD, 'crate_CCCCCCCCCCCCCCCC']);
+    unbox.dispose();
+    expect(parent.children).toHaveLength(0);
   });
 });
 

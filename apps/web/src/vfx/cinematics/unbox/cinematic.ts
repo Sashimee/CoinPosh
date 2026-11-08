@@ -13,7 +13,7 @@ import {
   type UnboxPose,
   type UnboxTimeline,
 } from './plan.ts';
-import { CRATE_SIZE, UnboxStage, type UnboxHero } from './stage.ts';
+import { CRATE_SIZE, UnboxStage, type UnboxAssets, type UnboxHero } from './stage.ts';
 
 /** The slice of `Vfx` the unbox fires into; any of it may be missing (tests, a lost GPU). */
 export interface UnboxVfx {
@@ -25,6 +25,8 @@ export interface UnboxVfx {
 
 export interface UnboxCinematicOptions {
   readonly parent: Object3D;
+  /** Shared props and light, mounted into `parent` once; the cinematic only borrows them. */
+  readonly assets: UnboxAssets;
   readonly camera: PerspectiveCamera;
   /** The venue framing for an aspect ratio; the dolly leaves it and returns to it. */
   readonly framing: (aspect: number) => CameraPreset;
@@ -67,7 +69,7 @@ export class UnboxCinematic {
     this.options = options;
     this.timeline = unboxTimeline(options.reducedMotion);
     this.beats = unboxBeats(this.timeline);
-    this.stage = new UnboxStage(options.rarity, options.hero);
+    this.stage = new UnboxStage(options.rarity, options.hero, options.assets);
     this.stage.root.position.copy(options.at);
     options.parent.add(this.stage.root);
     this.lastPose = unboxPose(0, this.timeline, options.reducedMotion);

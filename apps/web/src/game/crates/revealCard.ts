@@ -42,6 +42,7 @@ export interface CrateReveal {
  */
 export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   const { ui, roll, rarity, reducedMotion } = options;
+  const outlook = pityOutlook(roll.pity);
   registerCratesStrings(ui.i18n);
   const disposers: (() => void)[] = [];
   const loc = new Localizer(ui.i18n);
@@ -66,7 +67,6 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     list.append(item);
   });
   const pity = h('p', { class: 'cp-crate-pity' });
-  const outlook = pityOutlook(roll.pity);
   ctx.own(
     loc.text(pity, () => {
       const values = { rarity: t(`rarity.${outlook.rarity}`), count: outlook.within };

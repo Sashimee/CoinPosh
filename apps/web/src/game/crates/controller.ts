@@ -150,19 +150,21 @@ export class CrateController {
     this.opening.set(crateId, request);
   }
 
+  /** Only the server call can fail the open; once it answers, the wallet is already credited. */
   private async request(crateId: CrateId): Promise<void> {
-    try {
-      const opened = await this.options.client.call('cratesOpen', { body: { crateId } });
-      if (this.disposed) return;
-      this.latestPity = opened.roll.pity;
-      this.options.events.emit('crate:opened', {
-        crateId,
-        roll: opened.roll,
-        wallet: opened.wallet,
+    const opened = await this.options.client
+      .call('cratesOpen', { body: { crateId } })
+      .catch((error: unknown) => {
+        if (!this.disposed) this.options.events.emit('crate:failed', { crateId, error });
+        return null;
       });
-      this.options.events.emit('crate:pity', { pity: opened.roll.pity });
-    } catch (error) {
-      if (!this.disposed) this.options.events.emit('crate:failed', { crateId, error });
-    }
+    if (opened === null || this.disposed) return;
+    this.latestPity = opened.roll.pity;
+    this.options.events.emit('crate:opened', {
+      crateId,
+      roll: opened.roll,
+      wallet: opened.wallet,
+    });
+    this.options.events.emit('crate:pity', { pity: opened.roll.pity });
   }
 }

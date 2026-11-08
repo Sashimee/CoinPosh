@@ -16,6 +16,7 @@ import { easeInQuad, easeOutCubic, lerp } from '../../vfx/easing.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
 import {
   CRATE_SIZE,
+  UnboxAssets,
   UnboxCinematic,
   type UnboxBeat,
   type UnboxVfx,
@@ -199,16 +200,19 @@ interface Playing {
 
 /**
  * Plays opened crates one at a time: the 3D unbox, its stingers on the bus, then the reward card.
- * A crate that opens while another is playing waits its turn in arrival order.
+ * A crate that opens while another is playing waits its turn in arrival order. The unbox props
+ * and light are built here once and lent to each cinematic.
  */
 export class UnboxDirector {
   private readonly options: UnboxDirectorOptions;
+  private readonly assets: UnboxAssets;
   private readonly queue: OpenedCrate[] = [];
   private playing: Playing | null = null;
   private disposed = false;
 
   constructor(options: UnboxDirectorOptions) {
     this.options = options;
+    this.assets = new UnboxAssets(options.parent);
   }
 
   get active(): CrateId | null {
@@ -263,37 +267,55 @@ export class UnboxDirector {
     this.disposed = true;
     this.queue.length = 0;
     this.finish();
+    this.assets.dispose();
   }
 
+  /**
+   * Mounts the card before any 3D so a card that refuses the roll leaves nothing behind; the
+   * error still surfaces, and the queue moves on to the next crate.
+   */
   private startNext(): void {
     const opened = this.queue.shift();
     if (!opened) return;
     const { roll } = opened;
     this.options.onStart?.(opened.crateId);
-    let card: UnboxCard | null = null;
-    const cinematic = new UnboxCinematic({
-      parent: this.options.parent,
-      camera: this.options.camera,
-      framing: this.options.framing,
-      at: opened.at,
-      rarity: roll.rarity,
-      hero: heroOf(roll.rewards),
-      reducedMotion: this.options.reducedMotion(),
-      vfx: this.options.vfx ?? null,
-      haptics: this.options.haptics ?? null,
-      onBeat: (beat) => {
-        this.onBeat(opened, beat, cinematic.timeline.revealAtMs);
-        if (beat.kind === 'reveal') card?.show();
-      },
-    });
-    card = this.options.card(opened, {
-      skip: () => {
-        this.skip();
-      },
-      collect: () => {
-        this.collect();
-      },
-    });
+    let card: UnboxCard;
+    let cinematic: UnboxCinematic;
+    try {
+      card = this.options.card(opened, {
+        skip: () => {
+          this.skip();
+        },
+        collect: () => {
+          this.collect();
+        },
+      });
+    } catch (error) {
+      this.startNext();
+      throw error;
+    }
+    try {
+      cinematic = new UnboxCinematic({
+        parent: this.options.parent,
+        assets: this.assets,
+        camera: this.options.camera,
+        framing: this.options.framing,
+        at: opened.at,
+        rarity: roll.rarity,
+        hero: heroOf(roll.rewards),
+        reducedMotion: this.options.reducedMotion(),
+        vfx: this.options.vfx ?? null,
+        haptics: this.options.haptics ?? null,
+        onBeat: (beat) => {
+          this.onBeat(opened, beat, cinematic.timeline.revealAtMs);
+          if (beat.kind === 'reveal') card.show();
+        },
+      });
+    } catch (error) {
+      card.dispose();
+      this.startNext();
+      throw error;
+    }
     this.playing = { opened, cinematic, card, collected: false };
     if (cinematic.revealed) card.show();
   }
