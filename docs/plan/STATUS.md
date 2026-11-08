@@ -51,6 +51,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-1.14 | done | task/T-1.14 (merge 30d9991) | Vault Crates end-to-end + unbox cinematic (f9b2839); main.ts wiring and follow-ups queued as P-180..P-184; pnpm check green after merge |
 | P-176 | done | task/P-176 (merge f7a2cfd) | Pusher actually pushes: rigid raft behind the pusher broken so coins creep forward and fall over the lip (c1dffa1); SIM_VERSION 3 -> 4 with determinism hashes re-pinned (sim.test.ts, mechanics.test.ts edited outside owns, acknowledged by lead); follow-ups P-185..P-189; pnpm check green after merge |
 | P-174 | blocked(review: POLISH.md hunk outside owns with follow-up IDs P-178..P-180 colliding with feat/build-loop; openingHeapCoins = 100 is an economy number outside packages/economy) | task/P-174 (802d971, not merged) | Vault/feedback gate across P-136, P-149/P-169, P-137; follow-ups filed as P-190..P-198 |
+| P-201 | done | task/P-201 (merge dba5125) | Boot poster behind the canvas until the first lit frame instead of a black void; side meters hidden until playable (9d562eb); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 

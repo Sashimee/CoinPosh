@@ -11,6 +11,8 @@ import { createTierStamp } from './components/tierStamp.ts';
 import { tr, type UiContext } from './context.ts';
 import { h } from './dom.ts';
 import { icon } from './icons.ts';
+import { schedule } from './motion/loop.ts';
+import { isReducedMotion } from './motion/reduced.ts';
 import { SPRINGS } from './motion/spring.ts';
 import { SpringValue } from './motion/value.ts';
 import { createSettingsPanel } from './panels/settingsPanel.ts';
@@ -57,6 +59,59 @@ function createBadge(ctx: UiContext): HTMLElement {
     }),
   );
   return badge;
+}
+
+const POSTER_ID = 'cp-poster';
+/** Outlasts the poster's CSS cross-fade, so it is removed even if `transitionend` never fires. */
+const POSTER_FADE_MS = 1000;
+
+interface BootProbe {
+  readonly sim: { readonly renderTick: number } | null;
+  readonly playable: boolean;
+}
+
+function retirePoster(poster: HTMLElement): void {
+  if (isReducedMotion()) {
+    poster.remove();
+    return;
+  }
+  poster.classList.add('is-lit');
+  const remove = (): void => {
+    clearTimeout(timer);
+    poster.remove();
+  };
+  const timer = setTimeout(remove, POSTER_FADE_MS);
+  poster.addEventListener('transitionend', remove, { once: true });
+}
+
+/**
+ * The first frame that syncs sim coins is the first one drawn with the venue lit, so the poster
+ * from index.html leaves on it. Without a probe (the UI preview) there is no boot to wait for.
+ */
+function followBoot(ctx: UiContext, meters: HTMLElement): void {
+  const probe: BootProbe | undefined = window.__coinposh;
+  const entrance = new SpringValue(probe ? 0 : 1, SPRINGS.bouncy, (value) => {
+    meters.style.setProperty('--cp-meters-in', String(value));
+  });
+  if (!probe) return;
+  meters.classList.add('is-waiting');
+  meters.inert = true;
+  let poster = document.getElementById(POSTER_ID);
+  const stop = schedule(() => {
+    if (poster && (probe.playable || (probe.sim?.renderTick ?? 0) > 0)) {
+      retirePoster(poster);
+      poster = null;
+    }
+    if (!probe.playable) return true;
+    meters.classList.remove('is-waiting');
+    meters.inert = false;
+    void entrance.to(1);
+    return false;
+  });
+  ctx.own(() => {
+    stop();
+    entrance.stop();
+  });
 }
 
 export function createHud(ctx: UiContext): Hud {
@@ -136,6 +191,14 @@ export function createHud(ctx: UiContext): Hud {
   );
   ctx.loc.attr(dock, 'aria-label', () => tr(ctx, 'app.hudLabel'));
 
+  const meters = h(
+    'div',
+    { class: 'cp-hud-middle', attrs: { 'data-testid': 'hud-meters' } },
+    createDecorumMeter(ctx),
+    createComboLadder(ctx),
+  );
+  followBoot(ctx, meters);
+
   const hud = h(
     'div',
     { class: 'cp-hud' },
@@ -146,7 +209,7 @@ export function createHud(ctx: UiContext): Hud {
       createBalancePlaque(ctx),
       createConciergeNotice(ctx),
     ),
-    h('div', { class: 'cp-hud-middle' }, createDecorumMeter(ctx), createComboLadder(ctx)),
+    meters,
     dock,
   );
   const root = h(
