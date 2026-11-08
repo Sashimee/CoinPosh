@@ -1,8 +1,9 @@
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { COIN } from './coin.ts';
-import { FIXED_DT, SOLVER, TICK_RATE_HZ } from './constants.ts';
+import { FIXED_DT, SIM_VERSION, SOLVER, TICK_RATE_HZ } from './constants.ts';
 import type { SimInput } from './inputs.ts';
 import { Sim } from './sim.ts';
+import { DEFAULT_PUSHER_MOTION, type FallEvent, PUSHER, TABLE_SOLVER } from './table/index.ts';
 
 const TICKS = 3600;
 const HASH_INTERVAL = 300;
@@ -35,6 +36,8 @@ async function createSim(seed = SEED): Promise<Sim> {
 interface Replay {
   readonly sim: Sim;
   readonly checkpoints: string[];
+  readonly falls: FallEvent[];
+  readonly drops: number[];
   readonly inputsAt: (tick: number) => SimInput[];
 }
 
@@ -42,13 +45,20 @@ async function startReplay(
   seed: number,
   inputsAt: (tick: number) => SimInput[] = scriptedInputs,
 ): Promise<Replay> {
-  return { sim: await Sim.create({ seed }), checkpoints: [], inputsAt };
+  return { sim: await Sim.create({ seed }), checkpoints: [], falls: [], drops: [], inputsAt };
 }
 
 function advance(replay: Replay, ticks: number): string[] {
-  const { sim, checkpoints, inputsAt } = replay;
+  const { sim, checkpoints, falls, drops, inputsAt } = replay;
   while (sim.tick < ticks) {
-    sim.step(inputsAt(sim.tick));
+    const inputs = inputsAt(sim.tick);
+    for (const _ of inputs) {
+      drops.push(sim.tick);
+    }
+    for (const fall of sim.step(inputs)) {
+      expect(fall.tick, `coin ${fall.coinId}`).toBe(sim.tick);
+      falls.push(fall);
+    }
     if (sim.tick % HASH_INTERVAL === 0) {
       checkpoints.push(sim.hash());
     }
@@ -106,38 +116,48 @@ afterAll(async () => {
 });
 
 describe('Rapier world', () => {
-  it('runs the deterministic build at a fixed 60 Hz step with pinned solver settings', async () => {
+  it('runs the deterministic build at a fixed 60 Hz tick with the table solver settings', async () => {
     const sim = await createSim();
+    const scale = TABLE_SOLVER.worldScale;
     expect(TICK_RATE_HZ).toBe(60);
     expect(sim.engine).toEqual({
+      simVersion: SIM_VERSION,
       rapierVersion: '0.21.0',
-      timestep: Math.fround(1 / 60),
-      lengthUnit: Math.fround(SOLVER.lengthUnit),
-      numSolverIterations: SOLVER.numSolverIterations,
+      substepTimestep: Math.fround(FIXED_DT / TABLE_SOLVER.substeps),
+      substeps: TABLE_SOLVER.substeps,
+      worldScale: scale,
+      lengthUnit: Math.fround(TABLE_SOLVER.lengthUnit * scale),
+      normalizedPredictionDistance: Math.fround(TABLE_SOLVER.normalizedPredictionDistance),
+      numSolverIterations: TABLE_SOLVER.numSolverIterations,
+      numInternalPgsIterations: TABLE_SOLVER.numInternalPgsIterations,
       maxCcdSubsteps: SOLVER.maxCcdSubsteps,
     });
-    expect(Math.fround(FIXED_DT)).toBe(sim.engine.timestep);
+    expect(Math.fround(sim.engine.substepTimestep * sim.engine.substeps)).toBe(
+      Math.fround(FIXED_DT),
+    );
   });
 
-  it('lands a dropped coin cleanly, settles it flat on the tray and lets it sleep', async () => {
+  it('lands a dropped coin on the upper tier without sinking and settles it flat', async () => {
     const sim = await createSim();
     sim.step([{ kind: 'dropCoin', xMm: 0 }]);
+    const restY = PUSHER.height + COIN.halfThickness;
     let lowest = Number.POSITIVE_INFINITY;
     for (let i = 0; i < 4 * TICK_RATE_HZ; i++) {
       sim.step();
       lowest = Math.min(lowest, sim.coins()[0]?.translation.y ?? lowest);
     }
-    const [coin] = sim.coins();
+    const [coin, ...rest] = sim.coins();
     if (!coin) {
       throw new Error('the dropped coin is missing');
     }
     const { x, z } = coin.rotation;
     const faceUpY = 1 - 2 * (x * x + z * z);
+    expect(rest).toHaveLength(0);
     expect(coin.id).toBe(0);
-    expect(lowest).toBeGreaterThan(COIN.halfThickness - 0.0002);
-    expect(coin.translation.y).toBeCloseTo(COIN.halfThickness, 3);
+    expect(lowest).toBeGreaterThan(restY - 0.0002);
+    expect(coin.translation.y).toBeCloseTo(restY, 3);
+    expect(Math.abs(coin.translation.x)).toBeLessThan(0.002);
     expect(faceUpY).toBeGreaterThan(0.9999);
-    expect(coin.sleeping).toBe(true);
   });
 });
 
@@ -166,8 +186,18 @@ describe('determinism', () => {
   it('pins the final hash so engine, solver or input-handling changes are caught', async () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
-    // the change. Update it only alongside a deliberate sim version bump.
-    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"9a92b6f80b23ac96"`);
+    // the change. Update it only alongside a deliberate SIM_VERSION bump.
+    expect(SIM_VERSION).toBe(2);
+    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"590da61d0e98c762"`);
+  });
+
+  it('reports the same falls, at the same ticks, on both replays of the minute', async () => {
+    const { replica } = await scriptedMinute();
+    await referenceTo(TICKS);
+    advance(replica, TICKS);
+    const { reference } = await scriptedMinute();
+    expect(reference.falls.length).toBeGreaterThan(0);
+    expect(replica.falls).toEqual(reference.falls);
   });
 
   it('stays identical when two sims are stepped interleaved in the same WASM instance', async () => {
@@ -215,6 +245,44 @@ describe('determinism', () => {
       { kind: 'dropCoin', xMm: -40 },
     ]);
     expect(b.hash()).not.toBe(a.hash());
+  });
+});
+
+describe('table', () => {
+  it('drives the table once per tick, removing and reporting every coin that falls on the tick it falls', async () => {
+    const { reference } = await scriptedMinute();
+    await referenceTo(TICKS);
+    const { sim, falls, drops } = reference;
+    const onTable = new Set(sim.coins().map((coin) => coin.id));
+    expect(falls.length).toBeGreaterThan(0);
+    expect(sim.coinCount).toBe(drops.length - falls.length);
+    expect(onTable.size).toBe(sim.coinCount);
+    for (const fall of falls) {
+      expect(onTable.has(fall.coinId), `coin ${fall.coinId}`).toBe(false);
+      expect(fall.coinId).toBeLessThan(drops.length);
+      expect(fall.tick).toBeGreaterThan(drops[fall.coinId] ?? Number.POSITIVE_INFINITY);
+    }
+    const order = falls.map((fall) => [fall.tick, fall.coinId]);
+    expect(order).toEqual(
+      order.toSorted(([ta = 0, ia = 0], [tb = 0, ib = 0]) => ta - tb || ia - ib),
+    );
+  });
+
+  it('sweeps the pusher one tick per step and hashes its phase', async () => {
+    const a = await createSim();
+    const b = await createSim();
+    const start = a.pusher;
+    expect(start.motion).toEqual(DEFAULT_PUSHER_MOTION);
+    a.step();
+    b.step();
+    expect(a.pusher.frontZ).toBeGreaterThan(start.frontZ);
+    expect(a.pusher).toEqual(b.pusher);
+    expect(a.hash()).toBe(b.hash());
+    const half = DEFAULT_PUSHER_MOTION.periodTicks / 2;
+    while (a.tick < half) {
+      a.step();
+    }
+    expect(a.pusher.frontZ).toBeGreaterThan(PUSHER.frontZ + DEFAULT_PUSHER_MOTION.stroke / 2);
   });
 });
 

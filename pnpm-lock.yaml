@@ -227,6 +227,9 @@ importers:
       '@coinposh/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@coinposh/sim':
+        specifier: workspace:*
+        version: link:../../packages/sim
       i18next:
         specifier: 26.5.7
         version: 26.5.7(typescript@6.0.3)
