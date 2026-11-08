@@ -5,6 +5,7 @@ import {
   crateSpawn,
   fusion,
   fusionValue,
+  openingHeap,
 } from '@coinposh/economy';
 import {
   ClaimsResponseSchema,
@@ -128,10 +129,12 @@ describe('mock server: value is minted and conserved server-side', () => {
     expectConserved();
   });
 
-  it('opens the table with a heap of lowest-tier coins that pay out as soon as they fall', async () => {
+  it('opens the table with the economy opening heap, paid out as soon as it falls', async () => {
     const { table, wallet } = await state();
-    expect(table.coins).toHaveLength(MOCK_RULES.openingHeapCoins);
-    expect(new Set(table.coins.map((coin) => coin.tier))).toEqual(new Set([coinTiers[0].id]));
+    expect(table.coins).toHaveLength(openingHeap.coins);
+    expect(new Set(table.coins.map((coin) => coin.tier))).toEqual(new Set([openingHeap.tier]));
+    const face = coinTiers.find((tier) => tier.id === openingHeap.tier)?.value;
+    expect(table.coins.every((coin) => coin.value === face)).toBe(true);
     const [first, second] = table.coins;
     if (first === undefined || second === undefined) throw new Error('Expected a heap.');
     time.advance(100);

@@ -16,6 +16,7 @@ import {
   initialPityState,
   offline,
   offlineEarnings,
+  openingHeap,
   pity,
   rollDrop,
   season,
@@ -441,11 +442,14 @@ export class MockWorld {
       .map((record) => record.coin);
   }
 
-  /** The opening heap already rests at the front lip, so its coins may fall from tick 0. */
+  /**
+   * The opening heap is minted on the house and already rests at the front lip, so its coins
+   * may fall from tick 0. The sim lays them first, so they hold sim ids 0..n-1.
+   */
   #seedOpeningHeap(player: MockPlayer): void {
-    const value = this.#coinValue(player, DROP_TIER.id);
-    for (let i = 0; i < MOCK_RULES.openingHeapCoins; i++) {
-      this.#mint(player, DROP_TIER.id, value, 'table', 0, 'heap');
+    const value = this.#coinValue(player, openingHeap.tier);
+    for (let i = 0; i < openingHeap.coins; i++) {
+      this.#mint(player, openingHeap.tier, value, 'table', 0, 'heap');
     }
   }
 

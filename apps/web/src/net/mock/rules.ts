@@ -3,11 +3,6 @@
 export const MOCK_RULES = {
   /** Pre-minted, pre-paid coins kept ready for instant and offline drops. */
   bufferSize: 12,
-  /**
-   * Lowest-tier coins a new player's table opens with, minted on the house so the opening heap
-   * pays out when pushed off. The sim lays them first, so they hold sim ids 0..n-1.
-   */
-  openingHeapCoins: 100,
   accessTokenTtlMs: 15 * 60_000,
   /** Decorum points one nudge adds, against the `decorumCapacity` upgrade stat. */
   decorumPerNudge: 18,

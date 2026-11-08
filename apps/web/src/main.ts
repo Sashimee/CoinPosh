@@ -107,6 +107,8 @@ interface ProbeCounts {
   fusions: number;
   credits: number;
   creditedCoins: number;
+  /** Fall claims the server refused, by reason; `unanswered` when the request itself failed. */
+  refusedFalls: Record<string, number>;
 }
 
 declare global {
@@ -126,6 +128,7 @@ const probe: { bridge: SimBridge | null; playable: boolean; counts: ProbeCounts 
     fusions: 0,
     credits: 0,
     creditedCoins: 0,
+    refusedFalls: {},
   },
 };
 window.__coinposh = {
@@ -136,7 +139,7 @@ window.__coinposh = {
     return probe.playable;
   },
   get counts() {
-    return { ...probe.counts };
+    return { ...probe.counts, refusedFalls: { ...probe.counts.refusedFalls } };
   },
 };
 
@@ -692,6 +695,10 @@ function startPlay(
     }),
     systems.events.on('coin:fusion', () => {
       counts.fusions += 1;
+    }),
+    systems.events.on('fall:refused', ({ reason }) => {
+      const key = reason ?? 'unanswered';
+      counts.refusedFalls[key] = (counts.refusedFalls[key] ?? 0) + 1;
     }),
     systems.events.on('value:credited', ({ amount }) => {
       counts.credits += 1;

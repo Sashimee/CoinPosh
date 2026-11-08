@@ -300,7 +300,10 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
         if (claim.kind !== 'fall') break;
         const seen = claimedFalls.get(claim.coinId);
         claimedFalls.delete(claim.coinId);
-        if (result.status !== 'accepted') break;
+        if (result.status !== 'accepted') {
+          events.emit('fall:refused', { coinId: claim.coinId, reason: result.reason });
+          break;
+        }
         if (result.cascade !== null) {
           events.emit('cascade:confirmed', { tier: result.cascade, coinId: claim.coinId });
         }
@@ -317,7 +320,10 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       }
       case 'claimsFailed':
         for (const claim of event.claims) {
-          if (claim.kind === 'fall') claimedFalls.delete(claim.coinId);
+          if (claim.kind === 'fall') {
+            claimedFalls.delete(claim.coinId);
+            events.emit('fall:refused', { coinId: claim.coinId, reason: null });
+          }
           if (claim.kind === 'fusion') fusedBodies.delete(claim.coinIds[0]);
         }
         break;

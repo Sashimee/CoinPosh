@@ -376,6 +376,32 @@ describe('systems core: falls and the Cascade combo', () => {
     ]);
     expect(confirmed).toEqual([{ tier: 'chic', coinId: coin(1).id }]);
   });
+
+  it('reports each fall the server refused or never answered, and credits none of them', () => {
+    const { core, table, dropCoins, leave } = setup();
+    const credited = record(core, 'value:credited');
+    const refused = record(core, 'fall:refused');
+    dropCoins(3);
+    leave(0, FRONT);
+    leave(1, FRONT);
+    leave(2, FRONT);
+    const [first, ...rest] = [1, 2, 3].map(
+      (n) => ({ kind: 'fall', coinId: coin(n).id, tick: 0, edge: 'front' }) as const,
+    );
+    if (first === undefined) throw new Error('Expected three claims.');
+    table.emit({
+      type: 'claimSettled',
+      claim: first,
+      result: { status: 'rejected', reason: 'over_envelope' },
+    });
+    table.emit({ type: 'claimsFailed', claims: rest, error: new Error('offline') });
+    expect(refused).toEqual([
+      { coinId: coin(1).id, reason: 'over_envelope' },
+      { coinId: coin(2).id, reason: null },
+      { coinId: coin(3).id, reason: null },
+    ]);
+    expect(credited).toEqual([]);
+  });
 });
 
 describe('systems core: the sim event stream', () => {
