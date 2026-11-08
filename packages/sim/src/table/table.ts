@@ -1,4 +1,5 @@
 import type {
+  Collider,
   RigidBody,
   Rotation,
   Shape,
@@ -6,6 +7,7 @@ import type {
   World,
 } from '@dimforge/rapier3d-deterministic-compat';
 import { COIN, COIN_DROP_MAX_JITTER, COIN_DROP_MAX_TILT } from '../coin.ts';
+import { FIXED_DT } from '../constants.ts';
 import type { StateHasher } from '../hash.ts';
 import type { Xoshiro128ss } from '../prng.ts';
 import type { NudgeDirection } from '../inputs.ts';
@@ -21,7 +23,14 @@ import {
 import { type HeapGeometry, type HeapLayout, heapCapacity, heapPoses } from './heap.ts';
 import { DEFAULT_PUSHER_MOTION, PusherClock, type PusherMotion } from './pusher.ts';
 import { CoinSeparator, type Obstacle, type SeparationResult } from './separation.ts';
-import { COIN_MATERIAL, CONTACT_EVENTS, NUDGE, TABLE_MATERIAL, TABLE_SOLVER } from './tuning.ts';
+import {
+  COIN_MATERIAL,
+  COIN_REST,
+  CONTACT_EVENTS,
+  NUDGE,
+  TABLE_MATERIAL,
+  TABLE_SOLVER,
+} from './tuning.ts';
 
 /** Mirrors FallEdge in packages/shared, which packages/sim cannot import yet. */
 export type FallEdge = 'front' | 'left' | 'right';
@@ -33,6 +42,22 @@ export type FallEdge = 'front' | 'left' | 'right';
 export type ContactSurface = 'coin' | 'pusher' | 'floor' | 'cabinet';
 
 /** World units per metre; see TABLE_SOLVER.worldScale. */
+function square(x: number): number {
+  return x * x;
+}
+
+/**
+ * cos θ from its Taylor series, exact to double precision for |θ| under 0.1 rad, since
+ * Math.cos is engine-approximated.
+ */
+function smallAngleCos(theta: number): number {
+  if (!(Math.abs(theta) < 0.1)) {
+    throw new RangeError(`smallAngleCos: ${theta} rad is outside (-0.1, 0.1)`);
+  }
+  const t2 = theta * theta;
+  return 1 - (t2 / 2) * (1 - (t2 / 12) * (1 - (t2 / 30) * (1 - t2 / 56)));
+}
+
 const SCALE = TABLE_SOLVER.worldScale;
 const SUBSTEPS = TABLE_SOLVER.substeps;
 const IMPACT_SPEED = COIN_MATERIAL.impactSpeed * SCALE;
@@ -40,6 +65,35 @@ const IMPACT_SPEED_SQ = IMPACT_SPEED * IMPACT_SPEED;
 const IMPACT_MARGIN = COIN_MATERIAL.impactMargin * SCALE;
 const IMPACT_PASSES = COIN_MATERIAL.impactPasses;
 const FALL_Y = PLAYFIELD.fallY * SCALE;
+const REST_DRIFT_SQ = square(COIN_REST.drift * SCALE);
+const REST_TURN_COS_SQ = square(smallAngleCos((COIN_REST.turn * Math.PI) / 180));
+const SLOW_SPEED_SQ = square(COIN_REST.slowSpeed * SCALE);
+const WAKE_SPEED_SQ = square(COIN_REST.wakeSpeed * SCALE);
+const WAKE_FALL_SQ = square(COIN_REST.wakeFall * SCALE);
+const WAKE_IMPULSE = COIN_REST.wakeImpulse * SCALE;
+const TOUCH_DIST = IMPACT_MARGIN + 2 * COIN_MATERIAL.contactSkin * SCALE;
+const SHELF_Y = PUSHER.height * SCALE;
+const SHELF_EDGE_Z = PUSHER.frontZ * SCALE;
+
+/** A coin's rest state; see COIN_REST. */
+interface Rest {
+  readonly collider: Collider;
+  /**
+   * Ticks in a row it has stayed within COIN_REST.drift and COIN_REST.turn of `anchor`,
+   * zero when frozen.
+   */
+  still: number;
+  /**
+   * Where the still run began: centre x, y, z (z from the pusher's offset on the top),
+   * then the face normal x, y, z, in world units.
+   */
+  readonly anchor: [number, number, number, number, number, number];
+  frozen: boolean;
+  /** Frozen on the pusher top, moved with the block. */
+  rider: boolean;
+  /** Slow enough that its spin is damped at COIN_REST.angularDamping. */
+  damped: boolean;
+}
 
 export interface FallEvent {
   readonly coinId: number;
@@ -105,13 +159,18 @@ export class PusherTable {
   readonly #pusherCollider: number;
   /** Insertion-ordered by ascending coin id, which fixes the iteration order. */
   readonly #coins = new Map<number, RigidBody>();
+  /** Each coin's rest state, in the same order as #coins. */
+  readonly #rest = new Map<number, Rest>();
+  readonly #idByCollider = new Map<number, number>();
+  /** The pusher's velocity along z over the last tick, in world units per second. */
+  #pusherSpeed = 0;
   /** The strongest contact each coin made during the current step. */
   readonly #pendingContacts = new Map<number, PendingContact>();
   /** The tick of each coin's last reported contact, for CONTACT_EVENTS.cooldownTicks. */
   readonly #lastContact = new Map<number, number>();
   #contacts: ContactEvent[] = [];
   #nextCoinId = 0;
-  #separation: SeparationResult = { moved: 0, passes: 0, converged: true };
+  #separation: SeparationResult = { moved: 0, passes: 0, converged: true, loosened: [] };
 
   constructor(rapier: Rapier, world: World, options: TableOptions = {}) {
     this.#rapier = rapier;
@@ -175,7 +234,7 @@ export class PusherTable {
       id,
       translation: toMetres(body.translation()),
       rotation: body.rotation(),
-      sleeping: body.isSleeping(),
+      sleeping: this.#isFrozen(id) || body.isSleeping(),
     }));
   }
 
@@ -220,6 +279,7 @@ export class PusherTable {
     if (!body) {
       throw new RangeError(`PusherTable.removeCoin: coin ${id} is not on the table`);
     }
+    this.#wakeAround(body.translation());
     this.#forget(id);
     this.#world.removeRigidBody(body);
   }
@@ -242,6 +302,9 @@ export class PusherTable {
         throw new TypeError(`PusherTable.nudge: unknown direction ${JSON.stringify(direction)}`);
     }
     const lift = NUDGE.lift * SCALE;
+    for (const id of this.#coins.keys()) {
+      this.#wake(id);
+    }
     for (const body of this.#coins.values()) {
       const v = body.linvel();
       body.setLinvel({ x: v.x + dx, y: v.y + lift, z: v.z + dz }, true);
@@ -260,7 +323,7 @@ export class PusherTable {
         .setCanSleep(true)
         .setCcdEnabled(true),
     );
-    this.#world.createCollider(
+    const collider = this.#world.createCollider(
       new ColliderDesc(this.#coinShape)
         .setDensity(COIN.density / (SCALE * SCALE * SCALE))
         .setFriction(COIN_MATERIAL.friction)
@@ -271,6 +334,15 @@ export class PusherTable {
     );
     const id = this.#nextCoinId;
     this.#coins.set(id, body);
+    this.#rest.set(id, {
+      collider,
+      still: 0,
+      anchor: [0, 0, 0, 0, 0, 0],
+      frozen: false,
+      rider: false,
+      damped: false,
+    });
+    this.#idByCollider.set(collider.handle, id);
     this.#nextCoinId += 1;
     return id;
   }
@@ -285,17 +357,221 @@ export class PusherTable {
     const from = this.#clock.offset;
     this.#clock.advance();
     const to = this.#clock.offset;
+    this.#pusherSpeed = ((to - from) * SCALE) / FIXED_DT;
+    this.#wakeAhead(from, to);
+    const carry = ((to - from) * SCALE) / SUBSTEPS;
     for (let i = 1; i <= SUBSTEPS; i++) {
       this.#pusher.setNextKinematicTranslation(
         this.#pusherCentre(from + ((to - from) * i) / SUBSTEPS),
       );
+      this.#carryRiders(carry);
       this.#absorbImpacts();
       this.#world.step();
     }
     this.#separation = this.#separator.separate(this.#coins.values());
+    for (const body of this.#separation.loosened) {
+      this.#wake(this.#idOf(body.collider(0)));
+    }
     const falls = this.#collectFalls(tick);
     this.#contacts = this.#collectContacts(tick);
+    this.#settle();
     return falls;
+  }
+
+  #idOf(collider: Collider): number {
+    const id = this.#idByCollider.get(collider.handle);
+    if (id === undefined) {
+      throw new Error(`collider ${collider.handle} is not a coin on this table`);
+    }
+    return id;
+  }
+
+  #isFrozen(id: number): boolean {
+    return this.#rest.get(id)?.frozen === true;
+  }
+
+  #restOf(id: number): Rest {
+    const rest = this.#rest.get(id);
+    if (!rest) {
+      throw new Error(`PusherTable: coin ${id} has no rest state`);
+    }
+    return rest;
+  }
+
+  /** Thaws a frozen coin into a dynamic body moving with what it lay on. */
+  #wake(id: number): void {
+    const rest = this.#restOf(id);
+    rest.still = 0;
+    if (!rest.frozen) {
+      return;
+    }
+    rest.frozen = false;
+    const body = this.#coins.get(id);
+    if (!body) {
+      throw new Error(`PusherTable: coin ${id} has rest state but no body`);
+    }
+    body.setBodyType(this.#rapier.RigidBodyType.Dynamic, true);
+    body.setLinvel({ x: 0, y: 0, z: rest.rider ? this.#pusherSpeed : 0 }, true);
+    body.setAngvel(ZERO, true);
+  }
+
+  #freeze(id: number, body: RigidBody): void {
+    const rest = this.#restOf(id);
+    rest.frozen = true;
+    rest.still = 0;
+    rest.rider = body.translation().y > SHELF_Y;
+    body.setBodyType(this.#rapier.RigidBodyType.KinematicPositionBased, false);
+  }
+
+  /** Moves every coin frozen on the pusher top `dz` world units along with the block. */
+  #carryRiders(dz: number): void {
+    if (dz === 0) {
+      return;
+    }
+    for (const [id, body] of this.#coins) {
+      const rest = this.#restOf(id);
+      if (rest.frozen && rest.rider) {
+        const t = body.translation();
+        body.setNextKinematicTranslation({ x: t.x, y: t.y, z: t.z + dz });
+      }
+    }
+  }
+
+  /**
+   * Before the pusher moves from offset `from` to `to`: wakes the frozen coins on the
+   * lower tier its face comes near, and on the way back the riders it carries near the
+   * backboard.
+   */
+  #wakeAhead(from: number, to: number): void {
+    if (from === to) {
+      return;
+    }
+    const margin = COIN_REST.pusherMargin + COIN.radius;
+    const faceZ = (PUSHER.frontZ + Math.max(from, to) + margin) * SCALE;
+    const boardZ = (BACKBOARD.frontZ + margin + Math.max(0, from - to)) * SCALE;
+    for (const [id, body] of this.#coins) {
+      const rest = this.#restOf(id);
+      if (!rest.frozen) {
+        continue;
+      }
+      const z = body.translation().z;
+      if (rest.rider ? to < from && z < boardZ : z < faceZ) {
+        this.#wake(id);
+      }
+    }
+  }
+
+  /** Wakes every frozen coin within two coin widths of `centre`, in world units. */
+  #wakeAround(centre: Readonly<Vector>): void {
+    const reach = 4 * COIN.radius * SCALE;
+    for (const [id, body] of this.#coins) {
+      if (!this.#isFrozen(id)) {
+        continue;
+      }
+      const t = body.translation();
+      const dx = t.x - centre.x;
+      const dy = t.y - centre.y;
+      const dz = t.z - centre.z;
+      if (dx * dx + dy * dy + dz * dz < reach * reach) {
+        this.#wake(id);
+      }
+    }
+  }
+
+  /**
+   * After a tick: wakes the frozen coins an awake coin moves against or presses hard
+   * on, then counts every awake coin's still ticks and freezes those still for
+   * COIN_REST.ticks.
+   */
+  #settle(): void {
+    const toWake: number[] = [];
+    for (const [id, body] of this.#coins) {
+      const rest = this.#restOf(id);
+      if (rest.frozen) {
+        continue;
+      }
+      const v = body.linvel();
+      this.#world.contactPairsWith(rest.collider, (other) => {
+        const otherId = this.#idByCollider.get(other.handle);
+        if (otherId === undefined || toWake.includes(otherId)) {
+          return;
+        }
+        const otherRest = this.#restOf(otherId);
+        if (!otherRest.frozen) {
+          return;
+        }
+        const dz = v.z - (otherRest.rider ? this.#pusherSpeed : 0);
+        const speedSq = v.x * v.x + dz * dz;
+        const moving = speedSq > WAKE_SPEED_SQ || v.y * v.y > WAKE_FALL_SQ;
+        const reach = Math.sqrt(speedSq + v.y * v.y) * FIXED_DT;
+        if (this.#presses(rest.collider, other, moving, reach)) {
+          toWake.push(otherId);
+        }
+      });
+    }
+    for (const id of toWake.sort((a, b) => a - b)) {
+      this.#wake(id);
+    }
+    for (const [id, body] of this.#coins) {
+      const rest = this.#restOf(id);
+      if (rest.frozen) {
+        continue;
+      }
+      const v = body.linvel();
+      const t = body.translation();
+      const shelf = t.y > SHELF_Y;
+      const dz = v.z - (shelf ? this.#pusherSpeed : 0);
+      const slow = v.x * v.x + v.y * v.y + dz * dz < SLOW_SPEED_SQ;
+      if (slow !== rest.damped) {
+        rest.damped = slow;
+        body.setAngularDamping(slow ? COIN_REST.angularDamping : COIN_MATERIAL.angularDamping);
+      }
+      const q = body.rotation();
+      const nx = 2 * (q.x * q.y - q.w * q.z);
+      const ny = 1 - 2 * (q.x * q.x + q.z * q.z);
+      const nz = 2 * (q.y * q.z + q.w * q.x);
+      const z = t.z - (shelf ? this.#clock.offset * SCALE : 0);
+      const ex = t.x - rest.anchor[0];
+      const ey = t.y - rest.anchor[1];
+      const ez = z - rest.anchor[2];
+      const tilt = nx * rest.anchor[3] + ny * rest.anchor[4] + nz * rest.anchor[5];
+      const norm = nx * nx + ny * ny + nz * nz;
+      if (
+        rest.still > 0 &&
+        ex * ex + ey * ey + ez * ez < REST_DRIFT_SQ &&
+        tilt * tilt > REST_TURN_COS_SQ * norm * norm &&
+        tilt > 0
+      ) {
+        rest.still += 1;
+      } else {
+        rest.still = 1;
+        rest.anchor[0] = t.x;
+        rest.anchor[1] = t.y;
+        rest.anchor[2] = z;
+        rest.anchor[3] = nx;
+        rest.anchor[4] = ny;
+        rest.anchor[5] = nz;
+      }
+      if (rest.still > COIN_REST.ticks && !(shelf && z > SHELF_EDGE_Z)) {
+        this.#freeze(id, body);
+      }
+    }
+  }
+
+  /**
+   * Whether `a` touches `b` (when `moving`) or presses on it harder than
+   * COIN_REST.wakeImpulse (when not), going by their contact points from the last substep.
+   */
+  #presses(a: Collider, b: Collider, moving: boolean, reach: number): boolean {
+    let pressing = false;
+    this.#world.contactPair(a, b, (manifold) => {
+      for (let i = 0; i < manifold.numContacts() && !pressing; i++) {
+        pressing = moving
+          ? manifold.contactDist(i) < TOUCH_DIST + reach
+          : manifold.contactImpulse(i) > WAKE_IMPULSE;
+      }
+    });
+    return pressing;
   }
 
   #collectContacts(tick: number): ContactEvent[] {
@@ -339,6 +615,11 @@ export class PusherTable {
   }
 
   #forget(id: number): void {
+    const rest = this.#rest.get(id);
+    if (rest) {
+      this.#idByCollider.delete(rest.collider.handle);
+    }
+    this.#rest.delete(id);
     this.#coins.delete(id);
     this.#lastContact.delete(id);
   }
@@ -363,7 +644,7 @@ export class PusherTable {
     }
     fastest = Math.sqrt(fastest);
     for (const [id, body] of this.#coins) {
-      if (body.isSleeping()) {
+      if (body.isSleeping() || this.#isFrozen(id)) {
         continue;
       }
       const checked: number[] = [];
@@ -411,6 +692,10 @@ export class PusherTable {
       return false;
     }
     checked.push(hit.collider.handle);
+    const struck = this.#idByCollider.get(hit.collider.handle);
+    if (struck !== undefined) {
+      this.#wake(struck);
+    }
     const n = hit.normal1;
     const other = hit.collider.parent();
     const u = other && !other.isFixed() ? other.linvel() : ZERO;
@@ -442,7 +727,7 @@ export class PusherTable {
   #collectFalls(tick: number): FallEvent[] {
     const falls: FallEvent[] = [];
     for (const [id, body] of this.#coins) {
-      if (body.isSleeping()) {
+      if (body.isSleeping() || this.#isFrozen(id)) {
         continue;
       }
       const t = body.translation();
@@ -474,6 +759,11 @@ export class PusherTable {
         .vec3(body.linvel())
         .vec3(body.angvel())
         .bool(body.isSleeping());
+      const rest = this.#restOf(id);
+      h.int(rest.still).bool(rest.frozen).bool(rest.rider).bool(rest.damped);
+      for (const a of rest.anchor) {
+        h.float(a);
+      }
     }
     return h;
   }

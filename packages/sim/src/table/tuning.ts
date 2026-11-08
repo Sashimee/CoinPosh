@@ -81,8 +81,7 @@ export const COIN_MATERIAL = {
  * but on the return the ones held by the backboard slip over the retreating block
  * instead of being dragged hard into the board. The backboard only holds coins that
  * reach it, though: a heap with room in front of it rides the block out and back as
- * one raft and never meets the board. PUSHER_CAM's knock is what walks such a heap
- * forward.
+ * one raft and never meets the board, and stays on it (COIN_REST).
  */
 export const TABLE_MATERIAL = {
   floorFriction: 0.42,
@@ -92,37 +91,49 @@ export const TABLE_MATERIAL = {
 } as const;
 
 /**
- * The pusher's cam (pusherExtension). With a smoothstep that stops at both ends, every
- * coin on the upper tier rides the block out 12 cm and straight back again: the
- * accelerations peak at 0.28 m/s², an eighth of what it takes to slide a coin on the top
- * (0.225 × g, 2.2 m/s²), so nothing ever slips. A heap with room left in front of it
- * never meets the backboard and stands on the block for good. The Demo's opening pour
- * (160 coins, seed 0xc0196051) did that: five coins fell, then 155 held still from 16 s
- * on, 136 of them riding the block as one raft.
+ * Rest (P-215): rapier3d 0.21 exposes no sleep thresholds, and a body only sleeps with
+ * its whole contact island, which on a working table is nearly every coin. Left awake, a
+ * coin lying half on another see-sawed on it for good (53 mm/s and 178 °/s at worst over
+ * an idle minute), and the coins on the pusher top crept off it: the Demo's opening heap
+ * with nobody playing dropped 100 coins over the front lip in 10 minutes. So the table
+ * freezes coins itself (PusherTable): a coin that stays within `drift` metres and `turn`
+ * degrees of one pose for more than `ticks` ticks becomes a kinematic body that holds
+ * that pose exactly. Its pose is taken relative to the block when it lies on the pusher
+ * top, and a frozen coin there rides the block, moved with it every substep: the shelf
+ * carries its coins with no slip at all. Friction cannot do that on its own: a higher
+ * coefficient only delays the slip of a coin its neighbours jostle, and from 0.3 coin on
+ * coin the upper tier locks into a mound (COIN_MATERIAL). A coin on the top whose centre
+ * is past the block's front face never freezes; it is falling off.
  *
- * - knock 0.5: the cam reaches full reach still moving, at 2 × knock the mean speed of
- *   its push (0.05 m/s at the default motion, three quarters of its peak), and the block
- *   snaps straight into its return (0.075 m/s): a velocity change of 0.125 m/s within a
- *   substep, the clunk of a follower dropping off its cam lobe. Friction cannot stop the
- *   coins on top that fast, so they slide on toward the lip while the top reverses
- *   beneath them, then grip again and ride the return. Each stroke walks a lone coin on
- *   the upper tier 3.2 mm toward the lip, the whole upper heap with it, so its front
- *   coins tip one after another onto the lower tier, and the coins lying in front of the
- *   face coast on a millimetre or two when it pulls away. Retraction stays smooth, so a
- *   coin is never thrown back at the backboard.
+ * - drift 1 mm, turn 3°, ticks 30 (half a second): a pose window rather than a speed
+ *   threshold, because a see-sawing coin is never slow for long but never gets
+ *   anywhere either. 20 ticks froze coins mid-shuffle at the edge of the settling pour
+ *   (27 to 38 falls for 60 drops over four seeds); 45 and 60 left the settling heap
+ *   awake long enough to shed 6 and 9 coins over the lip after the first 10 s.
+ * - slowSpeed 0.01 m/s, angularDamping 60: below that speed (relative to what it lies
+ *   on) a coin's spin is damped hard, so it settles flat in a few ticks with the dead
+ *   stop of a heavy coin instead of rocking on its rim.
  *
- *   The slide grows as knock squared: 0.25 creeps about 0.8 mm a stroke, and the
- *   opening heap of 110 coins moved two coins in 40 s; 0.75 creeps 7.2 mm and the same
- *   heap sheds over a third of itself over the lip in 40 s with nobody playing. At 0.5,
- *   on twelve seeds of the Demo's opening pour with no drops after it, a coin leaves the
- *   upper tier for the floor in every run of three strokes (at least 6 of them, over the
- *   first ten strokes), for as long as 160 s were measured, and the first coin falls over
- *   the front lip 6 to 15 s after the pour starts (creep.test.ts checks the Demo seed).
- *   The knock wakes no extra coins in the 250-coin bench (table.bench.ts): at most one
- *   sleeps with or without it, and the mean tick moved by 0.1 ms in a back-to-back run.
+ * It wakes, back into a dynamic body carrying the velocity of what it lay on, when:
+ * - a fast coin is about to strike it (the impact brake, COIN_MATERIAL.impactSpeed);
+ * - an awake coin touching it, or closing on it within the tick, moves at more than
+ *   `wakeSpeed` across it or `wakeFall` down onto it, or presses on it with a contact
+ *   impulse over `wakeImpulse` in a substep;
+ * - the pusher's face comes within `pusherMargin` of it, or, riding the block back,
+ *   it comes within `pusherMargin` of the backboard, which then scrapes it;
+ * - the separation pass moves it (CoinSeparator reports it in `loosened`);
+ * - the cabinet is nudged, or a coin it may lean on is taken off the table.
  */
-export const PUSHER_CAM = {
-  knock: 0.5,
+export const COIN_REST = {
+  drift: 0.001,
+  turn: 3,
+  ticks: 30,
+  slowSpeed: 0.01,
+  angularDamping: 60,
+  wakeSpeed: 0.01,
+  wakeFall: 0.08,
+  wakeImpulse: 0.003,
+  pusherMargin: 0.002,
 } as const;
 
 /**
@@ -229,14 +240,15 @@ export const CONTACT_EVENTS = {
  *   drives a coin into the next. Pushing pairs apart to the full slop instead of
  *   half rebounds the pile into itself and takes more passes, not fewer.
  *
- * Nothing on a full table sleeps for long: rapier3d 0.21 exposes no sleep
- * thresholds, a body only sleeps with its whole contact island, and the moving
- * pusher wakes every coin it touches, which on a full table connect to nearly all
- * the others. The 4 ms budget is for 250 coins, at most one of them asleep:
- * table.bench.ts measures 3.01 to 3.06 ms a tick on average and 3.72 to 3.83 ms at
- * the 99th percentile. Rapier's step is about 2.75 ms of that on average (3.25 ms
- * at its own 99th percentile), the separation pass 0.19 ms (0.72 ms at its 99th,
- * on ticks that need 14 or more passes) and the impact brake and fall detection
+ * Rapier itself puts nothing on a full table to sleep: rapier3d 0.21 exposes no sleep
+ * thresholds, a body only sleeps with its whole contact island, and the moving pusher
+ * wakes every coin it touches, which on a full table connect to nearly all the others.
+ * The table's own rest (COIN_REST) freezes up to two thirds of the 250 coins in
+ * table.bench.ts, which took the mean tick about a tenth lower and the 99th percentile
+ * about 5% lower than with every coin awake, measured back to back (see table.bench.ts
+ * for the numbers). Before rest, Rapier's step was about 2.75 ms of a 3.05 ms tick
+ * (3.25 ms at its own 99th percentile), the separation pass 0.19 ms (0.72 ms at its
+ * 99th, on ticks that need 14 or more passes) and the impact brake and fall detection
  * 0.09 ms.
  */
 export const TABLE_SOLVER = {

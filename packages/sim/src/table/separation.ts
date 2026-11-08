@@ -40,6 +40,8 @@ interface Axis {
 interface Slot extends Axis {
   readonly index: number;
   body: RigidBody;
+  /** A frozen coin that has not been moved yet. */
+  fixed: boolean;
   rotation: Rotation;
   x: number;
   y: number;
@@ -73,6 +75,8 @@ export interface SeparationResult {
    * ran out while some pair or coin and slab may still be too deep.
    */
   readonly converged: boolean;
+  /** Frozen coins it moved, in the order it first moved them. */
+  readonly loosened: readonly RigidBody[];
 }
 
 /**
@@ -109,7 +113,8 @@ function entry<T>(items: readonly T[], i: number): T {
  * than `slop` is moved apart along Rapier's exact contact normal, the depth split
  * evenly between the two coins (they have the same mass). A coin pressed into a
  * fixed slab or the pusher is held there: it can still give way along the slab, but
- * not into it, so its partner takes the rest. Without that a coin squeezed between
+ * not into it, so its partner takes the rest. A frozen (kinematic) coin is moved like
+ * any other and reported in `loosened` for the table to wake. Without that a coin squeezed between
  * the floor and a stack is pushed down and back up pass after pass and never clears.
  * Velocities are not touched, so momentum is unchanged and Rapier's own contacts keep
  * doing the dynamics.
@@ -199,6 +204,12 @@ export class CoinSeparator {
       return sx * x + sy * y + sz * z;
     };
 
+    const loosened: RigidBody[] = [];
+    const loosen = (c: Slot): void => {
+      c.fixed = false;
+      loosened.push(c.body);
+    };
+
     this.#candidatePairs(coins);
     const pairs = this.#pairs;
     /** Pairs and obstacles are looked at again only for coins whose `movedIn` is at least this. */
@@ -257,6 +268,12 @@ export class CoinSeparator {
         depth -= slop / 2;
         const heldA = a.hx !== 0 || a.hy !== 0 || a.hz !== 0;
         const heldB = b.hx !== 0 || b.hy !== 0 || b.hz !== 0;
+        if (a.fixed) {
+          loosen(a);
+        }
+        if (b.fixed) {
+          loosen(b);
+        }
         if (heldA && !heldB) {
           shift(b, x, y, z, depth - shift(a, -x, -y, -z, depth / 2));
         } else if (heldB && !heldA) {
@@ -331,7 +348,7 @@ export class CoinSeparator {
         moved += 1;
       }
     }
-    return { moved, passes: pass, converged };
+    return { moved, passes: pass, converged, loosened };
   }
 
   /** Fills the slots from `bodies`, making new ones only for coins beyond the last call's count. */
@@ -344,7 +361,8 @@ export class CoinSeparator {
       const ax = 2 * (q.x * q.y - q.w * q.z);
       const ay = 1 - 2 * (q.x * q.x + q.z * q.z);
       const az = 2 * (q.y * q.z + q.w * q.x);
-      const movedIn = body.isSleeping() ? ASLEEP : AWAKE;
+      const fixed = !body.isDynamic();
+      const movedIn = fixed || body.isSleeping() ? ASLEEP : AWAKE;
       const ex = this.#halfExtent(ax);
       const ey = this.#halfExtent(ay);
       const ez = this.#halfExtent(az);
@@ -353,6 +371,7 @@ export class CoinSeparator {
         slots.push({
           index: n,
           body,
+          fixed,
           rotation: q,
           x: t.x,
           y: t.y,
@@ -373,6 +392,7 @@ export class CoinSeparator {
         });
       } else {
         slot.body = body;
+        slot.fixed = fixed;
         slot.rotation = q;
         slot.x = slot.sweptX = t.x;
         slot.y = slot.sweptY = t.y;

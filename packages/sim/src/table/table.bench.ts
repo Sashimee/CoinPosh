@@ -12,14 +12,16 @@ import { configureTableWorld } from './tuning.ts';
  * The table is filled by playing, not by placing coins, so the bench measures the
  * real steady state: a full upper tier riding the pusher, a packed lower tier being
  * shoved over the edge, and a fresh drop every tick that the table is short of 250,
- * which holds it at 240 to 250 coins (a sweep over the edge can take a dozen at
- * once), at most one of them asleep (see TABLE_SOLVER). Measured with the impact
- * brake (COIN_MATERIAL.impactSpeed), the separation pass and the solver settings in
- * TABLE_SOLVER, over three runs: 3.01 to 3.06 ms mean, 3.15 to 3.21 ms at the 75th
- * percentile and 3.72 to 3.83 ms at the 99th, so even the slowest percent of ticks
- * holds the budget with 4% to 7% to spare. The coin and sleeping counts over the
- * measured ticks are printed after the run, so the result always says what it
- * measured.
+ * which holds it at 224 to 250 coins (a sweep over the edge can take a couple of
+ * dozen at once), up to 166 of them frozen at rest (COIN_REST). Measured with the
+ * impact brake (COIN_MATERIAL.impactSpeed), the separation pass and the solver
+ * settings in TABLE_SOLVER: before coins could rest, 3.01 to 3.06 ms mean and 3.72 to
+ * 3.83 ms at the 99th percentile. Rest (P-215) took the tick about a tenth faster, but
+ * a second round of runs on the same host, then slower all round, measured the old
+ * table at 3.51 to 3.52 ms mean and 4.90 to 4.94 ms at the 99th, the new one at 3.17 to
+ * 3.21 ms and 4.63 to 4.72 ms: compare runs taken back to back on one machine. The
+ * coin and sleeping counts over the measured ticks are printed after the run, so the
+ * result always says what it measured.
  */
 const TARGET_COINS = 250;
 const WARMUP_TICKS = 45 * TICK_RATE_HZ;

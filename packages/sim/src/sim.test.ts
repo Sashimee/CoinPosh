@@ -188,8 +188,8 @@ describe('determinism', () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate SIM_VERSION bump.
-    expect(SIM_VERSION).toBe(4);
-    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"d715fa236eb0783f"`);
+    expect(SIM_VERSION).toBe(5);
+    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"28d84a03ebbb1757"`);
   });
 
   it('reports the same falls, at the same ticks, on both replays of the minute', async () => {
@@ -390,7 +390,7 @@ describe('nudge input', () => {
     expect(nudged[0]).toBe(plain[0]);
     expect(nudged[1]).not.toBe(plain[1]);
     // Changing this value breaks replay audits of every input log with a nudge in it.
-    expect(nudged[1]).toMatchInlineSnapshot(`"faccdb4d2e1e27ee"`);
+    expect(nudged[1]).toMatchInlineSnapshot(`"884d44f49d22eee9"`);
   });
 
   it('shoves the coins forward relative to a sim left alone', async () => {
@@ -558,6 +558,6 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"a7a02e90dd8c620f"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"cd8bafbb696a1667"`);
   });
 });

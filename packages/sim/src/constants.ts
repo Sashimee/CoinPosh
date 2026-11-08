@@ -38,5 +38,12 @@ export const SOLVER = {
  *   in front creeps forward instead of riding the block. Pinned table hash
  *   ee25f4b04dd687a6 (was a4e6238cc93d4acc), sim hash d715fa236eb0783f (was
  *   c5b0aeb071b1065b), mechanics digest 5935d058d1943638 (was 729f6f15f07d6198).
+ * - 5: coins come to rest (COIN_REST, P-215): a coin still for half a second freezes
+ *   in place, riding the block when it lies on the pusher top, until something moving
+ *   wakes it; the separation pass moves and wakes frozen coins; the cam is a plain
+ *   smoothstep again (the knock is gone). Pinned table hash 71d877a1ccb423be (was
+ *   ee25f4b04dd687a6), sim hash 28d84a03ebbb1757 (was d715fa236eb0783f), mechanics
+ *   digest 729f6f15f07d6198 again: its rig steps its own world with only the cam from
+ *   the table, so it is back on the version 3 motion.
  */
-export const SIM_VERSION = 4;
+export const SIM_VERSION = 5;
