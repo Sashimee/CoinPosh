@@ -5,6 +5,7 @@ import {
   clamp,
   cos,
   dot,
+  exp,
   float,
   floor,
   fract,
@@ -12,11 +13,14 @@ import {
   hash,
   inverseSqrt,
   length,
+  luminance,
   max,
+  min,
   mix,
   normalize,
   normalView,
   normalViewGeometry,
+  output,
   positionView,
   positionViewDirection,
   pow,
@@ -29,6 +33,7 @@ import {
   uv,
   vec2,
   vec3,
+  vec4,
   vertexStage,
 } from 'three/tsl';
 import {
@@ -86,6 +91,25 @@ function cotangentFrame(n: V3, st: V2): { t: V3; b: V3 } {
   const det = max(dot(t, t), dot(b, b));
   const scale = select(det.equal(0), float(0), inverseSqrt(det));
   return { t: t.mul(scale), b: b.mul(scale) };
+}
+
+// Scene-linear luminance where a coin highlight starts to roll off: just under the bloom
+// threshold of every quality tier (0.92 to 0.95), so a glint still blooms gently.
+export const HIGHLIGHT_KNEE = 0.85;
+
+// A flat polished face is a small mirror: when it lines up with the key light or the sun in the
+// HDRI its pixels run to 10+ and the bloom turns the whole coin into a white disc. Above the knee
+// the luminance eases towards the tier's ceiling and the colour keeps its hue.
+function compressHighlight(color: V3, knee: number, ceiling: number): V3 {
+  const span = ceiling - knee;
+  const lum = luminance(color);
+  const over = max(lum.sub(knee), 0);
+  const eased = min(lum, knee).add(
+    float(1)
+      .sub(exp(over.div(-span)))
+      .mul(span),
+  );
+  return color.mul(eased.div(max(lum, 1e-4)));
 }
 
 export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
@@ -152,23 +176,32 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
     .mul(float(1).sub(relief))
     .mul(float(1).sub(lip));
 
+  // Specular anti-aliasing: once a coin is only a few pixels wide the mipmapped emboss averages
+  // its slopes away and the face turns into a mirror that flickers between the key and the cool
+  // rim light. Widening the lobe by the screen footprint keeps the small coins reading as metal.
+  const minified = smoothstep(0.02, 0.1, fwidth(r));
+
   const faceRoughness = mix(
     mix(float(look.roughness), float(look.reliefRoughness), relief),
     float(look.roughness * 0.6),
     lip,
   );
   const roughness = clamp(
-    mix(faceRoughness, float(look.edgeRoughness), part).add(turning),
+    mix(faceRoughness, float(look.edgeRoughness), part).add(turning).add(minified.mul(0.14)),
     0.04,
     1,
   );
 
-  const radial = normalize(p.add(vec2(1e-5, 0)));
-  const faceAnisotropy = radial
+  // three.js stretches the highlight along the anisotropy direction. Running it around the
+  // face (the lathe's cut direction) draws soft concentric arcs that sweep as the coin turns;
+  // the radial direction drew a pinwheel of spokes that read as a CD at table distance.
+  const lathe = vec2(p.y.negate(), p.x).div(max(r, 1e-4));
+  const faceAnisotropy = lathe
     .mul(look.anisotropy)
-    .mul(smoothstep(0.02, 0.14, r))
-    .mul(float(1).sub(relief.mul(0.85)))
-    .mul(float(1).sub(lip.mul(0.7)));
+    .mul(smoothstep(0.04, 0.2, r))
+    .mul(float(1).sub(relief))
+    .mul(mix(float(1), float(1.25), lip))
+    .mul(float(1).sub(minified.mul(0.6)));
   const edgeAnisotropy = vec2(1, 0).mul(Math.min(look.anisotropy, 0.6));
   const anisotropy = mix(faceAnisotropy, edgeAnisotropy, part);
 
@@ -231,6 +264,10 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
     );
   }
   if (emissive) material.emissiveNode = emissive;
+  material.outputNode = vec4(
+    compressHighlight(output.rgb, HIGHLIGHT_KNEE, look.highlightCeiling),
+    output.a,
+  );
 
   return {
     material,
