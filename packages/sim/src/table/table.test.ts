@@ -776,7 +776,7 @@ describe('determinism', () => {
     const { hashes } = await referenceTo(SESSION_TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"71d877a1ccb423be"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"8934f7ea73a155b0"`);
   });
 
   it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {

@@ -28,9 +28,14 @@ import { configureTableWorld } from './tuning.ts';
  * ms at the 99th and 4.45 to 4.52 ms at the 99.5th: the 99th is still over the 4 ms
  * budget there. The tail is the world step on late-return ticks (3.6 to 3.9 ms, with
  * some 150 upper-tier coins held awake by the backboard as the block slides under
- * them) and separation ticks of 20 to 37 passes (1.3 to 3 ms). The
- * coin and sleeping counts over the measured ticks are printed after the run, so the
- * result always says what it measured.
+ * them) and separation ticks of 20 to 37 passes (1.3 to 3 ms). The rest cascade
+ * (COIN_REST), which wakes the frozen coins a push reaches before the tick instead of
+ * after it, keeps fewer coins frozen (about 90 against 105) and, back to back on a host
+ * slower than the one above, measured 3.01 to 3.06 ms mean and 4.40 to 4.44 ms at the
+ * 99th, against 2.82 to 2.83 ms and 4.20 to 4.21 ms without it and 3.53 to 3.55 ms and
+ * 4.93 to 4.98 ms for the table before coins could rest (3.72 to 3.83 ms at the 99th on
+ * the first host). The coin and sleeping counts over the measured ticks are printed
+ * after the run, so the result always says what it measured.
  */
 const TARGET_COINS = 250;
 const WARMUP_TICKS = 45 * TICK_RATE_HZ;

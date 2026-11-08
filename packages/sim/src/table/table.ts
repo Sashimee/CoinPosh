@@ -93,6 +93,23 @@ const NEAR_REACH =
   SCALE;
 /** Grid cell size for the search; an awake coin whose reach is longer is checked against every frozen coin. */
 const NEAR_CELL = NEAR_REACH + IMPACT_SPEED * FIXED_DT;
+/**
+ * Centre distance in world units within which two coins can touch: two bounding
+ * spheres, both contact skins and COIN_REST.cascadeGap.
+ */
+const TOUCH_REACH =
+  (2 *
+    (Math.sqrt(
+      square(COIN.halfThickness - COIN_MATERIAL.rimRadius) +
+        square(COIN.radius - COIN_MATERIAL.rimRadius),
+    ) +
+      COIN_MATERIAL.rimRadius +
+      COIN_MATERIAL.contactSkin) +
+    COIN_REST.cascadeGap) *
+  SCALE;
+const CASCADE_KEEP_SQ = square(COIN_REST.cascadeKeep);
+const CASCADE_SPEED_SQ = square(COIN_REST.cascadeSpeed * SCALE);
+const CASCADE_CONE_SQ = square(COIN_REST.cascadeConeCos);
 
 function cellKey(ix: number, iz: number): number {
   return ix * 65536 + iz;
@@ -125,6 +142,21 @@ interface Rest {
   readonly t: Vector;
   /** Squared centre distance beyond which it cannot be in contact with a frozen coin. */
   reachSq: number;
+}
+
+/**
+ * A coin moving into its neighbours at the start of a tick, for #cascade: its centre,
+ * how far it can reach a neighbour's centre this tick, and its velocity relative to the
+ * surface the neighbours lie on, all in world units.
+ */
+interface Push {
+  x: number;
+  y: number;
+  z: number;
+  reach: number;
+  vx: number;
+  vy: number;
+  vz: number;
 }
 
 export interface FallEvent {
@@ -205,6 +237,14 @@ export class PusherTable {
   readonly #cellPool: Rest[][] = [];
   /** Awake coins too fast for the grid, rebuilt by #pressedFrozen every tick. */
   readonly #farCoins: Rest[] = [];
+  /** Frozen coins by grid cell (TOUCH_REACH wide), rebuilt by #cascade every tick. */
+  readonly #frozenCells = new Map<number, Rest[]>();
+  /** The cell lists #frozenCells has used, kept for reuse. */
+  readonly #frozenPool: Rest[][] = [];
+  /** #cascade's queue: each coin pushing on, with the push it passes on. */
+  readonly #pushQueue: Push[] = [];
+  /** The pushes #pushQueue has used, kept for reuse. */
+  readonly #pushPool: Push[] = [];
   /** Pose reads that nothing keeps past the call reading them. */
   readonly #scratch: Vector = { x: 0, y: 0, z: 0 };
   readonly #scratchCarry: Vector = { x: 0, y: 0, z: 0 };
@@ -441,7 +481,9 @@ export class PusherTable {
     this.#clock.advance();
     const to = this.#clock.offset;
     this.#pusherSpeed = ((to - from) * SCALE) / FIXED_DT;
+    this.#pushQueue.length = 0;
     this.#wakeAhead(from, to);
+    this.#cascade();
     const carry = ((to - from) * SCALE) / SUBSTEPS;
     for (let i = 1; i <= SUBSTEPS; i++) {
       this.#pusher.setNextKinematicTranslation(
@@ -525,7 +567,12 @@ export class PusherTable {
     rest.frozen = true;
     rest.still = 0;
     rest.rider = body.translation().y > SHELF_Y;
-    body.setBodyType(this.#rapier.RigidBodyType.KinematicPositionBased, false);
+    body.setBodyType(
+      rest.rider
+        ? this.#rapier.RigidBodyType.KinematicPositionBased
+        : this.#rapier.RigidBodyType.Fixed,
+      false,
+    );
   }
 
   /** Moves every coin frozen on the pusher top `dz` world units along with the block. */
@@ -563,11 +610,132 @@ export class PusherTable {
       if (!rest.frozen) {
         continue;
       }
-      const z = body.translation(this.#scratch).z;
-      if (rest.rider ? to < from && z < boardZ : z < faceZ) {
+      const t = body.translation(this.#scratch);
+      if (rest.rider ? to < from && t.z < boardZ : t.z < faceZ) {
         this.#wake(id);
+        this.#pushOn(t, TOUCH_REACH, 0, 0, Math.abs(this.#pusherSpeed));
       }
     }
+  }
+
+  /** Queues a push for #cascade, reusing a pooled one. */
+  #pushOn(from: Readonly<Vector>, reach: number, vx: number, vy: number, vz: number): void {
+    const queue = this.#pushQueue;
+    let push = this.#pushPool[queue.length];
+    if (push === undefined) {
+      push = { x: 0, y: 0, z: 0, reach: 0, vx: 0, vy: 0, vz: 0 };
+      this.#pushPool.push(push);
+    }
+    push.x = from.x;
+    push.y = from.y;
+    push.z = from.z;
+    push.reach = reach;
+    push.vx = vx;
+    push.vy = vy;
+    push.vz = vz;
+    queue.push(push);
+  }
+
+  /**
+   * Before a tick's substeps: wakes the frozen coins that a coin moving into them will
+   * touch during the tick, and the ones those touch in turn, so the solver carries the
+   * whole push. Left frozen, each coin in the way would be a wall until the tick after
+   * it was struck (#settle), soaking up the push one coin at a time: a drop or the face
+   * would move the coin it touches and nothing beyond. A coin is in the way when its
+   * centre is within TOUCH_REACH of the pushing coin's (plus how far that one moves in
+   * the tick) and within the COIN_REST.cascadeConeCos cone of the push's direction; each coin woken
+   * passes the push on at COIN_REST.cascadeKeep of the speed, while that stays over
+   * COIN_REST.wakeSpeed. The pushes start from every awake coin moving faster than
+   * COIN_REST.cascadeSpeed across what it lies on, and from the coins #wakeAhead woke
+   * for the face and the backboard.
+   */
+  #cascade(): void {
+    const queue = this.#pushQueue;
+    for (const [id, rest] of this.#rest) {
+      if (rest.frozen) {
+        continue;
+      }
+      const body = this.#coin(id);
+      const v = body.linvel(this.#scratchCarry);
+      const t = body.translation(this.#scratch);
+      const vz = v.z - (t.y > SHELF_Y ? this.#pusherSpeed : 0);
+      const speedSq = v.x * v.x + v.y * v.y + vz * vz;
+      if (speedSq > CASCADE_SPEED_SQ) {
+        this.#pushOn(t, TOUCH_REACH + Math.sqrt(speedSq) * FIXED_DT, v.x, v.y, vz);
+      }
+    }
+    if (queue.length === 0) {
+      return;
+    }
+    const cells = this.#frozenCells;
+    cells.clear();
+    let pooled = 0;
+    for (const [id, rest] of this.#rest) {
+      if (!rest.frozen) {
+        continue;
+      }
+      const t = this.#coin(id).translation(rest.t);
+      const key = cellKey(Math.floor(t.x / TOUCH_REACH), Math.floor(t.z / TOUCH_REACH));
+      const cell = cells.get(key);
+      if (cell) {
+        cell.push(rest);
+        continue;
+      }
+      let fresh = this.#frozenPool[pooled];
+      if (fresh === undefined) {
+        fresh = [];
+        this.#frozenPool.push(fresh);
+      }
+      pooled += 1;
+      fresh.length = 0;
+      fresh.push(rest);
+      cells.set(key, fresh);
+    }
+    if (cells.size === 0) {
+      return;
+    }
+    for (const push of queue) {
+      const span = Math.ceil(push.reach / TOUCH_REACH);
+      const ix = Math.floor(push.x / TOUCH_REACH);
+      const iz = Math.floor(push.z / TOUCH_REACH);
+      const reachSq = push.reach * push.reach;
+      const speedSq = push.vx * push.vx + push.vy * push.vy + push.vz * push.vz;
+      const passOn = speedSq * CASCADE_KEEP_SQ > WAKE_SPEED_SQ;
+      for (let cx = ix - span; cx <= ix + span; cx++) {
+        for (let cz = iz - span; cz <= iz + span; cz++) {
+          for (const rest of cells.get(cellKey(cx, cz)) ?? NO_COINS) {
+            if (!rest.frozen) {
+              continue;
+            }
+            const ex = rest.t.x - push.x;
+            const ey = rest.t.y - push.y;
+            const ez = rest.t.z - push.z;
+            const distSq = ex * ex + ey * ey + ez * ez;
+            const along = ex * push.vx + ey * push.vy + ez * push.vz;
+            if (
+              distSq > reachSq ||
+              along <= 0 ||
+              along * along < CASCADE_CONE_SQ * distSq * speedSq
+            ) {
+              continue;
+            }
+            this.#wake(this.#idOf(rest.collider));
+            if (passOn) {
+              const keep = COIN_REST.cascadeKeep;
+              this.#pushOn(rest.t, TOUCH_REACH, push.vx * keep, push.vy * keep, push.vz * keep);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  #coin(id: number): RigidBody {
+    const body = this.#coins.get(id);
+    if (!body) {
+      throw new Error(`PusherTable: coin ${id} has rest state but no body`);
+    }
+    return body;
   }
 
   /** Wakes every frozen coin within two coin widths of `centre`, in world units. */
@@ -1066,6 +1234,7 @@ export class PusherTable {
 }
 
 const ZERO: Readonly<Vector> = { x: 0, y: 0, z: 0 };
+const NO_COINS: readonly Rest[] = [];
 
 /** The heap laid against a pusher where `clock` has it now, reaching to its full stroke. */
 function heapGeometry(clock: PusherClock, layout: HeapLayout): HeapGeometry {

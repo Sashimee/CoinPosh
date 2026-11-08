@@ -45,5 +45,16 @@ export const SOLVER = {
  *   ee25f4b04dd687a6), sim hash 28d84a03ebbb1757 (was d715fa236eb0783f), mechanics
  *   digest 729f6f15f07d6198 again: its rig steps its own world with only the cam from
  *   the table, so it is back on the version 3 motion.
+ * - 6: a push wakes the frozen coins in its way before the tick's substeps, passing on
+ *   from coin to coin (COIN_REST cascade, P-215), so drops and the face move the pile
+ *   they press on; frozen coins on the lower tier are fixed bodies. Pinned table hash
+ *   8934f7ea73a155b0 (was 71d877a1ccb423be), sim hash bdd732e82cbaab2c (was
+ *   28d84a03ebbb1757), nudge hash 4df094d60c3198e0 (was 884d44f49d22eee9), fused heap
+ *   996bcdc84b3175fb (was cd8bafbb696a1667), opening heap 53ff5809aefa4642 (was
+ *   1408f3ec4741a856), Demo pour 10 strokes bb41e00c43e62270 (was 55447c368ba0736d).
+ *   The rest tests now run the Demo table through Sim (the economy's opening heap):
+ *   idle 10 minutes 2c475ed06fbdb4fb and 2 minutes of drops 30afd7256494fcfe, against
+ *   a044318612a6692b and d12afc06736517d7 for the 160-coin pour they replaced.
+ *   Mechanics digest 729f6f15f07d6198 is unchanged.
  */
-export const SIM_VERSION = 5;
+export const SIM_VERSION = 6;

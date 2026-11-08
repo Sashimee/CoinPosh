@@ -97,9 +97,11 @@ export const TABLE_MATERIAL = {
  * an idle minute), and the coins on the pusher top crept off it: the Demo's opening heap
  * with nobody playing dropped 100 coins over the front lip in 10 minutes. So the table
  * freezes coins itself (PusherTable): a coin that stays within `drift` metres and `turn`
- * degrees of one pose for more than `ticks` ticks becomes a kinematic body that holds
- * that pose exactly. Its pose is taken relative to the block when it lies on the pusher
- * top, and a frozen coin there rides the block, moved with it every substep: the shelf
+ * degrees of one pose for more than `ticks` ticks becomes a body that holds that pose
+ * exactly: fixed on the lower tier, so Rapier does not move it or refit its bounds every
+ * substep as it does a kinematic body, and kinematic on the pusher top. Its pose is
+ * taken relative to the block there, and a frozen coin there rides the block, moved with
+ * it every substep: the shelf
  * carries its coins with no slip at all. Friction cannot do that on its own: a higher
  * coefficient only delays the slip of a coin its neighbours jostle, and from 0.3 coin on
  * coin the upper tier locks into a mound (COIN_MATERIAL). A coin on the top whose centre
@@ -107,14 +109,17 @@ export const TABLE_MATERIAL = {
  *
  * - drift 1 mm, turn 3°, ticks 30 (half a second): a pose window rather than a speed
  *   threshold, because a see-sawing coin is never slow for long but never gets
- *   anywhere either. 20 ticks froze coins mid-shuffle at the edge of the settling pour
- *   (27 to 38 falls for 60 drops over four seeds); 45 and 60 left the settling heap
- *   awake long enough to shed 6 and 9 coins over the lip after the first 10 s.
+ *   anywhere either. 20 and 24 ticks freeze the coin below one balanced a full radius
+ *   off its centre (rest.test.ts) while the top one is still tipping, and it rocks for
+ *   seconds; 45 and 60 left the settling heap awake long enough to shed 6 and 9 coins
+ *   over the lip after the first 10 s.
  * - slowSpeed 0.01 m/s, angularDamping 60: below that speed (relative to what it lies
  *   on) a coin's spin is damped hard, so it settles flat in a few ticks with the dead
  *   stop of a heavy coin instead of rocking on its rim.
  *
  * It wakes, back into a dynamic body carrying the velocity of what it lay on, when:
+ * - a coin moving into it will touch it within the tick, or one that coin wakes will
+ *   (the cascade below);
  * - a fast coin is about to strike it (the impact brake, COIN_MATERIAL.impactSpeed);
  * - an awake coin touching it, or closing on it within the tick, moves at more than
  *   `wakeSpeed` across it or `wakeFall` down onto it, or presses on it with a contact
@@ -124,9 +129,32 @@ export const TABLE_MATERIAL = {
  * - the separation pass moves it (CoinSeparator reports it in `loosened`);
  * - the cabinet is nudged, or a coin it may lean on is taken off the table.
  *
- * The idle Demo heap (rest.test.ts) drops exactly 2 coins over the front lip after it
- * settles, at ticks 1087 and 1339 of the pinned run, which is the whole allowance that
- * test gives: any retune here that loosens rest even slightly will fail it, with no margin.
+ * The cascade: woken only by contact after a tick, every frozen coin in a push was a
+ * wall for the tick it was struck in, so a drop or the face moved the coin it touched
+ * and little beyond, and the Demo heap paid 0.27 to 0.50 front falls per coin dropped.
+ * So before each tick's substeps every awake coin moving faster than `cascadeSpeed`
+ * across what it lies on, and every coin the face or the backboard wakes (at the
+ * block's speed), wakes the frozen coins whose centres it reaches within the tick:
+ * within a touch (two coin radii, the skin and `cascadeGap`) plus its travel, and
+ * within the cone whose half-angle has cosine `cascadeConeCos` around its direction. Each coin woken passes the push on at
+ * `cascadeKeep` of the speed for as long as that stays over `wakeSpeed`.
+ * - cascadeSpeed 0.03 m/s: starting pushes from 0.01 m/s kept the jostle in a working
+ *   pile waking itself, 42 coins frozen in table.bench.ts against 84, for 0.9 ms more
+ *   at the 99th percentile. Passing pushes on only above 0.03 m/s, rather than down to
+ *   `wakeSpeed`, stopped them a link or two from the face: 0.43 falls per drop at worst.
+ * - cascadeConeCos 0.5 (60°, kept as a cosine since Math.cos is engine-approximated): a
+ *   half-space (90°) also woke the coins beside a push, which it
+ *   barely moves, and cost 0.3 ms at the 99th percentile; 45° was no cheaper.
+ * - cascadeKeep 0.6: 0.5 left the worst case at 0.48 falls per drop.
+ *
+ * Measured with these values on the Demo heap (Sim with the worker's mechanics and the
+ * economy's 100-coin silver opening heap, as in rest.test.ts) on ten seeds, the Demo's
+ * among them: idle for 10 minutes, no coin over the front lip after the first 10 s and
+ * the pusher top keeping all of its 77 coins; one drop every 2 s for 2 minutes,
+ * scattered across the table, sweeping across it or near the centre line, 0.53 to 1.10
+ * front falls per drop, 0.78 on average. Coins spread across the table build up on the
+ * pusher top before they push its front row off (77 rising to as many as 93 in those
+ * two minutes), so scattered drops pay the least, 0.53 to 0.73.
  */
 export const COIN_REST = {
   drift: 0.001,
@@ -138,6 +166,10 @@ export const COIN_REST = {
   wakeFall: 0.08,
   wakeImpulse: 0.003,
   pusherMargin: 0.002,
+  cascadeSpeed: 0.03,
+  cascadeKeep: 0.6,
+  cascadeGap: 0.0005,
+  cascadeConeCos: 0.5,
 } as const;
 
 /**

@@ -105,9 +105,11 @@ describe('the Demo opening heap with no drops comes to rest on the pusher', () =
     );
   });
 
-  it('drops at most two coins over the front lip, both while the pour settles', async () => {
+  it('drops at most five coins over the front lip, all while the pour settles', async () => {
     const { frontFallTicks } = await referencePour();
-    expect(frontFallTicks.length, `at ticks ${frontFallTicks.join(' ')}`).toBeLessThanOrEqual(2);
+    // The pour is 160 drops, and since the rest cascade (COIN_REST) a drop's push
+    // carries through the pile to the lip: 5 go over while it settles, none after.
+    expect(frontFallTicks.length, `at ticks ${frontFallTicks.join(' ')}`).toBeLessThanOrEqual(5);
     for (const tick of frontFallTicks) {
       expect(tick).toBeLessThanOrEqual(SETTLED_STROKES * PUSHER.periodTicks);
     }
@@ -123,7 +125,7 @@ describe('the Demo opening heap with no drops comes to rest on the pusher', () =
     const { hashes } = await referencePour();
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"55447c368ba0736d"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"bb41e00c43e62270"`);
   });
 });
 

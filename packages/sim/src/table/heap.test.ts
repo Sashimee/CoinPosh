@@ -166,6 +166,6 @@ describe('opening heap on the table', () => {
     const hash = await play();
     expect(await play()).toBe(hash);
     // Changing this value breaks replay audits of input logs that open with a heap.
-    expect(hash).toMatchInlineSnapshot(`"1408f3ec4741a856"`);
+    expect(hash).toMatchInlineSnapshot(`"53ff5809aefa4642"`);
   });
 });
