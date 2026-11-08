@@ -1,3 +1,4 @@
+import { ftueTargets } from '../src/config/index.ts';
 import { createRng } from '../src/rng.ts';
 import type { EconomyConfig, PacingTargetDef, PacingTargetId } from '../src/types.ts';
 import type { SimModel } from './model.ts';
@@ -27,8 +28,11 @@ export interface Distribution {
   readonly unreached: number;
 }
 
+/** A pacing row from 02-ECONOMY.md or an FTUE row from 00-VISION. */
+export type SimTarget = Omit<PacingTargetDef, 'id'> & { readonly id: string };
+
 export interface TargetResult {
-  readonly target: PacingTargetDef;
+  readonly target: SimTarget;
   readonly distribution: Distribution;
   /** The value at the target's percentile; Infinity when that share of players never got there. */
   readonly value: number;
@@ -40,6 +44,7 @@ export interface DaySnapshot {
   readonly venue: number;
   readonly bullionProgress: number;
   readonly goldBars: number;
+  readonly crates: number;
   readonly charms: number;
   readonly albumSets: number;
   readonly pearls: number;
@@ -51,6 +56,7 @@ export interface DaySnapshot {
 export interface SimResult {
   readonly options: SimOptions;
   readonly targets: readonly TargetResult[];
+  readonly ftue: readonly TargetResult[];
   readonly active: Readonly<Record<MilestoneId, Distribution>>;
   readonly casualDays: readonly DaySnapshot[];
   readonly activeCapHours: number;
@@ -112,6 +118,7 @@ function snapshot(ctx: PlayerContext, player: PlayerState, day: number): DaySnap
     venue: venue.order,
     bullionProgress: Math.min(1, venueBullion(ctx, player) / venue.bullionThreshold),
     goldBars: player.goldBars,
+    crates: player.crates,
     charms: player.charms,
     albumSets: player.completedSets.size,
     pearls: player.pearls,
@@ -155,6 +162,7 @@ function medianSnapshot(day: number, all: readonly DaySnapshot[]): DaySnapshot {
     venue: med((s) => s.venue),
     bullionProgress: med((s) => s.bullionProgress),
     goldBars: med((s) => s.goldBars),
+    crates: med((s) => s.crates),
     charms: med((s) => s.charms),
     albumSets: med((s) => s.albumSets),
     pearls: med((s) => s.pearls),
@@ -164,7 +172,7 @@ function medianSnapshot(day: number, all: readonly DaySnapshot[]): DaySnapshot {
   };
 }
 
-function evaluate(target: PacingTargetDef, values: readonly (number | undefined)[]): TargetResult {
+function evaluate(target: SimTarget, values: readonly (number | undefined)[]): TargetResult {
   const dist = distribution(values);
   const filled = values.map((v) => v ?? Number.POSITIVE_INFINITY);
   const value = percentile(filled, target.percentile);
@@ -241,6 +249,12 @@ export function runSimulation(
   return {
     options,
     targets: config.pacing.map((target) => evaluate(target, valuesFor[target.id])),
+    ftue: ftueTargets.map((target) =>
+      evaluate(
+        target,
+        activeRuns.map((p) => p.milestones[target.id]),
+      ),
+    ),
     active,
     casualDays,
     activeCapHours: model.activeCapHours,

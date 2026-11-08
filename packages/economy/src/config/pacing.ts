@@ -59,3 +59,17 @@ export const pacing = [
     max: 35,
   },
 ] as const satisfies readonly PacingTargetDef[];
+
+/**
+ * 00-VISION "Retention and FTUE targets" the economy sim can see on its own. First drop,
+ * first Cascade and first Fusion are table physics, measured on packages/sim.
+ */
+export const ftueTargets = [
+  {
+    id: 'firstCrate',
+    label: 'First Vault Crate',
+    metric: 'activeSeconds',
+    percentile: 90,
+    max: 45,
+  },
+] as const satisfies readonly (Omit<PacingTargetDef, 'id'> & { readonly id: string })[];

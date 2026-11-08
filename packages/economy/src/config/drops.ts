@@ -41,20 +41,20 @@ export const crateSpawn = {
 
 export const crateRewards = {
   common: { incomeSeconds: 5, pearls: 0, keys: 0, tickets: 0, charmChance: 0, albumCard: true },
-  fine: { incomeSeconds: 12, pearls: 1, keys: 0, tickets: 0, charmChance: 2_500, albumCard: true },
-  rare: { incomeSeconds: 30, pearls: 3, keys: 1, tickets: 0, charmChance: 10_000, albumCard: true },
+  fine: { incomeSeconds: 12, pearls: 1, keys: 0, tickets: 0, charmChance: 1_000, albumCard: true },
+  rare: { incomeSeconds: 30, pearls: 3, keys: 0, tickets: 0, charmChance: 3_000, albumCard: true },
   exquisite: {
     incomeSeconds: 90,
     pearls: 8,
     keys: 1,
     tickets: 1,
-    charmChance: 10_000,
+    charmChance: 6_000,
     albumCard: true,
   },
   legendary: {
     incomeSeconds: 300,
     pearls: 20,
-    keys: 2,
+    keys: 1,
     tickets: 2,
     charmChance: 10_000,
     albumCard: true,
@@ -62,7 +62,7 @@ export const crateRewards = {
   heirloom: {
     incomeSeconds: 900,
     pearls: 50,
-    keys: 3,
+    keys: 2,
     tickets: 3,
     charmChance: 10_000,
     albumCard: true,

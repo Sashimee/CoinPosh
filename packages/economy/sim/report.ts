@@ -67,28 +67,38 @@ function milestoneRow(id: MilestoneId, d: Distribution, players: number): readon
   ];
 }
 
+function targetTable(targets: readonly TargetResult[]): string {
+  return table(
+    ['', 'Target', 'Bound', 'At', 'Sim', 'p10 / p50 / p90'],
+    targets.map((t) => [
+      t.pass ? 'PASS' : 'MISS',
+      t.target.label,
+      formatBound(t.target),
+      `p${t.target.percentile}`,
+      formatMetric(t.target.metric, t.value),
+      [t.distribution.p10, t.distribution.p50, t.distribution.p90]
+        .map((v) => formatMetric(t.target.metric, v))
+        .join(' / '),
+    ]),
+  );
+}
+
+function onTarget(targets: readonly TargetResult[]): string {
+  return `${targets.filter((t) => t.pass).length}/${targets.length} on target`;
+}
+
 export function formatSummary(result: SimResult): string {
   const { options } = result;
-  const passed = result.targets.filter((t) => t.pass).length;
   const out: string[] = [];
 
   out.push(
     `CoinPosh balancing sim · ${options.players} players · seed ${options.seed} · ${options.days} casual day${options.days === 1 ? '' : 's'}`,
     '',
-    `Pacing targets (02-ECONOMY.md): ${passed}/${result.targets.length} on target`,
-    table(
-      ['', 'Target', 'Bound', 'At', 'Sim', 'p10 / p50 / p90'],
-      result.targets.map((t) => [
-        t.pass ? 'PASS' : 'MISS',
-        t.target.label,
-        formatBound(t.target),
-        `p${t.target.percentile}`,
-        formatMetric(t.target.metric, t.value),
-        [t.distribution.p10, t.distribution.p50, t.distribution.p90]
-          .map((v) => formatMetric(t.target.metric, v))
-          .join(' / '),
-      ]),
-    ),
+    `Pacing targets (02-ECONOMY.md): ${onTarget(result.targets)}`,
+    targetTable(result.targets),
+    '',
+    `FTUE targets (00-VISION.md): ${onTarget(result.ftue)}`,
+    targetTable(result.ftue),
     '',
     `Active-play milestones (continuous play, capped at ${result.activeCapHours} h)`,
     table(
@@ -106,6 +116,7 @@ export function formatSummary(result: SimResult): string {
         'Venue',
         'Bullion',
         'Gold Bars',
+        'Crates',
         'Charms',
         'Sets',
         'Pearls',
@@ -118,6 +129,7 @@ export function formatSummary(result: SimResult): string {
         String(d.venue),
         `${Math.round(d.bullionProgress * 100)} %`,
         String(d.goldBars),
+        String(d.crates),
         String(d.charms),
         String(d.albumSets),
         String(d.pearls),
