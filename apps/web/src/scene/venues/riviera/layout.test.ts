@@ -148,20 +148,44 @@ describe('rivieraCameraPreset', () => {
     });
   }
 
-  it('puts the horizon in the upper half and the sun disc inside the frame at 1280x800', () => {
-    const camera = presetCamera(1280 / 800);
-    const horizon = camera.position
-      .clone()
-      .add(new Vector3(0, 0, -1000))
-      .project(camera);
-    expect(horizon.y).toBeGreaterThan(0.25);
-    expect(horizon.y).toBeLessThan(0.85);
-    const sunOnDome = RIVIERA_SUN_DIRECTION.clone().multiplyScalar(90).project(camera);
-    expect(Math.abs(sunOnDome.x)).toBeLessThan(0.85);
-    expect(sunOnDome.y).toBeGreaterThan(horizon.y);
-    expect(sunOnDome.y).toBeLessThan(0.9);
-    expect(sunOnDome.z).toBeLessThan(1);
-  });
+  for (const [label, aspect] of [
+    ['1280x800', 1280 / 800],
+    ['1920x1080', 1920 / 1080],
+    ['1024x768', 1024 / 768],
+  ] as const) {
+    it(`shows the horizon and the sun above the backboard crest at ${label}`, () => {
+      const camera = presetCamera(aspect);
+      const horizon = camera.position
+        .clone()
+        .add(new Vector3(0, 0, -1000))
+        .project(camera);
+      expect(horizon.y).toBeGreaterThan(0.25);
+      expect(horizon.y).toBeLessThan(0.85);
+      const sunOnDome = RIVIERA_SUN_DIRECTION.clone().multiplyScalar(90).project(camera);
+      expect(Math.abs(sunOnDome.x)).toBeLessThan(0.85);
+      expect(sunOnDome.y).toBeGreaterThan(horizon.y);
+      expect(sunOnDome.y).toBeLessThan(0.9);
+      expect(sunOnDome.z).toBeLessThan(1);
+
+      // The crest's rear top edge is its highest point on screen; the sky dome sits behind it,
+      // so a sun projected below that line is hidden by the backboard.
+      let crestTop = -Infinity;
+      for (const x of [-TABLE_BOUNDS.halfWidth, 0, TABLE_BOUNDS.halfWidth]) {
+        for (const z of [TABLE_BOUNDS.backZ - 0.01, T.backboardFrontZ + 0.024]) {
+          crestTop = Math.max(
+            crestTop,
+            new Vector3(x, TABLE_BOUNDS.top + 0.008, z).project(camera).y,
+          );
+        }
+      }
+      expect(crestTop, 'backboard crest stays below the horizon').toBeLessThan(horizon.y);
+      const sunRadiusNdc =
+        Math.tan((0.62 * Math.PI) / 180) / Math.tan((camera.fov * Math.PI) / 360);
+      expect(sunOnDome.y - sunRadiusNdc, 'sun disc clears the backboard crest').toBeGreaterThan(
+        crestTop,
+      );
+    });
+  }
 
   it('returns a finite preset that looks down at the table for extreme and invalid aspects', () => {
     for (const aspect of [0.05, 0.1, 0.3, 1, 3, 4, 0, -1]) {

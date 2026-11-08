@@ -76,6 +76,13 @@ const BAND_MARGIN = 0.03;
  * Cascade meters pinned to the screen edges (P-101) sit over the side walls, not the coins.
  */
 const PORTRAIT_FIELD_MAX_X = 0.7;
+/** NDC y of the sea horizon on desktop: the sun hangs just above it. */
+const HORIZON_WIDE = 0.7;
+/**
+ * On desktop the backboard crest stays this far below the horizon, in NDC, so the sea line runs
+ * unbroken behind the cabinet and the low sun never sets behind the backboard.
+ */
+const CREST_HORIZON_CLEARANCE = 0.32;
 
 const T = RIVIERA_TABLE;
 const INNER_HALF_WIDTH = T.fieldHalfWidth + T.gutterWidth;
@@ -112,11 +119,12 @@ interface FramePoint {
  * Two kinds of frame point. The play points (the coin floor's front corners, the back of the
  * upper tier and the payout landing) always sit inside the HUD band, the floor clear of the
  * side meters on a portrait phone. The cabinet points (finials, front panel, backboard crest)
- * keep the whole cabinet in frame on desktop; on a phone, `relax` (0..1) lets them run off
+ * keep the whole cabinet in frame on desktop, the crest below the horizon; on a phone, `relax` (0..1) lets them run off
  * the edges and under the HUD so the coins can come closer.
  */
 function framePoints(band: Band, tall: number, relax: number): FramePoint[] {
   const cabinet = { maxX: 0.98 + 3 * relax, minY: -0.97 - 3 * relax, maxY: 0.97 + 3 * relax };
+  const crest = { ...cabinet, maxY: HORIZON_WIDE - CREST_HORIZON_CLEARANCE + 3 * relax };
   const play = {
     maxX: 0.98 + (PORTRAIT_FIELD_MAX_X - 0.98) * tall,
     minY: band.bottom + BAND_MARGIN,
@@ -132,7 +140,7 @@ function framePoints(band: Band, tall: number, relax: number): FramePoint[] {
     points.push(
       { at: new Vector3(outer, FINIAL_TOP_Y, CABINET_FRONT_Z), ...cabinet },
       { at: new Vector3(outer, TRAY_FLOOR_Y, CABINET_FRONT_Z), ...cabinet },
-      { at: new Vector3(outer, CREST_Y, CABINET_BACK_Z), ...cabinet },
+      { at: new Vector3(outer, CREST_Y, CABINET_BACK_Z), ...crest },
       { at: new Vector3(inner, 0, T.fieldFrontZ), ...play },
       { at: new Vector3(inner, T.pusherHeight, T.backboardFrontZ), ...play },
     );
@@ -141,7 +149,6 @@ function framePoints(band: Band, tall: number, relax: number): FramePoint[] {
 }
 
 const ANCHOR = new Vector3(0, 0.1, -0.1);
-const HORIZON_WIDE = 0.79;
 const PITCH_TALL = (46 * Math.PI) / 180;
 const PITCH_SHORT = (40 * Math.PI) / 180;
 const VERTICAL_FOV_WIDE = 40;
