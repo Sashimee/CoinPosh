@@ -1,4 +1,4 @@
-import { upgradeLines } from '@coinposh/economy';
+import { stewardAllowance, upgradeLines } from '@coinposh/economy';
 import { affordableCount, upgradeRows } from '../app/model.ts';
 import type { PanelId } from '../app/state.ts';
 import { watch } from '../app/store.ts';
@@ -9,7 +9,7 @@ import { createConciergeNotice, createDecorumMeter } from './components/decorumM
 import { makePressable } from './components/pressable.ts';
 import { createTierStamp } from './components/tierStamp.ts';
 import { tr, type UiContext } from './context.ts';
-import { h } from './dom.ts';
+import { fromMarkup, h, listen, restartAnimation } from './dom.ts';
 import { icon } from './icons.ts';
 import { schedule } from './motion/loop.ts';
 import { isReducedMotion } from './motion/reduced.ts';
@@ -114,6 +114,127 @@ function followBoot(ctx: UiContext, meters: HTMLElement): void {
   });
 }
 
+/** A Vault that empties for a moment between a drop and the fall it pays is not news. */
+const EMPTY_SETTLE_MS = 600;
+/** How long a tap at an empty Vault keeps the notice lit. */
+const ASKED_MS = 900;
+const LEDGE_POINTER =
+  '<svg class="cp-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5v12.5"/><path d="m6.5 12 5.5 5.5 5.5-5.5"/><path d="M7 20.5h10" opacity="0.55"/></svg>';
+
+function isPlayable(): boolean {
+  const probe: BootProbe | undefined = window.__coinposh;
+  return probe?.playable ?? true;
+}
+
+/** Presses on HUD controls are theirs; anything else lands on the table. */
+function isTableTap(event: PointerEvent): boolean {
+  return !(event.target instanceof Element && event.target.closest('.cp-ui-host'));
+}
+
+/**
+ * Dims the plaque and has the Concierge point at the ledge while the Vault the server reports
+ * cannot pay for a drop. It only reads the balance: refilling an empty Vault is the server's
+ * Steward's allowance (02-ECONOMY.md), and its credit clears this like any other.
+ */
+function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElement {
+  const title = h('span', { class: 'cp-vault-empty-title' });
+  const hint = h('span', { class: 'cp-vault-empty-hint' });
+  const pointer = h(
+    'span',
+    { class: 'cp-vault-empty-pointer', attrs: { 'aria-hidden': 'true' } },
+    fromMarkup(LEDGE_POINTER),
+  );
+  const notice = h(
+    'div',
+    {
+      class: 'cp-vault-empty cp-panel',
+      attrs: { role: 'status', 'data-testid': 'hud-vault-empty', hidden: '' },
+    },
+    h('span', { class: 'cp-vault-empty-text' }, title, hint),
+    pointer,
+  );
+  const reveal = new SpringValue(0, SPRINGS.bouncy, (value) => {
+    notice.style.translate = value === 1 ? '' : `0 ${(1 - value) * -14}px`;
+    notice.style.opacity = String(Math.min(1, Math.max(0, value)));
+  });
+  ctx.loc.text(title, () => tr(ctx, 'hud.vaultEmpty.title'));
+  ctx.loc.text(hint, () => tr(ctx, 'hud.vaultEmpty.hint'));
+
+  const isEmpty = (): boolean => ctx.store.getState().coins < stewardAllowance.emptyBelowCoins;
+  let shown = false;
+  let settle: ReturnType<typeof setTimeout> | undefined;
+  let asked: ReturnType<typeof setTimeout> | undefined;
+
+  const show = (): void => {
+    clearTimeout(settle);
+    if (shown) return;
+    shown = true;
+    notice.hidden = false;
+    plaque.classList.add('is-empty');
+    reveal.jump(0);
+    void reveal.to(1);
+  };
+  const hide = (): void => {
+    clearTimeout(settle);
+    clearTimeout(asked);
+    if (!shown) return;
+    shown = false;
+    plaque.classList.remove('is-empty');
+    notice.classList.remove('is-asked', 'is-nudged');
+    void reveal.to(0, SPRINGS.snappy).then(() => {
+      if (!shown) notice.hidden = true;
+    });
+  };
+  const answerTap = (): void => {
+    if (!isEmpty() || !isPlayable()) return;
+    show();
+    notice.classList.add('is-asked');
+    if (!isReducedMotion()) restartAnimation(notice, 'is-nudged');
+    clearTimeout(asked);
+    asked = setTimeout(() => {
+      notice.classList.remove('is-asked');
+    }, ASKED_MS);
+  };
+
+  ctx.own(
+    watch(
+      ctx.store,
+      () => isEmpty(),
+      (empty) => {
+        if (!empty) hide();
+        else if (!shown && isPlayable()) {
+          clearTimeout(settle);
+          settle = setTimeout(show, EMPTY_SETTLE_MS);
+        }
+      },
+    ),
+  );
+  ctx.own(
+    listen(
+      window,
+      'pointerdown',
+      (event) => {
+        if (isTableTap(event)) answerTap();
+      },
+      { capture: true, passive: true },
+    ),
+  );
+  ctx.own(
+    ctx.bus.on('ui:feedback', ({ kind }) => {
+      if (kind === 'deny') answerTap();
+    }),
+  );
+  notice.addEventListener('animationend', () => {
+    notice.classList.remove('is-nudged');
+  });
+  ctx.own(() => {
+    clearTimeout(settle);
+    clearTimeout(asked);
+    reveal.stop();
+  });
+  return notice;
+}
+
 export function createHud(ctx: UiContext): Hud {
   const bannerSlot = h('div', {
     class: 'cp-banner-slot',
@@ -199,6 +320,7 @@ export function createHud(ctx: UiContext): Hud {
   );
   followBoot(ctx, meters);
 
+  const plaque = createBalancePlaque(ctx);
   const hud = h(
     'div',
     { class: 'cp-hud' },
@@ -206,7 +328,8 @@ export function createHud(ctx: UiContext): Hud {
       'div',
       { class: 'cp-hud-top' },
       bannerSlot,
-      createBalancePlaque(ctx),
+      plaque,
+      createVaultEmptyNotice(ctx, plaque),
       createConciergeNotice(ctx),
     ),
     meters,

@@ -16,7 +16,11 @@
     "vault": "Tresor",
     "balanceAria": "Tresorguthaben: {{value}}",
     "goldBarsAria": "Goldbarren: {{value}}",
-    "provisional": "Das Haus bestätigt"
+    "provisional": "Das Haus bestätigt",
+    "vaultEmpty": {
+      "title": "Tresor leer",
+      "hint": "Ihre Münzen an der Kante sind noch im Spiel. Sehen Sie zu, wie sie fallen."
+    }
   },
   "combo": {
     "label": "Kaskade",
