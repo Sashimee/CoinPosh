@@ -40,6 +40,19 @@ const CREST_TOP = 0.026;
 /** The body front sits a hair behind the teak so the two never fight over one plane. */
 const BODY_FRONT_INSET = 0.002;
 const GLASS_THICKNESS = 0.006;
+/**
+ * The cabinet front under the tray is reeded lacquer between two gold beads rather than a flat
+ * framed panel, so the strip a portrait camera shows below the lip reads as furniture, not as
+ * an empty box. The brass plate over the tray lip, under its nosing, makes the tray itself a
+ * thin brass line.
+ */
+const LIP_PLATE_TOP = 0.004;
+const LIP_PLATE_HEIGHT = 0.018;
+const LIP_PLATE_PROUD = 0.0025;
+const FLUTE_PITCH = 0.016;
+const FLUTE_DEPTH = 0.0075;
+const FLUTE_BEAD_RADIUS = 0.0065;
+const FLUTE_FOOT = 0.045;
 
 interface Dimensions {
   readonly t: RivieraTableLayout;
@@ -53,6 +66,8 @@ interface Dimensions {
   readonly trayFloor: number;
   readonly lipTop: number;
   readonly plinthTop: number;
+  readonly fluteTop: number;
+  readonly fluteBottom: number;
   readonly boardBottom: number;
   readonly boardTop: number;
   readonly emblem: Vector3;
@@ -67,6 +82,8 @@ function dimensions(t: RivieraTableLayout): Dimensions {
   const outerX = gutterX + t.wallThickness;
   const boardBottom = t.pusherHeight + 0.004;
   const trayFloor = -t.trayDepth;
+  const lipTop = trayFloor * LIP_TOP_FRACTION;
+  const plinthTop = t.deckY + 0.07;
   return {
     t,
     fieldX,
@@ -77,8 +94,10 @@ function dimensions(t: RivieraTableLayout): Dimensions {
     boardBackZ: t.backboardFrontZ - t.backboardDepth,
     bodyTop: -t.gutterDepth - 0.005,
     trayFloor,
-    lipTop: trayFloor * LIP_TOP_FRACTION,
-    plinthTop: t.deckY + 0.07,
+    lipTop,
+    plinthTop,
+    fluteTop: lipTop - LIP_PLATE_TOP - LIP_PLATE_HEIGHT - FLUTE_BEAD_RADIUS * 0.4,
+    fluteBottom: plinthTop + FLUTE_FOOT,
     boardBottom,
     boardTop: boardBottom + t.backboardHeight,
     emblem: new Vector3(0, boardBottom + t.backboardHeight * 0.52, t.backboardFrontZ),
@@ -117,6 +136,31 @@ function ball(centre: Vector3, radius: number): BufferGeometry {
   return g;
 }
 
+/** An elliptical reed, `halfWidth` across and standing `depth` proud of its face. */
+function reedProfile(halfWidth: number, depth: number, segments = 10): Vector2[] {
+  const points: Vector2[] = [];
+  for (let i = 0; i <= segments; i += 1) {
+    const a = Math.PI - (Math.PI * i) / segments;
+    points.push(new Vector2(Math.cos(a) * halfWidth, Math.sin(a) * depth));
+  }
+  return points;
+}
+
+function reeds(d: Dimensions): BufferGeometry[] {
+  const span = (d.outerX - 0.02) * 2;
+  const count = Math.floor(span / FLUTE_PITCH);
+  const z = d.t.cabinetFrontZ;
+  const profile = reedProfile(FLUTE_PITCH / 2, FLUTE_DEPTH);
+  return Array.from({ length: count }, (_, i) => {
+    const x = (i - (count - 1) / 2) * FLUTE_PITCH;
+    return sweepProfile(
+      line(new Vector3(x, d.fluteTop, z), new Vector3(x, d.fluteBottom, z)),
+      profile,
+      { up: Z },
+    );
+  });
+}
+
 function lacquerPieces(d: Dimensions): BufferGeometry[] {
   const { t } = d;
   return [
@@ -135,6 +179,7 @@ function lacquerPieces(d: Dimensions): BufferGeometry[] {
       new Vector3(d.gutterX, d.lipTop, t.cabinetFrontZ),
       0.008,
     ),
+    ...reeds(d),
     box(
       new Vector3(-d.outerX + 0.012, t.deckY, d.backZ + 0.015),
       new Vector3(d.outerX - 0.012, d.plinthTop + 0.01, t.cabinetFrontZ - 0.015),
@@ -279,11 +324,6 @@ function goldPieces(d: Dimensions): BufferGeometry[] {
       new Vector3(d.gutterX, -0.0078, t.fieldFrontZ + 0.005),
       0.007,
     ),
-    rod(
-      new Vector3(-d.gutterX, d.lipTop, t.cabinetFrontZ - LIP_DEPTH * 0.35),
-      new Vector3(d.gutterX, d.lipTop, t.cabinetFrontZ - LIP_DEPTH * 0.35),
-      0.009,
-    ),
     ...[t.backboardFrontZ + 0.013, d.boardBackZ - 0.008].map((z) =>
       rod(
         new Vector3(-d.outerX - 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
@@ -323,26 +363,21 @@ function goldPieces(d: Dimensions): BufferGeometry[] {
     ...sunburstRays(d),
     medallion(d),
   );
-  const panelHeight = d.trayFloor - d.plinthTop;
-  for (const [inset, radius] of [
-    [0.04, 0.0028],
-    [0.055, 0.0014],
-  ] as const) {
-    pieces.push(
-      sweepProfile(
-        roundedRectPath(
-          new Vector3(0, d.plinthTop + panelHeight / 2, t.cabinetFrontZ),
-          X,
-          Y,
-          (d.outerX - inset) * 2,
-          panelHeight - inset * 2,
-          0.022,
-        ),
-        halfRoundProfile(radius, 8),
-        { up: Z, closed: true },
+  pieces.push(
+    box(
+      new Vector3(-d.gutterX, d.lipTop - LIP_PLATE_TOP - LIP_PLATE_HEIGHT, t.cabinetFrontZ - 0.001),
+      new Vector3(d.gutterX, d.lipTop - LIP_PLATE_TOP, t.cabinetFrontZ + LIP_PLATE_PROUD),
+      0.0012,
+      2,
+    ),
+    ...[d.fluteTop, d.fluteBottom].map((y) =>
+      rod(
+        new Vector3(-d.outerX - 0.002, y, t.cabinetFrontZ + 0.002),
+        new Vector3(d.outerX + 0.002, y, t.cabinetFrontZ + 0.002),
+        FLUTE_BEAD_RADIUS,
       ),
-    );
-  }
+    ),
+  );
   return pieces;
 }
 
@@ -380,6 +415,13 @@ function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
       ball(new Vector3(side * (d.fieldX + 0.0045), d.glassTop + 0.004, t.gutterStartZ), 0.008),
     );
   }
+  pieces.push(
+    rod(
+      new Vector3(-d.gutterX, d.lipTop, t.cabinetFrontZ - LIP_DEPTH * 0.35),
+      new Vector3(d.gutterX, d.lipTop, t.cabinetFrontZ - LIP_DEPTH * 0.35),
+      0.009,
+    ),
+  );
   const ring = new TorusGeometry(0.047 * k, 0.0045 * k, 12, 64);
   ring.translate(d.emblem.x, d.emblem.y, d.emblem.z + 0.006 * k);
   pieces.push(ring);
