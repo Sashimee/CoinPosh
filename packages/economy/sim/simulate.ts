@@ -1,7 +1,12 @@
 import { ftueTargets } from '../src/config/index.ts';
 import { createRng } from '../src/rng.ts';
-import type { EconomyConfig, PacingTargetDef, PacingTargetId } from '../src/types.ts';
-import type { SimModel } from './model.ts';
+import type {
+  EconomyConfig,
+  OpeningHeapConfig,
+  PacingTargetDef,
+  PacingTargetId,
+} from '../src/types.ts';
+import { dropsBeforeFirstFall, type SimModel } from './model.ts';
 import {
   activeTick,
   claimOffline,
@@ -53,8 +58,16 @@ export interface DaySnapshot {
   readonly activeMinutes: number;
 }
 
+export interface OpeningHeapResult extends OpeningHeapConfig {
+  /** Drops paid into the heap before its first coin leaves the front edge. */
+  readonly dropsBeforeFirstFall: number;
+  /** Value the heap paid each active player, over the whole run. */
+  readonly paid: Distribution;
+}
+
 export interface SimResult {
   readonly options: SimOptions;
+  readonly openingHeap: OpeningHeapResult;
   readonly targets: readonly TargetResult[];
   readonly ftue: readonly TargetResult[];
   readonly active: Readonly<Record<MilestoneId, Distribution>>;
@@ -63,6 +76,7 @@ export interface SimResult {
 }
 
 const MILESTONES: readonly MilestoneId[] = [
+  'heapCleared',
   'firstUpgrade',
   'firstCrate',
   'firstCharm',
@@ -248,6 +262,11 @@ export function runSimulation(
 
   return {
     options,
+    openingHeap: {
+      ...config.openingHeap,
+      dropsBeforeFirstFall: dropsBeforeFirstFall(model.pile, config.openingHeap.coins),
+      paid: distribution(activeRuns.map((p) => p.ledger.heap)),
+    },
     targets: config.pacing.map((target) => evaluate(target, valuesFor[target.id])),
     ftue: ftueTargets.map((target) =>
       evaluate(

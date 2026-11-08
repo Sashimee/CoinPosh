@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { economyConfig } from '../src/config/index.ts';
 import { runCli } from './cli.ts';
-import { simModel } from './model.ts';
+import { dropsBeforeFirstFall, simModel, type TablePile } from './model.ts';
 import { formatMetric, formatSummary } from './report.ts';
 import { percentile, runSimulation } from './simulate.ts';
 
@@ -72,10 +72,40 @@ describe('runSimulation', () => {
   });
 
   it('never reaches the first upgrade from an empty table on 20 starting coins', () => {
-    const empty = { ...simModel, pile: { ...simModel.pile, startingCoins: 0 } };
-    const run = runSimulation(economyConfig, empty, { days: 1, players: 2, seed: 5 });
+    const empty = { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, coins: 0 } };
+    const run = runSimulation(empty, simModel, { days: 1, players: 2, seed: 5 });
     expect(run.active.firstUpgrade.p50).toBe(Number.POSITIVE_INFINITY);
     expect(run.targets.find((t) => t.target.id === 'firstUpgrade')?.pass).toBe(false);
+  });
+
+  it('pays the whole opening heap out to every player, at no less than its face value', () => {
+    const { coins, tier } = economyConfig.openingHeap;
+    const face = economyConfig.coinTiers.find((t) => t.id === tier)?.value ?? Number.NaN;
+    expect(result.openingHeap).toMatchObject({ coins, tier, dropsBeforeFirstFall: 10 });
+    expect(result.openingHeap.paid.p10).toBeGreaterThanOrEqual(coins * face);
+    expect(result.active.heapCleared.unreached).toBe(0);
+    expect(result.active.heapCleared.p90).toBeLessThan(5 * 60);
+  });
+
+  it('starts paying before the trust fund runs out', () => {
+    const trustFund = economyConfig.upgradeLines.find((l) => l.effect.stat === 'startingCoins');
+    expect(dropsBeforeFirstFall(simModel.pile, economyConfig.openingHeap.coins)).toBeLessThan(
+      trustFund?.effect.base ?? 0,
+    );
+  });
+
+  it('needs a silver heap to make the first upgrade at the measured return', () => {
+    // A copper heap pays no more than the pile it stands in for: at 0.9 coins per drop the
+    // trust fund barely grows (balance evidence for P-193).
+    const measured = { ...simModel, baseReturnRatio: 0.9 };
+    const firstUpgrade = (tier: 'copper' | 'silver') =>
+      runSimulation(
+        { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, tier } },
+        measured,
+        options,
+      ).targets.find((t) => t.target.id === 'firstUpgrade');
+    expect(firstUpgrade('copper')?.pass).toBe(false);
+    expect(firstUpgrade('silver')?.pass).toBe(true);
   });
 
   it('reports one median snapshot per casual day with steady progress', () => {
@@ -95,10 +125,54 @@ describe('runSimulation', () => {
 
   it('formats a readable summary', () => {
     const summary = formatSummary(result);
+    expect(summary).toMatch(
+      /Opening heap: 100 silver coins on the house · first fall after 10 drops · paid \d+ \/ \d+ \/ \d+ coins/,
+    );
+    expect(summary).toMatch(/Opening heap cleared {2}/);
     expect(summary).toContain('Pacing targets (02-ECONOMY.md): 7/7 on target');
     expect(summary).toContain('FTUE targets (00-VISION.md): 1/1 on target');
     expect(summary).toMatch(/PASS {2}Ascend Venue 1 \(active\)/);
     expect(summary).toContain('Casual player, median at end of each day');
+  });
+});
+
+describe('dropsBeforeFirstFall', () => {
+  const pile: TablePile = {
+    steadyCoins: 195,
+    firstFallAfterDrops: 145,
+    firstFallOnHeap: [
+      [25, 56],
+      [100, 10],
+    ],
+  };
+
+  it('reads the measured points and the empty table exactly', () => {
+    expect(dropsBeforeFirstFall(pile, 0)).toBe(145);
+    expect(dropsBeforeFirstFall(pile, 25)).toBe(56);
+    expect(dropsBeforeFirstFall(pile, 100)).toBe(10);
+  });
+
+  it('interpolates between points and holds the last one past the curve', () => {
+    expect(dropsBeforeFirstFall(pile, 62.5)).toBe(33);
+    expect(dropsBeforeFirstFall(pile, 110)).toBe(10);
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 500 }), fc.integer({ min: 0, max: 500 }), (a, b) => {
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        expect(dropsBeforeFirstFall(pile, hi)).toBeLessThanOrEqual(dropsBeforeFirstFall(pile, lo));
+      }),
+    );
+  });
+
+  it('rejects a negative heap and a curve that is not ascending', () => {
+    expect(() => dropsBeforeFirstFall(pile, -1)).toThrow(/heapCoins must be a finite number ≥ 0/);
+    const unsorted: TablePile = {
+      ...pile,
+      firstFallOnHeap: [
+        [100, 10],
+        [25, 56],
+      ],
+    };
+    expect(() => dropsBeforeFirstFall(unsorted, 200)).toThrow(/ascending/);
   });
 });
 
@@ -142,6 +216,22 @@ describe('sim CLI', () => {
     expect(cli('--days', '1', '--players', '2', '--empty-table').code).toBe(0);
   });
 
+  it('applies the --heap-coins and --heap-tier what-ifs', () => {
+    const heap = (...argv: string[]) =>
+      (
+        JSON.parse(cli('--days', '1', '--players', '1', '--json', ...argv).out) as {
+          openingHeap: { coins: number; tier: string; dropsBeforeFirstFall: number };
+        }
+      ).openingHeap;
+    expect(heap()).toMatchObject({ coins: 100, tier: 'silver', dropsBeforeFirstFall: 10 });
+    expect(heap('--heap-coins', '50', '--heap-tier', 'copper')).toMatchObject({
+      coins: 50,
+      tier: 'copper',
+      dropsBeforeFirstFall: 33,
+    });
+    expect(heap('--empty-table')).toMatchObject({ coins: 0, dropsBeforeFirstFall: 145 });
+  });
+
   it('applies the --return-ratio what-if', () => {
     const run = cli('--days', '1', '--players', '1', '--return-ratio', '0.9', '--json');
     const shipped = cli('--days', '1', '--players', '1', '--json');
@@ -158,6 +248,9 @@ describe('sim CLI', () => {
   it.each([
     [['--days', 'seven'], '--days expects an integer, got "seven"'],
     [['--return-ratio', '0'], '--return-ratio expects a positive number, got "0"'],
+    [['--heap-coins=-1'], '--heap-coins expects a whole number ≥ 0, got "-1"'],
+    [['--heap-coins', '2.5'], '--heap-coins expects a whole number ≥ 0, got "2.5"'],
+    [['--heap-tier', 'bronze'], '--heap-tier expects one of copper, silver, gold'],
     [['--bogus'], "Unknown option '--bogus'"],
   ])('fails loudly with usage on %j', (argv, message) => {
     const run = cli(...argv);

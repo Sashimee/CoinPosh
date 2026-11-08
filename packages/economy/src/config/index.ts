@@ -1,5 +1,5 @@
 import type { EconomyConfig } from '../types.ts';
-import { cascade, coinTiers, fusion } from './coins.ts';
+import { cascade, coinTiers, fusion, openingHeap } from './coins.ts';
 import { currencies } from './currencies.ts';
 import { crateRewards, crateSpawn, dropTables, pity } from './drops.ts';
 import { ftueTargets, pacing } from './pacing.ts';
@@ -14,6 +14,7 @@ export const economyConfig = {
   currencies,
   coinTiers,
   fusion,
+  openingHeap,
   cascade,
   upgradeCostRule,
   upgradeLines,
@@ -46,6 +47,7 @@ export {
   ftueTargets,
   fusion,
   offline,
+  openingHeap,
   pacing,
   pity,
   season,

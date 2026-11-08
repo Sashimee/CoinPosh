@@ -48,6 +48,7 @@ function table(headers: readonly string[], rows: readonly (readonly string[])[])
 }
 
 const MILESTONE_LABELS: Readonly<Record<MilestoneId, string>> = {
+  heapCleared: 'Opening heap cleared',
   firstUpgrade: 'First upgrade',
   firstCrate: 'First Vault Crate',
   firstCharm: 'First Charm',
@@ -87,6 +88,15 @@ function onTarget(targets: readonly TargetResult[]): string {
   return `${targets.filter((t) => t.pass).length}/${targets.length} on target`;
 }
 
+function openingHeapLine({ openingHeap: heap }: SimResult): string {
+  const paid = [heap.paid.p10, heap.paid.p50, heap.paid.p90].map((v) => v.toFixed(0)).join(' / ');
+  return (
+    `Opening heap: ${heap.coins} ${heap.tier} coins on the house · first fall after ` +
+    `${heap.dropsBeforeFirstFall} drop${heap.dropsBeforeFirstFall === 1 ? '' : 's'} · ` +
+    `paid ${paid} coins (p10 / p50 / p90)`
+  );
+}
+
 export function formatSummary(result: SimResult): string {
   const { options } = result;
   const out: string[] = [];
@@ -99,6 +109,8 @@ export function formatSummary(result: SimResult): string {
     '',
     `FTUE targets (00-VISION.md): ${onTarget(result.ftue)}`,
     targetTable(result.ftue),
+    '',
+    openingHeapLine(result),
     '',
     `Active-play milestones (continuous play, capped at ${result.activeCapHours} h)`,
     table(
