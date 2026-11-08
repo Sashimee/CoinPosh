@@ -55,6 +55,14 @@ function run(
   return events;
 }
 
+function ripeTicks(mechanics: TableMechanics<Tier>): number {
+  const ticks = mechanics.fusionTicks;
+  if (ticks === null) {
+    throw new Error('ripeTicks: these mechanics were made without fusion rules');
+  }
+  return ticks;
+}
+
 function placeRow(
   rig: MechanicsRig,
   mechanics: TableMechanics<Tier>,
@@ -73,12 +81,12 @@ describe('Contact Fusion on the table', () => {
     const { rig, mechanics } = await setUp(false);
     const ids = placeRow(rig, mechanics, ['copper', 'copper', 'copper']);
     const before = rig.coins();
-    expect(run(rig, mechanics, FIRST_LOOK + mechanics.fusionTicks - 1)).toEqual([]);
+    expect(run(rig, mechanics, FIRST_LOOK + ripeTicks(mechanics) - 1)).toEqual([]);
     const [fusion, ...rest] = run(rig, mechanics, 1);
     expect(rest).toEqual([]);
     expect(fusion).toEqual({
       kind: 'fusion',
-      tick: FIRST_LOOK + mechanics.fusionTicks,
+      tick: FIRST_LOOK + ripeTicks(mechanics),
       ids,
       tier: 'copper',
       into: 'silver',
@@ -122,9 +130,25 @@ describe('Contact Fusion on the table', () => {
     for (const row of [0, 1, 2]) {
       placeRow(rig, mechanics, ['copper', 'copper', 'copper'], -0.12 + row * 0.09);
     }
-    const first = run(rig, mechanics, FIRST_LOOK + mechanics.fusionTicks);
+    const first = run(rig, mechanics, FIRST_LOOK + ripeTicks(mechanics));
     expect(first.map((e) => e.kind === 'fusion' && e.into)).toEqual(['silver', 'silver', 'silver']);
     expect(rig.coins()).toHaveLength(3);
+  });
+
+  it('keeps every tier and fuses nothing without fusion rules', async () => {
+    const rig = await MechanicsRig.create();
+    live.push(rig);
+    const mechanics = new TableMechanics(rig.rapier, rig.world, rig, {
+      tiers: TIERS,
+      fusion: null,
+      tower: null,
+    });
+    const ids = placeRow(rig, mechanics, ['copper', 'copper', 'copper']);
+    expect(mechanics.fusionTicks).toBeNull();
+    expect(run(rig, mechanics, 120)).toEqual([]);
+    expect(mechanics.fusionProgress()).toEqual([]);
+    expect(rig.coins().map(({ id }) => id)).toEqual(ids);
+    expect(ids.map((id) => mechanics.tierOf(id))).toEqual(['copper', 'copper', 'copper']);
   });
 
   it('does not fuse mixed tiers, the top tier or two coins', async () => {
@@ -255,6 +279,6 @@ describe('mechanics determinism', () => {
 
   it('pins the session state so a change to the mechanics is noticed', async () => {
     const { digests } = await playSession(SEED);
-    expect(digests.at(-1)).toMatchInlineSnapshot(`"5b133732fd75a28e"`);
+    expect(digests.at(-1)).toMatchInlineSnapshot(`"729f6f15f07d6198"`);
   });
 });

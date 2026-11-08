@@ -11,7 +11,8 @@ import { FUSION_TUNING, type TowerPlacement } from './tuning.ts';
 export interface MechanicsConfig<Tier extends string> {
   /** The coin tier ladder, lowest first (COIN_TIERS from packages/shared). The top tier never fuses. */
   readonly tiers: readonly Tier[];
-  readonly fusion: FusionRules;
+  /** Contact Fusion's rules; null for a table whose coins keep their tier. */
+  readonly fusion: FusionRules | null;
   /** Where the Champagne Tower stands; null for a table without one. */
   readonly tower?: TowerPlacement | null;
 }
@@ -61,7 +62,7 @@ export class TableMechanics<Tier extends string> {
   readonly #tierIndex = new Map<Tier, number>();
   readonly #tierOf = new Map<number, number>();
   readonly #contacts: CoinContactFinder;
-  readonly #fusion: ContactFusion;
+  readonly #fusion: ContactFusion | null;
   readonly #tower: ChampagneTower | null;
   #lastTick = -1;
 
@@ -78,11 +79,10 @@ export class TableMechanics<Tier extends string> {
     this.#table = table;
     this.#tiers = config.tiers;
     this.#contacts = new CoinContactFinder(FUSION_TUNING.touchGap);
-    this.#fusion = new ContactFusion(
-      config.fusion,
-      FUSION_TUNING.graceTicks,
-      FUSION_TUNING.sampleTicks,
-    );
+    this.#fusion =
+      config.fusion === null
+        ? null
+        : new ContactFusion(config.fusion, FUSION_TUNING.graceTicks, FUSION_TUNING.sampleTicks);
     this.#tower = config.tower === null ? null : new ChampagneTower(rapier, world, config.tower);
   }
 
@@ -90,8 +90,9 @@ export class TableMechanics<Tier extends string> {
     return this.#tower?.state ?? null;
   }
 
-  get fusionTicks(): number {
-    return this.#fusion.requiredTicks;
+  /** Ticks of contact a fusion needs; null when the table does not fuse. */
+  get fusionTicks(): number | null {
+    return this.#fusion?.requiredTicks ?? null;
   }
 
   /** Records the tier of a coin just added to the table. */
@@ -113,7 +114,7 @@ export class TableMechanics<Tier extends string> {
 
   /** Contact progress of the same-tier pairs touching on the last step, for the charge-up. */
   fusionProgress(): ContactProgress[] {
-    return this.#fusion.progress(this.#lastTick);
+    return this.#fusion?.progress(this.#lastTick) ?? [];
   }
 
   /**
@@ -132,7 +133,7 @@ export class TableMechanics<Tier extends string> {
       this.#tierOf.delete(id);
       gone.push(id);
     }
-    this.#fusion.forget(gone);
+    this.#fusion?.forget(gone);
 
     const events: MechanicEvent<Tier>[] = [];
     const coins = this.#table.coins();
@@ -148,7 +149,7 @@ export class TableMechanics<Tier extends string> {
       this.#table,
     );
     if (captures.length > 0) {
-      this.#fusion.forget(captures.map((capture) => capture.coinId));
+      this.#fusion?.forget(captures.map((capture) => capture.coinId));
     }
     for (const { coinId, group, height } of captures) {
       events.push({ kind: 'towerCapture', tick, coinId, tier: this.#tier(group), height });
@@ -182,7 +183,7 @@ export class TableMechanics<Tier extends string> {
     for (const id of ids) {
       h.int(id).int(this.#index(id));
     }
-    this.#fusion.hashInto(h);
+    this.#fusion?.hashInto(h);
     if (this.#tower) {
       this.#tower.hashInto(h);
     }
@@ -190,13 +191,18 @@ export class TableMechanics<Tier extends string> {
   }
 
   #fuse(tick: number, coins: readonly TableCoin[], events: MechanicEvent<Tier>[]): Set<number> {
+    const fused = new Set<number>();
+    const fusion = this.#fusion;
+    if (!fusion) {
+      return fused;
+    }
     const top = this.#tiers.length - 1;
     const groups = new Int32Array(coins.length);
     coins.forEach((coin, i) => {
       const index = this.#index(coin.id);
       groups[i] = index === top ? NO_GROUP : index;
     });
-    const ripe = this.#fusion.update(
+    const ripe = fusion.update(
       tick,
       this.#contacts.find(
         coins,
@@ -205,7 +211,6 @@ export class TableMechanics<Tier extends string> {
         FUSION_TUNING.sampleTicks,
       ),
     );
-    const fused = new Set<number>();
     if (ripe.length === 0) {
       return fused;
     }
@@ -253,7 +258,7 @@ export class TableMechanics<Tier extends string> {
         position,
       });
     }
-    this.#fusion.forget(fused);
+    fusion.forget(fused);
     return fused;
   }
 

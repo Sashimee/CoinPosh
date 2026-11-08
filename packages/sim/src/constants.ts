@@ -30,5 +30,9 @@ export const SOLVER = {
  * - 2: the two-tier pusher table (T-1.01), stepped once per tick by Sim (P-42).
  *   Pinned table hash c090d32a142ce2b7 (was 0f07d3e911f71f99, then 18542c554c6831a6
  *   during T-1.01); pinned sim hash in sim.test.ts.
+ * - 3: 12 cm pusher stroke so the block sweeps the heap over the lip (P-120), nudge
+ *   input, contact events, opening heap and fusion run inside Sim (P-111). Pinned
+ *   table hash a4e6238cc93d4acc, sim hash c5b0aeb071b1065b (was 590da61d0e98c762),
+ *   mechanics digest 729f6f15f07d6198 (was 5b133732fd75a28e).
  */
-export const SIM_VERSION = 2;
+export const SIM_VERSION = 3;
