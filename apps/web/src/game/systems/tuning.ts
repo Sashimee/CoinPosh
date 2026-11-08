@@ -20,6 +20,9 @@ export const CASCADE_WINDOW_TICKS = ticksFor(cascade.windowMs);
 
 export const MIN_TICKS_BETWEEN_DROPS = MOCK_RULES.minTicksBetweenDrops;
 
+/** The most falls the server accepts on a single tick. */
+export const FALL_CLAIMS_PER_TICK = MOCK_RULES.fallEnvelope.maxPerTick;
+
 /**
  * A pour streams at the steadiest rate the server's drop envelope allows at base upgrades, so
  * a long pour never trips the drop cap that the economy derived for honest play.

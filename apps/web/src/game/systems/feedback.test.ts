@@ -1,6 +1,7 @@
 import type { CoinId } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import { createBus } from '../../app/bus.ts';
+import { CONTACT_ACCENT } from '../../vfx/index.ts';
 import type { GameEvents } from './events.ts';
 import { wireFeedback, type FeedbackAudio, type FeedbackVfx } from './feedback.ts';
 
@@ -117,6 +118,30 @@ describe('wireFeedback', () => {
     const [burst] = named('cascade');
     expect(burst?.args[0]).toBe('chic');
     expect(burst?.args[1]).toMatchObject({ origin: position });
+  });
+
+  it('clinks and flashes every front fall at the lip, paid or not, and leaves side falls quiet', () => {
+    const { events, live, vfx, audio, named } = setup();
+    live.vfx = vfx;
+    live.audio = audio;
+    const position = { x: -0.125, y: 0.01, z: 0.4 };
+    events.emit('coin:fell', { coin: null, edge: 'front', position, tick: 10 });
+    events.emit('coin:fell', {
+      coin: null,
+      edge: 'right',
+      position: { x: 0.3, y: 0, z: 0 },
+      tick: 11,
+    });
+    const clinks = named('playImpact').map(({ args }) => args[0] as Record<string, number>);
+    expect(clinks).toHaveLength(1);
+    expect(clinks[0]).toMatchObject({ material: 'metal', pan: -0.5 });
+    expect(clinks[0]?.velocity).toBeGreaterThan(0);
+    const sparks = named('contactSparks');
+    expect(sparks).toHaveLength(1);
+    expect(sparks[0]?.args[0]).toMatchObject(position);
+    expect(sparks[0]?.args[1]).toMatchObject({ surface: 'metal' });
+    expect((sparks[0]?.args[1] as { strength: number }).strength).toBeGreaterThan(CONTACT_ACCENT);
+    expect(named('numberPop')).toEqual([]);
   });
 
   it('kicks the camera and thumps the cabinet on a nudge, and ducks the music on a freeze', () => {

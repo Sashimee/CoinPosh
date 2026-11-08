@@ -440,35 +440,51 @@ async function bootScene(
   let riviera: typeof RivieraModule;
   let systemsModule: typeof SystemsModule;
   let vfxModule: typeof VfxModule;
-  let bridge: SimBridge | undefined;
-  let takeEarlyEvents: () => readonly SimEventBatch[];
+  let sim: StartedSim;
+  let started: StartedSim | undefined;
+  let built: Stage | undefined;
+  const pending: Promise<unknown>[] = [];
   const stopEarlyTaps = answerEarlyTaps(target.id);
-  const modules = Promise.all([
-    import('./stage.ts'),
-    import('./scene/venues/riviera/index.ts'),
-    import('./game/simWorker/index.ts'),
-    import('./game/systems/index.ts'),
-    import('./vfx/index.ts'),
-  ]);
-  const heap = await openingTable(netReady, hydrated);
   try {
-    const [stageModule, venueModule, simModule, gameSystems, effects] = await modules;
+    const [stageModule, venueModule, simModule, gameSystems, effects] = await Promise.all([
+      import('./stage.ts'),
+      import('./scene/venues/riviera/index.ts'),
+      import('./game/simWorker/index.ts'),
+      import('./game/systems/index.ts'),
+      import('./vfx/index.ts'),
+    ]);
     riviera = venueModule;
     systemsModule = gameSystems;
     vfxModule = effects;
-    bridge = startSim(simModule, openingHeapOf(heap));
-    takeEarlyEvents = holdEarlyEvents(bridge);
-    stage = await stageModule.createStage(target, {
-      look: riviera.RIVIERA_RENDER_LOOK,
-      vignetteTint: riviera.RIVIERA_VIGNETTE_TINT,
-      coins: { capacity: COIN_CAPACITY, radius: bridge.coin.radius },
+    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
+    const simStarted = openingTable(netReady, hydrated).then((heap) => {
+      started = startSim(simModule, heap);
+      return started;
     });
+    const stageBuilt = stageModule
+      .createStage(target, {
+        look: riviera.RIVIERA_RENDER_LOOK,
+        vignetteTint: riviera.RIVIERA_VIGNETTE_TINT,
+        coins: { capacity: COIN_CAPACITY, radius: simModule.SIM_COIN_DIMENSIONS.radius },
+      })
+      .then((created) => {
+        built = created;
+        return created;
+      });
+    pending.push(simStarted, stageBuilt);
+    [stage, sim] = await Promise.all([stageBuilt, simStarted]);
     teardownStage(stage);
   } catch (error) {
-    bridge?.dispose();
     console.error('CoinPosh boot failed: the renderer could not start.', error);
+    void Promise.allSettled(pending).then(() => {
+      started?.bridge.dispose();
+      built?.dispose().catch((disposeError: unknown) => {
+        console.error('CoinPosh teardown: the stage did not dispose cleanly.', disposeError);
+      });
+    });
     return;
   }
+  const { bridge, heap, takeEarlyEvents } = sim;
   let venue: RivieraVenue;
   try {
     venue = await riviera.createRivieraVenue(stage.scene, null, {
@@ -650,11 +666,11 @@ function startPlay(
     canvas: stage.canvas,
     upgradeLevels: boot.state.venue.upgrades,
     simBacklog: start.simBacklog,
+    openingHeap: start.heap,
   });
   teardown.push(() => {
     systems.dispose();
   });
-  systems.adoptOpeningHeap(start.heap);
   teardown.push(
     systemsModule.wireFeedback(systems.events, {
       vfx: () => start.vfx,
@@ -716,8 +732,16 @@ function teardownStage(stage: Stage): void {
   });
 }
 
-/** Started before the renderer, so the worker loads Rapier while the GPU initialises. */
-function startSim(simModule: typeof SimWorkerModule, openingHeap: OpeningHeap | null): SimBridge {
+interface StartedSim {
+  readonly bridge: SimBridge;
+  /** The server coins the sim's opening heap stands for, in sim id order. */
+  readonly heap: readonly MintedCoin[];
+  readonly takeEarlyEvents: () => readonly SimEventBatch[];
+}
+
+/** Started alongside the renderer, so the worker loads Rapier while the GPU initialises. */
+function startSim(simModule: typeof SimWorkerModule, heap: readonly MintedCoin[]): StartedSim {
+  const openingHeap = openingHeapOf(heap);
   const bridge = simModule.createSimBridge({
     seed: TABLE_SEED,
     ...(openingHeap ? { openingHeap } : {}),
@@ -732,7 +756,7 @@ function startSim(simModule: typeof SimWorkerModule, openingHeap: OpeningHeap | 
     probe.bridge = null;
     bridge.dispose();
   });
-  return bridge;
+  return { bridge, heap, takeEarlyEvents: holdEarlyEvents(bridge) };
 }
 
 function attachVenue(

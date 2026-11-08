@@ -17,7 +17,7 @@ export interface TablePoint {
 }
 
 export type DropBlockReason = 'frozen' | 'cooldown' | 'empty';
-export type NudgeRejectReason = 'frozen' | 'offline' | 'server';
+export type NudgeRejectReason = 'frozen' | 'offline' | 'server' | 'sim';
 export type PourGrade = 'perfect' | 'early' | 'late';
 export type ContactSurface = 'coin' | 'wood' | 'metal';
 export type NudgeSource = 'swipe' | 'motion' | 'key';

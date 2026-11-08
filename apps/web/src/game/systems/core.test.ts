@@ -19,6 +19,7 @@ import { SYSTEMS_NAMESPACE, SYSTEMS_STRINGS, registerSystemsStrings, systemsKey 
 import {
   CASCADE_WINDOW_TICKS,
   DECORUM_PER_NUDGE,
+  FALL_CLAIMS_PER_TICK,
   MIN_TICKS_BETWEEN_DROPS,
   POUR_STREAM_TICKS,
   POUR_TARGET_MS,
@@ -38,6 +39,7 @@ const key = (n: number): IdempotencyKey =>
 
 class FakeSim {
   readonly stats = { tick: 0, renderTick: 0 };
+  failure: Error | null = null;
   readonly drops: { xMm: number; tier: string }[] = [];
   readonly nudges: NudgeDirection[] = [];
   readonly bodies = new Map<number, [number, number, number]>();
@@ -64,6 +66,7 @@ class FakeSim {
   }
 
   nudge(direction: NudgeDirection): void {
+    if (this.failure) throw new Error(`SimBridge.nudge: ${this.failure.message}`);
     this.nudges.push(direction);
   }
 
@@ -91,6 +94,7 @@ class FakeTable implements TablePort {
   readonly listeners = new Set<(event: TableEvent) => void>();
   readonly falls: { coinId: CoinId; tick: number; edge: string }[] = [];
   readonly fusions: (readonly CoinId[])[] = [];
+  readonly fusionTicks: number[] = [];
   readonly nudges: { tick: number; direction: NudgeDirection }[] = [];
   online = true;
   next: { coin: MintedCoin | null } | null = null;
@@ -108,8 +112,9 @@ class FakeTable implements TablePort {
     this.falls.push({ coinId, tick, edge });
   }
 
-  claimFusion(coinIds: readonly [CoinId, CoinId, CoinId]): void {
+  claimFusion(coinIds: readonly [CoinId, CoinId, CoinId], tick: number): void {
     this.fusions.push(coinIds);
+    this.fusionTicks.push(tick);
   }
 
   nudge(tick: number, direction: NudgeDirection): boolean {
@@ -135,7 +140,8 @@ const NULL_TARGET: CoinTransformTarget = {
   setTransforms: () => undefined,
 };
 
-function setup(backlog?: readonly SimEventBatch[]) {
+function setup(options: { backlog?: readonly SimEventBatch[]; heap?: readonly MintedCoin[] } = {}) {
+  const { backlog, heap } = options;
   const sim = new FakeSim();
   const table = new FakeTable();
   const time = { now: 0 };
@@ -156,6 +162,7 @@ function setup(backlog?: readonly SimEventBatch[]) {
     bounds: BOUNDS,
     now: () => time.now,
     ...(backlog ? { simBacklog: backlog } : {}),
+    ...(heap ? { openingHeap: heap } : {}),
   });
   const sync = (): void => {
     core.sync(NULL_TARGET);
@@ -461,15 +468,14 @@ describe('systems core: the sim event stream', () => {
   });
 
   it('pays an opening-heap coin that fell before the systems took the table', () => {
-    const heap = [coin(101), coin(102), coin(103)];
-    const { core, sim, table, sync } = setup([
-      { falls: [{ coinId: 1, edge: 'front', tick: 40 }], contacts: [], fusions: [] },
-    ]);
+    const { core, sim, table, sync } = setup({
+      backlog: [{ falls: [{ coinId: 1, edge: 'front', tick: 40 }], contacts: [], fusions: [] }],
+      heap: [coin(101), coin(102), coin(103)],
+    });
     const fell = record(core, 'coin:fell');
     const credited = record(core, 'value:credited');
     sim.layHeap(3);
     sim.bodies.delete(1);
-    core.adoptOpeningHeap(heap);
     sim.stats.renderTick = 39;
     sync();
     expect(table.falls).toEqual([]);
@@ -488,10 +494,9 @@ describe('systems core: the sim event stream', () => {
   });
 
   it('keeps heap coins and dropped coins apart even when a heap coin was never drawn', () => {
-    const { core, sim, table, sync, leave } = setup();
+    const { core, sim, table, sync, leave } = setup({ heap: [coin(101), coin(102), coin(103)] });
     sim.layHeap(3);
     sim.bodies.delete(2);
-    core.adoptOpeningHeap([coin(101), coin(102), coin(103)]);
     sync();
     core.drop(0);
     sync();
@@ -501,10 +506,9 @@ describe('systems core: the sim event stream', () => {
   });
 
   it('counts three heap coins off the front inside the window as a Chic cascade', () => {
-    const { core, sim, table, sync } = setup();
+    const { core, sim, table, sync } = setup({ heap: [coin(101), coin(102), coin(103)] });
     const tiers = record(core, 'cascade:tier');
     sim.layHeap(3);
-    core.adoptOpeningHeap([coin(101), coin(102), coin(103)]);
     sync();
     sim.emit({
       falls: [0, 1, 2].map((coinId, i) => ({
@@ -517,6 +521,92 @@ describe('systems core: the sim event stream', () => {
     sync();
     expect(table.falls.map((f) => f.tick)).toEqual([100, 120, 140]);
     expect(tiers).toEqual([{ tier: 'chic', rank: 1, count: 3 }]);
+  });
+
+  it('spreads late falls held at the last claim over the next ticks, never past the per-tick cap', () => {
+    const heap = Array.from({ length: 10 }, (_, i) => coin(101 + i));
+    const { sim, table, sync } = setup({ heap });
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.renderTick = 300;
+    sim.emit({ falls: [{ coinId: 0, edge: 'front', tick: 300 }] });
+    sim.bodies.delete(0);
+    sync();
+    sim.emit({
+      falls: heap.slice(1).map((_, i) => ({ coinId: i + 1, edge: 'front' as const, tick: 290 })),
+    });
+    for (let id = 1; id < heap.length; id += 1) sim.bodies.delete(id);
+    sync();
+    const ticks = table.falls.map((f) => f.tick);
+    expect(ticks).toHaveLength(heap.length);
+    expect(ticks).toEqual([...ticks].sort((a, b) => a - b));
+    const perTick = new Map<number, number>();
+    for (const at of ticks) perTick.set(at, (perTick.get(at) ?? 0) + 1);
+    expect(Math.max(...perTick.values())).toBeLessThanOrEqual(FALL_CLAIMS_PER_TICK);
+    expect(ticks[0]).toBe(300);
+    expect(ticks.at(-1)).toBe(300 + Math.ceil(heap.length / FALL_CLAIMS_PER_TICK) - 1);
+  });
+
+  it('claims a fall the sim reports after a fusion claim no earlier than that claim', () => {
+    const heap = [coin(101), coin(102), coin(103), coin(104)];
+    const { sim, table, sync } = setup({ heap });
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.tick = 120;
+    sim.stats.renderTick = 110;
+    const fusedId = sim.spawn();
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: 120,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId,
+          position: { x: 0, y: 0.1, z: 0 },
+        },
+      ],
+      falls: [{ coinId: 3, edge: 'front', tick: 110 }],
+    });
+    sim.bodies.delete(3);
+    sync();
+    expect(table.fusionTicks).toEqual([120]);
+    expect(table.falls.map((f) => f.tick)).toEqual([120]);
+  });
+
+  it('claims a fusion of opening-heap coins the sim made before the systems took the table', () => {
+    const fusedId = 3;
+    const { sim, table, sync, leave } = setup({
+      heap: [coin(101), coin(102), coin(103)],
+      backlog: [
+        {
+          falls: [],
+          contacts: [],
+          fusions: [
+            {
+              kind: 'fusion',
+              tick: 30,
+              ids: [0, 1, 2],
+              tier: 'copper',
+              into: 'silver',
+              fusedId,
+              position: { x: 0, y: 0.1, z: 0 },
+            },
+          ],
+        },
+      ],
+    });
+    expect(table.fusions).toEqual([[coin(101).id, coin(102).id, coin(103).id]]);
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 30 },
+      result: { status: 'accepted', credited: 0, cascade: null, minted: coin(77, 'silver') },
+    });
+    sim.bodies.set(fusedId, [0, 0.1, 0]);
+    sync();
+    leave(fusedId, FRONT);
+    expect(table.falls.map((f) => f.coinId)).toEqual([coin(77, 'silver').id]);
   });
 
   it('claims a sim fusion, keeps the fused body off the drop queue and claims it once minted', () => {
@@ -601,6 +691,20 @@ describe('systems core: nudge, Decorum and the Concierge', () => {
       capacity: decorumCapacity({}),
       frozenSeconds: 0,
     });
+  });
+
+  it('once the sim has failed, a nudge is refused before it reaches the server or the meter', () => {
+    const { core, table, ui, sim } = setup();
+    const rejected = record(core, 'nudge:rejected');
+    const inputs = record(core, 'input');
+    sim.failure = new Error('CoinPosh sim: the worker crashed');
+    expect(core.nudge('forward', 1, 'key')).toBe(false);
+    expect(sim.nudges).toEqual([]);
+    expect(table.nudges).toEqual([]);
+    expect(rejected).toEqual([{ reason: 'sim' }]);
+    expect(inputs).toEqual([]);
+    expect(ui.feedback).toEqual(['deny']);
+    expect(ui.decorum).toEqual([]);
   });
 
   it('offline, a nudge is refused and nothing moves', () => {

@@ -1,6 +1,6 @@
 import { Vector3 } from 'three/webgpu';
 import type { AudioEngine } from '../../audio/index.ts';
-import type { Vfx } from '../../vfx/index.ts';
+import { CONTACT_ACCENT, type Vfx } from '../../vfx/index.ts';
 import type { Bus } from '../../app/bus.ts';
 import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
 import type { GameEvents, TablePoint } from './events.ts';
@@ -27,9 +27,14 @@ export interface FeedbackTargets {
 /**
  * The closing speed the audio treats as its hardest hit (IMPACT_VELOCITY_CEIL in
  * audio/synth/impactSpec.ts), which a contact at full strength is voiced at.
- * TODO(audio owner): export IMPACT_VELOCITY_CEIL from audio/index.ts and read it here.
  */
 const HARDEST_IMPACT_METRES_PER_S = 2.8;
+
+/**
+ * A coin tipping over the brass lip: loud enough to clink and, just past the accent line, to
+ * flash, so a fall is never silent even when the server pays nothing for it.
+ */
+const LIP_STRENGTH = CONTACT_ACCENT + 0.1;
 
 /**
  * What the player sees and hears for each thing the gameplay glue reports. Only `credited`
@@ -67,7 +72,14 @@ export function wireFeedback(events: Bus<GameEvents>, targets: FeedbackTargets):
       }
     }),
     events.on('coin:fell', ({ edge, position }) => {
-      if (edge === 'front') lastFrontFall = position;
+      if (edge !== 'front') return;
+      lastFrontFall = position;
+      audio()?.playImpact({
+        material: 'metal',
+        velocity: LIP_STRENGTH * HARDEST_IMPACT_METRES_PER_S,
+        pan: pan(position.x),
+      });
+      vfx()?.contactSparks(at(position), { strength: LIP_STRENGTH, surface: 'metal' });
     }),
     events.on('cascade:step', ({ count }) => {
       audio()?.comboStep(count);

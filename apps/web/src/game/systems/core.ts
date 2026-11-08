@@ -34,6 +34,7 @@ import {
   CASCADE_WINDOW_TICKS,
   DECORUM_DECAY_PER_SECOND,
   DECORUM_PER_NUDGE,
+  FALL_CLAIMS_PER_TICK,
   MIN_TICKS_BETWEEN_DROPS,
   PERFECT_POUR_HALF_WINDOW_MS,
   POUR_STREAM_TICKS,
@@ -44,6 +45,8 @@ import {
 /** The slice of `SimBridge` the glue drives. */
 export interface SimPort {
   readonly stats: { readonly tick: number; readonly renderTick: number };
+  /** Set once the worker has failed; the sim then refuses every input. */
+  readonly failure: Error | null;
   drop(xMm: number, tier: CoinTierId): void;
   nudge(direction: NudgeDirection): void;
   sync(target: CoinTransformTarget): void;
@@ -73,6 +76,11 @@ export interface SystemsCoreOptions {
   readonly upgradeLevels?: Readonly<Record<string, number>>;
   /** Sim event batches the worker sent before the systems existed, oldest first. */
   readonly simBacklog?: readonly SimEventBatch[];
+  /**
+   * The coins already on the table, in the order the server lists them, which the sim laid
+   * first as its opening heap, so they hold sim ids 0..n-1. Bound before the backlog is read.
+   */
+  readonly openingHeap?: readonly MintedCoin[];
 }
 
 export interface ContactReport {
@@ -110,11 +118,6 @@ export interface SystemsCore {
   /** Runs the timers: combo window, pour stream, decorum decay, freeze countdown. */
   update(): void;
   hydrate(state: StateResponse): void;
-  /**
-   * Pairs the coins already on the table, in the order the server lists them, with the sim's
-   * opening heap: the sim lays those first, so they hold sim ids 0..n-1.
-   */
-  adoptOpeningHeap(coins: readonly MintedCoin[]): void;
   setUpgradeLevels(levels: Readonly<Record<string, number>>): void;
   reportContact(contact: ContactReport): void;
   reportFusion(fusion: FusionReport): void;
@@ -168,7 +171,8 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const simFalls = new Map<number, SimFall>();
   const fusedAway = new Set<number>();
   const settledIds = new Set<number>();
-  let lastFallTick = 0;
+  let lastClaimTick = 0;
+  let fallsAtLastClaimTick = 0;
   /** Sim id of the coin each fusion claim makes, keyed by the claim's first coin. */
   const fusedBodies = new Map<CoinId, number>();
   const lip: TablePoint = { x: 0, y: 0, z: options.bounds.fieldFrontZ };
@@ -338,11 +342,32 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
 
   /**
    * The server refuses a claim older than the last one, so a fall the table noticed late is
-   * claimed no earlier than the falls already claimed.
+   * claimed no earlier than the claims already sent. It also refuses more than
+   * FALL_CLAIMS_PER_TICK falls on one tick, so late falls held at the last claim's tick spill
+   * over onto the ticks after it.
    */
+  const fallClaimTick = (seen: Tick): Tick => {
+    let at = Math.max(seen, lastClaimTick);
+    if (at === lastClaimTick && fallsAtLastClaimTick >= FALL_CLAIMS_PER_TICK) at += 1;
+    if (at !== lastClaimTick) {
+      lastClaimTick = at;
+      fallsAtLastClaimTick = 0;
+    }
+    fallsAtLastClaimTick += 1;
+    return at;
+  };
+
+  const fusionClaimTick = (): Tick => {
+    const at = Math.max(tick(), lastClaimTick);
+    if (at !== lastClaimTick) {
+      lastClaimTick = at;
+      fallsAtLastClaimTick = 0;
+    }
+    return at;
+  };
+
   const fell = (simId: number, edge: FallEdge, position: TablePoint, seen: Tick = tick()): void => {
-    const at = Math.max(seen, lastFallTick);
-    lastFallTick = at;
+    const at = fallClaimTick(seen);
     settledIds.add(simId);
     simFalls.delete(simId);
     const coin = ledger.claimable(simId);
@@ -367,7 +392,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     const [a, b, c] = coins;
     let claimed = false;
     if (a && b && c) {
-      table.claimFusion([a.id, b.id, c.id], tick());
+      table.claimFusion([a.id, b.id, c.id], fusionClaimTick());
       if (fusedId !== null) fusedBodies.set(a.id, fusedId);
       claimed = true;
     }
@@ -439,6 +464,9 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     if (disposed) throw new Error(`GameSystems.${method}: the systems were disposed`);
   };
 
+  options.openingHeap?.forEach((coin, simId) => {
+    ledger.bind(simId, coin);
+  });
   for (const batch of options.simBacklog ?? []) intake(batch);
   const stopSimEvents = sim.onEvents(intake);
 
@@ -499,6 +527,11 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
         ui.feedback('deny');
         return false;
       }
+      if (sim.failure) {
+        events.emit('nudge:rejected', { reason: 'sim' });
+        ui.feedback('deny');
+        return false;
+      }
       const current = tick();
       if (!table.nudge(current, direction)) {
         events.emit('nudge:rejected', { reason: 'offline' });
@@ -552,12 +585,6 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       requireLive('hydrate');
       decorum.setCapacity(decorumCapacity(state.venue.upgrades), now());
       applyFreeze(state.table.decorum, state.table.frozenUntil);
-    },
-    adoptOpeningHeap(coins) {
-      requireLive('adoptOpeningHeap');
-      coins.forEach((coin, simId) => {
-        ledger.bind(simId, coin);
-      });
     },
     setUpgradeLevels(levels) {
       decorum.setCapacity(decorumCapacity(levels), now());

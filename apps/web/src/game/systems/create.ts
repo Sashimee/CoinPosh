@@ -23,6 +23,8 @@ export interface GameSystemsOptions {
   readonly bridge: SimPort;
   /** Sim event batches the bridge delivered before the systems existed, oldest first. */
   readonly simBacklog?: readonly SimEventBatch[];
+  /** The server's coins for the sim's opening heap, in sim id order from 0. */
+  readonly openingHeap?: readonly MintedCoin[];
   readonly net: { readonly table: TablePort; readonly clock: ClockPort };
   readonly ui: Pick<UiApp, 'setCascade' | 'setDecorum' | 'bus' | 'i18n' | 'bannerSlot'>;
   /** The surface the player touches; the WebGL canvas. */
@@ -47,8 +49,6 @@ export interface GameSystems {
   /** Once per frame: reads input, writes the sim's coins into `field`, runs the timers. */
   sync(field: CoinTransformTarget): void;
   hydrate(state: StateResponse): void;
-  /** The server's coins for the sim's opening heap, in sim id order from 0. */
-  adoptOpeningHeap(coins: readonly MintedCoin[]): void;
   setUpgradeLevels(levels: Readonly<Record<string, number>>): void;
   /** A contact from outside the sim's own stream, which the systems already hear. */
   reportContact(contact: ContactReport): void;
@@ -89,6 +89,7 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     now,
     ...(options.upgradeLevels ? { upgradeLevels: options.upgradeLevels } : {}),
     ...(options.simBacklog ? { simBacklog: options.simBacklog } : {}),
+    ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
   });
 
   const overlay = createSystemsOverlay(host, { aim: t('aim.label'), gauge: t('pour.gauge') });
@@ -146,9 +147,6 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     },
     hydrate: (state) => {
       core.hydrate(state);
-    },
-    adoptOpeningHeap: (coins) => {
-      core.adoptOpeningHeap(coins);
     },
     setUpgradeLevels: (levels) => {
       core.setUpgradeLevels(levels);
