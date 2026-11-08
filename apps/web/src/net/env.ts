@@ -31,3 +31,22 @@ export function currentNetMode(): NetMode {
   const raw: unknown = import.meta.env.VITE_API_URL;
   return resolveNetMode(typeof raw === 'string' ? raw : undefined);
 }
+
+const SITE_KEY = /^[\w-]+$/;
+
+/** `vite.config.ts` already turns an empty `VITE_TURNSTILE_SITE_KEY` into undefined; this re-checks it. */
+export function resolveTurnstileSiteKey(raw: string | undefined): string | undefined {
+  const value = raw?.trim() ?? '';
+  if (value === '') return undefined;
+  if (!SITE_KEY.test(value)) {
+    throw new Error(
+      `CoinPosh net: VITE_TURNSTILE_SITE_KEY "${value}" is not a Cloudflare Turnstile site key. Copy the site key (not the secret) from the Turnstile dashboard.`,
+    );
+  }
+  return value;
+}
+
+export function currentTurnstileSiteKey(): string | undefined {
+  const raw: unknown = import.meta.env.VITE_TURNSTILE_SITE_KEY;
+  return resolveTurnstileSiteKey(typeof raw === 'string' ? raw : undefined);
+}

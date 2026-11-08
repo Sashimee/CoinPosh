@@ -8,16 +8,21 @@ import {
   cascadeTierFor,
   coinTiers,
   crateRewards,
+  crateIncomeCoins,
   crateSpawn,
   currencies,
   dropTables,
   fusion,
   fusionValue,
   initialPityState,
+  measuredActiveRatePerHour,
   offline,
-  offlineEarnings,
+  offlineRate,
+  offlineVaultCoins,
   openingHeap,
   pity,
+  playStretchOf,
+  playWindowStart,
   rollDrop,
   season,
   upgradeCost,
@@ -27,6 +32,7 @@ import {
   type CrateRewardDef,
   type DropSourceId,
   type PityState,
+  type PlayEntry,
   type RarityId,
   type Rng,
   type UpgradeLineDef,
@@ -168,7 +174,11 @@ export interface MockPlayer {
   cascadeChain: { lastTick: number; count: number } | null;
   lifetimeValue: number;
   lifetimeBullion: number;
-  creditedTotal: number;
+  /**
+   * Wallet coin movements from play (drops paid, falls won) inside the active-rate window, the
+   * same ledger kinds the server measures the Velvet Vault's rate from.
+   */
+  playLog: PlayEntry[];
   lastActiveAt: number;
   fair: FairSeedState;
   revealed: RevealedSeed[];
@@ -176,6 +186,8 @@ export interface MockPlayer {
 }
 
 const DROP_TIER = coinTiers[0];
+/** Ledger reasons that move wallet coins through play, matching the server's play kinds. */
+const PLAY_REASONS: ReadonlySet<string> = new Set(['drop.debit', 'drop.prepay', 'claim.fall']);
 const MS_PER_TICK = 1000 / MOCK_RULES.ticksPerSecond;
 
 function ticksFor(ms: number): number {
@@ -340,7 +352,7 @@ export class MockWorld {
       cascadeChain: null,
       lifetimeValue: 0,
       lifetimeBullion: 0,
-      creditedTotal: 0,
+      playLog: [],
       lastActiveAt: now,
       fair: await newSeed(),
       revealed: [],
@@ -382,6 +394,8 @@ export class MockWorld {
     ) as Partial<Record<Currency, number>>;
     if (Object.keys(moved).length === 0) return;
     player.wallet = next;
+    const playCoins = moved.coins;
+    if (playCoins !== undefined && PLAY_REASONS.has(reason)) this.#logPlay(player, now, playCoins);
     this.#ledger.push({
       seq: this.#nextSeq++,
       at: now,
@@ -559,15 +573,28 @@ export class MockWorld {
     return this.#loadout(player, venueId).map((charmId, socket) => ({ socket, charmId }));
   }
 
-  #activeRatePerSecond(player: MockPlayer, now: number): number {
-    const seconds = Math.max(60, (now - player.createdAt) / 1000);
-    return Math.max(DROP_TIER.value, player.creditedTotal / seconds);
+  #logPlay(player: MockPlayer, now: number, coins: number): void {
+    player.playLog.push({ at: now, coins });
+    const start = playWindowStart(now, offlineRate);
+    const stale = player.playLog.findIndex((entry) => entry.at >= start);
+    if (stale > 0) player.playLog.splice(0, stale);
+  }
+
+  /** Net coins per active hour over the last stretch of play, as the server measures it. */
+  #measuredActiveRate(player: MockPlayer): number {
+    return measuredActiveRatePerHour(playStretchOf(player.playLog, offlineRate), offlineRate);
   }
 
   #settleOffline(player: MockPlayer, awayMs: number, now: number) {
     const capHours = stat(player, 'offlineHours');
-    const ratePerHour = this.#activeRatePerSecond(player, now) * 3600;
-    const coins = Math.floor(offlineEarnings(awayMs / 3_600_000, capHours, ratePerHour, offline));
+    const coins = offlineVaultCoins(
+      awayMs / 3_600_000,
+      capHours,
+      this.#measuredActiveRate(player),
+      offlineRate,
+      offline,
+    );
+    if (coins < 1) return null;
     const creditedMs = Math.min(
       awayMs,
       Math.round(
@@ -581,7 +608,6 @@ export class MockWorld {
   #earn(player: MockPlayer, now: number, reason: string, coins: number, ref: string): void {
     const before = bullionFromValue(player.lifetimeValue, bullion);
     player.lifetimeValue += coins;
-    player.creditedTotal += coins;
     const minted = bullionFromValue(player.lifetimeValue, bullion) - before;
     player.lifetimeBullion += minted;
     this.#credit(player, now, reason, { coins, bullion: minted }, ref);
@@ -1168,9 +1194,10 @@ export class MockWorld {
   ): Reward[] {
     const def: CrateRewardDef = crateRewards[rarity];
     const rewards: Reward[] = [];
-    const coins = Math.max(
-      DROP_TIER.value,
-      Math.round(def.incomeSeconds * this.#activeRatePerSecond(player, now)),
+    const coins = crateIncomeCoins(
+      def.incomeSeconds,
+      this.#measuredActiveRate(player),
+      offlineRate,
     );
     const currencyRewards: [Currency, number][] = [
       ['coins', coins],
