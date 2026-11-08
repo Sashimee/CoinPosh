@@ -19,10 +19,11 @@ import {
   type UpgradeStatId,
   type VenueDef,
 } from '../src/types.ts';
-import type { SimModel } from './model.ts';
+import { dropsBeforeFirstFall, type SimModel } from './model.ts';
 
 export type MilestoneId =
   | 'firstUpgrade'
+  | 'heapCleared'
   | 'firstCrate'
   | 'firstCharm'
   | 'firstAlbumSet'
@@ -33,6 +34,8 @@ export type MilestoneId =
 /** Where every coin the player ever held came from and went, for conservation checks. */
 export interface CoinLedger {
   granted: number;
+  /** Value of the house's opening-heap coins pushed off the front edge. */
+  heap: number;
   won: number;
   crateIncome: number;
   offline: number;
@@ -42,7 +45,7 @@ export interface CoinLedger {
   forfeited: number;
 }
 
-export type IncomeSource = 'won' | 'crateIncome' | 'offline';
+export type IncomeSource = 'heap' | 'won' | 'crateIncome' | 'offline';
 
 export interface PlayerState {
   activeSeconds: number;
@@ -63,6 +66,8 @@ export interface PlayerState {
   levels: Map<string, number>;
   pity: PityState;
   dropCarry: number;
+  /** Opening-heap coins still on the table; they leave the front edge before any dropped coin. */
+  heapCoins: number;
   /** Drops still needed to build the pile up to where the front edge starts paying. */
   pileDebt: number;
   ledger: CoinLedger;
@@ -76,6 +81,10 @@ export interface PlayerState {
 
 export interface PlayerRates {
   readonly grossPerDrop: number;
+  /** Coins pushed off the front edge per coin dropped, whatever their value. */
+  readonly fallsPerDrop: number;
+  /** What one opening-heap coin pays when it falls, at the coin value it was minted with. */
+  readonly heapValuePerFall: number;
   readonly dropsPerSecond: number;
   readonly netPerSecond: number;
   readonly crateChancePerDrop: number;
@@ -95,6 +104,8 @@ export interface PlayerContext {
   readonly albumByRarity: ReadonlyMap<string, ReadonlyMap<RarityId, readonly AlbumItemDef[]>>;
   readonly cascadeMean: number;
   readonly seasonStars: number;
+  /** Face value of `config.openingHeap.tier`. */
+  readonly heapFaceValue: number;
   readonly venueLines: readonly UpgradeLineDef[];
   readonly globalLines: readonly UpgradeLineDef[];
   /** The line that drives each stat; stats without a line stay at 1. */
@@ -129,6 +140,11 @@ export function createContext(config: EconomyConfig, model: SimModel, rng: Rng):
     cascadeMean += share * tier.multiplier;
   }
   if (comboShare > 1) throw new Error('simModel.cascadeShare must sum to ≤ 1');
+
+  const heapTier = config.coinTiers.find((t) => t.id === config.openingHeap.tier);
+  if (heapTier === undefined) {
+    throw new Error(`Sim needs coin tier "${config.openingHeap.tier}" for the opening heap`);
+  }
   cascadeMean += 1 - comboShare;
 
   const statLines = new Map<UpgradeStatId, UpgradeLineDef>();
@@ -154,6 +170,7 @@ export function createContext(config: EconomyConfig, model: SimModel, rng: Rng):
     albumByRarity,
     cascadeMean,
     seasonStars: config.season.freeTiers * config.season.starsPerTier,
+    heapFaceValue: heapTier.value,
     venueLines: config.upgradeLines.filter((l) => l.scope === 'venue'),
     globalLines: config.upgradeLines.filter((l) => l.scope === 'global'),
     statLines,
@@ -182,9 +199,11 @@ export function createPlayer(ctx: PlayerContext): PlayerState {
     levels: new Map(),
     pity: initialPityState(ctx.config.pity),
     dropCarry: 0,
-    pileDebt: Math.max(0, ctx.model.pile.firstFallAfterDrops - ctx.model.pile.startingCoins),
+    heapCoins: ctx.config.openingHeap.coins,
+    pileDebt: dropsBeforeFirstFall(ctx.model.pile, ctx.config.openingHeap.coins),
     ledger: {
       granted: 0,
+      heap: 0,
       won: 0,
       crateIncome: 0,
       offline: 0,
@@ -270,9 +289,27 @@ export function netRatePerSecond(ctx: PlayerContext, player: PlayerState): numbe
   return Math.max(0, dropsPerSecond(ctx, player) * (grossPerDrop(ctx, player) - 1));
 }
 
+/** Front-edge falls per drop: the pusher moves coins, the value multipliers do not. */
+function fallsPerDrop(ctx: PlayerContext, player: PlayerState): number {
+  return ctx.model.baseReturnRatio * stat(ctx, player, 'pusherSpeed');
+}
+
+/**
+ * A heap coin falls with every multiplier a dropped one gets, except coinValue: it was
+ * minted at sign-up, before any coinValue level was bought.
+ */
+function heapValuePerFall(ctx: PlayerContext, player: PlayerState): number {
+  const valuePerFall = grossPerDrop(ctx, player) / fallsPerDrop(ctx, player);
+  const line = ctx.statLines.get('coinValue');
+  const mintedAt = line === undefined ? 1 : lookup(ctx.statByLevel, line, 0);
+  return (ctx.heapFaceValue * valuePerFall * mintedAt) / stat(ctx, player, 'coinValue');
+}
+
 export function rates(ctx: PlayerContext, player: PlayerState): PlayerRates {
   player.rates ??= {
     grossPerDrop: grossPerDrop(ctx, player),
+    fallsPerDrop: fallsPerDrop(ctx, player),
+    heapValuePerFall: heapValuePerFall(ctx, player),
     dropsPerSecond: dropsPerSecond(ctx, player),
     netPerSecond: netRatePerSecond(ctx, player),
     crateChancePerDrop: crateChancePerDrop(ctx, player),
@@ -300,6 +337,20 @@ function grant(ctx: PlayerContext, player: PlayerState): void {
   const coins = stat(ctx, player, 'startingCoins');
   player.coins = coins;
   player.ledger.granted += coins;
+}
+
+/**
+ * Pays one drop's front-edge falls. The heap lies ahead of every dropped coin, so falls
+ * come out of it first until it is gone.
+ */
+function payFalls(player: PlayerState, r: PlayerRates): void {
+  const heapFalls = Math.min(player.heapCoins, r.fallsPerDrop);
+  if (heapFalls > 0) {
+    player.heapCoins -= heapFalls;
+    earn(player, 'heap', heapFalls * r.heapValuePerFall);
+    if (player.heapCoins === 0) mark(player, 'heapCleared');
+  }
+  earn(player, 'won', r.grossPerDrop * (1 - heapFalls / r.fallsPerDrop));
 }
 
 function grantAlbumCard(ctx: PlayerContext, player: PlayerState, rarity: RarityId): void {
@@ -401,11 +452,8 @@ function tryAscend(ctx: PlayerContext, player: PlayerState): void {
 export function activeTick(ctx: PlayerContext, player: PlayerState): void {
   const { model, config } = ctx;
   const dt = model.tickSeconds;
-  const {
-    dropsPerSecond,
-    grossPerDrop: gross,
-    crateChancePerDrop: crateChance,
-  } = rates(ctx, player);
+  const tickRates = rates(ctx, player);
+  const { dropsPerSecond, crateChancePerDrop: crateChance } = tickRates;
   player.dropCarry += dropsPerSecond * dt;
   while (player.dropCarry >= 1 && player.coins >= 1) {
     player.dropCarry -= 1;
@@ -415,7 +463,7 @@ export function activeTick(ctx: PlayerContext, player: PlayerState): void {
       player.pileDebt -= 1;
       if (player.pileDebt === 0) player.rates = null;
     } else {
-      earn(player, 'won', gross);
+      payFalls(player, tickRates);
     }
     player.drops += 1;
     if (player.drops % config.season.dropsPerStar === 0) player.stars += 1;

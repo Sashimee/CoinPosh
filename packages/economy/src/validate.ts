@@ -97,7 +97,7 @@ function checkCurrencies(config: EconomyConfig, report: Report): void {
 }
 
 function checkCoins(config: EconomyConfig, report: Report): void {
-  const { coinTiers, fusion, cascade } = config;
+  const { coinTiers, fusion, openingHeap, cascade } = config;
   checkIdsExactly(
     report,
     'coinTiers',
@@ -117,6 +117,16 @@ function checkCoins(config: EconomyConfig, report: Report): void {
       if (!(next.value > tier.value)) report(path, `value must be below ${next.id}'s`);
     }
   });
+
+  if (!isPositiveInt(openingHeap.coins)) {
+    report('openingHeap.coins', `must be a positive integer, got ${openingHeap.coins}`);
+  }
+  if (!coinTiers.some((t) => t.id === openingHeap.tier)) {
+    report(
+      'openingHeap.tier',
+      `must be one of ${coinTiers.map((t) => t.id).join(', ')}, got "${openingHeap.tier}"`,
+    );
+  }
 
   if (!isPositiveInt(fusion.inputCount) || fusion.inputCount < 2) {
     report('fusion.inputCount', `must be an integer ≥ 2, got ${fusion.inputCount}`);

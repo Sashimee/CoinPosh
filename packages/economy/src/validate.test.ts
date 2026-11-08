@@ -7,6 +7,7 @@ import {
   DROP_SOURCE_IDS,
   RARITY_IDS,
   RATE_ENVELOPE_METRIC_IDS,
+  type CoinTierId,
   type DropTableDef,
   type EconomyConfig,
   type OddsTable,
@@ -180,6 +181,48 @@ describe('validateEconomyConfig: pity, upgrades, ladders', () => {
     const issues = paths({ ...economyConfig, coinTiers: tiers });
     expect(issues).toContain('coinTiers[1] (silver)');
     expect(issues).toContain('coinTiers[2] (gold)');
+  });
+
+  it('accepts an opening heap of any positive whole number of coins at any defined tier', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 1_000_000 }),
+        fc.constantFrom(...economyConfig.coinTiers.map((t) => t.id)),
+        (coins, tier) => {
+          expect(validateEconomyConfig({ ...economyConfig, openingHeap: { coins, tier } })).toEqual(
+            [],
+          );
+        },
+      ),
+    );
+  });
+
+  it.each([0, -1, -100, 0.5, 99.9, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects an opening heap of %s coins',
+    (coins) => {
+      const issues = validateEconomyConfig({
+        ...economyConfig,
+        openingHeap: { ...economyConfig.openingHeap, coins },
+      });
+      expect(issues).toEqual([
+        { path: 'openingHeap.coins', message: `must be a positive integer, got ${coins}` },
+      ]);
+    },
+  );
+
+  it('rejects an opening heap at a tier the ladder does not define', () => {
+    const unknown = { ...economyConfig.openingHeap, tier: 'bronze' as CoinTierId };
+    expect(validateEconomyConfig({ ...economyConfig, openingHeap: unknown })).toEqual([
+      {
+        path: 'openingHeap.tier',
+        message: 'must be one of copper, silver, gold, platinum, diamond, heirloom, got "bronze"',
+      },
+    ]);
+    const ladder = economyConfig.coinTiers.filter((t) => t.id !== 'heirloom');
+    const dropped = { ...economyConfig.openingHeap, tier: 'heirloom' as const };
+    expect(paths({ ...economyConfig, coinTiers: ladder, openingHeap: dropped })).toContain(
+      'openingHeap.tier',
+    );
   });
 
   it('rejects a fusion that destroys value', () => {
