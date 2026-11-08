@@ -16,10 +16,25 @@ export function formatPopValue(i18n: I18n, value: number): string {
       'numberPop needs an initialised i18next instance; call i18next.init() before createVfx()',
     );
   }
+  return formatter.format(value, 'number', lng, popNumberOptions(value));
+}
+
+/**
+ * The same text as `formatPopValue` straight from `Intl`, for pops composed inside the
+ * layer (the closing tally) where only the page's `lang` is known. i18next's number
+ * formatter is `Intl.NumberFormat(lng, options)`, so the two agree for the same locale.
+ */
+export function formatPopNumber(locale: string, value: number): string {
+  if (!Number.isFinite(value)) throw new RangeError(`numberPop needs a finite value, got ${value}`);
+  if (!locale) throw new Error('A tally pop needs the page language; set <html lang> first');
+  return new Intl.NumberFormat(locale, popNumberOptions(value)).format(value);
+}
+
+function popNumberOptions(value: number): Intl.NumberFormatOptions {
   const compact = Math.abs(value) >= COMPACT_FROM;
-  return formatter.format(value, 'number', lng, {
+  return {
     signDisplay: value === 0 ? 'never' : 'always',
     maximumFractionDigits: compact ? 1 : 0,
     ...(compact ? { notation: 'compact' } : {}),
-  });
+  };
 }
