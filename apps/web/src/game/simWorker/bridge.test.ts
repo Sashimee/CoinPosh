@@ -7,15 +7,8 @@ import { frameByteLength, FrameView, type CoinPose } from './frame.ts';
 import type { CoinTransformTarget } from './interpolate.ts';
 import type { MainToWorker, SimEventBatch, TransportKind, WorkerToMain } from './protocol.ts';
 import { MAX_CATCH_UP_TICKS, runSimWorker, TICK_MS } from './runtime.ts';
-import {
-  COIN,
-  Sim,
-  type FallEvent,
-  type MechanicsConfig,
-  type OpeningHeap,
-  type SimInput,
-  type SimOptions,
-} from './sim-api.ts';
+import { COIN, Sim } from '@coinposh/sim';
+import type { FallEvent, MechanicsConfig, OpeningHeap, SimInput, SimOptions } from './sim-api.ts';
 import { OPENING_HEAP_CAPACITY, SIM_MECHANICS } from './table-config.ts';
 
 const SEED = 0xc0195051;

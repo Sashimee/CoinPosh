@@ -1,5 +1,5 @@
 import { COIN_TIERS } from '@coinposh/shared';
-import { Sim, type MechanicsConfig } from './sim-api.ts';
+import { Sim, type MechanicsConfig } from '@coinposh/sim';
 
 /**
  * The mechanics the worker's Sim runs with: coins keep the tier they were dropped with, but

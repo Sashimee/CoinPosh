@@ -1,4 +1,7 @@
-import { NUDGE_DIRECTIONS, type NudgeDirection } from './table/table.ts';
+/** Mirrors NudgeDirection in packages/shared, which packages/sim cannot import yet. */
+export type NudgeDirection = 'left' | 'right' | 'forward';
+
+export const NUDGE_DIRECTIONS: readonly NudgeDirection[] = ['left', 'right', 'forward'];
 
 /**
  * Player inputs, replayed tick by tick by the server auditor. Positions are integer
