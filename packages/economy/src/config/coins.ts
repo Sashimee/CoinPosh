@@ -15,14 +15,11 @@ export const fusion = {
   bonusMultiplier: 1.25,
 } as const satisfies FusionConfig;
 
-// Silver, not copper: at the front-edge return measured on the physics table (0.82 to 0.93
-// coins per drop) a copper heap pays no more than the pile it stands in for, and first
-// upgrade lands at 2 min 55 s p90; silver lands it at 20 s. Evidence: `sim --heap-tier copper
-// --return-ratio 0.9` (P-193). Kept at 100 although it front-loads minute 1 on the physics
-// table: a 40 to 75 coin silver heap runs dry inside minute 1 (minute 2 earns ×0.3 to ×0.6
-// of it in the sim) and on seeded physics can starve the Vault for 30 to 75 s. Flattening
-// the curve needs a copper heap with a few silver tension coins, which this config cannot
-// yet express (P-238).
+// Misses P-238's bands: `node sim/heapProbe.ts` (seeds 1-10, a tap every 0.5 s, buying
+// nothing) makes the first upgrade affordable at 6.3 s and minute 2 earns ×0.22 to ×0.54 of
+// minute 1; `node sim/cli.ts` reads ×0.54 and 14 s. No single-tier heap meets both bands on
+// either (probe: 20 to 100 silver, 100 copper; sim: 20 to 200 of each), so the fix needs a
+// copper heap with a few silver tension coins, which OpeningHeapConfig cannot describe yet.
 export const openingHeap = {
   coins: 100,
   tier: 'silver',

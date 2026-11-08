@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { economyConfig } from '../src/config/index.ts';
 import { runCli } from './cli.ts';
 import { dropsBeforeFirstFall, simModel, type TablePile } from './model.ts';
-import { OPENING_MINUTES } from './player.ts';
+import { createRng } from '../src/rng.ts';
+import { OPENING_MINUTES, activeTick, createContext, createPlayer } from './player.ts';
 import { formatMetric, formatSummary } from './report.ts';
 import { percentile, runSimulation } from './simulate.ts';
 
@@ -79,13 +80,15 @@ describe('runSimulation', () => {
     expect(run.targets.find((t) => t.target.id === 'firstUpgrade')?.pass).toBe(false);
   });
 
-  it('pays the whole opening heap out to every player, at no less than its face value', () => {
+  it('pays the payable share of the opening heap to every player, at no less than face value', () => {
     const { coins, tier } = economyConfig.openingHeap;
     const face = economyConfig.coinTiers.find((t) => t.id === tier)?.value ?? Number.NaN;
+    const payable = simModel.pile.heapPools.reduce((sum, pool) => sum + pool.share, 0);
     expect(result.openingHeap).toMatchObject({ coins, tier, dropsBeforeFirstFall: 10 });
-    expect(result.openingHeap.paid.p10).toBeGreaterThanOrEqual(coins * face);
+    expect(result.openingHeap.paid.p10).toBeGreaterThanOrEqual(coins * payable * face);
     expect(result.active.heapCleared.unreached).toBe(0);
-    expect(result.active.heapCleared.p90).toBeLessThan(5 * 60);
+    // sim/heapProbe.ts still sees a heap coin or two fall per minute 5 to 10 minutes in.
+    expect(result.active.heapCleared.p90).toBeLessThan(10 * 60);
   });
 
   it('starts paying before the trust fund runs out', () => {
@@ -95,18 +98,18 @@ describe('runSimulation', () => {
     );
   });
 
-  it('needs a silver heap to make the first upgrade at the measured return', () => {
-    // A copper heap pays no more than the pile it stands in for: at 0.9 coins per drop the
-    // trust fund barely grows (balance evidence for P-193).
+  it('makes the first upgrade far later on a copper heap than on silver at the measured return', () => {
+    // A copper heap pays little more than the pile it stands in for: at 0.9 coins per drop
+    // the trust fund grows slowly (sim/heapProbe.ts --heap-tier copper --tap-every 75: Vault
+    // +8 to +23 in minute 1, against +157 to +214 on silver).
     const measured = { ...simModel, baseReturnRatio: 0.9 };
     const firstUpgrade = (tier: 'copper' | 'silver') =>
       runSimulation(
         { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, tier } },
         measured,
         options,
-      ).targets.find((t) => t.target.id === 'firstUpgrade');
-    expect(firstUpgrade('copper')?.pass).toBe(false);
-    expect(firstUpgrade('silver')?.pass).toBe(true);
+      ).active.firstUpgrade.p90;
+    expect(firstUpgrade('copper')).toBeGreaterThan(firstUpgrade('silver') + 30);
   });
 
   it('reports one median snapshot per casual day with steady progress', () => {
@@ -129,17 +132,30 @@ describe('runSimulation', () => {
     for (const minute of result.openingMinutes.gains) expect(minute.unreached).toBe(0);
   });
 
-  it('reads a heap that runs dry inside the opening minutes as a cliff', () => {
-    const ratio = (coins: number) =>
-      runSimulation(
-        { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, coins } },
-        simModel,
-        { days: 1, players: 4, seed: 5 },
-      ).openingMinutes.lastOverFirst;
-    const shipped = ratio(economyConfig.openingHeap.coins);
-    const small = ratio(40);
-    expect(small.p50).toBeLessThan(0.65);
-    expect(shipped.p50).toBeGreaterThan(0.65);
+  it('reads the shipped heap as the cliff the physics probe measures', () => {
+    // `node sim/heapProbe.ts --tap-every 75` (seeds 1-10, 0.8 drops/s, buying nothing):
+    // minute 2 earns ×0.26 to ×0.63 of minute 1, outside P-238's ±35 % band.
+    const ratio = runSimulation(economyConfig, simModel, { days: 1, players: 4, seed: 5 })
+      .openingMinutes.lastOverFirst;
+    expect(ratio.p50).toBeGreaterThan(0.26);
+    expect(ratio.p50).toBeLessThan(0.65);
+  });
+
+  it('drains the heap at the rates the physics probe measures', () => {
+    // Heap coins off the front edge per minute at 0.8 drops/s, seeds 1-10: 35 to 45 in
+    // minute 1, 11 to 20 in minute 2 (`node sim/heapProbe.ts --tap-every 75 --seconds 120`).
+    const ctx = createContext(economyConfig, simModel, createRng(1));
+    const player = createPlayer(ctx);
+    const left = [player.heapCoins];
+    for (let minute = 1; minute <= OPENING_MINUTES; minute += 1) {
+      while (player.activeSeconds < minute * 60) activeTick(ctx, player, false);
+      left.push(player.heapCoins);
+    }
+    const [start = 0, afterMinute1 = 0, afterMinute2 = 0] = left;
+    expect(start - afterMinute1).toBeGreaterThanOrEqual(35);
+    expect(start - afterMinute1).toBeLessThanOrEqual(45);
+    expect(afterMinute1 - afterMinute2).toBeGreaterThanOrEqual(11);
+    expect(afterMinute1 - afterMinute2).toBeLessThanOrEqual(20);
   });
 
   it('leaves the minute ratio unreached when minute 1 earned nothing back', () => {
@@ -164,7 +180,7 @@ describe('runSimulation', () => {
     expect(summary).toMatch(/Opening heap cleared {2}/);
     expect(summary).toMatch(/First upgrade affordable {2}/);
     expect(summary).toMatch(
-      /Opening minutes, Vault gain before purchases \(p10 \/ p50 \/ p90\): minute 1 \+-?\d+ \/ -?\d+ \/ -?\d+ · minute 2 \+-?\d+ \/ -?\d+ \/ -?\d+ · minute 2 \/ minute 1 ×\d+\.\d{2} \/ ×\d+\.\d{2} \/ ×\d+\.\d{2}/,
+      /Opening minutes, Vault gain of a player who buys nothing \(p10 \/ p50 \/ p90\): minute 1 \+-?\d+ \/ -?\d+ \/ -?\d+ · minute 2 \+-?\d+ \/ -?\d+ \/ -?\d+ · minute 2 \/ minute 1 ×\d+\.\d{2} \/ ×\d+\.\d{2} \/ ×\d+\.\d{2}/,
     );
     expect(summary).toContain('Pacing targets (02-ECONOMY.md): 7/7 on target');
     expect(summary).toContain('FTUE targets (00-VISION.md): 1/1 on target');
@@ -181,6 +197,7 @@ describe('dropsBeforeFirstFall', () => {
       [25, 56],
       [100, 10],
     ],
+    heapPools: [],
   };
 
   it('reads the measured points and the empty table exactly', () => {

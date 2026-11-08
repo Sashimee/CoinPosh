@@ -67,8 +67,10 @@ export interface OpeningHeapResult extends OpeningHeapConfig {
 }
 
 /**
- * Vault gain over the opening minutes of active play, before purchases, so a heap that pays
- * out in a rush and then leaves the table flat shows up as a cliff between the minutes.
+ * Vault gain over the opening minutes of a player who taps and buys nothing, as the
+ * playtest's Demo run and sim/heapProbe.ts do, so a heap that pays out in a rush and then
+ * leaves the table flat shows up as a cliff between the minutes rather than being hidden by
+ * the upgrades its rush paid for.
  */
 export interface OpeningMinutesResult {
   /** One distribution per opening minute, in order. */
@@ -144,6 +146,12 @@ function runActivePlayer(ctx: PlayerContext): PlayerState {
     const m = player.milestones;
     if (m.ascendVenue2 !== undefined && m.seasonFreeTrack !== undefined) break;
   }
+  return player;
+}
+
+function runOpeningPlayer(ctx: PlayerContext): PlayerState {
+  const player = createPlayer(ctx);
+  while (player.activeSeconds < OPENING_MINUTES * 60) activeTick(ctx, player, false);
   return player;
 }
 
@@ -239,7 +247,11 @@ export function runSimulation(
 
   const activeRuns: PlayerState[] = [];
   const casualRuns: CasualRun[] = [];
+  const openingRuns: PlayerState[] = [];
   for (let i = 0; i < options.players; i++) {
+    openingRuns.push(
+      runOpeningPlayer(createContext(config, model, createRng(playerSeed(options.seed, i, 2)))),
+    );
     activeRuns.push(
       runActivePlayer(createContext(config, model, createRng(playerSeed(options.seed, i, 0)))),
     );
@@ -295,7 +307,7 @@ export function runSimulation(
       dropsBeforeFirstFall: dropsBeforeFirstFall(model.pile, config.openingHeap.coins),
       paid: distribution(activeRuns.map((p) => p.ledger.heap)),
     },
-    openingMinutes: openingMinutes(activeRuns),
+    openingMinutes: openingMinutes(openingRuns),
     targets: config.pacing.map((target) => evaluate(target, valuesFor[target.id])),
     ftue: ftueTargets.map((target) =>
       evaluate(

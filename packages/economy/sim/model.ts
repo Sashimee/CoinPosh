@@ -32,17 +32,23 @@ export interface SimModel {
  *
  * The table a player first sits at holds `economyConfig.openingHeap` instead, laid at the
  * brink, so it starts paying far sooner than its coin count suggests. Re-measured for P-238
- * on sim version 4 (the P-176 cam knock walks a small heap to the lip sooner than P-193
- * measured): the same table without fusion or tower, as the game's worker runs it, centre
- * drops, seeds 1 to 3 at 0.8 and 2.4 drops/s, 120 s each:
+ * on sim version 4 with sim/heapProbe.ts (the game worker's table, no fusion or tower, centre
+ * drops), seeds 1 to 3 at 0.8 and 2.4 drops/s:
+ * `node sim/heapProbe.ts --heap-coins N --seeds 1-3 --seconds 60 --tap-every 75` and again
+ * with `--tap-every 25`.
  *
- * | Heap | First front fall after (drops) | Front coins per drop over 120 s |
- * | ---- | ------------------------------ | ------------------------------- |
- * | 0    | 130 – 158 (T-1.01)              | 0.90 once steady                |
- * | 25   | 11 – 43, mean 24                | 0.72 – 0.79, still building     |
- * | 50   | 11 – 15, mean 13                | 0.79 – 0.97                     |
- * | 60   | 5 – 15, mean 10                 | 0.81 – 1.02                     |
- * | 100  | 5 – 15, mean 10                 | 0.92 – 1.40, steady from start  |
+ * | Heap | First front fall after (drops) |
+ * | ---- | ------------------------------ |
+ * | 0    | 130 – 158 (T-1.01)              |
+ * | 25   | 11 – 20, mean 16                |
+ * | 50   | 11 – 15, mean 13                |
+ * | 60   | 5 – 15, mean 10                 |
+ * | 100  | 5 – 15, mean 10                 |
+ *
+ * `heapPools` fits the shipped 100 silver heap's drain at 0.8 drops/s
+ * (`node sim/heapProbe.ts --tap-every 75 --seconds 600`, seeds 1 to 10): 35 to 45 heap coins
+ * leave the front in minute 1, 11 to 20 in minute 2, 0 to 2 a minute after minute 4, and
+ * about 76 to 80 in all.
  */
 export interface TablePile {
   /** Coins a table holds once returns are steady. */
@@ -54,6 +60,18 @@ export interface TablePile {
    * ascending by heap. Between points the sim interpolates; past the last it holds it.
    */
   readonly firstFallOnHeap: readonly (readonly [heapCoins: number, drops: number])[];
+  /**
+   * How the opening heap leaves the front edge once the table pays, as pools that drain
+   * side by side: each holds `share` of the heap, and each drop knocks `fallsPerDrop` of
+   * what is left in it off the front edge. The shares sum below 1 because some heap coins
+   * wedge or gutter and never pay.
+   */
+  readonly heapPools: readonly HeapPool[];
+}
+
+export interface HeapPool {
+  readonly share: number;
+  readonly fallsPerDrop: number;
 }
 
 /**
@@ -100,10 +118,14 @@ export const simModel = {
     steadyCoins: 195,
     firstFallAfterDrops: 145,
     firstFallOnHeap: [
-      [25, 24],
+      [25, 16],
       [50, 13],
       [60, 10],
       [100, 10],
+    ],
+    heapPools: [
+      { share: 0.15, fallsPerDrop: 0.15 },
+      { share: 0.61, fallsPerDrop: 0.0124 },
     ],
   },
 } as const satisfies SimModel;

@@ -75,8 +75,12 @@ export interface PlayerState {
   levels: Map<string, number>;
   pity: PityState;
   dropCarry: number;
-  /** Opening-heap coins still on the table; they leave the front edge before any dropped coin. */
+  /**
+   * Opening-heap coins still on the table that will leave the front edge, in total and per
+   * pile.heapPools entry; they go before any dropped coin.
+   */
   heapCoins: number;
+  heapPools: number[];
   /** Drops still needed to build the pile up to where the front edge starts paying. */
   pileDebt: number;
   ledger: CoinLedger;
@@ -191,6 +195,9 @@ export function createContext(config: EconomyConfig, model: SimModel, rng: Rng):
 }
 
 export function createPlayer(ctx: PlayerContext): PlayerState {
+  const heapPools = ctx.model.pile.heapPools.map(
+    (pool) => ctx.config.openingHeap.coins * pool.share,
+  );
   const player: PlayerState = {
     activeSeconds: 0,
     venueIndex: 0,
@@ -210,7 +217,8 @@ export function createPlayer(ctx: PlayerContext): PlayerState {
     levels: new Map(),
     pity: initialPityState(ctx.config.pity),
     dropCarry: 0,
-    heapCoins: ctx.config.openingHeap.coins,
+    heapCoins: heapPools.reduce((sum, coins) => sum + coins, 0),
+    heapPools,
     pileDebt: dropsBeforeFirstFall(ctx.model.pile, ctx.config.openingHeap.coins),
     ledger: {
       granted: 0,
@@ -353,16 +361,23 @@ function grant(ctx: PlayerContext, player: PlayerState): void {
 
 /**
  * Pays one drop's front-edge falls. The heap lies ahead of every dropped coin, so falls
- * come out of it first until it is gone.
+ * come out of it first, from each pool a fixed share of what is left in it per drop, its
+ * last coin whole. Dropped coins pay for whatever share of the drop's falls the heap leaves them.
  */
-function payFalls(player: PlayerState, r: PlayerRates): void {
-  const heapFalls = Math.min(player.heapCoins, r.fallsPerDrop);
+function payFalls(ctx: PlayerContext, player: PlayerState, r: PlayerRates): void {
+  let heapFalls = 0;
+  player.heapPools = player.heapPools.map((left, i) => {
+    const rate = ctx.model.pile.heapPools[i]?.fallsPerDrop ?? 1;
+    const falls = left <= 1 ? left : left * rate;
+    heapFalls += falls;
+    return left - falls;
+  });
   if (heapFalls > 0) {
-    player.heapCoins -= heapFalls;
+    player.heapCoins = player.heapPools.reduce((sum, coins) => sum + coins, 0);
     earn(player, 'heap', heapFalls * r.heapValuePerFall);
     if (player.heapCoins === 0) mark(player, 'heapCleared');
   }
-  earn(player, 'won', r.grossPerDrop * (1 - heapFalls / r.fallsPerDrop));
+  earn(player, 'won', r.grossPerDrop * Math.max(0, 1 - heapFalls / r.fallsPerDrop));
 }
 
 function grantAlbumCard(ctx: PlayerContext, player: PlayerState, rarity: RarityId): void {
@@ -467,8 +482,11 @@ function recordOpeningMinute(player: PlayerState): void {
   player.openingGains.push(playEarnings(player.ledger) - before);
 }
 
-/** Advance one active tick: drops, returns, crates, purchases, ascension. */
-export function activeTick(ctx: PlayerContext, player: PlayerState): void {
+/**
+ * Advance one active tick: drops, returns, crates, purchases, ascension. With `shops` false
+ * the player only taps, buying and ascending nothing, as the playtest's Demo run did.
+ */
+export function activeTick(ctx: PlayerContext, player: PlayerState, shops = true): void {
   const { model, config } = ctx;
   const dt = model.tickSeconds;
   const tickRates = rates(ctx, player);
@@ -482,7 +500,7 @@ export function activeTick(ctx: PlayerContext, player: PlayerState): void {
       player.pileDebt -= 1;
       if (player.pileDebt === 0) player.rates = null;
     } else {
-      payFalls(player, tickRates);
+      payFalls(ctx, player, tickRates);
     }
     player.drops += 1;
     if (player.drops % config.season.dropsPerStar === 0) player.stars += 1;
@@ -497,8 +515,10 @@ export function activeTick(ctx: PlayerContext, player: PlayerState): void {
   recordOpeningMinute(player);
   const cheapest = rates(ctx, player).cheapestVenueUpgrade;
   if (cheapest !== null && player.coins >= cheapest.cost) mark(player, 'firstUpgradeAffordable');
-  buyUpgrades(ctx, player);
-  tryAscend(ctx, player);
+  if (shops) {
+    buyUpgrades(ctx, player);
+    tryAscend(ctx, player);
+  }
   if (player.stars >= ctx.seasonStars) mark(player, 'seasonFreeTrack');
 }
 

@@ -40,9 +40,21 @@ function balanceFromLedger(player: PlayerState): number {
   );
 }
 
+const heapPools = fc.array(
+  fc.record({
+    share: fc.double({ min: 0, max: 0.5, noNaN: true }),
+    fallsPerDrop: fc.double({ min: 0.001, max: 1, noNaN: true }),
+  }),
+  { minLength: 1, maxLength: 3 },
+);
+
 const models: fc.Arbitrary<SimModel> = fc
-  .double({ min: 0.5, max: 2, noNaN: true })
-  .map((baseReturnRatio) => ({ ...simModel, baseReturnRatio }));
+  .record({ baseReturnRatio: fc.double({ min: 0.5, max: 2, noNaN: true }), heapPools })
+  .map(({ baseReturnRatio, heapPools: pools }) => ({
+    ...simModel,
+    baseReturnRatio,
+    pile: { ...simModel.pile, heapPools: pools },
+  }));
 
 /** Any opening heap at any tier, including an empty table and heaps too small to ever pay. */
 const configs: fc.Arbitrary<EconomyConfig> = fc
@@ -120,25 +132,30 @@ describe('sim coin conservation', () => {
     );
   });
 
-  it('pays each heap coin out once, at no less than its tier face value', () => {
+  it('pays each payable heap coin out once, at no less than its tier face value', () => {
     fc.assert(
       fc.property(fc.integer(), configs, models, (seed, config, model) => {
         const ctx = createContext(config, model, createRng(seed));
         const player = createPlayer(ctx);
         const { coins, tier } = config.openingHeap;
         const face = config.coinTiers.find((t) => t.id === tier)?.value ?? Number.NaN;
+        const payable = coins * model.pile.heapPools.reduce((sum, pool) => sum + pool.share, 0);
         let left = player.heapCoins;
-        expect(left).toBe(coins);
-        for (let i = 0; i < 1_200 && player.ledger.dropsPaid < 400; i += 1) {
+        expect(left).toBeCloseTo(payable, 9);
+        for (let i = 0; i < 3_600 && player.ledger.dropsPaid < 1_200; i += 1) {
           activeTick(ctx, player);
           expect(player.heapCoins).toBeGreaterThanOrEqual(0);
           expect(player.heapCoins).toBeLessThanOrEqual(left);
+          expect(player.heapCoins).toBeCloseTo(
+            player.heapPools.reduce((sum, pool) => sum + pool, 0),
+            9,
+          );
           left = player.heapCoins;
         }
-        if (player.heapCoins === coins) expect(player.ledger.heap).toBe(0);
+        if (player.heapCoins === payable) expect(player.ledger.heap).toBe(0);
         if (coins > 0 && player.heapCoins === 0) {
           expect(player.milestones.heapCleared).toBeDefined();
-          expect(player.ledger.heap).toBeGreaterThanOrEqual(coins * face * (1 - 1e-9));
+          expect(player.ledger.heap).toBeGreaterThanOrEqual(payable * face * (1 - 1e-9));
         }
       }),
       RUNS,

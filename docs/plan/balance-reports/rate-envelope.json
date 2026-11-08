@@ -45,10 +45,9 @@
       "activeSeconds": 120,
       "table": {
         "levels": {
-          "pusherSpeed": 7,
-          "dropRate": 5,
-          "coinValue": 4,
-          "decorumCapacity": 1
+          "pusherSpeed": 5,
+          "dropRate": 4,
+          "coinValue": 3
         },
         "venue": "rivieraYacht",
         "charms": 2,
@@ -57,31 +56,31 @@
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 130
+          "max": 127
         },
         "falls": {
           "windowMs": 30000,
-          "max": 448
+          "max": 399
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 1703
+          "max": 1349
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 53
+          "max": 47
         },
         "crates": {
           "windowMs": 300000,
-          "max": 28
+          "max": 27
         }
       },
       "mean": {
-        "drops": 9.2,
-        "falls": 44.09,
-        "fallValue": 121.68,
-        "fusions": 4.9,
-        "crates": 6.9
+        "drops": 8.96,
+        "falls": 39.31,
+        "fallValue": 96.44,
+        "fusions": 4.37,
+        "crates": 6.72
       }
     },
     {
@@ -89,13 +88,12 @@
       "activeSeconds": 600,
       "table": {
         "levels": {
-          "pusherSpeed": 13,
+          "pusherSpeed": 12,
           "dropRate": 10,
-          "coinValue": 11,
+          "coinValue": 10,
           "crateChance": 5,
-          "vaultCapacity": 1,
           "fusionWindow": 3,
-          "decorumCapacity": 8
+          "decorumCapacity": 7
         },
         "venue": "rivieraYacht",
         "charms": 2,
@@ -108,15 +106,15 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 635
+          "max": 613
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 4312
+          "max": 3906
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 86
+          "max": 83
         },
         "crates": {
           "windowMs": 300000,
@@ -125,9 +123,9 @@
       },
       "mean": {
         "drops": 10.4,
-        "falls": 61.44,
-        "fallValue": 308.19,
-        "fusions": 7.98,
+        "falls": 59.37,
+        "fallValue": 279.19,
+        "fusions": 7.71,
         "crates": 8.97
       }
     },
@@ -136,7 +134,7 @@
       "activeSeconds": 1800,
       "table": {
         "levels": {
-          "pusherSpeed": 32,
+          "pusherSpeed": 31,
           "dropRate": 25,
           "coinValue": 32,
           "crateChance": 20,
@@ -155,15 +153,15 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 1401
+          "max": 1372
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 27033
+          "max": 26477
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 328
+          "max": 321
         },
         "crates": {
           "windowMs": 300000,
@@ -172,9 +170,9 @@
       },
       "mean": {
         "drops": 14,
-        "falls": 122.64,
-        "fallValue": 1930.97,
-        "fusions": 30.66,
+        "falls": 120.12,
+        "fallValue": 1891.3,
+        "fusions": 30.03,
         "crates": 16.8
       }
     },
@@ -324,7 +322,7 @@
     },
     {
       "label": "rivieraYacht before Ascension",
-      "activeSeconds": 10862,
+      "activeSeconds": 10911,
       "table": {
         "levels": {
           "pusherSpeed": 50,
@@ -420,7 +418,7 @@
     },
     {
       "label": "salonDeParis entry",
-      "activeSeconds": 10863,
+      "activeSeconds": 10912,
       "table": {
         "levels": {
           "oldMoney": 3,
@@ -462,7 +460,7 @@
     },
     {
       "label": "salonDeParis before Ascension",
-      "activeSeconds": 29333,
+      "activeSeconds": 29456,
       "table": {
         "levels": {
           "pusherSpeed": 50,
@@ -477,7 +475,7 @@
           "trustFund": 1
         },
         "venue": "salonDeParis",
-        "charms": 169,
+        "charms": 170,
         "albumBonus": 0.13
       },
       "limits": {

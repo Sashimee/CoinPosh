@@ -109,7 +109,7 @@ function openingMinutesLine({ openingMinutes }: SimResult): string {
     Number.isFinite(v) ? `×${v.toFixed(2)}` : '—',
   );
   return (
-    `Opening minutes, Vault gain before purchases (p10 / p50 / p90): ${gains} · ` +
+    `Opening minutes, Vault gain of a player who buys nothing (p10 / p50 / p90): ${gains} · ` +
     `minute ${openingMinutes.gains.length} / minute 1 ${ratio}`
   );
 }
