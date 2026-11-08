@@ -8,6 +8,7 @@ import type {
 import { COIN, COIN_DROP_MAX_JITTER, COIN_DROP_MAX_TILT } from '../coin.ts';
 import type { StateHasher } from '../hash.ts';
 import type { Xoshiro128ss } from '../prng.ts';
+import type { NudgeDirection } from '../inputs.ts';
 import type { Rapier } from '../rapier.ts';
 import {
   BACKBOARD,
@@ -24,11 +25,6 @@ import { COIN_MATERIAL, CONTACT_EVENTS, NUDGE, TABLE_MATERIAL, TABLE_SOLVER } fr
 
 /** Mirrors FallEdge in packages/shared, which packages/sim cannot import yet. */
 export type FallEdge = 'front' | 'left' | 'right';
-
-/** Mirrors NudgeDirection in packages/shared, which packages/sim cannot import yet. */
-export type NudgeDirection = 'left' | 'right' | 'forward';
-
-export const NUDGE_DIRECTIONS: readonly NudgeDirection[] = ['left', 'right', 'forward'];
 
 /**
  * What a coin struck: another coin, the pusher block (its face or the upper tier on

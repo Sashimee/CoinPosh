@@ -25,14 +25,13 @@ export {
   type HeapLayout,
   type HeapPose,
 } from './heap.ts';
+export { NUDGE_DIRECTIONS, type NudgeDirection } from '../inputs.ts';
 export type { SeparationResult } from './separation.ts';
 export {
   type ContactEvent,
   type ContactSurface,
   type FallEdge,
   type FallEvent,
-  NUDGE_DIRECTIONS,
-  type NudgeDirection,
   type PusherState,
   PusherTable,
   type TableCoin,
