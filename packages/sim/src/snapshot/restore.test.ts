@@ -10,7 +10,7 @@ import { pusherBox, validateSnapshot } from './validate.ts';
 
 const SEED = 0xc0195051;
 
-/** What apps/web's sim worker runs (SIM_MECHANICS there): tiers, no fusion, no tower. */
+/** Tiers with no fusion and no tower: the table on its own, as the sim worker ran it before P-222. */
 const WORKER_MECHANICS: MechanicsConfig<string> = {
   tiers: ['copper', 'silver', 'gold', 'platinum', 'diamond', 'heirloom'],
   fusion: null,

@@ -8,7 +8,7 @@ import type { CoinTransformTarget } from './interpolate.ts';
 import type { MainToWorker, SimEventBatch, TransportKind, WorkerToMain } from './protocol.ts';
 import { MAX_CATCH_UP_TICKS, runSimWorker, TICK_MS } from './runtime.ts';
 import { COIN, Sim } from '@coinposh/sim';
-import { openingHeap } from '@coinposh/economy';
+import { economyConfig, openingHeap } from '@coinposh/economy';
 import type { FallEvent, MechanicsConfig, OpeningHeap, SimInput, SimOptions } from './sim-api.ts';
 import { OPENING_HEAP_CAPACITY, SIM_MECHANICS } from './table-config.ts';
 
@@ -102,13 +102,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** The worker's mechanics with Contact Fusion on, as the economy's rules have it. */
-const FUSING: MechanicsConfig<string> = {
-  tiers: COIN_TIERS,
-  fusion: { inputCount: 3, contactSeconds: 0.4 },
-  tower: null,
-};
-
 interface HarnessOptions {
   /** Runs the worker's Sim with these; SIM_MECHANICS is what sim.worker.ts uses. */
   readonly mechanics?: MechanicsConfig<string>;
@@ -178,6 +171,15 @@ it('lays every coin the economy opens the table with, at its tier', () => {
   expect(openingHeap.coins).toBeGreaterThan(0);
   expect(openingHeap.coins).toBeLessThanOrEqual(OPENING_HEAP_CAPACITY);
   expect(SIM_MECHANICS.tiers).toContain(openingHeap.tier);
+});
+
+it("fuses on the economy's Contact Fusion rules, with no tower", () => {
+  expect(SIM_MECHANICS.tiers).toEqual(COIN_TIERS);
+  expect(SIM_MECHANICS.fusion).toEqual({
+    inputCount: economyConfig.fusion.inputCount,
+    contactSeconds: economyConfig.fusion.contactSeconds,
+  });
+  expect(SIM_MECHANICS.tower).toBeNull();
 });
 
 describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport', (transport) => {
@@ -328,7 +330,7 @@ describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport'
   });
 });
 
-// Each test plays a 110-coin heap for hundreds of ticks twice, through the worker and in-thread.
+// Each test plays an opening heap for hundreds of ticks twice, through the worker and in-thread.
 describe('SimBridge events', { timeout: 30_000 }, () => {
   interface Collected {
     falls: FallEvent[];
@@ -365,17 +367,21 @@ describe('SimBridge events', { timeout: 30_000 }, () => {
     }
   }
 
-  it('forwards the contacts and fusions of a fusing heap, and draws fused coins in their new tier', async () => {
-    const options: HarnessOptions = { mechanics: FUSING, openingHeap: { coins: 60 } };
+  it('forwards the contacts and fusions of the drops, and draws fused coins in their new tier', async () => {
+    const options: HarnessOptions = { mechanics: SIM_MECHANICS, openingHeap: { coins: 60 } };
     const { bridge, run, poll, newest } = harness('transfer', options);
     const all = collect(bridge);
     await bridge.ready;
     await poll();
-    bridge.drop(0);
-    await settle();
-    await run(90);
-    const drop: SimInput[] = [{ kind: 'dropCoin', xMm: 0, tier: 'copper' }];
-    const expected = await replay(options, new Map([[0, drop]]), bridge.stats.tick);
+    const inputs = new Map<number, SimInput[]>();
+    for (const xMm of [0, 6, -6, 0, 6, -6]) {
+      inputs.set(bridge.stats.tick, [{ kind: 'dropCoin', xMm, tier: 'copper' }]);
+      bridge.drop(xMm, 'copper');
+      await settle();
+      await run(20);
+    }
+    await run(240);
+    const expected = await replay(options, inputs, bridge.stats.tick);
     expect(all).toEqual(expected.all);
     expect(all.contacts.length).toBeGreaterThan(0);
     expect(all.fusions.length).toBeGreaterThan(0);
@@ -390,24 +396,22 @@ describe('SimBridge events', { timeout: 30_000 }, () => {
     );
   });
 
-  it("forwards the falls a stream of drops pushes over the lip, with the worker's mechanics", async () => {
-    const options: HarnessOptions = {
-      mechanics: SIM_MECHANICS,
-      openingHeap: { coins: OPENING_HEAP_CAPACITY },
-    };
+  it("forwards the falls and fusions of the Demo table's drops, with the worker's mechanics", async () => {
+    const options: HarnessOptions = { mechanics: SIM_MECHANICS, openingHeap };
     const { bridge, run, poll } = harness('transfer', options);
     const all = collect(bridge);
     await bridge.ready;
     await poll();
     const inputs = new Map<number, SimInput[]>();
-    for (let k = 0; k < 40; k += 1) {
+    for (let k = 0; k < 30; k += 1) {
       inputs.set(bridge.stats.tick, [{ kind: 'dropCoin', xMm: 0 }]);
       bridge.drop(0);
       await settle();
-      await run(15);
+      await run(60);
     }
     const expected = await replay(options, inputs, bridge.stats.tick);
     expect(all).toEqual(expected.all);
+    expect(all.fusions.length).toBeGreaterThan(0);
     expect(all.falls.length).toBeGreaterThan(0);
     expect(all.falls.every((fall) => fall.edge === 'front')).toBe(true);
   });
