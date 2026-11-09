@@ -1,15 +1,18 @@
 import {
   coinTiers,
+  crateSpawn,
+  crateSpawnInterval,
+  dropSpawnsCrate,
   fusion,
   fusionValue,
   openingHeap,
   upgradeLines,
   upgradeStat,
 } from '@coinposh/economy';
-import { endpoints, type MintedCoin } from '@coinposh/shared';
+import { endpoints, type DropResponse, type MintedCoin } from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { newSession, send, type Session } from '../test/client.ts';
+import { newIdempotencyKey, newSession, send, type Session } from '../test/client.ts';
 import {
   claims,
   dropAsClient,
@@ -44,6 +47,42 @@ function refunds(session: Session) {
       )
       .toArray(),
   );
+}
+
+function dropCounters(session: Session) {
+  return runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) => {
+    const read = (key: string) =>
+      Number(
+        ctx.storage.sql.exec<{ value: string }>('SELECT value FROM meta WHERE key = ?', key).one()
+          .value,
+      );
+    return { net: read('drop_count'), highWater: read('drop_high_water') };
+  });
+}
+
+function ledgerCrates(session: Session) {
+  return runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) =>
+    ctx.storage.sql
+      .exec<{ ref: string }>(
+        "SELECT ref FROM ledger WHERE kind = 'crate.spawn' AND account = 'table' ORDER BY seq",
+      )
+      .toArray()
+      .map((row) => row.ref),
+  );
+}
+
+function grantCoins(session: Session, amount: number) {
+  return runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) => {
+    commit(
+      ctx.storage.sql,
+      new LedgerTx('grant.starting').move('mint', 'wallet', 'coins', amount, null),
+      { at: 0, idempotencyKey: null },
+    );
+  });
+}
+
+function spawnIndices(drops: readonly DropResponse[]): number[] {
+  return drops.flatMap((response, i) => (response.spawnedCrates.length > 0 ? [i + 1] : []));
 }
 
 function credited(rows: readonly { account: string; delta: number }[], account: string): number {
@@ -135,6 +174,9 @@ describe('a page reload with coins on the table', () => {
     await runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) => {
       const sql = ctx.storage.sql;
       const coin = new Entities(sql).mintCoin(COPPER.id, 2, null, 'table', 0, 0);
+      sql.exec(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key IN ('drop_count', 'drop_high_water')",
+      );
       commit(
         sql,
         new LedgerTx('drop.mint')
@@ -216,5 +258,91 @@ describe('a page reload with coins on the table', () => {
     expect((await state(session)).table.coins.map((coin) => coin.id)).toEqual(
       expect.arrayContaining(coins.map((coin) => coin.id)),
     );
+  });
+});
+
+describe('crate spawns across a boot refund', () => {
+  const SCRIPTED = crateSpawn.ftueScriptedDrop;
+
+  it('spawns no second crate when the refunded spend is dropped to the threshold again', async () => {
+    const session = await newSession();
+    expect(spawnIndices(await dropAsClient(session, SCRIPTED))).toEqual([SCRIPTED]);
+    const [crate] = (await state(session)).table.crates;
+    if (crate === undefined) throw new Error('The scripted drop spawned no crate.');
+
+    await reload(session);
+    expect(await vaultCoins(session)).toBe(startingCoins());
+    expect(await dropCounters(session)).toEqual({ net: 0, highWater: SCRIPTED });
+
+    expect(spawnIndices(await dropAsClient(session, SCRIPTED))).toEqual([]);
+    expect(await dropCounters(session)).toEqual({ net: SCRIPTED, highWater: SCRIPTED });
+    expect((await state(session)).table.crates).toEqual([crate]);
+    expect(await ledgerCrates(session)).toEqual([crate.id]);
+    await expectConserved(session);
+  });
+
+  it('cannot farm crates by looping drop and reload', async () => {
+    const session = await newSession();
+    for (let round = 0; round < 3; round++) {
+      await dropAsClient(session, SCRIPTED);
+      await reload(session);
+    }
+    expect(await ledgerCrates(session)).toHaveLength(1);
+    expect(await vaultCoins(session)).toBe(startingCoins());
+    expect(await dropCounters(session)).toEqual({ net: 0, highWater: SCRIPTED });
+    await expectConserved(session);
+  });
+
+  it('spawns again on schedule once fresh drops lift the mark past the refunded ones', async () => {
+    const session = await newSession();
+    const interval = crateSpawnInterval({});
+    await grantCoins(session, interval * COPPER.value);
+    await dropAsClient(session, SCRIPTED);
+    await reload(session);
+
+    const drops = await dropAsClient(session, interval);
+    const expected = Array.from({ length: interval }, (_, i) => i + 1).filter(
+      (net) => net > SCRIPTED && dropSpawnsCrate(net, {}),
+    );
+    expect(expected.length).toBeGreaterThan(0);
+    expect(spawnIndices(drops)).toEqual(expected);
+    expect(await ledgerCrates(session)).toHaveLength(1 + expected.length);
+    expect(await dropCounters(session)).toEqual({ net: interval, highWater: interval });
+    await expectConserved(session);
+  });
+
+  it('takes every drop fused into a refunded coin off the count, and keeps the ones that fell', async () => {
+    const session = await newSession();
+    const [a, b, c, d] = await dropped(session, 4);
+    if ([a, b, c, d].some((coin) => coin === undefined)) throw new Error('The drops failed.');
+    const result = await claims(session, [
+      { kind: 'fusion', coinIds: [a?.id, b?.id, c?.id], tick: 4 },
+      { kind: 'fall', coinId: d?.id, tick: 5, edge: 'front' },
+    ]);
+    expect(result.results.map((entry) => entry.status)).toEqual(['accepted', 'accepted']);
+
+    await reload(session);
+    expect(await dropCounters(session)).toEqual({ net: 1, highWater: 4 });
+    await expectConserved(session);
+  });
+
+  it('replays the original response to a retried spawning drop without minting a crate', async () => {
+    const session = await newSession();
+    const drops = await dropAsClient(session, SCRIPTED - 1);
+    const body = { x: 0, tick: 0, coinId: drops.at(-1)?.buffer[0]?.id };
+    const idempotencyKey = newIdempotencyKey();
+    const retry = () => session.call(endpoints.tableDrop.path, { body, idempotencyKey });
+    const sent = await retry();
+    expect(sent.status, await sent.clone().text()).toBe(200);
+    const first = endpoints.tableDrop.response.parse(await sent.json());
+    expect(first.spawnedCrates).toHaveLength(1);
+
+    await reload(session);
+    const retried = await retry();
+    expect(retried.status).toBe(200);
+    expect(endpoints.tableDrop.response.parse(await retried.json())).toEqual(first);
+    expect(await ledgerCrates(session)).toHaveLength(1);
+    expect(await dropCounters(session)).toEqual({ net: 0, highWater: SCRIPTED });
+    await expectConserved(session);
   });
 });

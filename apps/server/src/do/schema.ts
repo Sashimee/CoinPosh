@@ -100,6 +100,12 @@ export const MIGRATIONS: readonly string[] = [
   INSERT INTO meta (key, value)
     SELECT 'cascade_carry', '0' WHERE EXISTS (SELECT 1 FROM meta WHERE key = 'player_id');
   `,
+  // Every spawn index up to drop_count already fired, so the mark starts there. Earlier refunds
+  // are not taken back off drop_count: their re-drops were already counted as fresh drops.
+  `
+  INSERT INTO meta (key, value)
+    SELECT 'drop_high_water', value FROM meta WHERE key = 'drop_count';
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {

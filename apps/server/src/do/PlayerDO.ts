@@ -58,6 +58,7 @@ import {
 } from './entities.ts';
 import {
   commit,
+  ConservationError,
   ledgerBalance,
   LedgerTx,
   openWallet,
@@ -121,6 +122,7 @@ type MetaKey =
   | 'locale'
   | 'created_at'
   | 'drop_count'
+  | 'drop_high_water'
   | 'flushed_seq'
   | 'fair_server_seed'
   | 'fair_server_seed_hash'
@@ -166,6 +168,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.setMeta('locale', input.locale);
       this.setMeta('created_at', String(input.createdAt));
       this.setMeta('drop_count', '0');
+      this.setMeta('drop_high_water', '0');
       this.setMeta('flushed_seq', '0');
       this.setMeta('fair_server_seed', serverSeed);
       this.setMeta('fair_server_seed_hash', serverSeedHash);
@@ -470,10 +473,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       context,
     );
 
-    const dropCount = Number(this.requireMeta('drop_count')) + 1;
-    this.setMeta('drop_count', String(dropCount));
     const spawnedCrates: TableCrate[] = [];
-    if (dropSpawnsCrate(dropCount, levels)) {
+    if (this.countDrop(levels)) {
       const crate = this.entities.spawnCrate('vault', body.tick, now);
       commit(this.sql, new LedgerTx('crate.spawn').move('mint', 'table', 'crate', 1, crate.id), {
         at: now,
@@ -489,6 +490,19 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       spawnedCrates,
       wallet: readWallet(this.sql),
     };
+  }
+
+  /**
+   * Counts a drop and says whether it spawns a crate. `drop_count` is the net of drops not
+   * refunded and `drop_high_water` the most it ever reached, so only a drop that lifts the mark
+   * reaches a new spawn index: re-spending refunded coins never earns the same crate twice.
+   */
+  private countDrop(levels: UpgradeLevelMap): boolean {
+    const dropCount = Number(this.requireMeta('drop_count')) + 1;
+    this.setMeta('drop_count', String(dropCount));
+    if (dropCount <= Number(this.requireMeta('drop_high_water'))) return false;
+    this.setMeta('drop_high_water', String(dropCount));
+    return dropSpawnsCrate(dropCount, levels);
   }
 
   private bufferedCoin(id: CoinId): StoredCoin {
@@ -697,24 +711,38 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const stranded = this.entities.coinsIn('table').filter((coin) => !heap.has(coin.id));
     if (stranded.length === 0) return;
     const tx = new LedgerTx('refund.table');
+    let refundedDrops = 0;
     for (const coin of stranded) {
-      const refund = Math.min(this.paidByVault(coin.id), coin.value);
+      const spend = this.dropsBehind(coin.id);
+      const refund = Math.min(spend.paid, coin.value);
+      refundedDrops += spend.drops;
       this.entities.settleCoin(coin.id, 'refunded', now);
       tx.move('table', 'wallet', 'coins', refund, coin.id);
       tx.move('table', 'house', 'coins', coin.value - refund, coin.id);
     }
     commit(this.sql, tx, { at: now, idempotencyKey: null });
+    const dropCount = Number(this.requireMeta('drop_count')) - refundedDrops;
+    if (dropCount < 0) {
+      throw new ConservationError(
+        `Refunding ${refundedDrops} drops would take drop_count below zero; the drop counter is out of step with the ledger.`,
+      );
+    }
+    this.setMeta('drop_count', String(dropCount));
   }
 
-  /** What the wallet paid to drop this coin, or to drop every coin fused into it. */
-  private paidByVault(id: string): number {
-    const dropped = this.sql
-      .exec<{ paid: number | null }>(
-        `SELECT -SUM(delta) AS paid FROM ledger
-         WHERE ref = ? AND kind IN ('drop.mint', 'drop.buffer') AND account IN ('wallet', 'buffer')`,
+  /**
+   * The drops behind this coin, its own or every drop fused into it, and what the wallet paid
+   * for them.
+   */
+  private dropsBehind(id: string): { paid: number; drops: number } {
+    const own = this.sql
+      .exec<{ paid: number | null; drops: number }>(
+        `SELECT -SUM(CASE WHEN account IN ('wallet', 'buffer') THEN delta END) AS paid,
+                COUNT(DISTINCT tx_id) AS drops
+         FROM ledger WHERE ref = ? AND kind IN ('drop.mint', 'drop.buffer')`,
         id,
       )
-      .one().paid;
+      .one();
     const inputs = this.sql
       .exec<{ ref: string }>(
         `SELECT input.ref AS ref FROM ledger AS output
@@ -724,7 +752,13 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
         id,
       )
       .toArray();
-    return inputs.reduce((total, input) => total + this.paidByVault(input.ref), dropped ?? 0);
+    return inputs.reduce(
+      (total, input) => {
+        const behind = this.dropsBehind(input.ref);
+        return { paid: total.paid + behind.paid, drops: total.drops + behind.drops };
+      },
+      { paid: own.paid ?? 0, drops: own.drops },
+    );
   }
 
   /**
