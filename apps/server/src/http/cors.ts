@@ -1,14 +1,17 @@
 import { HEADERS } from '@coinposh/shared';
 import { cors } from 'hono/cors';
 
-export const PRODUCTION_ORIGIN = 'https://sashimee.github.io';
+export const SITE_ORIGINS: ReadonlySet<string> = new Set([
+  'https://coinposh.bas.lu',
+  'https://devcoinposh.bas.lu',
+]);
 
 const LOCAL_DEV_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/;
 
 export const IDEMPOTENT_REPLAYED_HEADER = 'Idempotent-Replayed';
 
 export function isAllowedOrigin(origin: string): boolean {
-  return origin === PRODUCTION_ORIGIN || LOCAL_DEV_ORIGIN.test(origin);
+  return SITE_ORIGINS.has(origin) || LOCAL_DEV_ORIGIN.test(origin);
 }
 
 export const corsMiddleware = cors({
