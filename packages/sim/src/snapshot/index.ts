@@ -1,7 +1,7 @@
 /**
  * The `@coinposh/sim/snapshot` entry: the table snapshot format and the pose and crate
  * checks the server runs before it stores or restores one. It must never load Rapier, so
- * the worker can judge snapshots without the WASM; snapshot.test.ts walks its import
+ * the worker can judge snapshots without the WASM; validate.test.ts walks its import
  * graph to keep it that way.
  */
 export {
@@ -24,7 +24,6 @@ export {
   type CratePose,
   type CrateRejection,
   type CrateVerdict,
-  FRONT_FALL_REACH,
   POSE_OVERLAP_TOLERANCE,
   type PoseRejection,
   type PoseVerdict,
@@ -32,3 +31,4 @@ export {
   type SnapshotVerdict,
   validateSnapshot,
 } from './validate.ts';
+export { DEFAULT_PUSHER_MOTION, type PusherMotion } from '../table/pusher.ts';

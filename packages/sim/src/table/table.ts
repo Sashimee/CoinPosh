@@ -417,14 +417,15 @@ export class PusherTable {
   }
 
   /**
-   * Lays a saved table on this empty one, ids 0..n − 1 in `coins` order: every coin at
-   * rest on what it lies on, so a saved coin awake on the pusher top moves with the block
-   * as it was moving; left still there, it would slide against the block and wake the
-   * riders around it. Heap slots are lifted clear first (RestoreCoin.lift), then one
-   * separation pass removes what overlap the saved poses kept. A coin that was asleep
-   * restores at rest unless a COIN_RESTORE.probe cast straight down finds nothing to
-   * hold it, or it hangs past the pusher's lip, where no coin ever comes to rest; then it
-   * restores awake and settles. Throws if the table already has coins, or if a heap slot
+   * Lays a saved table on this empty one, ids 0..n − 1 in `coins` order, every coin with
+   * zero velocity relative to what it lies on: a coin awake with its centre over the
+   * pusher top, or past its face by less than a radius, moves with the block, as every
+   * check on the table measures it; left still there, it would slide against the block
+   * and wake the riders around it. Heap slots are lifted clear first (RestoreCoin.lift),
+   * then one separation pass removes what overlap the saved poses kept. A coin that was
+   * asleep restores at rest unless a COIN_RESTORE.probe cast straight down finds nothing
+   * at rest to hold it (#restingIds), or it hangs past the pusher's lip, where no coin
+   * ever comes to rest; then it restores awake and settles. Throws if the table already has coins, or if a heap slot
    * cannot be lifted clear below the top of the walls.
    */
   restore(coins: readonly RestoreCoin[]): number[] {
@@ -463,15 +464,17 @@ export class PusherTable {
       this.addCoin(translations[i] ?? coin.translation, coin.rotation),
     );
     this.#separator.separate(this.#coins.values());
-    const holds = ids.map((id, i) => coins[i]?.asleep === true && !coins[i].lift && this.#held(id));
+    const holds = this.#restingIds(ids, coins);
     const shelfSpeed = this.#lastPusherSpeed();
+    const shelfFrontZ = pusher.z + pusher.hz + COIN.radius * SCALE;
     ids.forEach((id, i) => {
       if (holds[i]) {
         this.#restAsIs(id);
       }
       if (!coins[i]?.lift && !this.#isFrozen(id)) {
         const body = this.#coin(id);
-        if (body.translation().y > SHELF_Y) {
+        const t = body.translation();
+        if (t.y > SHELF_Y && t.z <= shelfFrontZ) {
           body.setLinvel({ x: 0, y: 0, z: shelfSpeed }, true);
         }
       }
@@ -710,8 +713,33 @@ export class PusherTable {
     );
   }
 
-  /** Whether a COIN_RESTORE.probe cast straight down drives the coin into something. */
-  #held(id: number): boolean {
+  /**
+   * Which restored coins come to rest, by index: the asleep poses a COIN_RESTORE.probe
+   * cast holds up on the cabinet or on another coin that comes to rest. A coin lying on
+   * one that restores awake would start on a support settling from a standstill, without
+   * the contact impulses that held it up, and be shaken loose; it restores awake too.
+   */
+  #restingIds(ids: readonly number[], coins: readonly RestoreCoin[]): boolean[] {
+    const holds = ids.map((_, i) => coins[i]?.asleep === true && !coins[i].lift);
+    const resting = new Set(ids.filter((_, i) => holds[i]));
+    for (let changed = true; changed;) {
+      changed = false;
+      ids.forEach((id, i) => {
+        if (holds[i] && !this.#held(id, resting)) {
+          holds[i] = false;
+          resting.delete(id);
+          changed = true;
+        }
+      });
+    }
+    return holds;
+  }
+
+  /**
+   * Whether a COIN_RESTORE.probe cast straight down drives the coin into the cabinet or
+   * one of the `supports` coins.
+   */
+  #held(id: number, supports: ReadonlySet<number>): boolean {
     const disc = this.#discOf(this.#coin(id));
     const down = { ...disc, y: disc.y - PROBE };
     const grips = (now: number, after: number): boolean => after > 0 && after - now >= PROBE_GRIP;
@@ -731,7 +759,7 @@ export class PusherTable {
     }
     const reach = 2 * COIN_REACH + PROBE;
     for (const [other, body] of this.#coins) {
-      if (other === id) {
+      if (other === id || !supports.has(other)) {
         continue;
       }
       const near = this.#discOf(body);

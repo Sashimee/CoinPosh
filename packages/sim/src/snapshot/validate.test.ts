@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 import packageJson from '../../package.json' with { type: 'json' };
 import { COIN } from '../coin.ts';
 import { Xoshiro128ss } from '../prng.ts';
-import { BACKBOARD, PLAYFIELD, PUSHER, TABLE_INNER_HALF_WIDTH } from '../table/layout.ts';
+import { BACKBOARD, PLAYFIELD, PUSHER } from '../table/layout.ts';
+import { DEFAULT_PUSHER_MOTION, type PusherMotion } from '../table/pusher.ts';
 import * as entry from './index.ts';
 import {
   type CoinPose,
@@ -21,7 +22,6 @@ import {
   COIN_OVERLAP_TOLERANCE,
   CRATE_RIDE,
   type CratePose,
-  FRONT_FALL_REACH,
   type PoseRejection,
   validateSnapshot,
 } from './validate.ts';
@@ -181,85 +181,56 @@ describe('quantization', () => {
 
 describe('checkPose', () => {
   it('accepts every position limit exactly and refuses one unit past it', () => {
-    const shelfStanding = Math.round((PUSHER.height + COIN.radius) / 1e-5) + 3;
     const cases: [CoinPose, CoinPose][] = [
-      [pose([21070, 0, 3000], { q: ON_EDGE_X }), pose([21071, 0, 3000], { q: ON_EDGE_X })],
-      [pose([-21070, 0, 3000], { q: ON_EDGE_X }), pose([-21071, 0, 3000], { q: ON_EDGE_X })],
-      [
-        pose([0, shelfStanding, -21870], { q: ON_EDGE_Z }),
-        pose([0, shelfStanding, -21871], { q: ON_EDGE_Z }),
-      ],
-      [pose([0, 3500, 6350]), pose([0, 3500, 6351])],
-      [pose([19600, -3000, 3000]), pose([19600, -3001, 3000])],
+      [pose([16650, FLOOR_Y, 3000]), pose([16651, FLOOR_Y, 3000])],
+      [pose([-16650, FLOOR_Y, 3000]), pose([-16651, FLOOR_Y, 3000])],
+      [pose([16650, SHELF_Y, -15000]), pose([16651, SHELF_Y, -15000])],
+      [pose([0, SHELF_Y, -20650]), pose([0, SHELF_Y, -20651])],
+      [pose([0, FLOOR_Y, 5000]), pose([0, FLOOR_Y, 5001])],
       [pose([0, 22000, 0]), pose([0, 22001, 0])],
     ];
     for (const [inside, outside] of cases) {
       expect(reason(inside), inside.p.join(', ')).toBeNull();
       expect(reason(outside), outside.p.join(', ')).toBe('out_of_bounds');
     }
-    expect(21070 * 1e-5).toBeCloseTo(TABLE_INNER_HALF_WIDTH - COIN.halfThickness, 12);
-    expect(-21870 * 1e-5).toBeCloseTo(BACKBOARD.frontZ + COIN.halfThickness, 12);
-    expect(6350 * 1e-5).toBeCloseTo(PLAYFIELD.fieldFrontZ + COIN.radius, 12);
-    expect(-3000 * 1e-5).toBeCloseTo(PLAYFIELD.fallY, 12);
+    expect(16650 * 1e-5).toBeCloseTo(PLAYFIELD.fieldHalfWidth - COIN.radius, 12);
+    expect(-20650 * 1e-5).toBeCloseTo(BACKBOARD.frontZ + COIN.radius, 12);
+    expect(5000 * 1e-5).toBeCloseTo(PLAYFIELD.fieldFrontZ, 12);
+    expect(22000 * 1e-5).toBeCloseTo(PLAYFIELD.wallHeight, 12);
   });
 
-  it('refuses a coin more than 1 mm into the floor, a side wall or the backboard', () => {
-    const cases: [CoinPose['p'], CoinPose['p']][] = [
-      [
-        [0, 31, 0],
-        [0, 29, 0],
-      ],
-      [
-        [16749, SHELF_Y, -15000],
-        [16751, SHELF_Y, -15000],
-      ],
-      [
-        [-16749, SHELF_Y, -15000],
-        [-16751, SHELF_Y, -15000],
-      ],
-      [
-        [0, SHELF_Y, -20749],
-        [0, SHELF_Y, -20751],
-      ],
+  it('refuses a centre below -COIN.halfThickness, and a coin more than 1 mm into the floor above it', () => {
+    expect(-130 * 1e-5).toBeCloseTo(-COIN.halfThickness, 12);
+    expect(reason(pose([0, -131, 5000], { q: ON_EDGE_Z }))).toBe('out_of_bounds');
+    expect(reason(pose([0, 31, 0]))).toBeNull();
+    expect(reason(pose([0, 29, 0]))).toBe('out_of_bounds');
+    expect(reason(pose([0, -130, 5000], { q: ON_EDGE_Z }))).toBe('out_of_bounds');
+  });
+
+  it('refuses a coin falling past the lip or into a gutter, whatever its height', () => {
+    const falling: CoinPose[] = [
+      pose([0, -500, 5130], { q: ON_EDGE_Z }),
+      pose([0, -1, 15000]),
+      pose([0, 3499, 6351]),
+      pose([19600, -2900, 0]),
+      pose([17000, FLOOR_Y, 3000], { q: ON_EDGE_X }),
+      pose([-4072, 208, 7262], { q: [-30685, 1894, -4825, 10257], rest: 'awake' }),
+      pose([-10395, -2026, 6459], { q: [11081, 22750, 18608, 9332], rest: 'awake' }),
+      pose([10997, -1888, 6575], { q: [-1505, 19074, 25734, 6736], rest: 'awake' }),
     ];
-    for (const [inside, outside] of cases) {
-      expect(reason(pose(inside)), inside.join(', ')).toBeNull();
-      expect(reason(pose(outside)), outside.join(', ')).toBe('out_of_bounds');
+    for (const p of falling) {
+      expect(reason(p), p.p.join(', ')).toBe('out_of_bounds');
     }
   });
 
-  it('refuses a centre under the floor, but not a coin dropping past its front or into a gutter', () => {
-    expect(reason(pose([0, -500, 5130], { q: ON_EDGE_Z }))).toBeNull();
-    expect(reason(pose([0, -500, 4999], { q: ON_EDGE_Z }))).toBe('out_of_bounds');
-    expect(reason(pose([0, -2900, 0]))).toBe('out_of_bounds');
-    expect(reason(pose([19600, -2900, 0]))).toBeNull();
-  });
-
-  it('lets a coin flying off the front below the pusher top be out to FRONT_FALL_REACH', () => {
-    expect(FRONT_FALL_REACH).toBe(0.1);
-    expect(3500 * 1e-5).toBeCloseTo(PUSHER.height, 12);
-    expect(reason(pose([0, -1, 15000]))).toBeNull();
-    expect(reason(pose([0, -1, 15001]))).toBe('out_of_bounds');
-    expect(reason(pose([0, 3499, 15000]))).toBeNull();
-    expect(reason(pose([0, 3499, 15001]))).toBe('out_of_bounds');
-    expect(reason(pose([0, 3500, 6351]))).toBe('out_of_bounds');
-    expect(
-      reason(pose([-4072, 208, 7262], { q: [-30685, 1894, -4825, 10257], rest: 'awake' })),
-    ).toBeNull();
-    expect(
-      reason(pose([-10395, -2026, 6459], { q: [11081, 22750, 18608, 9332], rest: 'awake' })),
-    ).toBeNull();
-    expect(
-      reason(pose([10997, -1888, 6575], { q: [-1505, 19074, 25734, 6736], rest: 'awake' })),
-    ).toBeNull();
-  });
-
-  it('accepts poses a live table left: a coin over the gutter edge and one leaning on the backboard', () => {
+  it('refuses poses a live table can leave past those limits: a coin over a gutter edge, one leaning on the backboard', () => {
     expect(reason(pose([-17036, 152, 2571], { q: [23148, 11, -23192, -13] }))).toBe('bad_rotation');
-    expect(reason(pose([-17036, 152, 2571], { q: [-23148, -11, 23192, 13] }))).toBeNull();
+    expect(reason(pose([-17036, 152, 2571], { q: [-23148, -11, 23192, 13] }))).toBe(
+      'out_of_bounds',
+    );
     expect(
       reason(pose([-4251, 4097, -20670], { q: [-5639, -12435, 568, 29781], rest: 'awake' })),
-    ).toBeNull();
+    ).toBe('out_of_bounds');
   });
 
   it('refuses a coin more than 1 mm into the pusher block where it stands at that tick', () => {
@@ -325,6 +296,20 @@ describe('checkPose', () => {
     }
     expect(reason(pose([0, FLOOR_Y, 0]), PUSHER.periodTicks - 1)).toBeNull();
   });
+
+  it('judges the pusher by the motion it is given, the default one unless told', () => {
+    const fast: PusherMotion = { ...DEFAULT_PUSHER_MOTION, periodTicks: 120 };
+    const extended = Math.round((PUSHER.frontZ + PUSHER.stroke) / 1e-5);
+    const radius = Math.round(COIN.radius / 1e-5);
+    const atFullStroke = pose([0, FLOOR_Y, extended + radius - 101]);
+    expect(checkPose(atFullStroke, 72)).toEqual({ ok: true });
+    expect(checkPose(atFullStroke, 72, fast)).toEqual({ ok: false, reason: 'in_pusher' });
+    expect(checkPose(atFullStroke, 144, DEFAULT_PUSHER_MOTION)).toEqual(
+      checkPose(atFullStroke, 144),
+    );
+    expect(() => checkPose(atFullStroke, 120, fast)).toThrow(/\[0, 120\)/);
+    expect(() => checkPose(atFullStroke, 0, { ...fast, periodTicks: 1 })).toThrow(RangeError);
+  });
 });
 
 describe('validateSnapshot', () => {
@@ -389,6 +374,9 @@ describe('validateSnapshot', () => {
       validateSnapshot({ ...snapshot([]), version: 2 } as unknown as SimTableSnapshot),
     ).toThrow(/version must be 1/);
     expect(() => validateSnapshot(snapshot([], PUSHER.periodTicks))).toThrow(RangeError);
+    const fast: PusherMotion = { ...DEFAULT_PUSHER_MOTION, periodTicks: 120 };
+    expect(() => validateSnapshot(snapshot([], 120), fast)).toThrow(RangeError);
+    expect(validateSnapshot(snapshot([], 119), fast)).toEqual({ ok: [], dropped: [] });
     expect(() =>
       validateSnapshot(snapshot([pose([0, FLOOR_Y, 0]), pose([5000, FLOOR_Y, 0])])),
     ).toThrow(/coin id 0 appears more than once/);

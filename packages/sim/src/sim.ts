@@ -67,7 +67,7 @@ export type RestoreEntry =
  * fresh PRNG, the pusher `pusherTickInCycle` ticks into its first cycle, and entry i as
  * coin id i, every coin at rest velocity. Poses must pass validateSnapshot. A heap slot
  * that overlaps a coin before it or the pusher is lifted clear and restores awake; an
- * `asleep` pose restores asleep if something below holds it (PusherTable.restore).
+ * `asleep` pose restores asleep if something at rest below holds it (PusherTable.restore).
  * Fusion streaks start over. `restore` with every entry `heapSlot` 0..n − 1 lays the
  * same table as `openingHeap: { coins: n }`.
  */

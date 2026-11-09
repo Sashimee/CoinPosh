@@ -1,12 +1,11 @@
 import { COIN } from '../coin.ts';
+import { BACKBOARD, PLAYFIELD, PUSHER } from '../table/layout.ts';
 import {
-  BACKBOARD,
-  GUTTER_START_Z,
-  PLAYFIELD,
-  PUSHER,
-  TABLE_INNER_HALF_WIDTH,
-} from '../table/layout.ts';
-import { DEFAULT_PUSHER_MOTION, pusherExtension } from '../table/pusher.ts';
+  assertValidPusherMotion,
+  DEFAULT_PUSHER_MOTION,
+  type PusherMotion,
+  pusherExtension,
+} from '../table/pusher.ts';
 import { COIN_MATERIAL } from '../table/tuning.ts';
 import {
   type Box,
@@ -63,37 +62,26 @@ export const COIN_SHAPE: DiscShape = {
 };
 
 /**
- * How far past the front edge a coin falling off it may be, in metres: from the floor's
- * top to fallY takes 0.08 s, so this allows leaving the edge at over 1 m/s. The furthest
- * in 3 seeds of a minute of drops, every tick snapshotted, was 2.3 cm.
+ * The space a coin's centre may be in (92-table-persistence 1.3), in POSITION_UNIT, each
+ * a whole number of units: inside the inner walls, not over a side gutter; in front of
+ * the backboard and not past the lip; above the floor and below the wall top. A coin
+ * over a gutter or past the lip is falling, and its claim drains before the table
+ * boots, so dropping its pose costs the player nothing. No disc reaches further than
+ * its radius sideways, so these keep every coin out of the walls and the backboard;
+ * the floor (FLOOR_BOX) bounds it more tightly from below.
  */
-export const FRONT_FALL_REACH = 0.1;
-
-/**
- * The space a coin's centre may be in, in POSITION_UNIT, each a whole number of units.
- * No coin reaches less than COIN.halfThickness toward a wall, so a tilted coin can sit
- * that close to the side walls or the backboard; a coin hangs over the gutters and the
- * front edge until its centre drops below PLAYFIELD.fallY, when the table removes it,
- * and over the open front no further than a coin's radius before it does, unless it is
- * below the pusher's top and so flying off the front, out to FRONT_FALL_REACH. The
- * cabinet's colliders (cabinetBoxes) bound it more tightly.
- */
-const LIMIT_X = Math.round((TABLE_INNER_HALF_WIDTH - COIN.halfThickness) / POSITION_UNIT);
-const LIMIT_Z_MIN = Math.round((BACKBOARD.frontZ + COIN.halfThickness) / POSITION_UNIT);
-const LIMIT_Z_MAX = Math.round((PLAYFIELD.fieldFrontZ + COIN.radius) / POSITION_UNIT);
-const LIMIT_Z_FALLING = Math.round((PLAYFIELD.fieldFrontZ + FRONT_FALL_REACH) / POSITION_UNIT);
-const LIMIT_Y_MIN = Math.round(PLAYFIELD.fallY / POSITION_UNIT);
+const LIMIT_X = Math.round((PLAYFIELD.fieldHalfWidth - COIN.radius) / POSITION_UNIT);
+const LIMIT_Z_MIN = Math.round((BACKBOARD.frontZ + COIN.radius) / POSITION_UNIT);
+const LIMIT_Z_MAX = Math.round(PLAYFIELD.fieldFrontZ / POSITION_UNIT);
+const LIMIT_Y_MIN = Math.round(-COIN.halfThickness / POSITION_UNIT);
 const LIMIT_Y_MAX = Math.round(PLAYFIELD.wallHeight / POSITION_UNIT);
-const FALLING_Y_MAX = Math.round(PUSHER.height / POSITION_UNIT);
-const FLOOR_HALF_X = Math.round(PLAYFIELD.fieldHalfWidth / POSITION_UNIT);
-const FLOOR_FRONT_Z = Math.round(PLAYFIELD.fieldFrontZ / POSITION_UNIT);
 const REST_STATES: readonly string[] = ['awake', 'asleep', 'frozen'];
 const OVERLAP_CELL = 2 * COIN.radius;
 
-/** The pusher block at `tickInCycle` of the default motion, in metres. */
-export function pusherBox(tickInCycle: number): Box {
-  assertTickInCycle(tickInCycle);
-  const { stroke, periodTicks, pushFraction } = DEFAULT_PUSHER_MOTION;
+/** The pusher block at `tickInCycle` of `motion`, in metres. */
+export function pusherBox(tickInCycle: number, motion: PusherMotion = DEFAULT_PUSHER_MOTION): Box {
+  assertTickInCycle(tickInCycle, motion);
+  const { stroke, periodTicks, pushFraction } = motion;
   const offset = pusherExtension(tickInCycle / periodTicks, pushFraction) * stroke;
   return {
     x: 0,
@@ -105,56 +93,21 @@ export function pusherBox(tickInCycle: number): Box {
   };
 }
 
-/** The lower-tier floor, side walls and backboard as PusherTable builds them, in metres. */
-function cabinetBoxes(): Box[] {
-  const { fieldHalfWidth, fieldFrontZ, floorThickness, wallThickness, wallHeight } = PLAYFIELD;
+/** The lower-tier floor as PusherTable builds it, in metres. */
+function floorBox(): Box {
+  const { fieldHalfWidth, fieldFrontZ, floorThickness } = PLAYFIELD;
   const backZ = PUSHER.frontZ - PUSHER.depth;
-  const wallBottom = -floorThickness;
-  const wallY = (wallHeight + wallBottom) / 2;
-  const wallHy = (wallHeight - wallBottom) / 2;
-  const boardBottom = PUSHER.height - BACKBOARD.embed;
-  const boxes: Box[] = [
-    {
-      x: 0,
-      y: -floorThickness / 2,
-      z: (fieldFrontZ + backZ) / 2,
-      hx: fieldHalfWidth,
-      hy: floorThickness / 2,
-      hz: (fieldFrontZ - backZ) / 2,
-    },
-    {
-      x: 0,
-      y: (wallHeight + boardBottom) / 2,
-      z: BACKBOARD.frontZ - wallThickness / 2,
-      hx: fieldHalfWidth,
-      hy: (wallHeight - boardBottom) / 2,
-      hz: wallThickness / 2,
-    },
-  ];
-  for (const side of [-1, 1]) {
-    boxes.push(
-      {
-        x: side * (fieldHalfWidth + wallThickness / 2),
-        y: wallY,
-        z: (GUTTER_START_Z + backZ) / 2,
-        hx: wallThickness / 2,
-        hy: wallHy,
-        hz: (GUTTER_START_Z - backZ) / 2,
-      },
-      {
-        x: side * (TABLE_INNER_HALF_WIDTH + wallThickness / 2),
-        y: wallY,
-        z: (fieldFrontZ + GUTTER_START_Z) / 2,
-        hx: wallThickness / 2,
-        hy: wallHy,
-        hz: (fieldFrontZ - GUTTER_START_Z) / 2,
-      },
-    );
-  }
-  return boxes;
+  return {
+    x: 0,
+    y: -floorThickness / 2,
+    z: (fieldFrontZ + backZ) / 2,
+    hx: fieldHalfWidth,
+    hy: floorThickness / 2,
+    hz: (fieldFrontZ - backZ) / 2,
+  };
 }
 
-const CABINET = cabinetBoxes();
+const FLOOR_BOX = floorBox();
 const COIN_REACH = discReach(COIN_SHAPE);
 
 /** Whether the coin's bounding sphere reaches the box at all, before the exact depth. */
@@ -166,16 +119,18 @@ function nearBox(disc: Disc, box: Box): boolean {
   );
 }
 
-function inCabinetWalls(disc: Disc): boolean {
-  return CABINET.some(
-    (box) => nearBox(disc, box) && discBoxDepth(COIN_SHAPE, disc, box) > POSE_OVERLAP_TOLERANCE,
+function inFloor(disc: Disc): boolean {
+  return (
+    nearBox(disc, FLOOR_BOX) && discBoxDepth(COIN_SHAPE, disc, FLOOR_BOX) > POSE_OVERLAP_TOLERANCE
   );
 }
 
-function assertTickInCycle(tickInCycle: number): void {
-  if (!Number.isInteger(tickInCycle) || tickInCycle < 0 || tickInCycle >= PUSHER.periodTicks) {
+function assertTickInCycle(tickInCycle: number, motion: PusherMotion): void {
+  assertValidPusherMotion(motion);
+  const { periodTicks } = motion;
+  if (!Number.isInteger(tickInCycle) || tickInCycle < 0 || tickInCycle >= periodTicks) {
     throw new RangeError(
-      `pusherTickInCycle must be an integer in [0, ${PUSHER.periodTicks}), got ${tickInCycle}`,
+      `pusherTickInCycle must be an integer in [0, ${periodTicks}), got ${tickInCycle}`,
     );
   }
 }
@@ -229,12 +184,17 @@ function isCanonicalRotation(q: CoinPose['q']): boolean {
 
 /**
  * Whether one coin's pose is one the sim could have left, with the pusher at
- * `pusherTickInCycle` of the default motion: reasons in the order they are tested.
- * Overlap with other coins needs the whole snapshot; see validateSnapshot. Throws for a
- * tick outside the cycle, which is the caller's fault rather than the pose's.
+ * `pusherTickInCycle` of `motion` (the one the player's upgrades give): reasons in the
+ * order they are tested. Overlap with other coins needs the whole snapshot; see
+ * validateSnapshot. Throws for a bad motion or a tick outside its cycle, which are the
+ * caller's fault rather than the pose's.
  */
-export function checkPose(pose: CoinPose, pusherTickInCycle: number): PoseVerdict {
-  const box = pusherBox(pusherTickInCycle);
+export function checkPose(
+  pose: CoinPose,
+  pusherTickInCycle: number,
+  motion: PusherMotion = DEFAULT_PUSHER_MOTION,
+): PoseVerdict {
+  const box = pusherBox(pusherTickInCycle, motion);
   if (!isWellFormed(pose)) {
     return { ok: false, reason: 'non_finite' };
   }
@@ -250,13 +210,12 @@ export function checkPose(pose: CoinPose, pusherTickInCycle: number): PoseVerdic
     y < LIMIT_Y_MIN ||
     y > LIMIT_Y_MAX ||
     z < LIMIT_Z_MIN ||
-    z > (y < FALLING_Y_MAX ? LIMIT_Z_FALLING : LIMIT_Z_MAX) ||
-    (y < 0 && Math.abs(x) < FLOOR_HALF_X && z < FLOOR_FRONT_Z)
+    z > LIMIT_Z_MAX
   ) {
     return { ok: false, reason: 'out_of_bounds' };
   }
   const disc = poseDisc(pose);
-  if (inCabinetWalls(disc)) {
+  if (inFloor(disc)) {
     return { ok: false, reason: 'out_of_bounds' };
   }
   if (discBoxDepth(COIN_SHAPE, disc, box) > POSE_OVERLAP_TOLERANCE) {
@@ -269,17 +228,20 @@ export function checkPose(pose: CoinPose, pusherTickInCycle: number): PoseVerdic
  * Splits a snapshot into the poses a restore can take and the ones it must drop, with
  * why. Of two coins deeper in each other than COIN_OVERLAP_TOLERANCE the one with the
  * higher id is dropped; a coin is only compared with the coins kept before it. Throws
- * for a wrong version, a tick outside the cycle or a repeated id: those are not one
- * coin's fault.
+ * for a wrong version, a bad motion, a tick outside its cycle or a repeated id: those
+ * are not one coin's fault.
  */
-export function validateSnapshot(snapshot: SimTableSnapshot): SnapshotVerdict {
+export function validateSnapshot(
+  snapshot: SimTableSnapshot,
+  motion: PusherMotion = DEFAULT_PUSHER_MOTION,
+): SnapshotVerdict {
   const version: unknown = snapshot.version;
   if (version !== SIM_SNAPSHOT_VERSION) {
     throw new RangeError(
       `validateSnapshot: version must be ${SIM_SNAPSHOT_VERSION}, got ${String(version)}`,
     );
   }
-  assertTickInCycle(snapshot.pusherTickInCycle);
+  assertTickInCycle(snapshot.pusherTickInCycle, motion);
   const coins: readonly unknown[] = snapshot.coins;
   const seen = new Set<unknown>();
   for (const pose of coins) {
@@ -303,7 +265,7 @@ export function validateSnapshot(snapshot: SimTableSnapshot): SnapshotVerdict {
       dropped.push({ id: isInt(id) ? id : Number.NaN, reason: 'non_finite' });
       continue;
     }
-    const verdict = checkPose(pose, snapshot.pusherTickInCycle);
+    const verdict = checkPose(pose, snapshot.pusherTickInCycle, motion);
     if (!verdict.ok) {
       dropped.push({ id: pose.id, reason: verdict.reason });
       continue;
