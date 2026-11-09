@@ -203,7 +203,8 @@ async function reachCoinValue(session: Session, level: number): Promise<void> {
   await buyNext(session, 'coinValue', level - 1);
 }
 
-describe('coinValue pays its fraction through the mint carry', () => {
+// Six fresh sessions, each buying up to its level and dropping through the worker: over 3.5 s on CI.
+describe('coinValue pays its fraction through the mint carry', { timeout: 20_000 }, () => {
   it('credits 5, 6, 7, 8, 9, 10 over five copper drops and falls at levels 0..5', async () => {
     const totals: number[] = [];
     for (let level = 0; level <= 5; level++) {
@@ -302,27 +303,23 @@ describe('coinValue pays its fraction through the mint carry', () => {
   });
 });
 
-describe('crateChance upgrade on the server', () => {
-  it(
-    'spawns the FTUE crate and then one every dropsPerCrate drops at level 0',
-    // Seeing a second dropsPerCrate interval takes 80 real signed drops through the worker.
-    { timeout: 20_000 },
-    async () => {
-      const session = await newSession();
-      await fund(session, 200);
-      const responses = await dropFrom(
-        session,
-        (await state(session)).table.buffer,
-        2 * crateSpawn.dropsPerCrate,
-      );
-      expect(crateDrops(responses)).toEqual([
-        crateSpawn.ftueScriptedDrop,
-        crateSpawn.dropsPerCrate,
-        2 * crateSpawn.dropsPerCrate,
-      ]);
-      await expectConserved(session);
-    },
-  );
+// Seeing crate spacing takes up to 80 real signed drops through the worker: about 4 s on CI.
+describe('crateChance upgrade on the server', { timeout: 20_000 }, () => {
+  it('spawns the FTUE crate and then one every dropsPerCrate drops at level 0', async () => {
+    const session = await newSession();
+    await fund(session, 200);
+    const responses = await dropFrom(
+      session,
+      (await state(session)).table.buffer,
+      2 * crateSpawn.dropsPerCrate,
+    );
+    expect(crateDrops(responses)).toEqual([
+      crateSpawn.ftueScriptedDrop,
+      crateSpawn.dropsPerCrate,
+      2 * crateSpawn.dropsPerCrate,
+    ]);
+    await expectConserved(session);
+  });
 
   it('spaces crates closer from the next drop once the max level is bought', async () => {
     const session = await newSession();
