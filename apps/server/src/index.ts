@@ -6,7 +6,8 @@ import { corsMiddleware } from './http/cors.ts';
 import { ApiFailure } from './http/errors.ts';
 import { originGuardMiddleware, requestIdMiddleware } from './http/signed.ts';
 import { authRoutes } from './routes/auth.ts';
-import { tableRoutes } from './routes/table.ts';
+import { playerStub, tableRoutes } from './routes/table.ts';
+import { createUpgradeRoutes } from './routes/upgrades.ts';
 
 export type { Env } from './env.ts';
 export { PlayerDO } from './do/PlayerDO.ts';
@@ -19,6 +20,7 @@ app.get('/health', (c) => c.json({ status: 'ok', service: 'coinposh-server' }));
 
 app.route('/', authRoutes);
 app.route('/', tableRoutes);
+app.route('/', createUpgradeRoutes(playerStub));
 
 app.notFound((c) => c.json(errorEnvelope('not_found', 'No such route.'), 404));
 

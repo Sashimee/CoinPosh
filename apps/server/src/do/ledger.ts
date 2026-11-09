@@ -22,6 +22,7 @@ export const TX_KINDS = [
   'claim.fusion',
   'claim.crate',
   'refund.table',
+  'upgrade.buy',
 ] as const;
 export type TxKind = (typeof TX_KINDS)[number];
 

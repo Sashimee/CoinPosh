@@ -1,3 +1,5 @@
+import { UPGRADE_LEVELS_SQL } from '../routes/upgrades.ts';
+
 /** PlayerDO SQLite migrations, applied in order; `schema_version` records how many ran. */
 const MIGRATIONS: readonly string[] = [
   `
@@ -84,6 +86,7 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX coins_state ON coins (state);
   CREATE INDEX ledger_ref ON ledger (ref);
   `,
+  UPGRADE_LEVELS_SQL,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {

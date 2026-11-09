@@ -26,6 +26,8 @@ import {
   type StateResponse,
   type TableCrate,
   type TableSnapshot,
+  type UpgradeBuyRequest,
+  type UpgradeBuyResponse,
 } from '@coinposh/shared';
 import { DurableObject } from 'cloudflare:workers';
 import { randomBase62, randomBytes, sha256Hex } from '../crypto.ts';
@@ -48,6 +50,13 @@ import {
   readWallet,
   type CommitContext,
 } from './ledger.ts';
+import {
+  quoteUpgrade,
+  readUpgradeLevels,
+  recordUpgrade,
+  UPGRADE_TX_KIND,
+  type UpgradeHost,
+} from '../routes/upgrades.ts';
 import { migrate } from './schema.ts';
 
 /**
@@ -110,7 +119,7 @@ function startingCoins(): number {
   return upgradeStat(line, 0);
 }
 
-export class PlayerDO extends DurableObject<Env> {
+export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
 
@@ -186,9 +195,12 @@ export class PlayerDO extends DurableObject<Env> {
       socket,
       charmId: null,
     }));
-    const upgrades = Object.fromEntries(
-      upgradeLines.filter((line) => line.scope === 'venue').map((line) => [line.id, 0]),
-    );
+    const upgrades = {
+      ...Object.fromEntries(
+        upgradeLines.filter((line) => line.scope === 'venue').map((line) => [line.id, 0]),
+      ),
+      ...readUpgradeLevels(this.sql, HOME_VENUE.id),
+    };
     const state = {
       serverTime: now,
       player: {
@@ -222,6 +234,29 @@ export class PlayerDO extends DurableObject<Env> {
         this.applyClaim(claim, command.idempotencyKey, now),
       );
       return { results, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /** Prices the next level from economy config; the wallet pays the house for it. */
+  async buyUpgrade(command: Command<UpgradeBuyRequest>): Promise<DoResult<UpgradeBuyResponse>> {
+    return this.mutate(command, (now) => {
+      const quote = quoteUpgrade(
+        readUpgradeLevels(this.sql, HOME_VENUE.id),
+        readWallet(this.sql),
+        command.body,
+      );
+      recordUpgrade(this.sql, quote);
+      commit(
+        this.sql,
+        new LedgerTx(UPGRADE_TX_KIND).move('wallet', 'house', quote.currency, quote.cost, null),
+        { at: now, idempotencyKey: command.idempotencyKey },
+      );
+      return {
+        venueId: quote.venueId,
+        lineId: command.body.lineId,
+        level: quote.level,
+        wallet: readWallet(this.sql),
+      };
     });
   }
 
