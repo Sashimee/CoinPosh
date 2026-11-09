@@ -1,4 +1,5 @@
 import type { MintedCoin, StateResponse } from '@coinposh/shared';
+import type { Object3D } from 'three/webgpu';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import type * as CratesApi from './game/crates/index.ts';
@@ -12,7 +13,6 @@ import type {
   SimBridgeStats,
   SimEventBatch,
 } from './game/simWorker/index.ts';
-import { holdBackVenue } from './heldVenue.ts';
 import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
 import {
   createNet,
@@ -168,7 +168,6 @@ if (!canvas) {
 const uiRoot = document.createElement('div');
 document.body.append(uiRoot);
 const ui = mountUi(uiRoot);
-markBoot('ui');
 
 let audio: AudioEngine | null = null;
 
@@ -233,7 +232,6 @@ async function bootNet(app: UiApp): Promise<Net> {
   teardown.push(() => {
     net.table.close();
   });
-  markBoot('net');
   if (net.mode.kind !== 'demo') return net;
   let removeBanner = showDemoBanner(app);
   const stopRelabel = app.i18n.onLanguageChanged(() => {
@@ -298,7 +296,6 @@ interface NetBoot {
  */
 async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   const state = await loadState(net, app);
-  markBoot('state');
   const vault = trackVault(app, net.table, state);
   net.table.hydrate(state);
   app.setUpgradeLevels(state.venue.upgrades);
@@ -567,6 +564,15 @@ async function bootScene(
       },
     );
     pending.push(simStarted);
+    // A failed start is already logged and kept in `bridge.failure`; the mark only times success.
+    const simReady = simStarted
+      .then((early) => early.bridge.ready)
+      .then(
+        () => {
+          markBoot('sim-ready');
+        },
+        () => undefined,
+      );
     const [stageModule, venueModule, simModule, gameSystems, effects, crates] = await Promise.all([
       import('./stage.ts'),
       import('./scene/venues/riviera/index.ts'),
@@ -583,10 +589,9 @@ async function bootScene(
     // On a software GPU the stage's first frames hold the main thread for seconds, and a worker's
     // first messages wait for the main thread, so Rapier gets a bounded head start before them.
     await Promise.race([
-      simStarted.then((early) => early.bridge.ready).catch(() => undefined),
+      simReady,
       new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
     ]);
-    markBoot('sim-head-start');
     const stageBuilt = stageModule
       .createStage(target, {
         look: riviera.RIVIERA_RENDER_LOOK,
@@ -634,7 +639,6 @@ async function bootScene(
   // The renderer checks its clock against the first frame's timestamp, so the effects' first,
   // slowest update must not run inside that frame.
   await frameDrawn(stage);
-  markBoot('frame');
   const vfx = attachVfx(stage, vfxModule);
   const boot = await hydrated;
   const simBacklog = takeEarlyEvents();
@@ -652,12 +656,6 @@ async function bootScene(
   attachTable(stage, venue, bridge).use(systems);
   probe.playable = true;
   markBoot('playable');
-  measureBoot('total', 'ui', 'playable');
-  measureBoot('modules', 'ui', 'modules');
-  measureBoot('sim-head-start', 'modules', 'sim-head-start');
-  measureBoot('stage', 'sim-head-start', 'stage');
-  measureBoot('venue', 'stage', 'venue');
-  measureBoot('reveal', 'venue', 'playable');
 }
 
 /** The opening heap the server minted onto the table, in every net mode. */
@@ -939,14 +937,6 @@ function startSim(simModule: typeof SimWorkerModule, heap: readonly MintedCoin[]
   });
   probe.bridge = bridge;
   markBoot('sim-start');
-  // A failed start is already logged and kept in `bridge.failure`; the mark only times success.
-  bridge.ready.then(
-    () => {
-      markBoot('sim-ready');
-      measureBoot('sim', 'sim-start', 'sim-ready');
-    },
-    () => undefined,
-  );
   const stopCounting = bridge.onEvents(({ falls, fusions }) => {
     probe.counts.simFalls += falls.length;
     probe.counts.simFusions += fusions.length;
@@ -1015,7 +1005,34 @@ function markBoot(step: string): void {
   performance.mark(`coinposh:boot:${step}`);
 }
 
-/** Spans the e2e boot budget reads back, named `coinposh:boot:span:<name>`. */
-function measureBoot(name: string, from: string, to: string): void {
-  performance.measure(`coinposh:boot:span:${name}`, `coinposh:boot:${from}`, `coinposh:boot:${to}`);
+/**
+ * Keeps the venue's meshes out of the frames drawn while play is still being set up, so their
+ * shaders are linked once, in the first frame after everything that adds a light has run. The
+ * lights keep their layers, so those frames already light the scene as it will be drawn.
+ * Returns the function that shows the venue again.
+ *
+ * Only what the hold itself changed is undone: layers enabled on a held object during the hold
+ * are kept, an object whose layers were replaced during the hold is left as it was set, and
+ * objects added during the hold were never held.
+ */
+function holdBackVenue(root: Object3D): () => void {
+  // A layer no camera sees.
+  const heldLayer = 31;
+  const heldBit = 1 << heldLayer;
+  const held: { readonly object: Object3D; readonly mask: number }[] = [];
+  root.traverse((object) => {
+    if ((object as { readonly isLight?: boolean }).isLight === true) return;
+    held.push({ object, mask: object.layers.mask });
+    object.layers.set(heldLayer);
+  });
+  let revealed = false;
+  return () => {
+    if (revealed) return;
+    revealed = true;
+    for (const { object, mask } of held) {
+      const now = object.layers.mask;
+      if ((now & heldBit) === 0) continue;
+      object.layers.mask = ((now & ~heldBit) | mask) >>> 0;
+    }
+  };
 }
