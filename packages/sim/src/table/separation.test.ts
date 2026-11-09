@@ -102,7 +102,12 @@ describe('CoinSeparator', () => {
     const b = rig.coin({ x: DIAMETER - 0.02, y: 1, z: 0 });
     a.setLinvel({ x: 1, y: 0, z: 0 }, true);
     b.setLinvel({ x: -1, y: 0, z: 0 }, true);
-    expect(rig.separator.separate([a, b])).toEqual({ moved: 2, passes: 2, converged: true });
+    expect(rig.separator.separate([a, b])).toEqual({
+      moved: 2,
+      passes: 2,
+      converged: true,
+      loosened: [],
+    });
 
     expect(flatDepth(a, b)).toBeCloseTo(SLOP / 2, 4);
     expect(a.translation().x).toBeCloseTo(-(0.02 - SLOP / 2) / 2, 5);
@@ -118,7 +123,12 @@ describe('CoinSeparator', () => {
     const a = rig.coin({ x: 0, y: 1, z: 0 });
     const b = rig.coin({ x: DIAMETER - SLOP / 2, y: 1, z: 0 });
     const before = poses([a, b]);
-    expect(rig.separator.separate([a, b])).toEqual({ moved: 0, passes: 1, converged: true });
+    expect(rig.separator.separate([a, b])).toEqual({
+      moved: 0,
+      passes: 1,
+      converged: true,
+      loosened: [],
+    });
     expect(poses([a, b])).toEqual(before);
   });
 
@@ -152,7 +162,7 @@ describe('CoinSeparator', () => {
       rig.coin({ x: i * (DIAMETER - 0.015), y: 1, z: 0 }),
     );
     const result = rig.separator.separate(row);
-    expect(result).toEqual({ moved: 6, passes: 2, converged: false });
+    expect(result).toEqual({ moved: 6, passes: 2, converged: false, loosened: [] });
     const deepest = Math.max(...row.slice(1).map((coin, i) => flatDepth(entryAt(row, i), coin)));
     expect(deepest).toBeGreaterThan(SLOP);
   });
@@ -166,7 +176,12 @@ describe('CoinSeparator', () => {
       coin.sleep();
     }
     const before = poses([a, b, sunk]);
-    expect(rig.separator.separate([a, b, sunk])).toEqual({ moved: 0, passes: 1, converged: true });
+    expect(rig.separator.separate([a, b, sunk])).toEqual({
+      moved: 0,
+      passes: 1,
+      converged: true,
+      loosened: [],
+    });
     expect(poses([a, b, sunk])).toEqual(before);
 
     b.wakeUp();
