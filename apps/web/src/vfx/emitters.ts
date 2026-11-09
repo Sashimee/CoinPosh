@@ -331,7 +331,7 @@ export function cascadeFizz(ctx: EmitContext, at: Vec3, tier: CascadeTier, sprea
   const level = CASCADE_TIERS.indexOf(tier);
   if (level < 0) throw new RangeError(`Unknown cascade tier "${tier}"`);
   const colors = CASCADE_COLORS[tier].map(toLinear);
-  const count = scaledCount(ctx, 40 + level * 45);
+  const count = scaledCount(ctx, 26 + level * 38);
   for (let i = 0; i < count; i++) {
     const x = at[0] + range(ctx.rng, -spread, spread);
     const z = at[2] + range(ctx.rng, -spread * 0.6, spread * 0.6);
@@ -341,11 +341,11 @@ export function cascadeFizz(ctx: EmitContext, at: Vec3, tier: CascadeTier, sprea
       velocity: [range(ctx.rng, -0.03, 0.03), rise, range(ctx.rng, -0.03, 0.03)],
       life: range(ctx.rng, 0.7, 1.3),
       color: pick(ctx.rng, colors),
-      intensity: WARM + level * 0.5,
-      size: range(ctx.rng, 0.003, 0.006 + level * 0.001),
+      intensity: WARM * 0.7 + level * 0.45,
+      size: range(ctx.rng, 0.0022, 0.0042 + level * 0.0009),
       drag: 1.4,
       gravity: -0.012,
-      kind: ctx.rng() < 0.25 + level * 0.08 ? ParticleKind.Glint : ParticleKind.Mote,
+      kind: ctx.rng() < 0.1 + level * 0.07 ? ParticleKind.Glint : ParticleKind.Mote,
     });
   }
 }

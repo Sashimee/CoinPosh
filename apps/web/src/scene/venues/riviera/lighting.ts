@@ -47,7 +47,7 @@ export function createRivieraLighting(options: LightingOptions): RivieraLighting
   rimCool.position.set(-sun.x * 4 + 1.5, 1.2, sun.z * 3);
   rimCool.target.position.set(0, 0, 0);
 
-  const fill = new DirectionalLight(new Color(rivieraTones.rimWarm), 2.6);
+  const fill = new DirectionalLight(new Color(rivieraTones.rimWarm), 1.5);
   fill.position.set(0.9, 0.7, 3);
   fill.target.position.set(0, 0, -0.2);
 

@@ -16,7 +16,12 @@ import {
 } from 'three/webgpu';
 import type { EnvironmentOptions } from '../../env/environment.ts';
 import type { LookRenderer } from '../../post/look.ts';
-import { createRivieraVenue, RIVIERA_RENDER_LOOK, type RivieraVenueOptions } from './index.ts';
+import {
+  createRivieraVenue,
+  RIVIERA_RENDER_LOOK,
+  type RivieraVenue,
+  type RivieraVenueOptions,
+} from './index.ts';
 
 function fakeRenderer(): LookRenderer {
   return {
@@ -215,6 +220,26 @@ describe('createRivieraVenue', () => {
       if (!(deck instanceof Mesh)) throw new Error('Riviera venue has no deck-teak mesh');
       expect(venue.quality).toBe(quality);
       expect((deck.material as MeshPhysicalNodeMaterial).clearcoat).toBeCloseTo(clearcoat, 6);
+      venue.dispose();
+    }
+  });
+
+  it('drops the marble clearcoat and the felt sheen on the low tier', async () => {
+    const materialOf = (venue: RivieraVenue, name: string): MeshPhysicalNodeMaterial => {
+      const mesh = venue.root.getObjectByName(name);
+      if (!(mesh instanceof Mesh)) throw new Error(`Riviera venue has no ${name} mesh`);
+      return mesh.material as MeshPhysicalNodeMaterial;
+    };
+    for (const [quality, clearcoat, sheen] of [
+      ['low', 0, 0],
+      ['high', 0.5, 0.35],
+    ] as const) {
+      const { venue } = await build({ quality });
+      expect(materialOf(venue, 'table-marble').clearcoat).toBeCloseTo(clearcoat, 6);
+      expect(materialOf(venue, 'pusher-marble').clearcoat).toBeCloseTo(clearcoat, 6);
+      const felt = materialOf(venue, 'table-floor');
+      expect(felt.sheen).toBeCloseTo(sheen, 6);
+      expect(felt.sheenNode === null).toBe(quality === 'low');
       venue.dispose();
     }
   });
