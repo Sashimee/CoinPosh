@@ -17,6 +17,13 @@ const STROKES = 10;
 const SECONDS = (STROKES * PUSHER.periodTicks) / TICK_RATE_HZ;
 /** Strokes the opening pour takes to settle: it spills its last coins in the sixth. */
 const SETTLED_STROKES = 6;
+/**
+ * The most of the pour's coins that may go over the front lip, as a share of its drops.
+ * The pour builds the opening heap, so nearly all of it must stay on the table; since
+ * the rest cascade (COIN_REST) a drop's push carries through the pile to the lip, and
+ * 5 of the 160 go over while it settles.
+ */
+const POUR_SPILL_SHARE = 1 / 32;
 
 const live: World[] = [];
 
@@ -105,11 +112,11 @@ describe('the Demo opening heap with no drops comes to rest on the pusher', () =
     );
   });
 
-  it('drops at most five coins over the front lip, all while the pour settles', async () => {
+  it('drops at most one in 32 of the poured coins over the front lip, all while the pour settles', async () => {
     const { frontFallTicks } = await referencePour();
-    // The pour is 160 drops, and since the rest cascade (COIN_REST) a drop's push
-    // carries through the pile to the lip: 5 go over while it settles, none after.
-    expect(frontFallTicks.length, `at ticks ${frontFallTicks.join(' ')}`).toBeLessThanOrEqual(5);
+    expect(frontFallTicks.length, `at ticks ${frontFallTicks.join(' ')}`).toBeLessThanOrEqual(
+      Math.floor(POUR_COINS * POUR_SPILL_SHARE),
+    );
     for (const tick of frontFallTicks) {
       expect(tick).toBeLessThanOrEqual(SETTLED_STROKES * PUSHER.periodTicks);
     }

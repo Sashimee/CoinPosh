@@ -134,14 +134,23 @@ interface DemoRun {
   readonly frontFallTicks: number[];
   /** Coins that left the pusher top after the settle, by its front or down off it. */
   readonly departures: Departure[];
-  /** Over each second from 60 to 90 s, the coins frozen through all of it. */
+  /** Over each second from the settle on, the coins on the table at its end. */
+  readonly coinsPerSecond: number[];
+  /** Over each second from the settle on, the coins frozen at its start. */
   readonly resting: number[];
-  /** Over each second from 60 to 90 s, the coins awake through all of it. */
+  /** Over each second from the settle on, the coins awake through all of it. */
   readonly awake: number[];
-  readonly coinsAt90s: number;
-  /** The most a coin frozen through a second moved in it, summed tick by tick. */
+  /**
+   * The most a coin frozen at the start of a second, from the settle on, moved in that
+   * second, summed tick by tick whether it stayed frozen or not; along the block on the
+   * pusher top. A coin that left the table in the second counts as moving without bound.
+   */
   readonly restingWorst: Motion;
-  /** Of those, the coins lying half on another (halfOnAnother), and the most one moved. */
+  readonly restingWorstAt: string;
+  /**
+   * Of those coin-seconds, the ones lying half on another (halfOnAnother) at the
+   * second's start, and the most one moved.
+   */
   readonly halfOn: { readonly count: number; readonly worst: Motion };
   /**
    * From 60 to 90 s, for awake coins on the lower tier BEYOND_FACE ahead of the face:
@@ -179,9 +188,12 @@ async function demoRun(
     const awakeFor = new Map<number, number>();
     const looseMm = new Map<number, number>();
     let loose = { ticks: 0, mm: 0 };
-    let coinsAt90s = 0;
+    const coinsPerSecond: number[] = [];
+    let restingWorstAt = 'no coin';
     let last = new Map<number, CoinState>();
-    let path = new Map<number, Motion>();
+    let lastCoins: readonly CoinState[] = [];
+    let watched = new Map<number, Motion>();
+    let halfOnIds = new Set<number>();
     let awakeThrough = new Set<number>();
     let lastFront = sim.pusher.frontZ;
     let dropped = 0;
@@ -227,26 +239,58 @@ async function demoRun(
           scraped.delete(coin.id);
         }
       }
-      if (tick > 60 * TICK_RATE_HZ && tick <= 90 * TICK_RATE_HZ) {
-        const next = new Map<number, Motion>();
-        for (const coin of coins) {
-          const before = last.get(coin.id);
-          const sofar = path.get(coin.id);
-          if (before?.sleeping && coin.sleeping && (sofar || tick % TICK_RATE_HZ === 1)) {
-            next.set(coin.id, {
-              mm: (sofar?.mm ?? 0) + shift(before, coin, front - lastFront),
-              deg: (sofar?.deg ?? 0) + turn(before.rotation, coin.rotation),
-            });
+      if (tick > SETTLE_TICKS) {
+        const now = new Map(coins.map((coin) => [coin.id, coin]));
+        const secondStarts = (tick - SETTLE_TICKS) % TICK_RATE_HZ === 1;
+        if (secondStarts) {
+          watched = new Map();
+          for (const coin of lastCoins) {
+            if (coin.sleeping) {
+              watched.set(coin.id, { mm: 0, deg: 0 });
+            }
           }
+          halfOnIds = new Set(
+            lastCoins
+              .filter((coin) => coin.sleeping && halfOnAnother(coin, lastCoins))
+              .map((coin) => coin.id),
+          );
         }
-        path = next;
+        for (const [id, sofar] of watched) {
+          const before = last.get(id);
+          const coin = now.get(id);
+          watched.set(
+            id,
+            before && coin
+              ? {
+                  mm: sofar.mm + shift(before, coin, front - lastFront),
+                  deg: sofar.deg + turn(before.rotation, coin.rotation),
+                }
+              : { mm: Infinity, deg: Infinity },
+          );
+        }
         const stillAwake = new Set<number>();
         for (const coin of coins) {
-          if (!coin.sleeping && (tick % TICK_RATE_HZ === 1 || awakeThrough.has(coin.id))) {
+          if (!coin.sleeping && (secondStarts || awakeThrough.has(coin.id))) {
             stillAwake.add(coin.id);
           }
         }
         awakeThrough = stillAwake;
+        if (tick % TICK_RATE_HZ === 0) {
+          resting.push(watched.size);
+          awake.push(awakeThrough.size);
+          coinsPerSecond.push(coins.length);
+          for (const [id, motion] of watched) {
+            if (motion.mm > restingWorst.mm || motion.deg > restingWorst.deg) {
+              restingWorstAt = `coin ${id} in the second ending at tick ${tick}`;
+            }
+            restingWorst = worse(restingWorst, motion);
+            if (halfOnIds.has(id)) {
+              halfOn = { count: halfOn.count + 1, worst: worse(halfOn.worst, motion) };
+            }
+          }
+        }
+      }
+      if (tick > 60 * TICK_RATE_HZ && tick <= 90 * TICK_RATE_HZ) {
         for (const coin of coins) {
           const before = last.get(coin.id);
           if (!before || high(coin) || coin.sleeping || coin.translation.z - front < BEYOND_FACE) {
@@ -261,23 +305,10 @@ async function demoRun(
         if (tick % TICK_RATE_HZ === 0) {
           loose = { ticks: loose.ticks, mm: Math.max(loose.mm, ...looseMm.values()) };
           looseMm.clear();
-          resting.push(path.size);
-          awake.push(awakeThrough.size);
-          for (const coin of coins) {
-            const motion = path.get(coin.id);
-            if (!motion) {
-              continue;
-            }
-            restingWorst = worse(restingWorst, motion);
-            if (halfOnAnother(coin, coins)) {
-              halfOn = { count: halfOn.count + 1, worst: worse(halfOn.worst, motion) };
-            }
-          }
-          path = new Map();
-          coinsAt90s = coins.length;
         }
       }
       last = new Map(coins.map((coin) => [coin.id, coin]));
+      lastCoins = coins;
       lastFront = front;
       if (tick % (60 * TICK_RATE_HZ) === 0) {
         hashes.push(sim.hash());
@@ -288,8 +319,9 @@ async function demoRun(
       departures,
       resting,
       awake,
-      coinsAt90s,
+      coinsPerSecond,
       restingWorst,
+      restingWorstAt,
       halfOn,
       loose,
       hashes,
@@ -339,18 +371,20 @@ for (const seed of SEEDS) {
       'keeps most of the table at rest and almost none awake through a second, and a resting coin, even one half on another, where it lies',
       { timeout: 180_000 },
       async () => {
-        const { resting, awake, coinsAt90s, restingWorst, halfOn } = await idleTable(seed);
-        const perSecond = `resting coins per second: ${resting.join(' ')} of ${coinsAt90s}`;
+        const { resting, awake, coinsPerSecond, restingWorst, restingWorstAt, halfOn } =
+          await idleTable(seed);
+        const seconds = (IDLE_TICKS - SETTLE_TICKS) / TICK_RATE_HZ;
+        const perSecond = `coins frozen at the start of each second: ${resting.join(' ')}`;
         const awakePerSecond = `coins awake through each second: ${awake.join(' ')}`;
-        expect(resting).toHaveLength(30);
-        expect(resting.reduce((a, b) => a + b, 0) / resting.length, perSecond).toBeGreaterThan(
-          coinsAt90s / 2,
-        );
-        expect(Math.min(...resting), perSecond).toBeGreaterThan(coinsAt90s / 4);
-        expect(awake).toHaveLength(30);
-        expect(Math.max(...awake), awakePerSecond).toBeLessThanOrEqual(coinsAt90s / 20);
-        expect(restingWorst.mm).toBeLessThan(0.2);
-        expect(restingWorst.deg).toBeLessThan(1);
+        expect(resting).toHaveLength(seconds);
+        expect(awake).toHaveLength(seconds);
+        resting.forEach((count, i) => {
+          const coins = coinsPerSecond[i] ?? 0;
+          expect(count, perSecond).toBeGreaterThan(coins / 2);
+          expect(awake[i], awakePerSecond).toBeLessThanOrEqual(coins / 20);
+        });
+        expect(restingWorst.mm, restingWorstAt).toBeLessThan(0.2);
+        expect(restingWorst.deg, restingWorstAt).toBeLessThan(1);
         expect(halfOn.count, 'resting coin-seconds half on another coin').toBeGreaterThan(0);
         expect(halfOn.worst.mm).toBeLessThan(0.2);
         expect(halfOn.worst.deg).toBeLessThan(1);

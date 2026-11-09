@@ -18,11 +18,14 @@ import { configureTableWorld } from './tuning.ts';
  * tinybench has stopped the clock, so it is not in the figures; timing it inside moved
  * the 99th by under 0.05 ms. Compare only runs taken back to back on one machine.
  *
- * On 2026-11-09, back to back on one host: 3.11 to 3.13 ms mean and 4.46 to 4.48 ms at
- * the 99th, against 3.57 ms and 5.06 ms for the table before coins could rest (2e31a30).
- * The 99th is over budget. The tail is late-return ticks, where the backboard holds some
- * 180 upper-tier coins awake as the block slides under them (the world step alone 3.1 to
- * 3.5 ms), and separation ticks of 17 to 47 passes (1.2 to 2.8 ms). The coin and
+ * On 2026-11-09, two rounds back to back on one loaded host (load 4 to 6): 3.06 to
+ * 3.10 ms mean and 4.39 to 4.54 ms at the 99th, against 3.55 ms and 4.98 to 5.02 ms for
+ * the table before coins could rest (feat/build-loop). The 99th is over budget. The tail
+ * is late-return ticks, where the backboard holds some 180 to 230 upper-tier coins awake
+ * as the block slides under them (the world step alone 3.1 to 3.5 ms), and separation
+ * ticks of 17 to 47 passes (1.2 to 2.8 ms). Waking only the riders within a coin of the
+ * board, or not cascading the board's push, cut the separation passes but let the pour
+ * spill 12 to 13 coins over the front lip instead of 5. The coin and
  * sleeping counts are printed after the run.
  */
 const TARGET_COINS = 250;
