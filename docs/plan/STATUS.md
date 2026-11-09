@@ -65,6 +65,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-238 | blocked(review: heap still 100 silver, both acceptance bands fail (first upgrade at 6-15 s, minute 2 x0.22-0.54 of minute 1); mixed heap needs OpeningHeapConfig change outside owns; rate-envelope.json edited outside owns) | task/P-238 (0be1e5c, not merged) | Mixed opening heap blocked on the composition type request P-242; follow-ups P-242..P-246; branch kept |
 | P-248 | done | task/P-248 (merge da920d6) | Number pops never paint over open sheets: pops held while a sheet is open, then one tally pop on close (486ff04); pnpm check green after merge |
 | P-247 | done | task/P-247 (merge 849be80) | Side meters collapse to slim edge rails outside the coin floor: meterRail + railLayout with box tests, Cascade expands only while a rank is live, Decorum only once it moves, reduced-motion fade (9b3f7cb); follow-up P-251; pnpm check green after merge |
+| P-253 | done | task/P-253 (merge 44e5e70) | Formal table.bench re-baseline decision recorded in STACK.lock.md: same-host back-to-back rule and 1.3x host factor; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
