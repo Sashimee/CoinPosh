@@ -13,7 +13,7 @@ export const meta = {
 }
 
 const A = args || {}
-const MAX = A.maxTasks || 4
+const MAX = A.maxTasks || 5
 const FIX_ROUNDS = 1
 const GIT_NAME = 'Claude'
 const GIT_EMAIL = 'noreply@anthropic.com'
