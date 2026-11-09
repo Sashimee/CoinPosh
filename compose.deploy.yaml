@@ -1,0 +1,66 @@
+# The Dokploy stack, one per environment: the `dev` branch runs as STACK=coinposh-dev on
+# devcoinposh.bas.lu / api.devcoinposh.bas.lu, `main` as STACK=coinposh-prod on
+# coinposh.bas.lu / api.coinposh.bas.lu. Dokploy clones the repo, builds on the VPS and
+# writes the stack env (STACK, WEB_HOST, API_HOST, VITE_TURNSTILE_SITE_KEY, AUTH_SECRET,
+# TURNSTILE_SECRET_KEY) to .env, which fills the ${...} below.
+#
+# Traefik router names are global to the instance, so every one is prefixed with STACK.
+
+name: ${STACK}
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: web
+      args:
+        VITE_API_URL: https://${API_HOST}
+        VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY}
+    restart: unless-stopped
+    networks: [dokploy-network]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.${STACK}-web-http.rule=Host(`${WEB_HOST}`)
+      - traefik.http.routers.${STACK}-web-http.entrypoints=web
+      - traefik.http.routers.${STACK}-web-http.middlewares=redirect-to-https@file
+      - traefik.http.routers.${STACK}-web-http.service=${STACK}-web
+      - traefik.http.routers.${STACK}-web.rule=Host(`${WEB_HOST}`)
+      - traefik.http.routers.${STACK}-web.entrypoints=websecure
+      - traefik.http.routers.${STACK}-web.tls.certresolver=letsencrypt
+      - traefik.http.routers.${STACK}-web.service=${STACK}-web
+      - traefik.http.services.${STACK}-web.loadbalancer.server.port=80
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: api
+    restart: unless-stopped
+    environment:
+      AUTH_SECRET: ${AUTH_SECRET}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
+    volumes:
+      - data:/data
+    networks: [dokploy-network]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.${STACK}-api-http.rule=Host(`${API_HOST}`)
+      - traefik.http.routers.${STACK}-api-http.entrypoints=web
+      - traefik.http.routers.${STACK}-api-http.middlewares=redirect-to-https@file
+      - traefik.http.routers.${STACK}-api-http.service=${STACK}-api
+      - traefik.http.routers.${STACK}-api.rule=Host(`${API_HOST}`)
+      - traefik.http.routers.${STACK}-api.entrypoints=websecure
+      - traefik.http.routers.${STACK}-api.tls.certresolver=letsencrypt
+      - traefik.http.routers.${STACK}-api.service=${STACK}-api
+      - traefik.http.services.${STACK}-api.loadbalancer.server.port=8787
+
+volumes:
+  # Player ledgers (Durable Objects) and the D1 database; survives redeploys.
+  data:
+
+networks:
+  dokploy-network:
+    external: true

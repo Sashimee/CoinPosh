@@ -22,6 +22,7 @@ export { NET_I18N_KEYS, NET_I18N_SOURCE, type NetI18nKey } from './i18nKeys.ts';
 export { resolveNetMode, currentNetMode, type NetMode } from './env.ts';
 export { ApiRequestError, NetworkError } from './errors.ts';
 export { ContractViolationError } from './request.ts';
+export { openingTableCoins } from './openingTable.ts';
 export type { ApiClient } from './client.ts';
 export type { Session } from './session.ts';
 export type { ServerClock } from './clock.ts';
@@ -51,6 +52,9 @@ export interface Net {
   /** The in-browser server behind Demo Mode; `null` when talking to the real API. */
   readonly mock: MockServer | null;
 }
+
+const LIVE_NUDGES_STAY_LOCAL =
+  'The live server does not serve /v1/table/nudge until the decorum numbers move into packages/economy (#15); the table freezes on local decorum only.';
 
 /**
  * Boots the net layer. With `VITE_API_URL` set it talks to the Workers API and keeps the
@@ -86,6 +90,7 @@ export async function createNet(options: NetOptions): Promise<Net> {
       options.connectivity ?? (typeof window === 'undefined' ? neverOnline : browserConnectivity()),
     scheduler: options.scheduler ?? realScheduler,
     onError: options.onError,
+    localNudges: mode.kind === 'live' ? LIVE_NUDGES_STAY_LOCAL : null,
   });
   return { mode, client, session, table, clock, mock };
 }

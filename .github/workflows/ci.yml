@@ -69,12 +69,11 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Pages output
+      - name: Verify web output
         working-directory: apps/web/dist
         run: |
           test -f index.html || { echo "::error::apps/web/dist/index.html is missing; the Vite build produced no entry page."; exit 1; }
-          test -f 404.html || { echo "::error::apps/web/dist/404.html is missing; deep links would hit the GitHub 404 page. Check apps/web/public/404.html."; exit 1; }
-          grep -q 'src="/CoinPosh/assets/' index.html || { echo "::error::index.html does not load assets from /CoinPosh/; check base in apps/web/vite.config.ts."; exit 1; }
+          grep -q 'src="/assets/' index.html || { echo "::error::index.html does not load assets from /assets/; check base in apps/web/vite.config.ts."; exit 1; }
 
       - name: Summarize run
         if: ${{ !cancelled() }}
@@ -120,12 +119,3 @@ jobs:
           path: .turbo/cache
           key: ${{ steps.turbo-cache.outputs.cache-primary-key }}
 
-      # Deploy web publishes exactly this build once the run is green, instead of rebuilding it.
-      - name: Upload web build for Deploy web
-        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: web-dist
-          path: apps/web/dist
-          if-no-files-found: error
-          retention-days: 3

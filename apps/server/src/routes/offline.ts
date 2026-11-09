@@ -39,7 +39,8 @@ function settledThrough(sql: SqlStorage): number | null {
 }
 
 /**
- * Net coins per hour the wallet gained from play (falls won minus drops paid) during the
+ * Net coins per hour the player gained from play (falls won minus drops paid, counted when the
+ * coin is dropped whether the wallet or a prepaid buffer reservation paid it) during the
  * last stretch of play (`offlineRate.windowMs`), matching the balancing sim's net rate and
  * the Demo mock. Vault payouts, crate loot and allowances are not play, so they never
  * compound into the rate.
@@ -58,7 +59,7 @@ export function measuredActiveRate(sql: SqlStorage): number {
          (SELECT MIN(at) FROM ledger WHERE at >= ? AND kind IN (${PLAY_KIND_PLACEHOLDERS})) AS first,
          (SELECT SUM(delta) FROM ledger
            WHERE at >= ? AND at <= ? AND kind IN (${PLAY_KIND_PLACEHOLDERS})
-             AND account = 'wallet' AND unit = 'coins') AS won`,
+             AND account IN ('wallet', 'buffer') AND unit = 'coins') AS won`,
       windowStart,
       ...PLAY_KINDS,
       windowStart,

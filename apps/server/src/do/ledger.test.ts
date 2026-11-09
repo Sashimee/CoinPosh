@@ -2,7 +2,7 @@ import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { newSession, type Session } from '../test/client.ts';
-import { claims, drop, expectConserved, playerStub, state } from '../test/game.ts';
+import { claims, drop, dropAsClient, expectConserved, playerStub, state } from '../test/game.ts';
 import { ConservationError, LedgerTx } from './ledger.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
@@ -16,8 +16,7 @@ interface LedgerRow {
 }
 
 async function playSomeRounds(session: Session): Promise<void> {
-  const coins = [];
-  for (let i = 0; i < 5; i++) coins.push((await drop(session, { tick: i })).coin);
+  const coins = (await dropAsClient(session, 5, (i) => i)).map((response) => response.coin);
   const [a, b, c, d, e] = coins;
   if (a === undefined || b === undefined || c === undefined || d === undefined || e === undefined) {
     throw new Error('drops failed');
@@ -77,6 +76,7 @@ describe('PlayerDO ledger', () => {
     await playSomeRounds(session);
     await expectConserved(session);
 
+    const { wallet } = await state(session);
     const rows = await doLedger(session);
     const byTx = new Map<string, Map<string, number>>();
     for (const row of rows) {
@@ -88,11 +88,17 @@ describe('PlayerDO ledger', () => {
       for (const sum of units.values()) expect(sum).toBe(0);
     }
     const kinds = new Set(rows.map((row) => row.kind));
-    for (const kind of ['grant.starting', 'drop.mint', 'claim.fusion', 'claim.fall']) {
+    for (const kind of [
+      'grant.starting',
+      'grant.heap',
+      'buffer.prepay',
+      'drop.buffer',
+      'claim.fusion',
+      'claim.fall',
+    ]) {
       expect(kinds).toContain(kind);
     }
 
-    const { wallet } = await state(session);
     const walletSum = rows
       .filter((row) => row.account === 'wallet' && row.unit === 'coins')
       .reduce((sum, row) => sum + row.delta, 0);
@@ -114,8 +120,11 @@ describe('PlayerDO ledger', () => {
   it('flushes every row to D1 once, with the wallet mirror at the same sequence', async () => {
     const session = await newSession();
     await playSomeRounds(session);
+    const { wallet } = await state(session);
     const stub = playerStub(session.tokens.playerId);
-    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    let alarmed = await runDurableObjectAlarm(stub);
+    expect(alarmed).toBe(true);
+    while (alarmed) alarmed = await runDurableObjectAlarm(stub);
 
     const local = await doLedger(session);
     const remote = await env.DB.prepare(
@@ -129,7 +138,7 @@ describe('PlayerDO ledger', () => {
       .bind(session.tokens.playerId)
       .first<{ coins: number; ledger_seq: number }>();
     expect(mirror).toEqual({
-      coins: (await state(session)).wallet.coins,
+      coins: wallet.coins,
       ledger_seq: local.at(-1)?.seq,
     });
 

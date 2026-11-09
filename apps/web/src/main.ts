@@ -3,6 +3,7 @@ import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
+import { mountUpgrades, netUpgradeApi } from './game/upgrades/index.ts';
 import type * as SimWorkerModule from './game/simWorker/index.ts';
 import type {
   OpeningHeap,
@@ -17,6 +18,7 @@ import {
   mountDemoBanner,
   NET_I18N_KEYS,
   NET_I18N_SOURCE,
+  openingTableCoins,
   type DemoBannerColors,
   type Net,
   type NetMode,
@@ -182,7 +184,7 @@ const hydrated = netReady
     return null;
   });
 
-void bootScene(canvas, netReady, hydrated);
+void bootScene(canvas, hydrated);
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
 // unlock the context and the track starts without a render hitch.
@@ -283,22 +285,74 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   const vault = trackVault(app, net.table, state);
   net.table.hydrate(state);
   app.setUpgradeLevels(state.venue.upgrades);
-  const resyncWhenShown = (): void => {
-    if (document.visibilityState !== 'visible') return;
+  const resync = (reason: string): void => {
     net.table.resume().then(
       () => {
         vault.resumed();
       },
       (error: unknown) => {
-        console.error('CoinPosh net: the table did not resync after the tab came back.', error);
+        console.error(`CoinPosh net: the table did not resync after ${reason}.`, error);
       },
     );
+  };
+  mountUpgradePurchases(net, app, state, () => {
+    resync('an upgrade purchase');
+  });
+  const resyncWhenShown = (): void => {
+    if (document.visibilityState !== 'visible') return;
+    resync('the tab came back');
   };
   document.addEventListener('visibilitychange', resyncWhenShown);
   teardown.push(() => {
     document.removeEventListener('visibilitychange', resyncWhenShown);
   });
   return { net, state, vault };
+}
+
+/**
+ * Turns the upgrades panel's confirms into server purchases. The Vault plaque counts the drop
+ * buffer on top of the wallet, so a purchase re-reads the table instead of showing the bare
+ * wallet the purchase returns. Stale levels re-read the state without `hydrate=boot`, which
+ * would refund the coins in play.
+ */
+function mountUpgradePurchases(
+  net: Net,
+  app: UiApp,
+  state: StateResponse,
+  walletChanged: () => void,
+): void {
+  const upgrades = mountUpgrades({
+    ui: {
+      store: app.store,
+      bus: app.bus,
+      i18n: app.i18n,
+      bannerSlot: app.bannerSlot,
+      onUpgradeRequest: (handler) => app.onUpgradeRequest(handler),
+      resolveUpgrade: (levels) => {
+        app.resolveUpgrade(levels);
+      },
+      setWallet: walletChanged,
+    },
+    api: netUpgradeApi(net.client),
+    venueId: state.venue.id,
+    audio: () => audio,
+    refresh: () => {
+      net.client.call('state').then(
+        (fresh) => {
+          app.setUpgradeLevels(fresh.venue.upgrades);
+        },
+        (error: unknown) => {
+          console.error('CoinPosh net: the upgrade levels did not refresh.', error);
+        },
+      );
+    },
+    onError: (error) => {
+      console.error('CoinPosh net: an upgrade purchase failed.', error);
+    },
+  });
+  teardown.push(() => {
+    upgrades.dispose();
+  });
 }
 
 /**
@@ -314,7 +368,7 @@ async function loadState(net: Net, app: UiApp): Promise<StateResponse> {
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await net.client.call('state');
+        return await net.client.call('state', { query: { hydrate: 'boot' } });
       } catch (error) {
         if (stopped.signal.aborted) throw error;
         const delayMs = Math.min(STATE_RETRY.firstDelayMs * 2 ** attempt, STATE_RETRY.maxDelayMs);
@@ -468,13 +522,12 @@ function registerNetStrings(i18n: I18n): void {
 }
 
 /**
- * Play starts once the table is hydrated and the first frame is drawn. In Demo Mode the sim opens
- * on the heap the server minted, so it pays out from the first shove. Until play starts the
+ * Play starts once the table is hydrated and the first frame is drawn. The sim opens on the heap
+ * the server minted, so it pays out from the first shove. Until play starts the
  * bridge draws the coins and a tap on the table answers with the tap cue.
  */
 async function bootScene(
   target: HTMLCanvasElement,
-  netReady: Promise<Net | null>,
   hydrated: Promise<NetBoot | null>,
 ): Promise<void> {
   let stage: Stage;
@@ -498,7 +551,7 @@ async function bootScene(
     systemsModule = gameSystems;
     vfxModule = effects;
     // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
-    const simStarted = openingTable(netReady, hydrated).then((heap) => {
+    const simStarted = openingTable(hydrated).then((heap) => {
       started = startSim(simModule, heap);
       return started;
     });
@@ -556,17 +609,10 @@ async function bootScene(
   probe.playable = true;
 }
 
-/**
- * The coins the server says are already on the table. Demo Mode's server mints the opening heap
- * there; live mode opens on an empty sim table, since nothing seeds the sim from the server's.
- * TODO(lead-architect): lay the live table's coins too once the API hands out a table seed.
- */
-async function openingTable(
-  netReady: Promise<Net | null>,
-  hydrated: Promise<NetBoot | null>,
-): Promise<readonly MintedCoin[]> {
-  if ((await netReady)?.mode.kind !== 'demo') return [];
-  return (await hydrated)?.state.table.coins ?? [];
+/** The opening heap the server minted onto the table, in every net mode. */
+async function openingTable(hydrated: Promise<NetBoot | null>): Promise<readonly MintedCoin[]> {
+  const boot = await hydrated;
+  return boot === null ? [] : openingTableCoins(boot.state);
 }
 
 function openingHeapOf(coins: readonly MintedCoin[]): OpeningHeap | null {

@@ -127,6 +127,15 @@ export function parseBody<S extends z.ZodType>(schema: S, rawBody: string): z.ou
   return parsed.data;
 }
 
+/** Query fields arrive as strings, so the schema sees them exactly as sent. */
+export function parseQuery<S extends z.ZodType>(schema: S, c: AppContext): z.output<S> {
+  const parsed = schema.safeParse(c.req.query());
+  if (!parsed.success) {
+    throw ApiFailure.validation(parsed.error, 'The query string does not match the contract.');
+  }
+  return parsed.data;
+}
+
 export async function verifySigned(
   c: AppContext,
   request: SignedRequest,

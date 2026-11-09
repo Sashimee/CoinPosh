@@ -1,4 +1,4 @@
-import { coinTiers, upgradeLines, upgradeStat } from '@coinposh/economy';
+import { coinTiers, openingHeap, upgradeLines, upgradeStat } from '@coinposh/economy';
 import { endpoints, HEADERS, PlayerIdSchema } from '@coinposh/shared';
 import { env, exports } from 'cloudflare:workers';
 import { sign } from 'hono/jwt';
@@ -15,7 +15,7 @@ import {
   send,
   type Session,
 } from '../test/client.ts';
-import { expectError, state } from '../test/game.ts';
+import { expectError, state, vaultCoins } from '../test/game.ts';
 
 const AUTH_SECRET = authSecret(env.AUTH_SECRET);
 
@@ -37,18 +37,18 @@ function refresh(
 }
 
 describe('POST /v1/auth/guest', () => {
-  it('creates a player whose table is funded only by the starting grant', async () => {
+  it("creates a player funded only by the starting grant, on the house's opening heap", async () => {
     const session = await newSession();
     expect(PlayerIdSchema.safeParse(session.tokens.playerId).success).toBe(true);
     expect(session.tokens.accessTokenTtlMs).toBe(ACCESS_TOKEN_TTL_MS);
     expect(session.tokens.refreshToken).toMatch(/^rt_[A-Za-z0-9_-]{43}$/);
 
     const snapshot = await state(session);
-    expect(snapshot.wallet.coins).toBe(startingCoins());
-    expect(snapshot.table.buffer).toHaveLength(
-      Math.min(PREMINT_BUFFER_TARGET, startingCoins() / coinTiers[0].value),
-    );
-    expect(snapshot.table.coins).toEqual([]);
+    const buffered = Math.min(PREMINT_BUFFER_TARGET, startingCoins() / coinTiers[0].value);
+    expect(snapshot.table.buffer).toHaveLength(buffered);
+    expect(snapshot.wallet.coins).toBe(startingCoins() - buffered * coinTiers[0].value);
+    expect(await vaultCoins(session)).toBe(startingCoins());
+    expect(snapshot.table.coins).toHaveLength(openingHeap.coins);
     expect(snapshot.player.displayName).toMatch(/^[0-9A-Z]{4}$/);
     expect(snapshot.fair.serverSeedHash).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -62,8 +62,8 @@ describe('POST /v1/auth/guest', () => {
     expect(tokens.playerId).toBe(session.tokens.playerId);
     expect(tokens.refreshToken).not.toBe(session.tokens.refreshToken);
 
-    const snapshot = await state({ ...session, tokens });
-    expect(snapshot.wallet.coins).toBe(startingCoins());
+    await state({ ...session, tokens });
+    expect(await vaultCoins(session)).toBe(startingCoins());
   });
 
   it('rejects a replay of a captured, validly signed sign-in request', async () => {

@@ -436,6 +436,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             body: validationErrorEnvelope(params.error, 'Path parameters are invalid.'),
           };
         }
+        if (found.endpoint.query !== undefined) {
+          const [, search = ''] = request.path.split('?');
+          const query = found.endpoint.query.safeParse(
+            Object.fromEntries(new URLSearchParams(search)),
+          );
+          if (!query.success) {
+            return {
+              status: errorStatus('validation_failed'),
+              body: validationErrorEnvelope(query.error, 'Query parameters are invalid.'),
+            };
+          }
+        }
         result = await world.handle(player, found.name, body as never, params?.data as never, at);
         world.touch(player, at);
       }

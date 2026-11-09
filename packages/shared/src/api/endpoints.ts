@@ -1,4 +1,4 @@
-import type { z } from 'zod';
+import { z } from 'zod';
 import {
   GuestAuthRequestSchema,
   GuestAuthResponseSchema,
@@ -71,8 +71,20 @@ export interface Endpoint<
   readonly body: B;
   /** Path parameters (`:name` segments); `null` when the path has none. */
   readonly params: Q;
+  /** Query string fields, each a string on the wire; absent when the endpoint takes none. */
+  readonly query?: z.ZodType;
   readonly response: R;
 }
+
+/**
+ * `hydrate=boot` marks the snapshot a freshly loaded client lays its table from. Its sim can
+ * only lay the opening heap, so the server refunds every other table coin for that one call.
+ * Mid-session snapshots (resync, resume) omit it and leave coins in play alone.
+ */
+export const StateQuerySchema = z.strictObject({
+  hydrate: z.literal('boot').optional(),
+});
+export type StateQuery = z.infer<typeof StateQuerySchema>;
 
 function get<const P extends string, R extends z.ZodType>(
   path: P,
@@ -101,7 +113,7 @@ function post<const P extends string, B extends z.ZodType, R extends z.ZodType>(
 export const endpoints = {
   authGuest: post('/v1/auth/guest', GuestAuthRequestSchema, GuestAuthResponseSchema, 'none'),
   authRefresh: post('/v1/auth/refresh', RefreshRequestSchema, RefreshResponseSchema, 'none'),
-  state: get('/v1/state', StateResponseSchema),
+  state: { ...get('/v1/state', StateResponseSchema), query: StateQuerySchema },
   tableDrop: post('/v1/table/drop', DropRequestSchema, DropResponseSchema),
   tableClaims: post('/v1/table/claims', ClaimsRequestSchema, ClaimsResponseSchema),
   tableNudge: post('/v1/table/nudge', NudgeRequestSchema, NudgeResponseSchema),
@@ -142,6 +154,11 @@ export type EndpointBody<N extends EndpointName> = Output<Endpoints[N]['body']>;
 export type EndpointBodyInput<N extends EndpointName> = Input<Endpoints[N]['body']>;
 export type EndpointParams<N extends EndpointName> = Output<Endpoints[N]['params']>;
 export type EndpointParamsInput<N extends EndpointName> = Input<Endpoints[N]['params']>;
+export type EndpointQueryInput<N extends EndpointName> = Endpoints[N] extends {
+  readonly query: infer S;
+}
+  ? Input<S>
+  : never;
 export type EndpointResponse<N extends EndpointName> = Output<Endpoints[N]['response']>;
 export type EndpointResponseInput<N extends EndpointName> = Input<Endpoints[N]['response']>;
 

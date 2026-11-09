@@ -3,7 +3,9 @@ import { exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { API_ORIGIN, newDevice, send } from '../test/client.ts';
 import { expectError } from '../test/game.ts';
-import { isAllowedOrigin, PRODUCTION_ORIGIN } from './cors.ts';
+import { isAllowedOrigin } from './cors.ts';
+
+const SITE_ORIGIN = 'https://coinposh.bas.lu';
 
 function preflight(origin: string) {
   return exports.default.fetch(
@@ -20,7 +22,8 @@ function preflight(origin: string) {
 
 describe('CORS', () => {
   it.each([
-    PRODUCTION_ORIGIN,
+    SITE_ORIGIN,
+    'https://devcoinposh.bas.lu',
     'http://localhost:5173',
     'http://localhost',
     'http://127.0.0.1:4173',
@@ -38,11 +41,12 @@ describe('CORS', () => {
 
   it.each([
     'https://evil.example',
-    'https://sashimee.github.io.evil.example',
-    'https://evil-sashimee.github.io',
-    'http://sashimee.github.io',
-    'https://sashimee.github.io:8443',
-    'https://other.github.io',
+    'https://coinposh.bas.lu.evil.example',
+    'https://evilcoinposh.bas.lu',
+    'http://coinposh.bas.lu',
+    'https://coinposh.bas.lu:8443',
+    'https://api.coinposh.bas.lu',
+    'https://sashimee.github.io',
     'http://localhost.evil.example',
     'http://localhost:5173.evil.example',
     'http://192.168.1.10:5173',
@@ -71,9 +75,9 @@ describe('CORS', () => {
 
   it('exposes the idempotency and request-ID headers to the allowed origin', async () => {
     const response = await exports.default.fetch(
-      new Request(`${API_ORIGIN}/health`, { headers: { Origin: PRODUCTION_ORIGIN } }),
+      new Request(`${API_ORIGIN}/health`, { headers: { Origin: SITE_ORIGIN } }),
     );
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION_ORIGIN);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(SITE_ORIGIN);
     const exposed = response.headers.get('Access-Control-Expose-Headers') ?? '';
     expect(exposed).toContain('Idempotent-Replayed');
     expect(exposed).toContain('X-Request-Id');

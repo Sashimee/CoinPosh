@@ -1,5 +1,5 @@
 import { HEADERS, type CoinId, type MintedCoin } from '@coinposh/shared';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Connectivity, Scheduler } from './connectivity.ts';
 import { MOCK_RULES } from './mock/rules.ts';
 import type { MockServer } from './mock/server.ts';
@@ -45,7 +45,7 @@ beforeEach(async () => {
   alice = await connectPlayer(server, time);
 });
 
-async function openTable(player: Player = alice) {
+async function openTable(player: Player = alice, localNudges: string | null = null) {
   const outbox = await Outbox.open(player.store, rethrow);
   const sync = new TableSync({
     client: player.client,
@@ -54,6 +54,7 @@ async function openTable(player: Player = alice) {
     scheduler: manualScheduler,
     jitter: () => 0,
     onError: rethrow,
+    localNudges,
   });
   const events: TableEvent[] = [];
   sync.subscribe((event) => events.push(event));
@@ -330,6 +331,42 @@ describe('TableSync offline queue', () => {
     server.setNetwork('up');
     await sync.flush();
     expect(alice.requests.filter((request) => request.path === '/v1/table/nudge')).toHaveLength(1);
+  });
+
+  describe('with nudges kept local', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('accepts the nudge without a request and logs the reason once', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      const { sync, events } = await openTable(alice, 'No nudge endpoint here.');
+      const before = alice.requests.length;
+      time.advance(100);
+      expect(sync.nudge(time.tick(), 'left')).toBe(true);
+      time.advance(100);
+      expect(sync.nudge(time.tick(), 'right')).toBe(true);
+      await sync.flush();
+
+      expect(sync.pending).toBe(0);
+      expect(alice.requests.slice(before)).toEqual([]);
+      expect(events.some((event) => event.type.startsWith('nudge'))).toBe(false);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith(
+        'CoinPosh net: nudges are not sent. No nudge endpoint here.',
+      );
+    });
+
+    it('still refuses a nudge while offline', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      const { sync } = await openTable(alice, 'No nudge endpoint here.');
+      server.setNetwork('down');
+      dropNow(sync);
+      await sync.flush();
+      expect(sync.status).toBe('offline');
+      time.advance(100);
+      expect(sync.nudge(time.tick(), 'left')).toBe(false);
+    });
   });
 
   it('returns null for a drop with a dry buffer while offline', async () => {

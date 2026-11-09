@@ -99,6 +99,40 @@ describe('signRequest', () => {
     ).resolves.toBe(true);
   });
 
+  it('puts the boot flag in the signed query, and nothing for a plain snapshot', async () => {
+    const device = await loadOrCreateDeviceKey(memoryStore());
+    const signed = { idempotencyKey: null, accessToken: 'at_token' };
+    const boot = await signRequest('state', { query: { hydrate: 'boot' } }, signed, device);
+    expect(boot.path).toBe('/v1/state?hydrate=boot');
+    const message = canonicalRequest({
+      method: 'GET',
+      pathWithQuery: '/v1/state?hydrate=boot',
+      idempotencyKey: null,
+      bodySha256: EMPTY_BODY_SHA256,
+    });
+    await expect(
+      crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        await verifyKey(device),
+        fromBase64Url(boot.headers[HEADERS.deviceSignature] ?? ''),
+        utf8Bytes(message),
+      ),
+    ).resolves.toBe(true);
+    expect((await signRequest('state', {}, signed, device)).path).toBe('/v1/state');
+    expect((await signRequest('state', { query: {} }, signed, device)).path).toBe('/v1/state');
+  });
+
+  it('refuses a query outside the contract, or on an endpoint that takes none', async () => {
+    const device = await loadOrCreateDeviceKey(memoryStore());
+    const signed = { idempotencyKey: null, accessToken: 'at' };
+    const forged = { hydrate: 'boot', refund: 'all' } as unknown as { hydrate: 'boot' };
+    await expect(signRequest('state', { query: forged }, signed, device)).rejects.toBeInstanceOf(
+      ContractViolationError,
+    );
+    const stray = { query: { hydrate: 'boot' } } as unknown as Record<string, never>;
+    await expect(signRequest('album', stray, signed, device)).rejects.toThrow(/takes no query/);
+  });
+
   it('refuses to put an out-of-contract body on the wire', async () => {
     const device = await loadOrCreateDeviceKey(memoryStore());
     const smuggled = { x: 0, tick: 1, value: 1_000 } as unknown as { x: number; tick: number };
