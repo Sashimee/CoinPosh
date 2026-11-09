@@ -97,7 +97,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
 | T-10.01 | done | task/T-10.01 (merge 75e63f3) | Account link contracts: packages/shared/src/api/account.ts, accountEndpoints in endpoints.ts, new error codes (e91c834); wiring into `endpoints`, fixtures and Demo mock queued as P-281 for T-10.03; pnpm check green after merge |
-| T-10.02 | blocked(review: commit 68f7c5f appends P-292..P-294 to docs/plan/POLISH.md, outside owns; the integrator queues out-of-scope requests) | task/T-10.02 (68f7c5f, not merged) | Fix: drop the POLISH.md hunk so the diff against task/T-92.02 no longer touches docs/plan/POLISH.md and report the items in the implementer summary; code needs no change; follow-ups P-304..P-306 |
+| T-10.02 | done | task/T-10.02 (merge 695d63b) | Server: verify ID tokens, link, sign in on a new device (19c8550, POLISH.md hunk dropped after review); follow-ups P-304..P-306; P-292..P-294 already queued in POLISH.md; pnpm check green after merge |
 | T-10.03 | todo | | Waits on T-10.01, T-92.05. Net layer + Demo mock for account link |
 | T-10.04 | todo | | Waits on T-10.03. Account UI: link, sign in, progress choice |
 | H-10.01 | todo | | Human step: Google Cloud OAuth web client (origins `https://sashimee.github.io`, `https://devcoinposh.bas.lu`, localhost) → Worker secret `GOOGLE_CLIENT_ID`, repo variable `VITE_GOOGLE_CLIENT_ID` |
