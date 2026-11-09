@@ -91,7 +91,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.05 | todo | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag) |
 | T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
-| T-10.01 | todo | | Ready: no deps. Account link contracts |
+| T-10.01 | done | task/T-10.01 (merge 75e63f3) | Account link contracts: packages/shared/src/api/account.ts, accountEndpoints in endpoints.ts, new error codes (e91c834); wiring into `endpoints`, fixtures and Demo mock queued as P-281 for T-10.03; pnpm check green after merge |
 | T-10.02 | todo | | Waits on T-10.01. Server: verify ID tokens, link, sign in on a new device |
 | T-10.03 | todo | | Waits on T-10.01, T-92.05. Net layer + Demo mock for account link |
 | T-10.04 | todo | | Waits on T-10.03. Account UI: link, sign in, progress choice |
