@@ -1,4 +1,5 @@
 import type { MintedCoin, StateResponse } from '@coinposh/shared';
+import type { Object3D } from 'three/webgpu';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import type * as CratesApi from './game/crates/index.ts';
@@ -54,6 +55,9 @@ const COIN_CAPACITY: Readonly<Record<CoinTierId, number>> = {
  * TODO(lead-architect): seed the sim from the server table session once the API exposes one.
  */
 const TABLE_SEED = 0xc0196051;
+
+/** The longest the stage waits for the sim to be ready, so a slow worker download never blanks the table. */
+const SIM_HEAD_START_MS = 1500;
 
 /** Waits between attempts to load the player's table at boot, doubling up to the ceiling. */
 const STATE_RETRY = { firstDelayMs: 1000, maxDelayMs: 30_000 } as const;
@@ -551,23 +555,43 @@ async function bootScene(
   const pending: Promise<unknown>[] = [];
   const stopEarlyTaps = answerEarlyTaps(target.id);
   try {
+    const simModuleLoaded = import('./game/simWorker/index.ts');
+    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
+    const simStarted = Promise.all([simModuleLoaded, openingTable(hydrated)]).then(
+      ([simModule, heap]) => {
+        started = startSim(simModule, heap);
+        return started;
+      },
+    );
+    pending.push(simStarted);
+    // A failed start is already logged and kept in `bridge.failure`; the mark only times success.
+    const simReady = simStarted
+      .then((early) => early.bridge.ready)
+      .then(
+        () => {
+          markBoot('sim-ready');
+        },
+        () => undefined,
+      );
     const [stageModule, venueModule, simModule, gameSystems, effects, crates] = await Promise.all([
       import('./stage.ts'),
       import('./scene/venues/riviera/index.ts'),
-      import('./game/simWorker/index.ts'),
+      simModuleLoaded,
       import('./game/systems/index.ts'),
       import('./vfx/index.ts'),
       import('./game/crates/index.ts'),
     ]);
+    markBoot('modules');
     riviera = venueModule;
     systemsModule = gameSystems;
     vfxModule = effects;
     cratesApi = crates;
-    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
-    const simStarted = openingTable(hydrated).then((heap) => {
-      started = startSim(simModule, heap);
-      return started;
-    });
+    // On a software GPU the stage's first frames hold the main thread for seconds, and a worker's
+    // first messages wait for the main thread, so Rapier gets a bounded head start before them.
+    await Promise.race([
+      simReady,
+      new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
+    ]);
     const stageBuilt = stageModule
       .createStage(target, {
         look: riviera.RIVIERA_RENDER_LOOK,
@@ -575,10 +599,11 @@ async function bootScene(
         coins: { capacity: COIN_CAPACITY, radius: simModule.SIM_COIN_DIMENSIONS.radius },
       })
       .then((created) => {
+        markBoot('stage');
         built = created;
         return created;
       });
-    pending.push(simStarted, stageBuilt);
+    pending.push(stageBuilt);
     [stage, sim] = await Promise.all([stageBuilt, simStarted]);
     teardownStage(stage);
   } catch (error) {
@@ -603,9 +628,10 @@ async function bootScene(
     console.error('CoinPosh boot failed: the Riviera venue could not load.', error);
     return;
   }
+  markBoot('venue');
+  const revealVenue = holdBackVenue(venue.root);
   attachVenue(stage, venue, riviera.applyCameraPreset);
   stage.castCoinShadowsFrom(venue.lighting.key);
-  const table = attachTable(stage, venue, bridge);
   watchReducedMotion((reduced) => {
     venue.setReducedMotion(reduced);
     stage.coins.setReducedMotion(reduced);
@@ -616,12 +642,20 @@ async function bootScene(
   const vfx = attachVfx(stage, vfxModule);
   const boot = await hydrated;
   const simBacklog = takeEarlyEvents();
-  if (!boot || bridge.failure) return;
+  if (!boot || bridge.failure) {
+    revealVenue();
+    attachTable(stage, venue, bridge);
+    return;
+  }
   stopEarlyTaps();
   const systems = startPlay(systemsModule, stage, bridge, boot, { heap, simBacklog, vfx });
-  table.use(systems);
   mountTableCrates(cratesApi, { stage, venue, bridge, boot, systems, vfx });
+  // Shown only now that crates have added the unbox light: a light added later changes every lit
+  // shader, so a venue drawn before it would have every program linked twice.
+  revealVenue();
+  attachTable(stage, venue, bridge).use(systems);
   probe.playable = true;
+  markBoot('playable');
 }
 
 /** The opening heap the server minted onto the table, in every net mode. */
@@ -902,6 +936,7 @@ function startSim(simModule: typeof SimWorkerModule, heap: readonly MintedCoin[]
     ...(openingHeap ? { openingHeap } : {}),
   });
   probe.bridge = bridge;
+  markBoot('sim-start');
   const stopCounting = bridge.onEvents(({ falls, fusions }) => {
     probe.counts.simFalls += falls.length;
     probe.counts.simFusions += fusions.length;
@@ -964,4 +999,40 @@ function watchReducedMotion(apply: (reduced: boolean) => void): void {
   query.addEventListener('change', (event) => {
     apply(event.matches);
   });
+}
+
+function markBoot(step: string): void {
+  performance.mark(`coinposh:boot:${step}`);
+}
+
+/**
+ * Keeps the venue's meshes out of the frames drawn while play is still being set up, so their
+ * shaders are linked once, in the first frame after everything that adds a light has run. The
+ * lights keep their layers, so those frames already light the scene as it will be drawn.
+ * Returns the function that shows the venue again.
+ *
+ * Only what the hold itself changed is undone: layers enabled on a held object during the hold
+ * are kept, an object whose layers were replaced during the hold is left as it was set, and
+ * objects added during the hold were never held.
+ */
+function holdBackVenue(root: Object3D): () => void {
+  // A layer no camera sees.
+  const heldLayer = 31;
+  const heldBit = 1 << heldLayer;
+  const held: { readonly object: Object3D; readonly mask: number }[] = [];
+  root.traverse((object) => {
+    if ((object as { readonly isLight?: boolean }).isLight === true) return;
+    held.push({ object, mask: object.layers.mask });
+    object.layers.set(heldLayer);
+  });
+  let revealed = false;
+  return () => {
+    if (revealed) return;
+    revealed = true;
+    for (const { object, mask } of held) {
+      const now = object.layers.mask;
+      if ((now & heldBit) === 0) continue;
+      object.layers.mask = ((now & ~heldBit) | mask) >>> 0;
+    }
+  };
 }

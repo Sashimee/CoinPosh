@@ -3,6 +3,7 @@ export { ContactFusion, fusionTicks, type ContactProgress, type FusionRules } fr
 export {
   TableMechanics,
   type FusionEvent,
+  type LaidCoin,
   type MechanicEvent,
   type MechanicsConfig,
   type TowerCaptureEvent,

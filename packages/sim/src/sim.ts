@@ -68,7 +68,8 @@ export type RestoreEntry =
  * coin id i, every coin at rest velocity. Poses must pass validateSnapshot. A heap slot
  * that overlaps a coin before it or the pusher is lifted clear and restores awake; an
  * `asleep` pose restores asleep if something at rest below holds it (PusherTable.restore).
- * Fusion streaks start over. `restore` with every entry `heapSlot` 0..n − 1 lays the
+ * Fusion streaks start over, and every restored coin is settled like the opening heap
+ * (FUSION_TUNING.settledShift). `restore` with every entry `heapSlot` 0..n − 1 lays the
  * same table as `openingHeap: { coins: n }`.
  */
 export interface SimRestore {
@@ -138,8 +139,10 @@ export class Sim {
   }
 
   /**
-   * The most coins `openingHeap` can ask for on a Sim made with `mechanics`. A Sim that
-   * fuses lays a single layer, and a tower keeps its pedestal bare, so both hold fewer.
+   * The most coins `openingHeap` can ask for on a Sim made with `mechanics`. A tower keeps
+   * its pedestal bare, so a Sim with one holds fewer. A Sim that fuses lays the same heap
+   * as one that does not: the heap is settled (FUSION_TUNING.settledShift), so its second
+   * layer does not fuse with the coins it rests on.
    */
   static heapCapacity(mechanics?: MechanicsConfig<string>): number {
     return PusherTable.heapCapacity(heapLayout(mechanics));
@@ -180,9 +183,19 @@ export class Sim {
       this.#mechanics = config
         ? new TableMechanics(rapier, this.#world, this.#table, config)
         : null;
-      this.#lay(entries, config).forEach((id, i) => {
-        this.#register(id, tiers[i] ?? null);
-      });
+      const laid = this.#lay(entries, config);
+      const mechanics = this.#mechanics;
+      if (mechanics) {
+        mechanics.layCoins(
+          laid.map((id, i) => {
+            const tier = tiers[i];
+            if (tier === undefined || tier === null) {
+              throw new Error(`Sim: laid coin ${id} has no tier on a Sim with mechanics`);
+            }
+            return { id, tier };
+          }),
+        );
+      }
     } catch (error) {
       this.#world.free();
       throw error;
@@ -455,5 +468,5 @@ function heapLayout(config: MechanicsConfig<string> | undefined): HeapLayout {
     const { x, z } = config.tower ?? TOWER_TUNING.placement;
     keepClear.push({ x, z, radius: TOWER_TUNING.pedestalRadius });
   }
-  return { keepClear, secondLayer: !config?.fusion };
+  return { keepClear };
 }

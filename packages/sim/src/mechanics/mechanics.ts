@@ -50,17 +50,31 @@ export interface TowerToppleEvent {
 export type MechanicEvent<Tier extends string> =
   FusionEvent<Tier> | TowerCaptureEvent<Tier> | TowerToppleEvent;
 
+/** A coin laid on the table before the first tick, for TableMechanics.layCoins. */
+export interface LaidCoin<Tier extends string> {
+  readonly id: number;
+  readonly tier: Tier;
+}
+
 /**
  * The table's mechanics, run once a tick after the table steps: Contact Fusion, then
  * the Champagne Tower. It keeps each coin's tier (the table knows only bodies), so the
  * caller registers every coin it adds and passes the ids of coins that fell. Events
  * are physical facts for the server to value; the sim does no value math.
+ *
+ * Not every coin may fuse (FUSION_TUNING.spawnGraceTicks, settledShift): a coin added
+ * during play waits out a spawn grace, and a coin laid before the first tick is
+ * settled until its height changes. Both are kept, and hashed, only on a table that fuses.
  */
 export class TableMechanics<Tier extends string> {
   readonly #table: MechanicTable;
   readonly #tiers: readonly Tier[];
   readonly #tierIndex = new Map<Tier, number>();
   readonly #tierOf = new Map<number, number>();
+  /** Coins still in their spawn grace, with the first tick they may fuse on. */
+  readonly #fusesFrom = new Map<number, number>();
+  /** Settled coins, with the height they were laid at. */
+  readonly #laidY = new Map<number, number>();
   readonly #contacts: CoinContactFinder;
   readonly #fusion: ContactFusion | null;
   readonly #tower: ChampagneTower | null;
@@ -95,16 +109,33 @@ export class TableMechanics<Tier extends string> {
     return this.#fusion?.requiredTicks ?? null;
   }
 
-  /** Records the tier of a coin just added to the table. */
+  /** Records the tier of a coin just added to the table; it waits out the spawn grace. */
   registerCoin(id: number, tier: Tier): void {
-    const index = this.#tierIndex.get(tier);
-    if (index === undefined) {
-      throw new RangeError(`TableMechanics.registerCoin: "${tier}" is not in the tier ladder`);
+    this.#setTier(id, tier, 'registerCoin');
+    this.#startGrace(id, this.#lastTick + 1);
+  }
+
+  /**
+   * Records the coins laid on the table before the first step, such as the opening heap.
+   * They are settled: none fuses until its height has changed by FUSION_TUNING.settledShift.
+   */
+  layCoins(coins: Iterable<LaidCoin<Tier>>): void {
+    if (this.#lastTick >= 0) {
+      throw new RangeError(
+        `TableMechanics.layCoins: coins are laid before the first step, but tick ${this.#lastTick} has run; use registerCoin`,
+      );
     }
-    if (this.#tierOf.has(id)) {
-      throw new RangeError(`TableMechanics.registerCoin: coin ${id} is already registered`);
+    const heights = new Map(this.#table.coins().map((coin) => [coin.id, coin.translation.y]));
+    for (const { id, tier } of coins) {
+      const y = heights.get(id);
+      if (y === undefined) {
+        throw new RangeError(`TableMechanics.layCoins: coin ${id} is not on the table`);
+      }
+      this.#setTier(id, tier, 'layCoins');
+      if (this.#fusion) {
+        this.#laidY.set(id, y);
+      }
     }
-    this.#tierOf.set(id, index);
   }
 
   /** The tier of a coin on the table or in the tower. */
@@ -130,7 +161,7 @@ export class TableMechanics<Tier extends string> {
     this.#lastTick = tick;
     const gone: number[] = [];
     for (const id of fallen) {
-      this.#tierOf.delete(id);
+      this.#forgetCoin(id);
       gone.push(id);
     }
     this.#fusion?.forget(gone);
@@ -150,6 +181,10 @@ export class TableMechanics<Tier extends string> {
     );
     if (captures.length > 0) {
       this.#fusion?.forget(captures.map((capture) => capture.coinId));
+      for (const { coinId } of captures) {
+        this.#fusesFrom.delete(coinId);
+        this.#laidY.delete(coinId);
+      }
     }
     for (const { coinId, group, height } of captures) {
       events.push({ kind: 'towerCapture', tick, coinId, tier: this.#tier(group), height });
@@ -161,6 +196,7 @@ export class TableMechanics<Tier extends string> {
           throw new Error(`TableMechanics: topple released coin ${id} without a tier`);
         }
         this.#tierOf.set(id, group);
+        this.#startGrace(id, tick);
       });
       for (const id of topple.ids) {
         this.#tierOf.delete(id);
@@ -183,7 +219,19 @@ export class TableMechanics<Tier extends string> {
     for (const id of ids) {
       h.int(id).int(this.#index(id));
     }
-    this.#fusion?.hashInto(h);
+    if (this.#fusion) {
+      const grace = Array.from(this.#fusesFrom).sort((p, q) => p[0] - q[0]);
+      h.int(grace.length);
+      for (const [id, from] of grace) {
+        h.int(id).int(from);
+      }
+      const laid = Array.from(this.#laidY).sort((p, q) => p[0] - q[0]);
+      h.int(laid.length);
+      for (const [id, y] of laid) {
+        h.int(id).float(y);
+      }
+      this.#fusion.hashInto(h);
+    }
     if (this.#tower) {
       this.#tower.hashInto(h);
     }
@@ -200,7 +248,7 @@ export class TableMechanics<Tier extends string> {
     const groups = new Int32Array(coins.length);
     coins.forEach((coin, i) => {
       const index = this.#index(coin.id);
-      groups[i] = index === top ? NO_GROUP : index;
+      groups[i] = index === top || !this.#mayFuse(coin, tick) ? NO_GROUP : index;
     });
     const ripe = fusion.update(
       tick,
@@ -243,11 +291,12 @@ export class TableMechanics<Tier extends string> {
       const index = this.#index(first.id);
       for (const id of ids) {
         this.#table.removeCoin(id);
-        this.#tierOf.delete(id);
+        this.#forgetCoin(id);
         fused.add(id);
       }
       const fusedId = this.#table.addCoin(position, first.rotation);
       this.#tierOf.set(fusedId, index + 1);
+      this.#startGrace(fusedId, tick);
       events.push({
         kind: 'fusion',
         tick,
@@ -260,6 +309,53 @@ export class TableMechanics<Tier extends string> {
     }
     fusion.forget(fused);
     return fused;
+  }
+
+  /**
+   * Whether `coin` may take part in a fusion at `tick`. A coin whose spawn grace has run
+   * out, or a settled coin that has moved off its level, is free for good from then on.
+   */
+  #mayFuse(coin: TableCoin, tick: number): boolean {
+    const from = this.#fusesFrom.get(coin.id);
+    if (from !== undefined) {
+      if (tick < from) {
+        return false;
+      }
+      this.#fusesFrom.delete(coin.id);
+    }
+    const laidY = this.#laidY.get(coin.id);
+    if (laidY !== undefined) {
+      if (Math.abs(coin.translation.y - laidY) <= FUSION_TUNING.settledShift) {
+        return false;
+      }
+      this.#laidY.delete(coin.id);
+    }
+    return true;
+  }
+
+  /** Starts the spawn grace of a coin that entered the table on `tick`. */
+  #startGrace(id: number, tick: number): void {
+    if (this.#fusion) {
+      this.#fusesFrom.set(id, tick + FUSION_TUNING.spawnGraceTicks);
+    }
+  }
+
+  #setTier(id: number, tier: Tier, caller: string): void {
+    const index = this.#tierIndex.get(tier);
+    if (index === undefined) {
+      throw new RangeError(`TableMechanics.${caller}: "${tier}" is not in the tier ladder`);
+    }
+    if (this.#tierOf.has(id)) {
+      throw new RangeError(`TableMechanics.${caller}: coin ${id} is already registered`);
+    }
+    this.#tierOf.set(id, index);
+  }
+
+  /** Drops a coin that left the table for good. */
+  #forgetCoin(id: number): void {
+    this.#tierOf.delete(id);
+    this.#fusesFrom.delete(id);
+    this.#laidY.delete(id);
   }
 
   #index(id: number): number {

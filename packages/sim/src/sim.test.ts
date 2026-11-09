@@ -1,3 +1,5 @@
+import { economyConfig, openingHeap } from '@coinposh/economy';
+import { COIN_TIERS } from '@coinposh/shared';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { COIN } from './coin.ts';
 import { FIXED_DT, SIM_VERSION, SOLVER, TICK_RATE_HZ } from './constants.ts';
@@ -363,12 +365,24 @@ const MECHANICS: MechanicsConfig<string> = {
   tower: null,
 };
 
-/** What apps/web's sim worker runs (SIM_MECHANICS there): tiers, no fusion, no tower. */
+/** Tiers with no fusion and no tower: the table on its own, as the sim worker ran it before P-222. */
 const WORKER_MECHANICS: MechanicsConfig<string> = {
   tiers: ['copper', 'silver', 'gold', 'platinum', 'diamond', 'heirloom'],
   fusion: null,
   tower: null,
 };
+
+/** The Demo table as apps/web's sim worker runs it (SIM_MECHANICS there). */
+const DEMO_MECHANICS: MechanicsConfig<string> = {
+  tiers: COIN_TIERS,
+  fusion: {
+    inputCount: economyConfig.fusion.inputCount,
+    contactSeconds: economyConfig.fusion.contactSeconds,
+  },
+  tower: null,
+};
+const DEMO_SEED = 0xc0196051;
+const DEMO_DROPS = 30;
 
 /** A drop every 12 ticks, wandering across the middle 80 mm of the table. */
 function steadyDrops(tick: number): SimInput[] {
@@ -483,15 +497,13 @@ describe('opening heap and mechanics', () => {
     expect(sim.step().mechanics).toEqual([]);
   });
 
-  it('lays a single-layer heap on a table that fuses, and a full one on a table that does not', () => {
+  it('lays the same full heap whether the table fuses or not, and keeps a tower pedestal bare', () => {
     const full = Sim.heapCapacity();
     expect(full).toBeGreaterThanOrEqual(110);
     expect(Sim.heapCapacity(WORKER_MECHANICS)).toBe(full);
-    expect(Sim.heapCapacity(MECHANICS)).toBeGreaterThan(50);
-    expect(Sim.heapCapacity(MECHANICS)).toBeLessThan(full);
-    expect(Sim.heapCapacity({ tiers: MECHANICS.tiers, fusion: FUSION })).toBeLessThan(
-      Sim.heapCapacity(MECHANICS),
-    );
+    expect(Sim.heapCapacity(MECHANICS)).toBe(full);
+    expect(Sim.heapCapacity({ tiers: MECHANICS.tiers, fusion: FUSION })).toBeLessThan(full);
+    expect(Sim.heapCapacity({ tiers: MECHANICS.tiers, fusion: FUSION })).toBeGreaterThan(50);
   });
 
   it('leaves a fresh heap on a table that fuses unfused until the pusher packs it', async () => {
@@ -558,6 +570,43 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"5659c314480b9ede"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"982470c1506c0983"`);
+  });
+
+  it('plays the Demo table with fusion: the heap holds, drops fuse, coins still fall', async () => {
+    const play = async (seed: number) => {
+      const sim = await Sim.create({ seed, mechanics: DEMO_MECHANICS, openingHeap });
+      live.push(sim);
+      const fusions: FusionEvent<string>[] = [];
+      const falls: FallEvent[] = [];
+      for (let tick = 0; tick < 60 * TICK_RATE_HZ; tick++) {
+        const second = tick / TICK_RATE_HZ;
+        const drop =
+          tick % TICK_RATE_HZ === 0 && second < DEMO_DROPS
+            ? [{ kind: 'dropCoin' as const, xMm: ((second * 17) % 41) - 20 }]
+            : [];
+        const events = sim.step(drop);
+        falls.push(...events.falls);
+        for (const event of events.mechanics) {
+          if (event.kind === 'fusion') {
+            fusions.push(event);
+          }
+        }
+      }
+      return { sim, fusions, falls };
+    };
+    for (const seed of [DEMO_SEED, 0x1234]) {
+      const { sim, fusions, falls } = await play(seed);
+      const heapFusions = fusions.filter((f) => f.ids.some((id) => id < openingHeap.coins));
+      expect(fusions.length, `seed ${seed}`).toBeGreaterThan(0);
+      expect(heapFusions[0]?.tick ?? Infinity, `seed ${seed}`).toBeGreaterThan(2 * TICK_RATE_HZ);
+      expect(falls.filter((fall) => fall.edge === 'front').length, `seed ${seed}`).toBeGreaterThan(
+        0,
+      );
+      if (seed === DEMO_SEED) {
+        // Changing this value breaks replay audits of every Demo input log played with fusion.
+        expect(sim.hash()).toMatchInlineSnapshot(`"8d8b89f4c3c645a5"`);
+      }
+    }
   });
 });

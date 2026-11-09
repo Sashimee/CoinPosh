@@ -18,8 +18,8 @@ import { COIN_MATERIAL } from './tuning.ts';
  *    overhanging the lip the same way, so the block carries it to the edge of spilling.
  * 3. A second layer over the upper tier, then over the lower sheet, each coin over the
  *    hollow between three below it, so a pile reads as heaped rather than tiled. Those
- *    coins rest on the ones below and so touch them from the first tick; a table that
- *    fuses lays the heap without this layer (`secondLayer: false`).
+ *    coins rest on the ones below and so touch them from the first tick; Contact Fusion
+ *    leaves them be because the heap is settled (FUSION_TUNING.settledShift).
  *
  * Values, in metres:
  *
@@ -66,8 +66,8 @@ export interface HeapGeometry {
   readonly upperY: number;
   readonly keepClear?: readonly HeapKeepClear[];
   /**
-   * Whether to lay the second layer (step 3 above); true when omitted. A table that
-   * fuses leaves it off: each of its coins rests on three below, already touching them.
+   * Whether to lay the second layer (step 3 above); true when omitted. Off, the heap
+   * holds fewer coins and none of them touches another.
    */
   readonly secondLayer?: boolean;
 }

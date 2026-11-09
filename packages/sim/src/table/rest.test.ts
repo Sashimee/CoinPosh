@@ -17,7 +17,7 @@ import { COIN_MATERIAL, configureTableWorld } from './tuning.ts';
 /** The Demo table's seed (apps/web), then two more tables with the same heap. */
 const DEMO_SEED = 0xc0196051;
 const SEEDS = [DEMO_SEED, 1, 2];
-/** What apps/web's sim worker runs (SIM_MECHANICS there): tiers, no fusion, no tower. */
+/** Tiers with no fusion and no tower: the table on its own, as the sim worker ran it before P-222. */
 const DEMO_MECHANICS: MechanicsConfig<string> = { tiers: COIN_TIERS, fusion: null, tower: null };
 const SETTLE_TICKS = 10 * TICK_RATE_HZ;
 const IDLE_TICKS = 600 * TICK_RATE_HZ;
@@ -162,7 +162,7 @@ interface DemoRun {
 }
 
 /**
- * The Demo table (Sim with the worker's mechanics and the economy's opening heap) on
+ * The Demo table (Sim with tiers and no fusion and the economy's opening heap) on
  * `seed`, with `drops` coins dropped one every two seconds from the settle on (none for
  * the idle table), across the table by `pattern`; Sim.hash every minute.
  */
