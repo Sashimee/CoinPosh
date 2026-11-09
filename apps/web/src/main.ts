@@ -164,6 +164,7 @@ if (!canvas) {
 const uiRoot = document.createElement('div');
 document.body.append(uiRoot);
 const ui = mountUi(uiRoot);
+markBoot('ui');
 
 let audio: AudioEngine | null = null;
 
@@ -228,6 +229,7 @@ async function bootNet(app: UiApp): Promise<Net> {
   teardown.push(() => {
     net.table.close();
   });
+  markBoot('net');
   if (net.mode.kind !== 'demo') return net;
   let removeBanner = showDemoBanner(app);
   const stopRelabel = app.i18n.onLanguageChanged(() => {
@@ -292,6 +294,7 @@ interface NetBoot {
  */
 async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   const state = await loadState(net, app);
+  markBoot('state');
   const vault = trackVault(app, net.table, state);
   net.table.hydrate(state);
   app.setUpgradeLevels(state.venue.upgrades);
@@ -559,6 +562,7 @@ async function bootScene(
       import('./vfx/index.ts'),
       import('./game/crates/index.ts'),
     ]);
+    markBoot('modules');
     riviera = venueModule;
     systemsModule = gameSystems;
     vfxModule = effects;
@@ -575,6 +579,7 @@ async function bootScene(
         coins: { capacity: COIN_CAPACITY, radius: simModule.SIM_COIN_DIMENSIONS.radius },
       })
       .then((created) => {
+        markBoot('stage');
         built = created;
         return created;
       });
@@ -603,9 +608,10 @@ async function bootScene(
     console.error('CoinPosh boot failed: the Riviera venue could not load.', error);
     return;
   }
+  markBoot('venue');
+  const revealVenue = holdBackVenue(venue);
   attachVenue(stage, venue, riviera.applyCameraPreset);
   stage.castCoinShadowsFrom(venue.lighting.key);
-  const table = attachTable(stage, venue, bridge);
   watchReducedMotion((reduced) => {
     venue.setReducedMotion(reduced);
     stage.coins.setReducedMotion(reduced);
@@ -613,15 +619,24 @@ async function bootScene(
   // The renderer checks its clock against the first frame's timestamp, so the effects' first,
   // slowest update must not run inside that frame.
   await frameDrawn(stage);
+  markBoot('frame');
   const vfx = attachVfx(stage, vfxModule);
   const boot = await hydrated;
   const simBacklog = takeEarlyEvents();
-  if (!boot || bridge.failure) return;
+  if (!boot || bridge.failure) {
+    revealVenue();
+    attachTable(stage, venue, bridge);
+    return;
+  }
   stopEarlyTaps();
   const systems = startPlay(systemsModule, stage, bridge, boot, { heap, simBacklog, vfx });
-  table.use(systems);
   mountTableCrates(cratesApi, { stage, venue, bridge, boot, systems, vfx });
+  // Shown only now that crates have added the unbox light: a light added later changes every lit
+  // shader, so a venue drawn before it would have every program linked twice.
+  revealVenue();
+  attachTable(stage, venue, bridge).use(systems);
   probe.playable = true;
+  markBoot('playable');
 }
 
 /** The opening heap the server minted onto the table, in every net mode. */
@@ -902,6 +917,14 @@ function startSim(simModule: typeof SimWorkerModule, heap: readonly MintedCoin[]
     ...(openingHeap ? { openingHeap } : {}),
   });
   probe.bridge = bridge;
+  markBoot('sim-start');
+  // A failed start is already logged and kept in `bridge.failure`; the mark only times success.
+  bridge.ready.then(
+    () => {
+      markBoot('sim-ready');
+    },
+    () => undefined,
+  );
   const stopCounting = bridge.onEvents(({ falls, fusions }) => {
     probe.counts.simFalls += falls.length;
     probe.counts.simFusions += fusions.length;
@@ -964,4 +987,33 @@ function watchReducedMotion(apply: (reduced: boolean) => void): void {
   query.addEventListener('change', (event) => {
     apply(event.matches);
   });
+}
+
+function markBoot(step: string): void {
+  performance.mark(`coinposh:boot:${step}`);
+}
+
+/** A layer no camera sees, holding the venue's meshes until play can start. */
+const HELD_LAYER = 31;
+
+/**
+ * Keeps the venue's meshes out of the frames drawn while play is still being set up, so their
+ * shaders are linked once, in the first frame after everything that adds a light has run. The
+ * lights keep their layers, so those frames already light the scene as it will be drawn.
+ * Returns the function that shows the venue again.
+ */
+function holdBackVenue(venue: RivieraVenue): () => void {
+  const held: { readonly object: Object3DLike; readonly mask: number }[] = [];
+  venue.root.traverse((object) => {
+    if ((object as { readonly isLight?: boolean }).isLight === true) return;
+    held.push({ object, mask: object.layers.mask });
+    object.layers.set(HELD_LAYER);
+  });
+  return () => {
+    for (const { object, mask } of held) object.layers.mask = mask;
+  };
+}
+
+interface Object3DLike {
+  readonly layers: { mask: number };
 }

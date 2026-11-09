@@ -60,6 +60,9 @@ export default defineConfig(({ mode }) => {
     build: {
       // The lazily imported stage chunk is three/webgpu (~815 kB minified). It loads after first paint, so the budget sits just above it to keep flagging real growth.
       chunkSizeWarningLimit: 900,
+      // Only Safari before 17 lacks modulepreload, and there the preloaded chunks still load through
+      // their imports, so the polyfill is bytes on the critical path for no change in behavior.
+      modulePreload: { polyfill: false },
     },
   };
 });
