@@ -6,6 +6,7 @@ import { h } from '../dom.ts';
 import { icon } from '../icons.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
+import { createMeterRail, type MeterRail } from './meterRail.ts';
 
 const SHAKE_VELOCITY = 180;
 const LEVEL_KEYS = {
@@ -19,7 +20,14 @@ function sameView(a: DecorumView, b: DecorumView): boolean {
   return a.fraction === b.fraction && a.level === b.level && a.frozenSeconds === b.frozenSeconds;
 }
 
-export function createDecorumMeter(ctx: UiContext): HTMLElement {
+/** Decorum stays a rail until it moves, and folds back once it has been spotless this long. */
+const SETTLED_LINGER_MS = 1400;
+
+function hasMoved(view: DecorumView): boolean {
+  return view.fraction > 0 || view.level !== 'calm';
+}
+
+export function createDecorumMeter(ctx: UiContext): MeterRail {
   const heading = h('span', { class: 'cp-side-label' });
   const fill = h('span', { class: 'cp-decorum-fill' });
   const bell = h('span', { class: 'cp-decorum-bell' }, icon('bell'));
@@ -32,18 +40,17 @@ export function createDecorumMeter(ctx: UiContext): HTMLElement {
     fill,
     h('span', { class: 'cp-decorum-ticks', attrs: { 'aria-hidden': 'true' } }),
   );
+  const percent = h('span', { class: 'cp-decorum-percent', attrs: { 'aria-hidden': 'true' } });
   const status = h('span', { class: 'cp-decorum-status' });
-  const root = h(
-    'div',
-    {
-      class: 'cp-decorum cp-side-meter',
-      attrs: { 'data-testid': 'hud-decorum', 'data-level': 'calm' },
-    },
-    heading,
-    bell,
-    track,
-    status,
-  );
+  const rail = createMeterRail(ctx, {
+    side: 'left',
+    className: 'cp-decorum',
+    testId: 'hud-decorum',
+    spine: h('span', { class: 'cp-decorum-spine' }, bell, track),
+    card: h('span', { class: 'cp-rail-text' }, heading, percent, status),
+  });
+  const root = rail.root;
+  root.dataset.level = 'calm';
 
   const level = new SpringValue(0, SPRINGS.snappy, (value) => {
     root.style.setProperty('--cp-decorum', String(Math.min(1, Math.max(0, value))));
@@ -55,9 +62,10 @@ export function createDecorumMeter(ctx: UiContext): HTMLElement {
   ctx.loc.text(heading, () => tr(ctx, 'decorum.label'));
   const describe = (view: DecorumView): void => {
     status.textContent = tr(ctx, LEVEL_KEYS[view.level]);
-    const percent = formatPercent(view.fraction, ctx.i18n.language);
+    const share = formatPercent(view.fraction, ctx.i18n.language);
+    percent.textContent = share;
     track.setAttribute('aria-valuenow', String(Math.round(view.fraction * 100)));
-    track.setAttribute('aria-label', tr(ctx, 'decorum.aria', { percent }));
+    track.setAttribute('aria-label', tr(ctx, 'decorum.aria', { percent: share }));
   };
 
   ctx.own(
@@ -70,6 +78,7 @@ export function createDecorumMeter(ctx: UiContext): HTMLElement {
         if (previous && view.fraction > previous.fraction) {
           shake.kick(view.level === 'calm' ? SHAKE_VELOCITY * 0.4 : SHAKE_VELOCITY);
         }
+        rail.setOpen(hasMoved(view), SETTLED_LINGER_MS);
         describe(view);
       },
       sameView,
@@ -80,7 +89,7 @@ export function createDecorumMeter(ctx: UiContext): HTMLElement {
       describe(decorumView(ctx.store.getState().decorum));
     }),
   );
-  return root;
+  return rail;
 }
 
 /** The Concierge's freeze notice: rings in under the balance and counts the table back in. */

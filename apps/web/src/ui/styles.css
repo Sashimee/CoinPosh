@@ -127,28 +127,14 @@
   width: 100%;
 }
 
-.cp-hud-middle {
-  position: relative;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: 0;
+.cp-hud > .cp-dock {
+  grid-row: 3;
 }
 
-.cp-hud-middle.is-waiting {
-  visibility: hidden;
-}
-
-.cp-hud-middle > .cp-side-meter {
-  opacity: clamp(0, var(--cp-meters-in, 1), 1);
-}
-
-.cp-hud-middle > .cp-side-meter:first-child {
-  translate: calc((1 - var(--cp-meters-in, 1)) * -64px) 0;
-}
-
-.cp-hud-middle > .cp-side-meter:last-child {
-  translate: calc((1 - var(--cp-meters-in, 1)) * 64px) 0;
+.cp-meters {
+  position: absolute;
+  inset: var(--cp-safe-top) var(--cp-safe-right) var(--cp-safe-bottom) var(--cp-safe-left);
+  pointer-events: none;
 }
 
 .cp-plaque-wrap {
@@ -420,18 +406,138 @@
   }
 }
 
-.cp-side-meter {
-  pointer-events: auto;
+/* A side meter at rest is a slim lacquer rail on the screen edge; with news it widens inward
+   into a card. Its box is set from the rail plan, so it never covers the coin floor. */
+.cp-rail {
+  --cp-rail-w: 22px;
+  position: absolute;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.07), transparent 46%), var(--cp-lacquer);
+  border: 1px solid var(--cp-hairline-soft);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 0.3),
+    var(--cp-glow-inner);
+  transition:
+    opacity 260ms ease,
+    scale 560ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 260ms ease,
+    box-shadow 260ms ease;
+}
+
+.cp-rail[data-side='right'] {
+  flex-direction: row-reverse;
+}
+
+/* The rails draw in from their centre, never from off-screen, once the table is playable. */
+.cp-meters.is-waiting .cp-rail {
+  opacity: 0;
+  scale: 1 0.4;
+}
+
+.cp-rail.is-swapping {
+  opacity: 0;
+  transition: none;
+}
+
+.cp-rail.is-open {
+  border-color: var(--cp-hairline);
+}
+
+.cp-rail::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgb(var(--cp-champagne-rgb) / 0.32) 48%,
+    transparent 66%
+  );
+  translate: -120% 0;
+  opacity: 0;
+}
+
+.cp-rail.is-open::after {
+  animation: cp-rail-shine 900ms ease-out 120ms;
+}
+
+.cp-rail[data-side='right'].is-open::after {
+  animation-name: cp-rail-shine-in;
+}
+
+@keyframes cp-rail-shine {
+  from {
+    translate: -120% 0;
+    opacity: 1;
+  }
+  to {
+    translate: 120% 0;
+    opacity: 1;
+  }
+}
+
+@keyframes cp-rail-shine-in {
+  from {
+    translate: 120% 0;
+    opacity: 1;
+  }
+  to {
+    translate: -120% 0;
+    opacity: 1;
+  }
+}
+
+.cp-rail-spine {
+  flex: none;
+  width: calc(var(--cp-rail-w) - 2px);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 76px;
-  padding: 10px 6px 12px;
-  border-radius: var(--cp-radius-lg);
-  background:
-    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.06), transparent 42%), var(--cp-lacquer);
-  border: 1px solid var(--cp-hairline-soft);
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 0;
+}
+
+.cp-rail-card {
+  flex: none;
+  display: flex;
+  align-items: center;
+  width: calc(var(--cp-card-w, var(--cp-rail-w)) - var(--cp-rail-w));
+  padding: 8px 12px 8px 6px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.cp-rail[data-side='right'] .cp-rail-card {
+  justify-content: flex-end;
+  padding: 8px 6px 8px 12px;
+  text-align: right;
+}
+
+.cp-rail.is-open .cp-rail-card {
+  opacity: 1;
+  transition: opacity 220ms ease 60ms;
+}
+
+.cp-rail-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cp-rail[data-side='right'] .cp-rail-text {
+  align-items: flex-end;
+}
+
+.cp-rail[data-compact='true'] .cp-combo-hint,
+.cp-rail[data-compact='true'] .cp-decorum-percent {
+  display: none;
 }
 
 .cp-side-label {
@@ -443,8 +549,8 @@
 }
 
 .cp-flute {
-  width: 44px;
-  height: 154px;
+  width: 100%;
+  height: 100%;
   overflow: visible;
 }
 
@@ -509,14 +615,14 @@
 
 .cp-combo-caption {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-height: 38px;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .cp-combo-tier {
   font-family: var(--cp-font-display);
-  font-size: 17px;
+  font-size: 20px;
+  line-height: 1.1;
   font-weight: 700;
   color: var(--cp-champagne);
   white-space: nowrap;
@@ -531,10 +637,9 @@
 }
 
 .cp-combo-hint {
-  font-size: 10px;
-  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.3;
   color: var(--cp-ink-muted);
-  max-width: 70px;
 }
 
 .cp-combo.is-active[data-rank='5'] .cp-combo-tier {
@@ -552,9 +657,23 @@
   animation: cp-shimmer 1.6s linear infinite;
 }
 
+.cp-combo.is-spent .cp-combo-caption {
+  opacity: 0.6;
+  transition: opacity 300ms ease;
+}
+
+.cp-combo.is-active {
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 0.3),
+    0 0 calc(4px + var(--cp-fill, 0) * 18px) rgb(var(--cp-gold-brushed-rgb) / 0.3),
+    var(--cp-glow-inner);
+}
+
 .cp-combo[data-rank='5'] {
   border-color: var(--cp-gold-brushed);
-  box-shadow: 0 0 24px rgb(var(--cp-gold-brushed-rgb) / 0.35);
+  box-shadow:
+    0 0 24px rgb(var(--cp-gold-brushed-rgb) / 0.4),
+    var(--cp-glow-inner);
 }
 
 @keyframes cp-shimmer {
@@ -563,15 +682,28 @@
   }
 }
 
+.cp-decorum-spine {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+}
+
 .cp-decorum-bell {
   display: grid;
   color: var(--cp-champagne);
 }
 
+.cp-decorum-bell .cp-icon {
+  width: 13px;
+  height: 13px;
+}
+
 .cp-decorum-track {
   position: relative;
-  width: 12px;
-  height: 128px;
+  flex: 1;
+  width: 6px;
   border-radius: 999px;
   border: 1px solid var(--cp-hairline);
   background: rgb(var(--cp-navy-lacquer-rgb) / 0.75);
@@ -597,11 +729,33 @@
   );
 }
 
+.cp-decorum-percent {
+  font-family: var(--cp-font-display);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.05;
+  color: var(--cp-champagne);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
 .cp-decorum-status {
-  font-size: 10px;
-  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.3;
   color: var(--cp-ink-muted);
-  max-width: 70px;
+}
+
+.cp-meters[data-zone='edge'] .cp-decorum-bell {
+  display: none;
+}
+
+.cp-meters[data-zone='edge'] .cp-decorum-track {
+  width: 4px;
+}
+
+.cp-decorum[data-level='warning'] .cp-decorum-status,
+.cp-decorum[data-level='critical'] .cp-decorum-status,
+.cp-decorum[data-level='frozen'] .cp-decorum-status {
+  color: var(--cp-coral-sunset);
 }
 
 .cp-decorum[data-level='warning'] .cp-decorum-fill {
@@ -1352,6 +1506,16 @@
   display: none;
 }
 
+/* Reduced motion: the rail does not slide open or grow in; it cross-fades into its card. */
+.cp-ui-host[data-motion='reduced'] .cp-rail,
+.cp-ui-host[data-motion='reduced'] .cp-meters.is-waiting .cp-rail {
+  scale: none;
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-rail-card {
+  translate: none !important;
+}
+
 .cp-ui-host[data-motion='reduced'] .cp-sheet {
   transition: opacity 180ms ease;
 }
@@ -1389,18 +1553,6 @@
   .cp-plaque {
     min-width: 170px;
     padding: 6px 18px 8px;
-  }
-
-  .cp-side-meter {
-    width: 68px;
-  }
-
-  .cp-flute {
-    height: 128px;
-  }
-
-  .cp-decorum-track {
-    height: 104px;
   }
 
   .cp-stamp-name {
