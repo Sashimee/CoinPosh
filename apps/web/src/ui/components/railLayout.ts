@@ -208,3 +208,49 @@ export function railBox(slot: RailSlot, open: number): Box {
   const left = slot.side === 'left' ? slot.rail.left : slot.rail.left + slot.rail.width - width;
   return { left, top: slot.rail.top, width, height: slot.rail.height };
 }
+
+/** Width over which a card's contents fade in once the morphing box has uncovered them. */
+export const REVEAL_FADE_PX = 14;
+
+/**
+ * How opaque a card's contents may be while its box is `boxWidth` wide. `inset` is how far the
+ * contents' leading (field-side) edge sits inside the open card, so they stay invisible until the
+ * box has uncovered every glyph and never show clipped by the card edge mid-morph. Contents that
+ * overflow the card (`inset` ≤ 0) only show once it is fully open.
+ */
+export function cardReveal(boxWidth: number, cardWidth: number, inset: number): number {
+  if (inset <= 0) return boxWidth >= cardWidth ? 1 : 0;
+  const uncovered = boxWidth - (cardWidth - inset);
+  return Math.min(1, Math.max(0, uncovered / Math.min(REVEAL_FADE_PX, inset)));
+}
+
+export interface CaptionFitInput {
+  /** Width the caption may use inside the card. */
+  readonly room: number;
+  /** Natural widths, at full size, of the rank name and of the multiplier beside it. */
+  readonly name: number;
+  readonly multiplier: number;
+  readonly gap: number;
+}
+
+export interface CaptionFit {
+  /** The multiplier drops under the name instead of sitting beside it. */
+  readonly stacked: boolean;
+  /** Font scale for the name, 1 unless even a line of its own is too narrow. */
+  readonly scale: number;
+}
+
+/** Smallest the rank name may shrink before it would stop reading as the card's headline. */
+export const CAPTION_MIN_SCALE = 0.6;
+
+/**
+ * Fits a Cascade caption to its card: the name and multiplier share a line when they can, the
+ * multiplier wraps under the name when they cannot, and a name too long for a line of its own
+ * shrinks until it fits.
+ */
+export function fitCaption(input: CaptionFitInput): CaptionFit {
+  const { room, name, multiplier, gap } = input;
+  if (name + gap + multiplier <= room) return { stacked: false, scale: 1 };
+  if (name <= room) return { stacked: true, scale: 1 };
+  return { stacked: true, scale: Math.max(CAPTION_MIN_SCALE, room / name) };
+}

@@ -493,6 +493,7 @@
 }
 
 .cp-rail-spine {
+  position: relative;
   flex: none;
   width: calc(var(--cp-rail-w) - 2px);
   display: flex;
@@ -503,14 +504,16 @@
   padding: 7px 0;
 }
 
+/* The card's opacity follows the morph (meterRail), so its text never shows half-uncovered; it
+   clips to its own box so nothing it holds can stray over the spine's gauge. */
 .cp-rail-card {
   flex: none;
   display: flex;
   align-items: center;
   width: calc(var(--cp-card-w, var(--cp-rail-w)) - var(--cp-rail-w));
   padding: 8px 12px 8px 6px;
+  overflow: clip;
   opacity: 0;
-  transition: opacity 140ms ease;
 }
 
 .cp-rail[data-side='right'] .cp-rail-card {
@@ -519,9 +522,23 @@
   text-align: right;
 }
 
-.cp-rail.is-open .cp-rail-card {
+/* A gold hairline parts the gauge from the card, so the flute reads on its own. */
+.cp-rail-spine::after {
+  content: '';
+  position: absolute;
+  inset: 12px auto 12px 100%;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--cp-hairline), transparent);
+  opacity: 0;
+  transition: opacity 260ms ease;
+}
+
+.cp-rail[data-side='right'] .cp-rail-spine::after {
+  inset: 12px 100% 12px auto;
+}
+
+.cp-rail.is-open .cp-rail-spine::after {
   opacity: 1;
-  transition: opacity 220ms ease 60ms;
 }
 
 .cp-rail-text {
@@ -529,6 +546,7 @@
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  max-width: 100%;
 }
 
 .cp-rail[data-side='right'] .cp-rail-text {
@@ -616,7 +634,18 @@
 .cp-combo-caption {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 0 6px;
+}
+
+/* A rank name too long to share its line with the multiplier sets the multiplier beneath it. */
+.cp-combo-caption.is-stacked {
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* Flush against the gauge, the rank-up swell grows away from it rather than into the clip. */
+.cp-combo-caption.is-stacked .cp-combo-tier {
+  transform-origin: right center;
 }
 
 .cp-combo-tier {

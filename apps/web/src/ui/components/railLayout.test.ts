@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   boxContains,
   boxesIntersect,
+  CAPTION_MIN_SCALE,
+  cardReveal,
   coinFloorRect,
+  fitCaption,
   planMeterRails,
   RAIL_MAX_WIDTH,
   railBox,
@@ -215,5 +218,106 @@ describe('railBox', () => {
     }
     expect(railBox(slot, 0)).toEqual(slot.rail);
     expect(railBox(slot, 1).width).toBeCloseTo(slot.card.width);
+  });
+});
+
+describe('cardReveal', () => {
+  /** Field-side insets of real captions, from a full-width "OBSCÈNE ×3" to a short "Chic ×1.1". */
+  const INSETS = [-4, 0, 1, 6, 12, 40, 90];
+
+  for (const screen of SCREENS.filter((s) => ['390x844', '360x640'].includes(s.name))) {
+    for (const side of ['left', 'right'] as const) {
+      const slot = planMeterRails(inputFor(screen))[side];
+
+      it(`${screen.name} ${side}: shows a card's contents only once the box has uncovered them`, () => {
+        if (!slot?.card) throw new Error(`${screen.name} plan has no ${side} card`);
+        const card = slot.card;
+        for (const inset of INSETS.filter((i) => i > 0)) {
+          const reach = card.width - inset;
+          const leading = side === 'right' ? card.left + card.width - reach : card.left + reach;
+          for (const t of MORPH_SAMPLES) {
+            const box = railBox(slot, t);
+            if (cardReveal(box.width, card.width, inset) === 0) continue;
+            expect(leading).toBeGreaterThanOrEqual(box.left - 1e-6);
+            expect(leading).toBeLessThanOrEqual(box.left + box.width + 1e-6);
+          }
+        }
+      });
+
+      it(`${screen.name} ${side}: shows the contents in full once the card is open`, () => {
+        if (!slot?.card) throw new Error(`${screen.name} plan has no ${side} card`);
+        for (const inset of INSETS) {
+          expect(cardReveal(railBox(slot, 1).width, slot.card.width, inset)).toBe(1);
+          expect(cardReveal(slot.rail.width, slot.card.width, inset)).toBe(0);
+        }
+      });
+
+      it(`${screen.name} ${side}: holds back contents wider than the card until it is open`, () => {
+        if (!slot?.card) throw new Error(`${screen.name} plan has no ${side} card`);
+        for (const t of MORPH_SAMPLES.filter((t) => t < 1)) {
+          expect(cardReveal(railBox(slot, t).width, slot.card.width, -4)).toBe(0);
+        }
+      });
+    }
+  }
+
+  it('fades in rather than popping, and never runs backwards as the box grows', () => {
+    let previous = 0;
+    const seen = new Set<number>();
+    for (let width = 22; width <= 176; width += 0.5) {
+      const reveal = cardReveal(width, 176, 12);
+      expect(reveal).toBeGreaterThanOrEqual(previous);
+      previous = reveal;
+      seen.add(Math.round(reveal * 10));
+    }
+    expect(seen.size).toBeGreaterThan(5);
+  });
+});
+
+describe('fitCaption', () => {
+  it('keeps the name and multiplier on one line when they fit', () => {
+    expect(fitCaption({ room: 136, name: 78, multiplier: 35, gap: 6 })).toEqual({
+      stacked: false,
+      scale: 1,
+    });
+  });
+
+  it('sets the multiplier under a name that cannot share its line', () => {
+    expect(fitCaption({ room: 108, name: 78, multiplier: 35, gap: 6 })).toEqual({
+      stacked: true,
+      scale: 1,
+    });
+  });
+
+  it('wraps at the exact boundary only once the line overflows', () => {
+    expect(fitCaption({ room: 119, name: 78, multiplier: 35, gap: 6 }).stacked).toBe(false);
+    expect(fitCaption({ room: 118.9, name: 78, multiplier: 35, gap: 6 }).stacked).toBe(true);
+  });
+
+  it('shrinks a name too long for a line of its own until it fits', () => {
+    const fit = fitCaption({ room: 90, name: 120, multiplier: 30, gap: 6 });
+    expect(fit.stacked).toBe(true);
+    expect(120 * fit.scale).toBeCloseTo(90);
+  });
+
+  it('fits every name and multiplier the card can hold', () => {
+    for (let room = 60; room <= 160; room += 7) {
+      for (let name = 20; name <= room / CAPTION_MIN_SCALE; name += 9) {
+        for (const multiplier of [16, 27, 35]) {
+          if (multiplier > room) continue;
+          const fit = fitCaption({ room, name, multiplier, gap: 6 });
+          const line = fit.stacked ? Math.max(name * fit.scale, multiplier) : name + 6 + multiplier;
+          expect(line).toBeLessThanOrEqual(room + 1e-9);
+          expect(fit.scale).toBeGreaterThanOrEqual(CAPTION_MIN_SCALE);
+          expect(fit.scale).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
+  it('stops shrinking at the floor rather than shrink a name to nothing', () => {
+    expect(fitCaption({ room: 10, name: 200, multiplier: 8, gap: 6 }).scale).toBe(
+      CAPTION_MIN_SCALE,
+    );
   });
 });
