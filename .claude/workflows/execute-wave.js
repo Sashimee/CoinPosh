@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Build', detail: 'one owning agent per task, isolated git worktree, task/<id> branch' },
     { title: 'Review', detail: 'reviewer gate, 1 fix round per task; a task that still fails retries next wave' },
     { title: 'Integrate', detail: 'merge each approved task as soon as it passes review, run checks, update STATUS, push' },
-    { title: 'Ship', detail: 'PR base into dev and dev into main after each merge, so Pages redeploys' },
+    { title: 'Ship', detail: 'PR base into dev after each merge, so the dev site on Dokploy redeploys' },
     { title: 'Playtest', detail: 'screenshot + feel critique, files polish tasks' },
   ],
 }
@@ -108,7 +108,7 @@ Determine the current branch with \`git rev-parse --abbrev-ref HEAD\` and return
 Select up to ${MAX} tasks (never H-* human tasks) whose deps are all "done" in STATUS.md, whose state is todo
 (or blocked with a reason that is now resolved), and whose "owns" paths do NOT overlap each other.
 A task whose owns is "any" must be alone in its wave.
-Priority order: first, tasks that make the game playable on Pages (coins dropping on the table and pushed off by the pusher,
+Priority order: first, tasks that make the game playable on the dev site (coins dropping on the table and pushed off by the pusher,
 the coin physics T-1.01, wiring coins into the scene P-19, the HUD P-28, and whatever directly unblocks those);
 then tasks on the critical path to the current milestone; then everything else.
 POLISH.md items marked "ready" can be scheduled as tasks with id "P-<n>" using the agent named in the item.
@@ -194,10 +194,9 @@ Return merged (boolean), the merge sha, and a one-line summary.`,
 // A ship run already in flight picks up later merges on its next pass, so CI waits are not stacked per task.
 let shipping = null
 let shipAgain = false
-const shipPrompt = () => `Ship the current ${plan.base} to GitHub Pages for CoinPosh. Use gh; never push to main or dev directly.
+const shipPrompt = () => `Ship the current ${plan.base} to the CoinPosh dev environment (https://devcoinposh.bas.lu, API https://api.devcoinposh.bas.lu). Use gh; never push to main or dev directly, and never open or merge a PR into main: main is promoted only when the user validates a release candidate.
 1. If ${plan.base} has commits not on origin/dev: reuse the open PR from ${plan.base} into dev or open one (title "build: <task ids merged since the last ship>"), wait for its checks (gh pr checks --watch), and merge it with gh pr merge --merge. If checks fail, stop and report the failing check and log excerpt.
-2. If origin/dev has commits not on origin/main: reuse or open the PR from dev into main (title "release: <task ids>"). CI does not run on that PR; wait for the CI run on the dev push for the same head sha (gh run list --branch dev --event push --workflow CI), and once it passes merge the PR with a merge commit.
-3. Wait for the Deploy web run (workflow_run after CI on main) and report its conclusion, plus Deploy server if it ran.
+2. Dokploy auto-deploys dev on push. Wait up to 10 minutes for https://api.devcoinposh.bas.lu/health to answer 200 and for https://devcoinposh.bas.lu/ to serve an index.html whose /assets/index-*.js differs from before the merge, and report what you saw.
 PR bodies end with the attribution lines from the session. Do not modify files or the working tree.
 Return a one-line summary with the PR numbers and deploy results.`
 const ship = () => {
