@@ -3,10 +3,10 @@ import { h } from '../dom.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
-import { railBox, type RailSide, type RailSlot } from './railLayout.ts';
+import { cardReveal, railBox, type RailSide, type RailSlot } from './railLayout.ts';
 
-/** How far the card's contents travel in from the rail as it opens. */
-const SLIDE_PX = 14;
+/** How far the card's contents rise as they are revealed; they never slide across the spine. */
+const RISE_PX = 6;
 
 export interface MeterRail {
   readonly root: HTMLElement;
@@ -15,6 +15,8 @@ export interface MeterRail {
   setOpen(open: boolean, linger?: number): void;
   /** Moves the rail to its slot in viewport px, relative to `origin`; null hides it. */
   place(slot: RailSlot | null, origin: { left: number; top: number }): void;
+  /** How far, in px, a transient effect pushes the contents past their field-side edge. */
+  setOverhang(px: number): void;
 }
 
 export interface MeterRailOptions {
@@ -29,7 +31,8 @@ export interface MeterRailOptions {
 
 /**
  * A side meter that rests as a slim rail against the screen edge and morphs, by width alone,
- * into a card when it has news. The slide is a spring; under reduced motion the card fades in.
+ * into a card when it has news. The morph is a spring, and the card's contents only fade and rise
+ * in once the box has uncovered them; under reduced motion the whole card cross-fades in.
  */
 export function createMeterRail(ctx: UiContext, options: MeterRailOptions): MeterRail {
   const card = h('span', { class: 'cp-rail-card' }, options.card);
@@ -43,11 +46,13 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
     card,
   );
   root.hidden = true;
-  const direction = options.side === 'left' ? -1 : 1;
   let slot: RailSlot | null = null;
   let origin = { left: 0, top: 0 };
   let wanted = false;
   let linger: ReturnType<typeof setTimeout> | undefined;
+  /** How far the contents' field-side edge sits inside the open card, in px. */
+  let inset = 0;
+  let overhang = 0;
 
   const paint = (open: number): void => {
     if (!slot) return;
@@ -56,8 +61,9 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
     root.style.top = `${box.top - origin.top}px`;
     root.style.width = `${box.width}px`;
     root.style.height = `${box.height}px`;
-    const t = Math.min(1, Math.max(0, open));
-    card.style.translate = t === 1 ? '' : `${(1 - t) * SLIDE_PX * direction}px 0`;
+    const reveal = slot.card ? cardReveal(box.width, slot.card.width, inset - overhang) : 0;
+    card.style.opacity = String(reveal);
+    card.style.translate = reveal === 1 ? '' : `0 ${(1 - reveal) * RISE_PX}px`;
   };
   const openness = new SpringValue(0, SPRINGS.snappy, (value) => {
     paint(value);
@@ -76,9 +82,23 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
     void openness.to(open ? 1 : 0, open ? SPRINGS.snappy : SPRINGS.sheet);
   };
 
+  const measure = (): void => {
+    const frame = card.getBoundingClientRect();
+    const content = options.card.getBoundingClientRect();
+    if (frame.width === 0) return;
+    const border = root.clientLeft;
+    inset =
+      border + (options.side === 'left' ? frame.right - content.right : content.left - frame.left);
+    paint(openness.value);
+  };
+  const resizes = new ResizeObserver(measure);
+  resizes.observe(card);
+  resizes.observe(options.card);
+
   ctx.own(() => {
     clearTimeout(linger);
     openness.stop();
+    resizes.disconnect();
   });
 
   return {
@@ -106,6 +126,11 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
       root.classList.toggle('has-card', next.card !== null);
       root.dataset.compact = String(next.rail.height < 96);
       apply();
+      paint(openness.value);
+    },
+    setOverhang(px) {
+      if (px === overhang) return;
+      overhang = px;
       paint(openness.value);
     },
   };
