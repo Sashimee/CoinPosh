@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { endpointFixtures } from '../test/fixtures.ts';
+import { endpointFixtures, ids } from '../test/fixtures.ts';
 import { roundTrip } from '../test/roundTrip.ts';
 import {
   buildPath,
   ENDPOINT_NAMES,
   endpoints,
   requiresIdempotencyKey,
+  tableSnapshotEndpoint,
   type Endpoint,
   type EndpointName,
 } from './endpoints.ts';
@@ -139,6 +140,47 @@ describe.each(cases)('$name round-trip', ({ endpoint, fixture }) => {
       expect(reparsed).toEqual(parsed);
     });
   }
+});
+
+describe('tableSnapshotEndpoint', () => {
+  const endpoint: Endpoint = tableSnapshotEndpoint;
+  const body = {
+    session: 'session_K3p9Wz2QfL',
+    seq: 3,
+    tick: 7_200,
+    pusher: { tickInCycle: 15 },
+    coins: [[ids.coins[0], 1_250, 480, -32_000, 0, 0, 0, 32_767, 'asleep']],
+    crates: [[ids.crate, -4_100, 22_000, 1_850, 'riding']],
+  };
+  const response = { seq: 3, stored: 2, ignored: 0 };
+
+  it('is a signed bearer POST that requires an idempotency key', () => {
+    expect(`${endpoint.method} ${endpoint.path}`).toBe('POST /v1/table/snapshot');
+    expect(endpoint.auth).toBe('bearer');
+    expect(endpoint.params).toBeNull();
+    expect(requiresIdempotencyKey(endpoint)).toBe(true);
+  });
+
+  it('does not collide with a registered route', () => {
+    const routes = cases.map((c) => `${c.endpoint.method} ${c.endpoint.path}`);
+    expect(routes).not.toContain(`${endpoint.method} ${endpoint.path}`);
+  });
+
+  it('round-trips its request and response through JSON', () => {
+    expect(endpoint.body).not.toBeNull();
+    const request = roundTrip(tableSnapshotEndpoint.body, body);
+    expect(request.parsed).toEqual(body);
+    expect(request.reparsed).toEqual(request.parsed);
+    const answer = roundTrip(endpoint.response, response);
+    expect(answer.parsed).toEqual(response);
+    expect(answer.reparsed).toEqual(answer.parsed);
+  });
+
+  it('rejects a body with an extra key and ignores an extra response key', () => {
+    const result = tableSnapshotEndpoint.body.safeParse(withExtraKey(body));
+    expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
+    expect(endpoint.response.parse(withExtraKey(response))).toEqual(response);
+  });
 });
 
 describe('buildPath', () => {

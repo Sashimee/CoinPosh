@@ -64,6 +64,13 @@ describe('error codes', () => {
     expect(errorStatus('idempotency_in_progress')).toBe(409);
     expect(errorStatus('idempotency_key_reused')).toBe(422);
   });
+
+  it('answer a fenced tab and an out-of-order table snapshot with 409', () => {
+    expect(errorStatus('session_superseded')).toBe(409);
+    expect(errorStatus('stale_snapshot')).toBe(409);
+    const envelope = errorEnvelope('session_superseded', 'This table is open elsewhere.');
+    expect(ErrorEnvelopeSchema.parse(envelope)).toEqual(envelope);
+  });
 });
 
 describe('errorEnvelope', () => {

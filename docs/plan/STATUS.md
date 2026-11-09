@@ -68,7 +68,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-253 | done | task/P-253 (merge 44e5e70) | Formal table.bench re-baseline decision recorded in STACK.lock.md: same-host back-to-back rule and 1.3x host factor; pnpm check green after merge |
 | P-254 | done | task/P-254 (merge b55f64f) | creep.test pour front-fall bound APPROVED as falls during the pour <= ceil(POUR_COINS/32) (5 for 160), all falls inside SETTLED_STROKES, strict post-settle zeros kept (decision in POLISH.md P-254/P-215); P-215 re-review checks against it; pnpm check green after merge |
 | P-257 | done | task/P-257 (merge d5b674d) | Escape ownership and focus restore for sheets: the open sheet owns Escape wherever focus sits, and a late close restores focus to its trigger only if focus is still inside it (sheetFocus.ts, 8cf66c2); pnpm check green after merge |
-| T-92.01 | todo | | Ready: no deps. Shared contracts for table persistence (#92) |
+| T-92.01 | done | task/T-92.01 (merge 7e2058c) | Shared contracts for table persistence: TableSnapshot/session/layout schemas in packages/shared/src/api/table.ts, tableSnapshotEndpoint, new error codes and ids (40774ee); session/layout optional until T-92.04/T-92.05/T-92.08 (P-265..P-268); pnpm check green after merge (#92) |
 | T-92.02 | todo | | Ready: no deps. Sim snapshot/restore and pose validation (#92) |
 | T-92.03 | todo | | Ready: no deps. Crate spawns not re-earned through refunds (#84) |
 | T-92.04 | todo | | Waits on T-92.01, T-92.02, T-92.03 (#92) |

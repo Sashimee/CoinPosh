@@ -16,6 +16,8 @@ export const ERROR_STATUS = {
   insufficient_funds: 409,
   not_ready: 409,
   table_frozen: 409,
+  session_superseded: 409,
+  stale_snapshot: 409,
   payload_too_large: 413,
   idempotency_key_reused: 422,
   rate_limited: 429,
