@@ -17,6 +17,7 @@ import {
   mountDemoBanner,
   NET_I18N_KEYS,
   NET_I18N_SOURCE,
+  openingTableCoins,
   type DemoBannerColors,
   type Net,
   type NetMode,
@@ -182,7 +183,7 @@ const hydrated = netReady
     return null;
   });
 
-void bootScene(canvas, netReady, hydrated);
+void bootScene(canvas, hydrated);
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
 // unlock the context and the track starts without a render hitch.
@@ -314,7 +315,7 @@ async function loadState(net: Net, app: UiApp): Promise<StateResponse> {
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await net.client.call('state');
+        return await net.client.call('state', { query: { hydrate: 'boot' } });
       } catch (error) {
         if (stopped.signal.aborted) throw error;
         const delayMs = Math.min(STATE_RETRY.firstDelayMs * 2 ** attempt, STATE_RETRY.maxDelayMs);
@@ -468,13 +469,12 @@ function registerNetStrings(i18n: I18n): void {
 }
 
 /**
- * Play starts once the table is hydrated and the first frame is drawn. In Demo Mode the sim opens
- * on the heap the server minted, so it pays out from the first shove. Until play starts the
+ * Play starts once the table is hydrated and the first frame is drawn. The sim opens on the heap
+ * the server minted, so it pays out from the first shove. Until play starts the
  * bridge draws the coins and a tap on the table answers with the tap cue.
  */
 async function bootScene(
   target: HTMLCanvasElement,
-  netReady: Promise<Net | null>,
   hydrated: Promise<NetBoot | null>,
 ): Promise<void> {
   let stage: Stage;
@@ -498,7 +498,7 @@ async function bootScene(
     systemsModule = gameSystems;
     vfxModule = effects;
     // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
-    const simStarted = openingTable(netReady, hydrated).then((heap) => {
+    const simStarted = openingTable(hydrated).then((heap) => {
       started = startSim(simModule, heap);
       return started;
     });
@@ -556,17 +556,10 @@ async function bootScene(
   probe.playable = true;
 }
 
-/**
- * The coins the server says are already on the table. Demo Mode's server mints the opening heap
- * there; live mode opens on an empty sim table, since nothing seeds the sim from the server's.
- * TODO(lead-architect): lay the live table's coins too once the API hands out a table seed.
- */
-async function openingTable(
-  netReady: Promise<Net | null>,
-  hydrated: Promise<NetBoot | null>,
-): Promise<readonly MintedCoin[]> {
-  if ((await netReady)?.mode.kind !== 'demo') return [];
-  return (await hydrated)?.state.table.coins ?? [];
+/** The opening heap the server minted onto the table, in every net mode. */
+async function openingTable(hydrated: Promise<NetBoot | null>): Promise<readonly MintedCoin[]> {
+  const boot = await hydrated;
+  return boot === null ? [] : openingTableCoins(boot.state);
 }
 
 function openingHeapOf(coins: readonly MintedCoin[]): OpeningHeap | null {

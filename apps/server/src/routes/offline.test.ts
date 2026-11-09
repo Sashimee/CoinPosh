@@ -10,7 +10,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import type { PlayerDO } from '../do/PlayerDO.ts';
 import { newSession, type Session } from '../test/client.ts';
-import { claims, drop, playerStub, state } from '../test/game.ts';
+import { claims, dropAsClient, playerStub, vaultCoins } from '../test/game.ts';
 import {
   measuredActiveRate,
   OFFLINE_MIN_AWAY_MS,
@@ -27,20 +27,14 @@ type Edge = 'front' | 'left';
 interface Played {
   /** Coins the wallet was paid for falls. */
   readonly won: number;
-  /** Coins the wallet paid for drops. */
+  /** Coins the Vault paid for drops. */
   readonly spent: number;
 }
 
 async function dropCoins(session: Session, count: number) {
-  const before = (await state(session)).wallet.coins;
-  let after = before;
-  const coins = [];
-  for (let i = 0; i < count; i++) {
-    const response = await drop(session, { tick: i });
-    coins.push(response.coin);
-    after = response.wallet.coins;
-  }
-  return { coins, spent: before - after };
+  const before = await vaultCoins(session);
+  const coins = (await dropAsClient(session, count, (i) => i)).map((response) => response.coin);
+  return { coins, spent: before - (await vaultCoins(session)) };
 }
 
 async function fuse(session: Session, coinIds: readonly CoinId[], tick: number): Promise<CoinId[]> {
