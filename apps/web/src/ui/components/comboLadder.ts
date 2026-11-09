@@ -7,7 +7,7 @@ import { fromMarkup, h } from '../dom.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { createMeterRail, type MeterRail } from './meterRail.ts';
-import { fitCaption } from './railLayout.ts';
+import { fitCaption, swellOverhang } from './railLayout.ts';
 
 const BOWL_TOP = 8;
 const BOWL_BOTTOM = 112;
@@ -93,14 +93,18 @@ export function createComboLadder(ctx: UiContext): MeterRail {
     foam.setAttribute('y', String(y - 1));
     root.style.setProperty('--cp-fill', String(level));
   });
+  /** Distance from the rank name's field-side edge to the origin it swells about. */
+  let swellReach = 0;
   const swell = new SpringValue(1, SPRINGS.pop, (value) => {
     tierName.style.scale = value === 1 ? '' : String(value);
+    rail.setOverhang(swellOverhang(value, swellReach));
   });
 
   ctx.loc.text(heading, () => tr(ctx, 'combo.label'));
 
   const frame = captionRow.closest('.cp-rail-card');
   if (!(frame instanceof HTMLElement)) throw new Error('Combo caption is not inside a rail card');
+  let fitted = '';
   /** Keeps the longest rank name, in every language, inside the card: wrap first, then shrink. */
   const fit = (): void => {
     const style = getComputedStyle(frame);
@@ -118,6 +122,15 @@ export function createComboLadder(ctx: UiContext): MeterRail {
     if (scale < 1) {
       tierName.style.fontSize = `${parseFloat(getComputedStyle(tierName).fontSize) * scale}px`;
     }
+    const originX = parseFloat(getComputedStyle(tierName).transformOrigin);
+    swellReach = rail.side === 'right' ? originX : tierName.offsetWidth - originX;
+    fitted = captionKey();
+  };
+  const captionKey = (): string =>
+    `${ctx.i18n.language}\n${tierName.textContent}\n${multiplier.textContent}`;
+  /** A cascade recounts on every coin; only a new rank, multiplier or language needs a re-fit. */
+  const refit = (): void => {
+    if (captionKey() !== fitted) fit();
   };
   const frameResizes = new ResizeObserver(fit);
   frameResizes.observe(frame);
@@ -150,7 +163,7 @@ export function createComboLadder(ctx: UiContext): MeterRail {
     if (view.tier) lastLive = view;
     // A spent cascade's card folds away still naming the rank it reached, not an idle dash.
     caption(view.tier ? view : (lastLive ?? view));
-    fit();
+    refit();
     root.classList.toggle('is-spent', !view.tier && lastLive !== null);
     const tier = view.tier ? tr(ctx, `combo.tier.${view.tier.id}`) : '';
     const mult = tr(ctx, 'combo.multiplier', { value: formatDecimal(view.multiplier, language) });

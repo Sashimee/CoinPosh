@@ -15,6 +15,8 @@ export interface MeterRail {
   setOpen(open: boolean, linger?: number): void;
   /** Moves the rail to its slot in viewport px, relative to `origin`; null hides it. */
   place(slot: RailSlot | null, origin: { left: number; top: number }): void;
+  /** How far, in px, a transient effect pushes the contents past their field-side edge. */
+  setOverhang(px: number): void;
 }
 
 export interface MeterRailOptions {
@@ -50,6 +52,7 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
   let linger: ReturnType<typeof setTimeout> | undefined;
   /** How far the contents' field-side edge sits inside the open card, in px. */
   let inset = 0;
+  let overhang = 0;
 
   const paint = (open: number): void => {
     if (!slot) return;
@@ -58,7 +61,7 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
     root.style.top = `${box.top - origin.top}px`;
     root.style.width = `${box.width}px`;
     root.style.height = `${box.height}px`;
-    const reveal = slot.card ? cardReveal(box.width, slot.card.width, inset) : 0;
+    const reveal = slot.card ? cardReveal(box.width, slot.card.width, inset - overhang) : 0;
     card.style.opacity = String(reveal);
     card.style.translate = reveal === 1 ? '' : `0 ${(1 - reveal) * RISE_PX}px`;
   };
@@ -123,6 +126,11 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
       root.classList.toggle('has-card', next.card !== null);
       root.dataset.compact = String(next.rail.height < 96);
       apply();
+      paint(openness.value);
+    },
+    setOverhang(px) {
+      if (px === overhang) return;
+      overhang = px;
       paint(openness.value);
     },
   };

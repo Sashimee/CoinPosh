@@ -224,6 +224,15 @@ export function cardReveal(boxWidth: number, cardWidth: number, inset: number): 
   return Math.min(1, Math.max(0, uncovered / Math.min(REVEAL_FADE_PX, inset)));
 }
 
+/**
+ * How far a name swollen to `scale` reaches past its own field-side edge, where `reach` is the
+ * distance from that edge to the scale's origin. The reveal holds back by this much, so a rank-up
+ * swell never pokes out past the morphing box while the card is still opening.
+ */
+export function swellOverhang(scale: number, reach: number): number {
+  return Math.max(0, scale - 1) * Math.max(0, reach);
+}
+
 export interface CaptionFitInput {
   /** Width the caption may use inside the card. */
   readonly room: number;
