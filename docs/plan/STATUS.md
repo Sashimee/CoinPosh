@@ -70,8 +70,10 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-257 | done | task/P-257 (merge d5b674d) | Escape ownership and focus restore for sheets: the open sheet owns Escape wherever focus sits, and a late close restores focus to its trigger only if focus is still inside it (sheetFocus.ts, 8cf66c2); pnpm check green after merge |
 | T-92.01 | done | task/T-92.01 (merge 7e2058c) | Shared contracts for table persistence: TableSnapshot/session/layout schemas in packages/shared/src/api/table.ts, tableSnapshotEndpoint, new error codes and ids (40774ee); session/layout optional until T-92.04/T-92.05/T-92.08 (P-265..P-268); pnpm check green after merge (#92) |
 | P-180 | done | task/P-180 (merge a42fc7b) | mountCrates() wired into main.ts: crates mounted with net, sim port, stage, framing, UI, vfx, haptics, audio, inventory and the systems bus; crates already on the table adopted at boot (bae04e3); follow-up P-269 (cascade multiplier, #112); pnpm check green after merge |
-| T-92.02 | blocked(review: Node/browser parity criterion unmet, no browser round trip or parity harness; restore stability test weaker than the <1 mm asleep criterion; SIM_VERSION 7 note pins hashes that differ from restore.test.ts:183-187) | task/T-92.02 (10aea39) | Fix inside owned paths: add a parity check (e.g. vitest browser project in packages/sim; lockfile change goes to the lead as a request) or get a recorded lead decision deferring it to POLISH; assert per-coin <1 mm vs played-on table and absolute <1 mm for reference-asleep coins, most coins still; correct the SIM_VERSION 7 hash note (#92) |
-| T-92.03 | todo | | Ready: no deps. Crate spawns not re-earned through refunds (#84) |
+| T-92.02 | blocked(review: restore.test.ts:116/:331 holds pusher-moved coins to WOKEN 1.5 mm vs the reference table, not the 1 mm of design 1.4; comment cites a P-275 lead decision that is not recorded) | task/T-92.02 (ff9cca2, not merged) | Fix: either the lead records the moved-coin bound (amend design 1.4 or note under P-275, citing the 10 µm position format) and the comment at :109-115 cites it, or bring the moved-coin bound to 1 mm (STILL) at all four phases; worst case measured 1.08 mm at tick 180; follow-ups P-282, P-283 (#92) |
+| T-92.03 | done | task/T-92.03 (merge 0f3b434) | Crate spawns not re-earned through refunds (#84): PlayerDO.ts tracks spent crate spawns, schema.ts migration, reload/schema tests (71a8be0); pnpm check green after merge |
+| P-264 | done | task/P-264 (merge 2f4a90c) | Cascade rank card fits its rank name and stays clear of the flute: railLayout box helpers, comboLadder/meterRail fit the longest EN/FR/DE rank names inside the card, with box tests at 390x844 and 360x780 (4326ffa); pnpm check green after merge |
+| P-231 | blocked(review: boot.perf firstDropMs not reliably < 3000 ms (4 of 15 Demo runs over, 3047-3191 ms; passes only 120-280 ms under); env still adds ~200-250 ms before first drop; dispose() does not stop the in-flight HDRI worker) | task/P-231 (928a668, not merged) | Fix: 10+ consecutive green boot.perf runs with margin and report the distribution (or a profiled request to the lead for the main.ts boot path); cut boot-time env cost in environment.ts:187-194/:240 (e.g. compile boot shaders against the fallback, one controlled refresh at handoff) or show it is inherent to IBL with numbers; AbortSignal/cancel through EnvironmentLoader, terminate the worker on dispose (:350-371, :434, :67) with a unit test; follow-ups P-284..P-287 |
 | T-92.04 | todo | | Waits on T-92.01, T-92.02, T-92.03 (#92) |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
@@ -91,7 +93,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.05 | todo | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag) |
 | T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
-| T-10.01 | todo | | Ready: no deps. Account link contracts |
+| T-10.01 | done | task/T-10.01 (merge 75e63f3) | Account link contracts: packages/shared/src/api/account.ts, accountEndpoints in endpoints.ts, new error codes (e91c834); wiring into `endpoints`, fixtures and Demo mock queued as P-281 for T-10.03; pnpm check green after merge |
 | T-10.02 | todo | | Waits on T-10.01. Server: verify ID tokens, link, sign in on a new device |
 | T-10.03 | todo | | Waits on T-10.01, T-92.05. Net layer + Demo mock for account link |
 | T-10.04 | todo | | Waits on T-10.03. Account UI: link, sign in, progress choice |
@@ -288,3 +290,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 15 · 2026-11-09 · P-215 P-247 P-248 · merged P-248 (da920d6), P-247 (849be80); 1 rejected (P-215)
 - wave 16 · 2026-11-09 · P-215 P-253 P-254 P-257 · merged P-253 (44e5e70), P-254 (b55f64f), P-257 (d5b674d), P-215 (237e6ea); 0 rejected
 - wave 17 · 2026-11-09 · T-92.01 T-92.02 P-180 · merged T-92.01 (7e2058c), P-180 (a42fc7b); 1 rejected (T-92.02)
+- wave 18 · 2026-11-09 · T-92.02 T-92.03 T-10.01 P-231 P-264 · merged T-10.01 (75e63f3), T-92.03 (0f3b434), P-264 (2f4a90c); 2 rejected (T-92.02, P-231)
