@@ -73,6 +73,27 @@ describe('error codes', () => {
   });
 });
 
+describe('account link error codes', () => {
+  it.each([
+    ['identity_in_use', 409],
+    ['invalid_id_token', 401],
+    ['provider_unavailable', 503],
+  ] as const)('maps %s to %i', (code, status) => {
+    expect(errorStatus(code)).toBe(status);
+    const envelope = errorEnvelope(code, 'Account link failed.', { requestId: 'req_02KD9Y' });
+    const { parsed, reparsed } = roundTrip(ErrorEnvelopeSchema, envelope);
+    expect(parsed).toEqual(envelope);
+    expect(reparsed).toEqual(parsed);
+  });
+
+  it('asks a client to retry an unavailable provider later', () => {
+    const envelope = errorEnvelope('provider_unavailable', 'Sign in with Apple is not set up.', {
+      retryAfterMs: 60_000,
+    });
+    expect(ErrorEnvelopeSchema.parse(envelope).error.retryAfterMs).toBe(60_000);
+  });
+});
+
 describe('errorEnvelope', () => {
   it('builds a valid envelope and keeps the extras', () => {
     const envelope = errorEnvelope('insufficient_funds', 'Not enough coins to drop.', {

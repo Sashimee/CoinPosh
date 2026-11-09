@@ -1,5 +1,16 @@
 import { z } from 'zod';
 import {
+  AccountLinkRequestSchema,
+  AccountLinkResponseSchema,
+  AccountNonceRequestSchema,
+  AccountNonceResponseSchema,
+  AccountResponseSchema,
+  AccountUnlinkRequestSchema,
+  AccountUnlinkResponseSchema,
+  SignInRequestSchema,
+  SignInResponseSchema,
+} from './account.ts';
+import {
   GuestAuthRequestSchema,
   GuestAuthResponseSchema,
   RefreshRequestSchema,
@@ -56,7 +67,10 @@ import {
 
 export type HttpMethod = 'GET' | 'POST';
 
-/** `none` endpoints are still device-signed; they just carry no bearer access token. */
+/**
+ * `none` endpoints carry no bearer access token but are still device-signed: the verifying key
+ * travels in the body (`devicePublicKey`) or is looked up from the refresh-token row.
+ */
 export type AuthMode = 'none' | 'bearer';
 
 export interface Endpoint<
@@ -153,6 +167,31 @@ export const tableSnapshotEndpoint = post(
   TableSnapshotRequestSchema,
   TableSnapshotResponseSchema,
 );
+
+// TODO(lead-architect): spread into `endpoints` in the same change that adds their fixtures to
+// `test/fixtures.ts` and their Demo handlers to `apps/web/src/net/mock/world.ts`; both are mapped
+// over every EndpointName (https://github.com/Sashimee/CoinPosh/issues/119).
+/** `none` routes serve a device with no session yet and carry the signing key in the body. */
+export const accountEndpoints = {
+  accountNonce: post(
+    '/v1/account/nonce',
+    AccountNonceRequestSchema,
+    AccountNonceResponseSchema,
+    'none',
+  ),
+  accountLink: post('/v1/account/link', AccountLinkRequestSchema, AccountLinkResponseSchema),
+  authSignIn: post('/v1/auth/signin', SignInRequestSchema, SignInResponseSchema, 'none'),
+  accountUnlink: post(
+    '/v1/account/unlink',
+    AccountUnlinkRequestSchema,
+    AccountUnlinkResponseSchema,
+  ),
+  account: get('/v1/account', AccountResponseSchema),
+} as const satisfies Record<string, Endpoint>;
+
+export type AccountEndpoints = typeof accountEndpoints;
+export type AccountEndpointName = keyof AccountEndpoints;
+export const ACCOUNT_ENDPOINT_NAMES = Object.keys(accountEndpoints) as AccountEndpointName[];
 
 export type Endpoints = typeof endpoints;
 export type EndpointName = keyof Endpoints;

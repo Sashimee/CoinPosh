@@ -123,6 +123,16 @@ describe('a player stored by the v1 schema', () => {
         { key: 'cascade_carry', value: '0' },
         { key: 'mint_carry', value: '0' },
       ]);
+      const dropCounters = () =>
+        sql
+          .exec(
+            "SELECT key, value FROM meta WHERE key IN ('drop_count', 'drop_high_water') ORDER BY key",
+          )
+          .toArray();
+      expect(dropCounters()).toEqual([
+        { key: 'drop_count', value: '3' },
+        { key: 'drop_high_water', value: '3' },
+      ]);
       const vault = () => {
         const report = player.conservation();
         return report.walletCoins + report.bufferPaid;
@@ -152,11 +162,19 @@ describe('a player stored by the v1 schema', () => {
         { id: coinId(1), state: 'refunded' },
         { id: coinId(2), state: 'refunded' },
       ]);
+      expect(dropCounters()).toEqual([
+        { key: 'drop_count', value: '1' },
+        { key: 'drop_high_water', value: '3' },
+      ]);
 
       const again = await player.state({ hydrate: 'boot' });
       if (!again.ok) throw new Error(again.error.message);
       expect(again.body.table.coins).toEqual(booted.body.table.coins);
       expect(again.body.wallet).toEqual(booted.body.wallet);
+      expect(dropCounters()).toEqual([
+        { key: 'drop_count', value: '1' },
+        { key: 'drop_high_water', value: '3' },
+      ]);
       expect(player.conservation()).toMatchObject({ conserved: true });
     });
   });
