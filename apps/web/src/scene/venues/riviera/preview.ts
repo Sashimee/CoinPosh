@@ -10,7 +10,12 @@ import {
   WebGPURenderer,
   type Object3D,
 } from 'three/webgpu';
-import { applyCameraPreset, createRivieraVenue, type RivieraQuality } from './index.ts';
+import {
+  applyCameraPreset,
+  createRivieraVenue,
+  type EnvironmentSource,
+  type RivieraQuality,
+} from './index.ts';
 import { RIVIERA_TABLE } from './layout.ts';
 import { rivieraTokens } from './palette.ts';
 
@@ -34,7 +39,9 @@ interface Percentiles {
 }
 
 interface PreviewStats {
+  /** True once frames are on screen and the environment has settled on its final lighting. */
   ready: boolean;
+  environment: EnvironmentSource | 'loading';
   backend: string;
   quality: RivieraQuality;
   drawCalls: number;
@@ -57,6 +64,7 @@ const params = new URLSearchParams(location.search);
 const quality = params.get('quality') === 'low' ? 'low' : 'high';
 const stats: PreviewStats = {
   ready: false,
+  environment: 'loading',
   backend: '',
   quality,
   drawCalls: 0,
@@ -146,6 +154,9 @@ async function boot(): Promise<void> {
     reducedMotion: params.has('reduced'),
     quality,
   });
+  void venue.environmentReady.then((source) => {
+    stats.environment = source;
+  });
 
   if (params.has('coins')) scene.add(...standInCoins());
   if (params.has('probe')) {
@@ -214,7 +225,7 @@ async function boot(): Promise<void> {
     stats.frameMs = intervals.percentiles();
     stats.drawCalls = renderer.info.render.drawCalls;
     stats.triangles = renderer.info.render.triangles;
-    stats.ready = true;
+    stats.ready = stats.environment !== 'loading';
   });
 }
 

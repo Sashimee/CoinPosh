@@ -1,8 +1,10 @@
-import { Group, type Scene, type Texture, type Vector3 } from 'three/webgpu';
+import { Group, type Scene, type Vector3 } from 'three/webgpu';
 import {
-  applyHdriEnvironment,
+  installVenueEnvironment,
   SUNSET_HDRI,
-  type EnvironmentOptions,
+  type EnvironmentLoader,
+  type EnvironmentSource,
+  type VenueEnvironment,
 } from '../../env/environment.ts';
 import { createNoiseTexture } from '../../env/noise-texture.ts';
 import { applyRenderLook, type LookRenderer, type RenderLook } from '../../post/look.ts';
@@ -25,6 +27,7 @@ export { rivieraTokens, rivieraTones, paletteCssVariables } from './palette.ts';
 export { RIVIERA_TABLE, rivieraCameraPreset, applyCameraPreset } from './layout.ts';
 export type { CameraPreset } from './layout.ts';
 export type { RivieraQuality } from './materials.ts';
+export type { EnvironmentLoader, EnvironmentSource } from '../../env/environment.ts';
 
 const SUN_DIRECTION = RIVIERA_SUN_DIRECTION;
 const REDUCED_MOTION_WAVE_RATE = 0.3;
@@ -44,8 +47,6 @@ export const RIVIERA_RENDER_LOOK: RenderLook = {
 /** The sunset rim light; the post vignette leans toward it so the frame edges glow warm. */
 export const RIVIERA_VIGNETTE_TINT = rivieraTones.rimWarm;
 
-export type EnvironmentLoader = (scene: Scene, options: EnvironmentOptions) => Promise<Texture>;
-
 export interface RivieraVenueOptions {
   /**
    * Shadow-casting key light; must match the `shadows` of the look the renderer was given.
@@ -60,8 +61,8 @@ export interface RivieraVenueOptions {
   /** Freezes deck sway and slows the sea. Defaults to the OS `prefers-reduced-motion`. */
   readonly reducedMotion?: boolean;
   /**
-   * Installs the image-based lighting on the scene and resolves with the texture it set.
-   * Defaults to loading the bundled sunset HDRI; tests inject a stand-in.
+   * Loads the HDRI that takes over the image-based lighting a few frames into play. Defaults
+   * to fetching the bundled sunset HDRI; tests inject a stand-in.
    */
   readonly loadEnvironment?: EnvironmentLoader;
 }
@@ -80,6 +81,12 @@ export interface RivieraVenue {
   readonly look: RenderLook;
   /** Seconds of sea animation so far; advances slower than real time under reduced motion. */
   readonly waveTime: number;
+  /**
+   * The venue is lit from its first frame by a 32 px fallback environment; this resolves
+   * `hdri` once the full HDRI has crossfaded in (a second or so into play), or `fallback` if it
+   * failed to load (already logged as an error). Never rejects. Screenshot harnesses await it.
+   */
+  readonly environmentReady: Promise<EnvironmentSource>;
   cameraPreset(aspect: number): CameraPreset;
   /** 0 = pusher retracted, 1 = full stroke. Drive it from the sim's pusher phase. */
   setPusherStroke(stroke01: number): void;
@@ -96,22 +103,33 @@ function prefersReducedMotion(): boolean {
 /**
  * Builds the Riviera Yacht venue into `scene`: the lacquered table, the teak deck and stern
  * rail, the procedural sunset sky and sea, the HDRI environment and the venue's lights.
- * Resolves once the HDRI is loaded so the first frame is fully lit.
+ * Resolves without waiting on the network or the GPU: the first frame is lit by the inlined
+ * fallback environment and the HDRI hands off later (`environmentReady`), so boot never pays
+ * for the HDRI fetch or its PMREM pre-filter.
  *
  * The game passes `null` for `renderer`: its post pipeline owns tonemapping, exposure, the
  * shadow map and the IBL intensity, fed with `venue.look`. A harness that renders without
  * the post pipeline passes its renderer and the venue applies `look` through
  * `applyRenderLook`.
  */
-export async function createRivieraVenue(
+export function createRivieraVenue(
   scene: Scene,
   renderer: LookRenderer | null,
   options: RivieraVenueOptions = {},
 ): Promise<RivieraVenue> {
+  return new Promise((resolve) => {
+    resolve(buildRivieraVenue(scene, renderer, options));
+  });
+}
+
+function buildRivieraVenue(
+  scene: Scene,
+  renderer: LookRenderer | null,
+  options: RivieraVenueOptions,
+): RivieraVenue {
   const shadows = options.shadows ?? RIVIERA_RENDER_LOOK.shadows;
   const look: RenderLook = { ...RIVIERA_RENDER_LOOK, shadows };
   const quality = options.quality ?? 'high';
-  const loadEnvironment = options.loadEnvironment ?? applyHdriEnvironment;
   let reducedMotion = options.reducedMotion ?? prefersReducedMotion();
 
   if (renderer) applyRenderLook(renderer, scene, look);
@@ -164,11 +182,12 @@ export async function createRivieraVenue(
     lighting.dispose();
   };
 
-  let environment: Texture;
+  let environment: VenueEnvironment;
   try {
-    environment = await loadEnvironment(scene, {
+    environment = installVenueEnvironment(scene, {
       hdri: SUNSET_HDRI,
       sunYaw: Math.atan2(SUN_DIRECTION.z, SUN_DIRECTION.x),
+      ...(options.loadEnvironment ? { load: options.loadEnvironment } : {}),
     });
   } catch (error) {
     disposeParts();
@@ -191,6 +210,7 @@ export async function createRivieraVenue(
     get waveTime() {
       return ocean.time.value;
     },
+    environmentReady: environment.ready,
     cameraPreset: rivieraCameraPreset,
     setPusherStroke: (stroke01) => {
       table.setPusherStroke(stroke01);
@@ -211,7 +231,6 @@ export async function createRivieraVenue(
     },
     dispose() {
       scene.remove(root);
-      if (scene.environment === environment) scene.environment = null;
       environment.dispose();
       disposeParts();
     },

@@ -14,7 +14,8 @@ import {
   Texture,
   type Object3D,
 } from 'three/webgpu';
-import type { EnvironmentOptions } from '../../env/environment.ts';
+import { texture } from 'three/tsl';
+import type { HdriAsset } from '../../env/environment.ts';
 import type { LookRenderer } from '../../post/look.ts';
 import {
   createRivieraVenue,
@@ -34,13 +35,27 @@ function fakeRenderer(): LookRenderer {
 
 function fakeEnvironment() {
   const texture = new DataTexture(new Uint8Array(4), 1, 1);
-  const calls: EnvironmentOptions[] = [];
-  const load = vi.fn((scene: Scene, options: EnvironmentOptions) => {
-    calls.push(options);
-    scene.environment = texture;
-    return Promise.resolve<Texture>(texture);
+  const calls: HdriAsset[] = [];
+  let settle: (loaded: Texture) => void = () => undefined;
+  let fail: (error: Error) => void = () => undefined;
+  const load = vi.fn((hdri: HdriAsset) => {
+    calls.push(hdri);
+    return new Promise<Texture>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
   });
-  return { texture, calls, load };
+  return {
+    texture,
+    calls,
+    load,
+    resolve: () => {
+      settle(texture);
+    },
+    reject: (error: Error) => {
+      fail(error);
+    },
+  };
 }
 
 async function build(options: RivieraVenueOptions = {}, renderer: LookRenderer | null = null) {
@@ -71,16 +86,43 @@ afterEach(() => {
 });
 
 describe('createRivieraVenue', () => {
-  it('installs the injected environment, adds the root and leaves the grade to the post pipeline', async () => {
+  it('installs its environment, adds the root and leaves the grade to the post pipeline', async () => {
     const { scene, environment, venue } = await build({ shadows: true });
     expect(venue.look).toEqual({ exposure: 0.85, environmentIntensity: 0.32, shadows: true });
     expect(scene.environmentIntensity).toBe(1);
     expect(environment.load).toHaveBeenCalledTimes(1);
-    expect(environment.calls[0]?.hdri.url).toMatch(/venice_sunset_512\.hdr/);
-    expect(scene.environment).toBe(environment.texture);
+    expect(environment.calls[0]?.url).toMatch(/venice_sunset_512\.hdr/);
+    expect(scene.environmentNode?.name).toBe('venue-environment');
     expect(scene.children).toContain(venue.root);
     expect(venue.quality).toBe('high');
     venue.dispose();
+  });
+
+  it('resolves playable before the HDRI loader settles, lit by the inlined fallback', async () => {
+    const scene = new Scene();
+    const environment = fakeEnvironment();
+    let venueReady = false;
+    const created = createRivieraVenue(scene, null, {
+      reducedMotion: false,
+      loadEnvironment: environment.load,
+    }).then((venue) => {
+      venueReady = true;
+      return venue;
+    });
+    const venue = await created;
+    expect(venueReady).toBe(true);
+    expect(environment.load).toHaveBeenCalledTimes(1);
+    expect(scene.children).toContain(venue.root);
+    expect(scene.environmentNode?.name).toBe('venue-environment');
+    let environmentSettled = false;
+    void venue.environmentReady.then(() => {
+      environmentSettled = true;
+    });
+    await Promise.resolve();
+    expect(environmentSettled).toBe(false);
+    environment.resolve();
+    venue.dispose();
+    await expect(venue.environmentReady).resolves.toBe('fallback');
   });
 
   it('applies its look to a renderer it is handed, for harnesses without the post pipeline', async () => {
@@ -172,42 +214,39 @@ describe('createRivieraVenue', () => {
     const { scene, environment, venue } = await build();
     venue.dispose();
     expect(scene.children).not.toContain(venue.root);
-    expect(scene.environment).toBeNull();
+    expect(scene.environmentNode).toBeNull();
     expect(materialDispose).toHaveBeenCalled();
     expect(geometryDispose).toHaveBeenCalled();
+    expect(
+      textureDispose.mock.contexts.some((t) => (t as Texture).name === 'venue-hdri-fallback'),
+    ).toBe(true);
+    environment.resolve();
+    await venue.environmentReady;
+    await Promise.resolve();
     expect(textureDispose.mock.contexts).toContain(environment.texture);
     expect(textureDispose.mock.contexts.some((t) => (t as Texture).name === 'baked-noise')).toBe(
       true,
     );
   });
 
-  it('leaves a scene environment it did not set in place on dispose', async () => {
+  it('leaves a scene environment node it did not set in place on dispose', async () => {
     const { scene, venue } = await build();
-    const other = new DataTexture(new Uint8Array(4), 1, 1);
-    scene.environment = other;
+    const other = texture(new DataTexture(new Uint8Array(4), 1, 1)).rgb;
+    scene.environmentNode = other;
     venue.dispose();
-    expect(scene.environment).toBe(other);
+    expect(scene.environmentNode).toBe(other);
   });
 
-  it('rejects, leaves the scene untouched and disposes everything when the HDRI fails', async () => {
-    const materialDispose = vi.spyOn(Material.prototype, 'dispose');
-    const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
-    const textureDispose = vi.spyOn(Texture.prototype, 'dispose');
-    const scene = new Scene();
+  it('keeps playing on the fallback and logs loudly when the HDRI fails to load', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { scene, environment, venue } = await build();
     const failure = new Error('HDRI 404');
-    await expect(
-      createRivieraVenue(scene, fakeRenderer(), {
-        reducedMotion: false,
-        loadEnvironment: () => Promise.reject(failure),
-      }),
-    ).rejects.toBe(failure);
-    expect(scene.children).toHaveLength(0);
-    expect(scene.environment).toBeNull();
-    expect(materialDispose).toHaveBeenCalled();
-    expect(geometryDispose).toHaveBeenCalled();
-    expect(textureDispose.mock.contexts.some((t) => (t as Texture).name === 'baked-noise')).toBe(
-      true,
-    );
+    environment.reject(failure);
+    await expect(venue.environmentReady).resolves.toBe('fallback');
+    expect(logged).toHaveBeenCalledWith(expect.stringMatching(/HDRI did not load/), failure);
+    expect(scene.children).toContain(venue.root);
+    expect(scene.environmentNode?.name).toBe('venue-environment');
+    venue.dispose();
   });
 
   it('drops the deck clearcoat on the low tier and keeps it on high', async () => {
