@@ -266,30 +266,38 @@ describe('crate spawns across a boot refund', () => {
 
   it('spawns no second crate when the refunded spend is dropped to the threshold again', async () => {
     const session = await newSession();
-    expect(spawnIndices(await dropAsClient(session, SCRIPTED))).toEqual([SCRIPTED]);
-    const [crate] = (await state(session)).table.crates;
-    if (crate === undefined) throw new Error('The scripted drop spawned no crate.');
+    const interval = crateSpawnInterval({});
+    await grantCoins(session, 2 * interval * COPPER.value);
+    const vault = await vaultCoins(session);
+    expect(spawnIndices(await dropAsClient(session, interval))).toEqual([SCRIPTED, interval]);
+    const crates = await ledgerCrates(session);
+    expect(crates).toHaveLength(2);
 
     await reload(session);
-    expect(await vaultCoins(session)).toBe(startingCoins());
-    expect(await dropCounters(session)).toEqual({ net: 0, highWater: SCRIPTED });
+    expect(await vaultCoins(session)).toBe(vault);
 
-    expect(spawnIndices(await dropAsClient(session, SCRIPTED))).toEqual([]);
-    expect(await dropCounters(session)).toEqual({ net: SCRIPTED, highWater: SCRIPTED });
-    expect((await state(session)).table.crates).toEqual([crate]);
-    expect(await ledgerCrates(session)).toEqual([crate.id]);
+    expect(spawnIndices(await dropAsClient(session, interval))).toEqual([]);
+    expect(await ledgerCrates(session)).toEqual(crates);
+    expect(await dropCounters(session)).toEqual({ net: interval, highWater: interval });
     await expectConserved(session);
   });
 
   it('cannot farm crates by looping drop and reload', async () => {
     const session = await newSession();
+    const interval = crateSpawnInterval({});
+    await grantCoins(session, 3 * interval * COPPER.value);
+    const vault = await vaultCoins(session);
     for (let round = 0; round < 3; round++) {
-      await dropAsClient(session, SCRIPTED);
+      await dropAsClient(session, interval);
       await reload(session);
     }
-    expect(await ledgerCrates(session)).toHaveLength(1);
-    expect(await vaultCoins(session)).toBe(startingCoins());
-    expect(await dropCounters(session)).toEqual({ net: 0, highWater: SCRIPTED });
+    const expected = Array.from({ length: interval }, (_, i) => i + 1).filter((net) =>
+      dropSpawnsCrate(net, {}),
+    );
+    expect(expected).toEqual([SCRIPTED, interval]);
+    expect(await ledgerCrates(session)).toHaveLength(expected.length);
+    expect(await vaultCoins(session)).toBe(vault);
+    expect(await dropCounters(session)).toEqual({ net: 0, highWater: interval });
     await expectConserved(session);
   });
 
