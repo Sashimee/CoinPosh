@@ -1,9 +1,9 @@
-import { accountEndpoints, type ProgressChoice } from '@coinposh/shared';
+import { accountEndpoints, HEADERS, type ProgressChoice } from '@coinposh/shared';
 import { Hono } from 'hono';
 import { deviceKeyThumbprint } from '../auth/device.ts';
 import { nonceMatches, verifyIdToken, type VerifiedIdToken } from '../auth/link/idToken.ts';
 import type { JwksCache } from '../auth/link/jwks.ts';
-import { issueNonce, spendNonce } from '../auth/link/nonces.ts';
+import { assertNonceEnvelope, clientKey, issueNonce, spendNonce } from '../auth/link/nonces.ts';
 import { requireProvider, type ReadyProvider } from '../auth/link/providers.ts';
 import {
   admitDevice,
@@ -16,8 +16,8 @@ import {
   readSave,
   unlinkIdentity,
 } from '../auth/link/store.ts';
-import { authSecret, tokenBundle } from '../auth/tokens.ts';
-import type { AppEnv } from '../http/context.ts';
+import { authSecret, tokenBundle, verifyAccessToken } from '../auth/tokens.ts';
+import type { AppContext, AppEnv } from '../http/context.ts';
 import { IDEMPOTENT_REPLAYED_HEADER } from '../http/cors.ts';
 import { ApiFailure } from '../http/errors.ts';
 import {
@@ -51,6 +51,24 @@ async function verifiedFor(
 }
 
 /**
+ * A link nonce is only useful to a session that can then call link, so only such a session
+ * may ask for one: the bearer token must belong to the same key that signed the request.
+ */
+async function requireSessionOf(c: AppContext, deviceJkt: string): Promise<void> {
+  const grant = await verifyAccessToken(
+    authSecret(c.env.AUTH_SECRET),
+    c.req.header(HEADERS.authorization),
+    Date.now(),
+  );
+  if ((await deviceKeyThumbprint(grant.deviceKey)) !== deviceJkt) {
+    throw new ApiFailure(
+      'unauthorized',
+      'This access token belongs to another device key. Sign the request with the key it was issued to.',
+    );
+  }
+}
+
+/**
  * Google and Apple linking. Nothing here reads a balance or a reward from the client: a link
  * only maps a verified provider subject to a save, and a sign-in only hands this device a
  * session on the save that subject already keeps. Saves are never merged.
@@ -65,13 +83,20 @@ export function createAccountRoutes(deps: AccountRouteDeps) {
     const body = parseBody(endpoints.accountNonce.body, request.rawBody);
     await verifySigned(c, request, body.devicePublicKey);
     requireProvider(c.env, body.provider);
+    const deviceJkt = await deviceKeyThumbprint(body.devicePublicKey);
+    if (body.purpose === 'link') await requireSessionOf(c, deviceJkt);
     const now = Date.now();
+    const requester = {
+      deviceJkt,
+      clientKey: await clientKey(authSecret(c.env.AUTH_SECRET), c.req.header('CF-Connecting-IP')),
+      now,
+    };
+    await assertNonceEnvelope(c.env.DB, requester);
     await burnAuthKey(c.env.DB, idempotencyKey, endpoints.accountNonce.path, now);
     const issued = await issueNonce(c.env.DB, {
+      ...requester,
       provider: body.provider,
       purpose: body.purpose,
-      deviceJkt: await deviceKeyThumbprint(body.devicePublicKey),
-      now,
     });
     return c.json(endpoints.accountNonce.response.parse(issued));
   });

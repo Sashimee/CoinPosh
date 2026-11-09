@@ -6,46 +6,106 @@ import {
   type NoncePurpose,
   type PlayerId,
 } from '@coinposh/shared';
-import { base64UrlEncode, randomBytes } from '../../crypto.ts';
+import { base64UrlEncode, randomBytes, utf8 } from '../../crypto.ts';
 import { ApiFailure } from '../../http/errors.ts';
 
 export const ACCOUNT_NONCE_TTL_MS = 10 * 60 * 1000;
 /** Unspent nonces one device may hold at once; a real sign-in sheet needs one or two. */
 export const MAX_OPEN_NONCES_PER_DEVICE = 6;
 
+/**
+ * Unspent nonces one client IP may hold at once. Fresh device keys cost a bot nothing, so the
+ * per-device cap alone does not bound the writes; this one is sized for a busy carrier NAT.
+ */
+export const MAX_OPEN_NONCES_PER_IP = 30;
+
 export interface IssuedNonce {
   readonly nonce: AccountNonce;
   readonly expiresAt: EpochMs;
 }
 
-export async function issueNonce(
-  db: D1Database,
-  input: { provider: IdentityProvider; purpose: NoncePurpose; deviceJkt: string; now: EpochMs },
-): Promise<IssuedNonce> {
-  const { provider, purpose, deviceJkt, now } = input;
+export interface NonceRequester {
+  readonly deviceJkt: string;
+  readonly clientKey: string;
+  readonly now: EpochMs;
+}
+
+/** HMAC of the client IP, so the table never stores an address that could be read back. */
+export async function clientKey(secret: string, ip: string | undefined): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    utf8(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const mac = await crypto.subtle.sign('HMAC', key, utf8(`account-nonce-ip:${ip ?? 'unknown'}`));
+  return base64UrlEncode(new Uint8Array(mac));
+}
+
+interface OpenCount {
+  open: number;
+  first_expiry: number | null;
+}
+
+function retryAfter(count: OpenCount, now: EpochMs): number {
+  return Math.max(1000, (count.first_expiry ?? now) - now);
+}
+
+/**
+ * Refuses before anything is written, so a client over either cap costs one prune and two
+ * index reads, never a row.
+ */
+export async function assertNonceEnvelope(db: D1Database, who: NonceRequester): Promise<void> {
+  const { deviceJkt, clientKey: ipKey, now } = who;
   await db.prepare('DELETE FROM account_nonces WHERE expires_at <= ?').bind(now).run();
-  const open = await db
-    .prepare(
-      `SELECT COUNT(*) AS open, MIN(expires_at) AS first_expiry FROM account_nonces
-        WHERE device_jkt = ? AND consumed_at IS NULL AND expires_at > ?`,
-    )
-    .bind(deviceJkt, now)
-    .first<{ open: number; first_expiry: number | null }>();
-  if (open !== null && open.open >= MAX_OPEN_NONCES_PER_DEVICE) {
+  const [byDevice, byIp] = await db.batch<OpenCount>([
+    db
+      .prepare(
+        `SELECT COUNT(*) AS open, MIN(expires_at) AS first_expiry FROM account_nonces
+          WHERE device_jkt = ? AND consumed_at IS NULL AND expires_at > ?`,
+      )
+      .bind(deviceJkt, now),
+    db
+      .prepare(
+        `SELECT COUNT(*) AS open, MIN(expires_at) AS first_expiry FROM account_nonces
+          WHERE client_ip = ? AND consumed_at IS NULL AND expires_at > ?`,
+      )
+      .bind(ipKey, now),
+  ]);
+  const device = byDevice?.results[0];
+  if (device !== undefined && device.open >= MAX_OPEN_NONCES_PER_DEVICE) {
     throw new ApiFailure(
       'rate_limited',
       'Too many sign-in attempts from this device. Finish or wait for one to expire.',
-      { retryAfterMs: Math.max(1000, (open.first_expiry ?? now) - now) },
+      { retryAfterMs: retryAfter(device, now) },
     );
   }
+  const ip = byIp?.results[0];
+  if (ip !== undefined && ip.open >= MAX_OPEN_NONCES_PER_IP) {
+    throw new ApiFailure(
+      'rate_limited',
+      'Too many sign-in attempts from this network. Wait a few minutes and try again.',
+      { retryAfterMs: retryAfter(ip, now) },
+    );
+  }
+}
+
+/** Call only after `assertNonceEnvelope` passed for the same requester. */
+export async function issueNonce(
+  db: D1Database,
+  input: NonceRequester & { provider: IdentityProvider; purpose: NoncePurpose },
+): Promise<IssuedNonce> {
+  const { provider, purpose, deviceJkt, clientKey: ipKey, now } = input;
   const nonce = AccountNonceSchema.parse(base64UrlEncode(randomBytes(32)));
   const expiresAt = now + ACCOUNT_NONCE_TTL_MS;
   await db
     .prepare(
-      `INSERT INTO account_nonces (nonce, provider, purpose, device_jkt, issued_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO account_nonces
+         (nonce, provider, purpose, device_jkt, client_ip, issued_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(nonce, provider, purpose, deviceJkt, now, expiresAt)
+    .bind(nonce, provider, purpose, deviceJkt, ipKey, now, expiresAt)
     .run();
   return { nonce, expiresAt };
 }

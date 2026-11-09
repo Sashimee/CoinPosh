@@ -11,7 +11,8 @@ import {
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../crypto.ts';
-import { MAX_OPEN_NONCES_PER_DEVICE } from '../auth/link/nonces.ts';
+import { deviceKeyThumbprint } from '../auth/device.ts';
+import { MAX_OPEN_NONCES_PER_DEVICE, MAX_OPEN_NONCES_PER_IP } from '../auth/link/nonces.ts';
 import { PROVIDERS } from '../auth/link/providers.ts';
 import { LocalJwks, newSigningKey, signIdToken, type SigningKey } from '../auth/link/testIssuer.ts';
 import { createApp } from '../index.ts';
@@ -52,6 +53,13 @@ interface CallOptions {
   readonly accessToken?: string;
   readonly idempotencyKey?: IdempotencyKey;
   readonly env?: Record<string, unknown>;
+  readonly ip?: string;
+}
+
+/** Each call comes from its own address unless a test pins one, so per-IP caps stay out of the way. */
+function randomIp(): string {
+  const [a, b] = crypto.getRandomValues(new Uint16Array(2));
+  return `2001:db8::${(a ?? 0).toString(16)}:${(b ?? 0).toString(16)}`;
 }
 
 /** Like test/client `send`, but through an app whose provider keys come from `jwks`. */
@@ -65,6 +73,7 @@ async function call(device: Device, path: string, options: CallOptions = {}): Pr
     headers.set(HEADERS.authorization, `Bearer ${options.accessToken}`);
   }
   if (idempotencyKey !== null) headers.set(HEADERS.idempotencyKey, idempotencyKey);
+  headers.set('CF-Connecting-IP', options.ip ?? randomIp());
   headers.set(
     HEADERS.deviceSignature,
     await signParts(device.privateKey, method, path, idempotencyKey, rawBody),
@@ -77,13 +86,18 @@ async function call(device: Device, path: string, options: CallOptions = {}): Pr
   return linkedApp.fetch(request, options.env ?? configured);
 }
 
+/** A link nonce needs the session's bearer token; a sign-in nonce only the device key. */
 async function nonceFor(
-  device: Device,
+  who: Device | Session,
   provider: IdentityProvider,
   purpose: NoncePurpose,
+  ip?: string,
 ): Promise<AccountNonceResponse> {
+  const device = 'tokens' in who ? who.device : who;
   const response = await call(device, accountEndpoints.accountNonce.path, {
     body: { provider, purpose, devicePublicKey: device.publicKey },
+    ...('tokens' in who ? { accessToken: who.tokens.accessToken } : {}),
+    ...(ip === undefined ? {} : { ip }),
   });
   expect(response.status, await response.clone().text()).toBe(200);
   return accountEndpoints.accountNonce.response.parse(await response.json());
@@ -137,7 +151,7 @@ function link(session: Session, body: unknown, idempotencyKey?: IdempotencyKey) 
 }
 
 async function linkGoogle(session: Session, subject: string): Promise<Response> {
-  const { nonce } = await nonceFor(session.device, 'google', 'link');
+  const { nonce } = await nonceFor(session, 'google', 'link');
   return link(session, {
     provider: 'google',
     idToken: await googleToken({ subject, nonce }),
@@ -222,7 +236,7 @@ describe('POST /v1/account/nonce', () => {
   it('refuses a replay of a captured nonce request', async () => {
     const device = await newDevice();
     const idempotencyKey = newIdempotencyKey();
-    const body = { provider: 'google', purpose: 'link', devicePublicKey: device.publicKey };
+    const body = { provider: 'google', purpose: 'signin', devicePublicKey: device.publicKey };
     expect(
       (await call(device, accountEndpoints.accountNonce.path, { body, idempotencyKey })).status,
     ).toBe(200);
@@ -241,6 +255,66 @@ describe('POST /v1/account/nonce', () => {
     });
     await expectError(response, 429, 'rate_limited');
     expect(Number(response.headers.get('Retry-After'))).toBeGreaterThan(0);
+  });
+
+  it('caps the unspent nonces one IP can hold, however many device keys a bot mints', async () => {
+    const ip = randomIp();
+    for (let i = 0; i < MAX_OPEN_NONCES_PER_IP; i++) {
+      await nonceFor(await newDevice(), 'google', 'signin', ip);
+    }
+    const bot = await newDevice();
+    const idempotencyKey = newIdempotencyKey();
+    const response = await call(bot, accountEndpoints.accountNonce.path, {
+      body: { provider: 'google', purpose: 'signin', devicePublicKey: bot.publicKey },
+      idempotencyKey,
+      ip,
+    });
+    await expectError(response, 429, 'rate_limited');
+    expect(Number(response.headers.get('Retry-After'))).toBeGreaterThan(0);
+    const burned = await env.DB.prepare('SELECT 1 FROM auth_requests WHERE idempotency_key = ?')
+      .bind(idempotencyKey)
+      .first();
+    expect(burned, 'a refused request must not write an auth_requests row').toBeNull();
+    const stored = await env.DB.prepare('SELECT 1 FROM account_nonces WHERE device_jkt = ?')
+      .bind(await deviceKeyThumbprint(bot.publicKey))
+      .first();
+    expect(stored, 'a refused request must not write a nonce').toBeNull();
+    await nonceFor(await newDevice(), 'google', 'signin');
+  });
+
+  it('never stores the client IP itself', async () => {
+    const ip = '203.0.113.77';
+    const { nonce } = await nonceFor(await newDevice(), 'google', 'signin', ip);
+    const row = await env.DB.prepare('SELECT client_ip FROM account_nonces WHERE nonce = ?')
+      .bind(nonce)
+      .first<{ client_ip: string }>();
+    expect(row?.client_ip).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(row?.client_ip).not.toContain('203.0.113');
+  });
+
+  it('issues a link nonce only to a session of the key that signs the request', async () => {
+    const device = await newDevice();
+    const body = { provider: 'google', purpose: 'link', devicePublicKey: device.publicKey };
+    await expectError(
+      await call(device, accountEndpoints.accountNonce.path, { body }),
+      401,
+      'unauthorized',
+    );
+    const other = await newSession();
+    await expectError(
+      await call(device, accountEndpoints.accountNonce.path, {
+        body,
+        accessToken: other.tokens.accessToken,
+      }),
+      401,
+      'unauthorized',
+    );
+    const session = await newSession();
+    const response = await call(session.device, accountEndpoints.accountNonce.path, {
+      body: { provider: 'google', purpose: 'link', devicePublicKey: session.device.publicKey },
+      accessToken: session.tokens.accessToken,
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
   });
 
   it('answers provider_unavailable for a provider whose secrets are missing', async () => {
@@ -269,7 +343,7 @@ describe('POST /v1/account/link', () => {
 
   it('links Apple too, accepting the hashed nonce native Sign in with Apple sends', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'apple', 'link');
+    const { nonce } = await nonceFor(session, 'apple', 'link');
     const idToken = await appleToken({ subject: newSubject(), nonce: await sha256Hex(nonce) });
     const response = await link(session, { provider: 'apple', idToken, nonce });
     expect(response.status, await response.clone().text()).toBe(200);
@@ -294,7 +368,7 @@ describe('POST /v1/account/link', () => {
 
   it('answers a network retry of the exact same request as a replay', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const body = {
       provider: 'google',
       idToken: await googleToken({ subject: newSubject(), nonce }),
@@ -309,7 +383,7 @@ describe('POST /v1/account/link', () => {
 
   it('refuses a forged signature under the genuine key id', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const forged = await googleToken({ subject: newSubject(), nonce, key: forger });
     await expectError(
       await link(session, { provider: 'google', idToken: forged, nonce }),
@@ -322,7 +396,7 @@ describe('POST /v1/account/link', () => {
 
   it('refuses a token minted for another app (wrong aud)', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const idToken = await googleToken({
       subject: newSubject(),
       nonce,
@@ -337,7 +411,7 @@ describe('POST /v1/account/link', () => {
 
   it('refuses an expired token', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const past = Math.floor(Date.now() / 1000) - 7200;
     const idToken = await googleToken({
       subject: newSubject(),
@@ -353,7 +427,7 @@ describe('POST /v1/account/link', () => {
 
   it('refuses a replayed nonce, even with a fresh idempotency key', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const body = {
       provider: 'google',
       idToken: await googleToken({ subject: newSubject(), nonce }),
@@ -366,7 +440,7 @@ describe('POST /v1/account/link', () => {
 
   it('refuses a same-key retry that changes the request', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const subject = newSubject();
     const key = newIdempotencyKey();
     const first = { provider: 'google', idToken: await googleToken({ subject, nonce }), nonce };
@@ -380,8 +454,8 @@ describe('POST /v1/account/link', () => {
 
   it('refuses a token that embeds a different nonce than the one sent', async () => {
     const session = await newSession();
-    const sent = await nonceFor(session.device, 'google', 'link');
-    const other = await nonceFor(session.device, 'google', 'link');
+    const sent = await nonceFor(session, 'google', 'link');
+    const other = await nonceFor(session, 'google', 'link');
     const idToken = await googleToken({ subject: newSubject(), nonce: other.nonce });
     await expectError(
       await link(session, { provider: 'google', idToken, nonce: sent.nonce }),
@@ -392,11 +466,11 @@ describe('POST /v1/account/link', () => {
 
   it('refuses a nonce issued to another device, for another purpose or provider, or expired', async () => {
     const session = await newSession();
-    const thief = await newDevice();
+    const thief = await newSession();
     const stolen = await nonceFor(thief, 'google', 'link');
     const signinNonce = await nonceFor(session.device, 'google', 'signin');
-    const appleNonce = await nonceFor(session.device, 'apple', 'link');
-    const stale = await nonceFor(session.device, 'google', 'link');
+    const appleNonce = await nonceFor(session, 'apple', 'link');
+    const stale = await nonceFor(session, 'google', 'link');
     await env.DB.prepare('UPDATE account_nonces SET expires_at = ? WHERE nonce = ?')
       .bind(Date.now() - 1, stale.nonce)
       .run();
@@ -434,7 +508,7 @@ describe('POST /v1/account/link', () => {
 
   it('accepts no value field from the client', async () => {
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const idToken = await googleToken({ subject: newSubject(), nonce });
     const response = await link(session, {
       provider: 'google',
@@ -564,7 +638,7 @@ describe('POST /v1/auth/signin', () => {
   it('works with Apple', async () => {
     const session = await newSession();
     const subject = newSubject();
-    const { nonce } = await nonceFor(session.device, 'apple', 'link');
+    const { nonce } = await nonceFor(session, 'apple', 'link');
     expect(
       (
         await link(session, {
@@ -621,7 +695,8 @@ describe('POST /v1/auth/signin', () => {
 
   it('refuses a forged token and a link nonce', async () => {
     const { subject } = await linkedAccount();
-    const phone = await newDevice();
+    const guest = await newSession();
+    const phone = guest.device;
     const signinNonce = await nonceFor(phone, 'google', 'signin');
     const forged = await googleToken({ subject, nonce: signinNonce.nonce, key: forger });
     await expectError(
@@ -636,7 +711,7 @@ describe('POST /v1/auth/signin', () => {
       401,
       'invalid_id_token',
     );
-    const linkNonce = await nonceFor(phone, 'google', 'link');
+    const linkNonce = await nonceFor(guest, 'google', 'link');
     await expectError(
       await call(phone, accountEndpoints.authSignIn.path, {
         body: {
@@ -771,7 +846,7 @@ describe('without provider secrets (the deployed worker before H-10.01/H-10.02)'
     down.failing = true;
     const app = createApp({ fetchJwks: down.fetcher });
     const session = await newSession();
-    const { nonce } = await nonceFor(session.device, 'google', 'link');
+    const { nonce } = await nonceFor(session, 'google', 'link');
     const rawBody = JSON.stringify({
       provider: 'google',
       idToken: await googleToken({ subject: newSubject(), nonce }),

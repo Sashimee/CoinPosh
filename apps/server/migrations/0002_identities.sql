@@ -11,12 +11,15 @@ CREATE TABLE identities (
 
 -- Single-use and bound to the device key that asked, the provider and the purpose, so a nonce
 -- lifted from one flow cannot be spent in another. The consumer is kept to answer a retry of
--- the exact same link idempotently.
+-- the exact same link idempotently. `client_ip` is an HMAC of CF-Connecting-IP (never the
+-- address itself) and caps how many open nonces one network can hold, since a bot can mint a
+-- fresh device key for every request.
 CREATE TABLE account_nonces (
   nonce                TEXT PRIMARY KEY,
   provider             TEXT NOT NULL CHECK (provider IN ('google', 'apple')),
   purpose              TEXT NOT NULL CHECK (purpose IN ('link', 'signin')),
   device_jkt           TEXT NOT NULL,
+  client_ip            TEXT NOT NULL,
   issued_at            INTEGER NOT NULL,
   expires_at           INTEGER NOT NULL,
   consumed_at          INTEGER,
@@ -25,6 +28,7 @@ CREATE TABLE account_nonces (
   consumed_player      TEXT
 ) STRICT;
 CREATE INDEX account_nonces_device ON account_nonces (device_jkt, expires_at);
+CREATE INDEX account_nonces_client_ip ON account_nonces (client_ip, expires_at);
 CREATE INDEX account_nonces_expiry ON account_nonces (expires_at);
 
 -- Extra device keys that reached a save by signing in; the key in `players` stays its first
