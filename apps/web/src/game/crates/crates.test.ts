@@ -32,7 +32,18 @@ import {
 import { bindCrateAudio, stingerDuck } from './audio.ts';
 import { CrateController } from './controller.ts';
 import type { CrateEvents } from './events.ts';
-import { ARRIVAL_HINT_MS, bindArrivalHint, type HintClock } from './hint.ts';
+import {
+  ARRIVAL_HINT_MS,
+  bindArrivalHint,
+  HINT_HEIGHT,
+  hintFontScale,
+  placeArrivalHint,
+  PLAQUE_SWELL,
+  type ArrivalHintLayout,
+  type ArrivalHintPlacement,
+  type HintClock,
+  type HintRect,
+} from './hint.ts';
 import { CRATES_STRINGS, cratesKey, registerCratesStrings } from './i18n.ts';
 import { heroOf, pityOutlook, rewardLines } from './loot.ts';
 import { CRATE_RIDE_SECONDS, CrateRide } from './ride.ts';
@@ -311,6 +322,91 @@ describe('arrival hint', () => {
     expect(timers.size).toBe(0);
     spawn('crate_BBBBBBBBBBBBBBBB');
     expect(log).toEqual(['show', 'hide']);
+  });
+});
+
+describe('arrival hint placement', () => {
+  const rect = (left: number, top: number, right: number, bottom: number): HintRect => ({
+    left,
+    top,
+    right,
+    bottom,
+  });
+  const intersects = (a: HintRect, b: HintRect) =>
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const hintBox = (at: ArrivalHintPlacement, viewportWidth: number) =>
+    rect(at.inset, at.top, viewportWidth - at.inset, at.top + HINT_HEIGHT);
+
+  /** Measured at 390x844 in Demo Mode: banner, plaque, crown rails, aim rail above the dock. */
+  const phone: ArrivalHintLayout = {
+    viewportWidth: 390,
+    ceiling: 164,
+    plaque: rect(97, 90, 293, 164),
+    floor: rect(15.6, 322.5, 374.4, 525.1),
+    base: 658,
+    rails: [rect(7, 186, 27, 300), rect(363, 186, 383, 300)],
+  };
+
+  it('sets the hint in the apron past the payout lip, clear of the balance and the rails', () => {
+    const at = placeArrivalHint(phone);
+    expect(at.zone).toBe('apron');
+    const box = hintBox(at, phone.viewportWidth);
+    expect(box.top).toBeGreaterThan(phone.floor.bottom);
+    expect(box.bottom).toBeLessThan(phone.base);
+    expect(intersects(box, phone.plaque ?? rect(0, 0, 0, 0))).toBe(false);
+    for (const rail of phone.rails) expect(intersects(box, rail)).toBe(false);
+    expect(at.inset).toBe(16);
+  });
+
+  it('narrows symmetrically for a rail that shares the apron', () => {
+    const at = placeArrivalHint({
+      ...phone,
+      rails: [rect(7, 540, 27, 640), rect(363, 540, 383, 640)],
+    });
+    expect(at.zone).toBe('apron');
+    expect(at.inset).toBe(35);
+    for (const rail of [rect(7, 540, 27, 640), rect(363, 540, 383, 640)]) {
+      expect(intersects(hintBox(at, phone.viewportWidth), rail)).toBe(false);
+    }
+  });
+
+  it('falls back under the HUD, clear of the plaque at the peak of its credit pop', () => {
+    const tight = { ...phone, base: phone.floor.bottom + 40 };
+    const at = placeArrivalHint(tight);
+    expect(at.zone).toBe('crown');
+    const plaque = rect(97, 90, 293, 164);
+    const swollen = 164 + ((164 - 90) * (PLAQUE_SWELL - 1)) / 2;
+    expect(at.top).toBeGreaterThan(swollen);
+    expect(intersects(hintBox(at, tight.viewportWidth), plaque)).toBe(false);
+    expect(at.inset).toBe(35);
+  });
+
+  it('leaves the apron when its rails leave too little width for the hint', () => {
+    const at = placeArrivalHint({
+      ...phone,
+      rails: [rect(6, 540, 100, 640), rect(290, 540, 384, 640)],
+    });
+    expect(at.zone).toBe('crown');
+  });
+
+  it('keeps under a HUD that grows below the plaque, such as the empty-Vault notice', () => {
+    const at = placeArrivalHint({ ...phone, base: 560, ceiling: 240 });
+    expect(at).toEqual({ zone: 'crown', top: 248, inset: 35 });
+  });
+
+  it('shrinks an overlong instruction only as far as it stays legible', () => {
+    expect(hintFontScale(200, 260)).toBe(1);
+    expect(hintFontScale(260, 260)).toBe(1);
+    expect(hintFontScale(280, 260)).toBe(0.92);
+    expect(hintFontScale(600, 260)).toBe(0.8);
+    expect(hintFontScale(100, 0)).toBe(1);
+  });
+
+  it('keeps the instruction short enough for one line on a 360 px phone in every language', () => {
+    for (const language of LANGUAGES) {
+      expect(CRATES_STRINGS[language].arrived.length).toBeLessThanOrEqual(34);
+      expect(CRATES_STRINGS[language].title.length).toBeLessThanOrEqual(20);
+    }
   });
 });
 
