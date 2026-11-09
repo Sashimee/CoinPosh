@@ -1,5 +1,7 @@
+import { UPGRADE_LEVELS_SQL } from '../routes/upgrades.ts';
+
 /** PlayerDO SQLite migrations, applied in order; `schema_version` records how many ran. */
-const MIGRATIONS: readonly string[] = [
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -61,6 +63,33 @@ const MIGRATIONS: readonly string[] = [
     at          INTEGER NOT NULL
   );
   CREATE INDEX idempotency_at ON idempotency (at);
+  `,
+  `
+  ALTER TABLE coins ADD COLUMN paid INTEGER NOT NULL DEFAULT 0 CHECK (paid >= 0);
+  `,
+  `
+  CREATE TABLE coins_v3 (
+    id           TEXT PRIMARY KEY,
+    tier         TEXT NOT NULL,
+    value        INTEGER NOT NULL CHECK (value >= 0),
+    state        TEXT NOT NULL
+                 CHECK (state IN ('buffer', 'table', 'claimed', 'lost', 'fused', 'refunded')),
+    dropped_tick INTEGER,
+    minted_at    INTEGER NOT NULL,
+    settled_at   INTEGER,
+    paid         INTEGER NOT NULL DEFAULT 0 CHECK (paid >= 0)
+  );
+  INSERT INTO coins_v3 (rowid, id, tier, value, state, dropped_tick, minted_at, settled_at, paid)
+    SELECT rowid, id, tier, value, state, dropped_tick, minted_at, settled_at, paid FROM coins;
+  DROP TABLE coins;
+  ALTER TABLE coins_v3 RENAME TO coins;
+  CREATE INDEX coins_state ON coins (state);
+  CREATE INDEX ledger_ref ON ledger (ref);
+  `,
+  UPGRADE_LEVELS_SQL,
+  `
+  INSERT INTO meta (key, value)
+    SELECT 'heap_seeded', '1' WHERE EXISTS (SELECT 1 FROM ledger WHERE kind = 'grant.heap');
   `,
 ];
 

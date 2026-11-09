@@ -3,6 +3,7 @@ import {
   crateSpawn,
   fusion,
   fusionValue,
+  openingHeap,
   upgradeLines,
   upgradeStat,
 } from '@coinposh/economy';
@@ -22,9 +23,12 @@ import {
   type ErrorCode,
   type Locale,
   type PlayerId,
+  type StateQuery,
   type StateResponse,
   type TableCrate,
   type TableSnapshot,
+  type UpgradeBuyRequest,
+  type UpgradeBuyResponse,
 } from '@coinposh/shared';
 import { DurableObject } from 'cloudflare:workers';
 import { randomBase62, randomBytes, sha256Hex } from '../crypto.ts';
@@ -39,12 +43,27 @@ import {
   tierDef,
   type StoredCoin,
 } from './entities.ts';
-import { commit, ledgerBalance, LedgerTx, openWallet, readWallet } from './ledger.ts';
+import {
+  commit,
+  ledgerBalance,
+  LedgerTx,
+  openWallet,
+  readWallet,
+  type CommitContext,
+} from './ledger.ts';
+import {
+  quoteUpgrade,
+  readUpgradeLevels,
+  recordUpgrade,
+  UPGRADE_TX_KIND,
+  type UpgradeHost,
+} from '../routes/upgrades.ts';
 import { migrate } from './schema.ts';
 
 /**
- * Coin IDs reserved ahead so play survives short network drops. A reservation holds no
- * value: the wallet pays when the coin is dropped, so the buffer never locks coins away.
+ * Coin IDs reserved ahead so play survives short network drops. The wallet pays for each
+ * one as it is reserved, as the snapshot contract promises, so an offline drop spends
+ * coins the player really had when it was made.
  */
 export const PREMINT_BUFFER_TARGET = 16;
 export const FLUSH_INTERVAL_MS = 30_000;
@@ -73,8 +92,9 @@ export type DoResult<T> =
 
 export interface ConservationReport {
   readonly walletCoins: number;
-  readonly ledger: Readonly<Record<'wallet' | 'table' | 'house' | 'mint', number>>;
+  readonly ledger: Readonly<Record<'wallet' | 'buffer' | 'table' | 'house' | 'mint', number>>;
   readonly bufferCoins: number;
+  readonly bufferPaid: number;
   readonly tableValue: number;
   readonly tableCrates: number;
   readonly ledgerCratesOnTable: number;
@@ -91,7 +111,8 @@ type MetaKey =
   | 'fair_server_seed'
   | 'fair_server_seed_hash'
   | 'fair_client_seed'
-  | 'fair_nonce';
+  | 'fair_nonce'
+  | 'heap_seeded';
 
 function startingCoins(): number {
   const line = upgradeLines.find((candidate) => candidate.effect.stat === 'startingCoins');
@@ -99,7 +120,7 @@ function startingCoins(): number {
   return upgradeStat(line, 0);
 }
 
-export class PlayerDO extends DurableObject<Env> {
+export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
 
@@ -134,23 +155,42 @@ export class PlayerDO extends DurableObject<Env> {
         new LedgerTx('grant.starting').move('mint', 'wallet', 'coins', startingCoins(), null),
         { at: now, idempotencyKey: null },
       );
-      this.reserveBuffer(now);
+      this.seedOpeningHeap(now);
+      this.reserveBuffer({ at: now, idempotencyKey: null });
     });
-    await this.flush();
+    if (await this.flush()) await this.ctx.storage.setAlarm(Date.now());
   }
 
-  state(): DoResult<StateResponse> {
+  /**
+   * The player's snapshot. A boot one (`hydrate=boot`) is what a freshly loaded client lays its table from,
+   * so it first refunds the coins that client cannot lay again (see refundStranded). Every
+   * one lays the opening heap for a player who never had one and settles the buffer against
+   * the wallet.
+   */
+  async state(query: StateQuery): Promise<DoResult<StateResponse>> {
     const playerId = this.meta('player_id');
     if (playerId === null) return this.uninitialized();
+    const now = Date.now();
+    const committed = this.ctx.storage.transactionSync(() => {
+      const before = this.latestSeq();
+      if (query.hydrate === 'boot') this.refundStranded(now);
+      this.seedOpeningHeap(now);
+      this.reserveBuffer({ at: now, idempotencyKey: null });
+      return this.latestSeq() !== before;
+    });
+    if (committed) await this.scheduleFlush(now);
     const loadout = Array.from({ length: HOME_VENUE.charmSockets }, (_, socket) => ({
       socket,
       charmId: null,
     }));
-    const upgrades = Object.fromEntries(
-      upgradeLines.filter((line) => line.scope === 'venue').map((line) => [line.id, 0]),
-    );
+    const upgrades = {
+      ...Object.fromEntries(
+        upgradeLines.filter((line) => line.scope === 'venue').map((line) => [line.id, 0]),
+      ),
+      ...readUpgradeLevels(this.sql, HOME_VENUE.id),
+    };
     const state = {
-      serverTime: Date.now(),
+      serverTime: now,
       player: {
         id: playerId,
         displayName: this.requireMeta('display_name'),
@@ -185,15 +225,41 @@ export class PlayerDO extends DurableObject<Env> {
     });
   }
 
+  /** Prices the next level from economy config; the wallet pays the house for it. */
+  async buyUpgrade(command: Command<UpgradeBuyRequest>): Promise<DoResult<UpgradeBuyResponse>> {
+    return this.mutate(command, (now) => {
+      const quote = quoteUpgrade(
+        readUpgradeLevels(this.sql, HOME_VENUE.id),
+        readWallet(this.sql),
+        command.body,
+      );
+      recordUpgrade(this.sql, quote);
+      commit(
+        this.sql,
+        new LedgerTx(UPGRADE_TX_KIND).move('wallet', 'house', quote.currency, quote.cost, null),
+        { at: now, idempotencyKey: command.idempotencyKey },
+      );
+      return {
+        venueId: quote.venueId,
+        lineId: command.body.lineId,
+        level: quote.level,
+        wallet: readWallet(this.sql),
+      };
+    });
+  }
+
   /** Double-entry totals next to the entity tables they must agree with. */
   conservation(): ConservationReport {
     const ledger = {
       wallet: ledgerBalance(this.sql, 'wallet', 'coins'),
+      buffer: ledgerBalance(this.sql, 'buffer', 'coins'),
       table: ledgerBalance(this.sql, 'table', 'coins'),
       house: ledgerBalance(this.sql, 'house', 'coins'),
       mint: ledgerBalance(this.sql, 'mint', 'coins'),
     };
     const walletCoins = readWallet(this.sql).coins;
+    const buffer = this.entities.coinsIn('buffer');
+    const bufferPaid = buffer.reduce((total, coin) => total + coin.paid, 0);
     const tableValue = this.entities
       .coinsIn('table')
       .reduce((total, coin) => total + coin.value, 0);
@@ -201,13 +267,15 @@ export class PlayerDO extends DurableObject<Env> {
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
     const conserved =
       ledger.wallet === walletCoins &&
+      ledger.buffer === bufferPaid &&
       ledger.table === tableValue &&
       ledgerCratesOnTable === tableCrates &&
-      ledger.wallet + ledger.table + ledger.house + ledger.mint === 0;
+      ledger.wallet + ledger.buffer + ledger.table + ledger.house + ledger.mint === 0;
     return {
       walletCoins,
       ledger,
-      bufferCoins: this.entities.countCoinsIn('buffer'),
+      bufferCoins: buffer.length,
+      bufferPaid,
       tableValue,
       tableCrates,
       ledgerCratesOnTable,
@@ -266,8 +334,7 @@ export class PlayerDO extends DurableObject<Env> {
         row.idempotency_key,
       ),
     );
-    const latestSeq = this.sql.exec<{ seq: number }>('SELECT MAX(seq) AS seq FROM ledger').one();
-    const caughtUp = latestSeq.seq === last.seq;
+    const caughtUp = this.latestSeq() === last.seq;
     if (caughtUp) {
       statements.push(
         this.env.DB.prepare(
@@ -346,8 +413,10 @@ export class PlayerDO extends DurableObject<Env> {
     const context = { at: now, idempotencyKey };
     const cost = tierDef(DROP_TIER).value;
     const reserved = body.coinId === undefined ? null : this.bufferedCoin(body.coinId);
+    const prepaid = reserved?.paid ?? 0;
+    const due = Math.max(0, cost - prepaid);
     const balance = readWallet(this.sql).coins;
-    if (balance < cost) {
+    if (balance < due) {
       throw new ApiFailure(
         'insufficient_funds',
         `A drop costs ${cost} coin and the wallet holds ${balance}. Collect coins before dropping again.`,
@@ -363,8 +432,9 @@ export class PlayerDO extends DurableObject<Env> {
     commit(
       this.sql,
       new LedgerTx(reserved !== null ? 'drop.buffer' : 'drop.mint')
-        .move('wallet', 'table', 'coins', cost, coin.id)
-        .move('mint', 'table', 'coins', coin.value - cost, coin.id),
+        .move('buffer', 'table', 'coins', prepaid, coin.id)
+        .move('wallet', 'table', 'coins', due, coin.id)
+        .move('mint', 'table', 'coins', coin.value - prepaid - due, coin.id),
       context,
     );
 
@@ -380,7 +450,7 @@ export class PlayerDO extends DurableObject<Env> {
       spawnedCrates.push(publicCrate(crate));
     }
 
-    this.reserveBuffer(now);
+    this.reserveBuffer(context);
     return {
       coin: publicCoin(coin),
       buffer: this.entities.coinsIn('buffer').map(publicCoin),
@@ -474,13 +544,113 @@ export class PlayerDO extends DurableObject<Env> {
     }
   }
 
-  /** Reserves IDs up to the target, but never more than the wallet could pay to drop. */
-  private reserveBuffer(now: EpochMs): void {
-    const affordable = Math.floor(readWallet(this.sql).coins / tierDef(DROP_TIER).value);
-    const target = Math.min(PREMINT_BUFFER_TARGET, affordable);
-    for (let held = this.entities.countCoinsIn('buffer'); held < target; held++) {
-      this.entities.mintCoin(DROP_TIER, mintedValue(DROP_TIER), 'buffer', null, now);
+  /**
+   * Tops the buffer up to the target with coins the wallet pays for now. A reservation made
+   * before buffers were prepaid is paid for too, or let go when the wallet cannot cover it.
+   */
+  private reserveBuffer(context: CommitContext): void {
+    const cost = tierDef(DROP_TIER).value;
+    const canPay = () => readWallet(this.sql).coins >= cost;
+    for (const coin of this.entities.coinsIn('buffer')) {
+      if (coin.paid > 0) continue;
+      if (canPay()) this.prepay(coin.id, cost, context);
+      else this.entities.discardUnpaid(coin.id);
     }
+    for (let held = this.entities.countCoinsIn('buffer'); held < PREMINT_BUFFER_TARGET; held++) {
+      if (!canPay()) break;
+      const coin = this.entities.mintCoin(
+        DROP_TIER,
+        mintedValue(DROP_TIER),
+        'buffer',
+        null,
+        context.at,
+      );
+      this.prepay(coin.id, cost, context);
+    }
+  }
+
+  private prepay(id: CoinId, cost: number, context: CommitContext): void {
+    this.entities.markPaid(id, cost);
+    commit(
+      this.sql,
+      new LedgerTx('buffer.prepay').move('wallet', 'buffer', 'coins', cost, id),
+      context,
+    );
+  }
+
+  /**
+   * The client's sim can only lay the opening heap when it boots, so after a reload every
+   * other coin on the table would sit there unclaimable. Mid-session snapshots (a resync or
+   * a tab coming back) must not do this, or coins still in play would stop paying while
+   * their refund buys new drops. Each one goes back: the wallet gets what it paid for the
+   * coin, or for the drops fused into it, but never more than the coin is worth, and the
+   * house takes the rest of its value. The coin leaves the table for good, so a second boot
+   * finds nothing to refund and a late claim of it is refused as already claimed.
+   */
+  private refundStranded(now: EpochMs): void {
+    const heap = new Set(
+      this.sql
+        .exec<{ ref: string }>(
+          "SELECT ref FROM ledger WHERE kind = 'grant.heap' AND account = 'table'",
+        )
+        .toArray()
+        .map((row) => row.ref),
+    );
+    const stranded = this.entities.coinsIn('table').filter((coin) => !heap.has(coin.id));
+    if (stranded.length === 0) return;
+    const tx = new LedgerTx('refund.table');
+    for (const coin of stranded) {
+      const refund = Math.min(this.paidByVault(coin.id), coin.value);
+      this.entities.settleCoin(coin.id, 'refunded', now);
+      tx.move('table', 'wallet', 'coins', refund, coin.id);
+      tx.move('table', 'house', 'coins', coin.value - refund, coin.id);
+    }
+    commit(this.sql, tx, { at: now, idempotencyKey: null });
+  }
+
+  /** What the wallet paid to drop this coin, or to drop every coin fused into it. */
+  private paidByVault(id: string): number {
+    const dropped = this.sql
+      .exec<{ paid: number | null }>(
+        `SELECT -SUM(delta) AS paid FROM ledger
+         WHERE ref = ? AND kind IN ('drop.mint', 'drop.buffer') AND account IN ('wallet', 'buffer')`,
+        id,
+      )
+      .one().paid;
+    const inputs = this.sql
+      .exec<{ ref: string }>(
+        `SELECT input.ref AS ref FROM ledger AS output
+         JOIN ledger AS input ON input.tx_id = output.tx_id
+         WHERE output.kind = 'claim.fusion' AND output.ref = ? AND output.account = 'table'
+           AND output.delta > 0 AND input.account = 'table' AND input.delta < 0`,
+        id,
+      )
+      .toArray();
+    return inputs.reduce((total, input) => total + this.paidByVault(input.ref), dropped ?? 0);
+  }
+
+  /**
+   * Lays the opening heap once per player, staked by the house rather than the wallet. It
+   * rests at the front lip, so its coins may fall from tick 0; the client's sim lays them
+   * first, in this order, so they hold sim ids 0..n-1. Hydration refunds every other table
+   * coin first, so a player who signed up before the heap existed gets theirs on the boot
+   * after this deploy.
+   */
+  private seedOpeningHeap(now: EpochMs): void {
+    if (this.meta('heap_seeded') === '1') return;
+    if (this.entities.countCoinsIn('table') > 0) return;
+    const value = mintedValue(openingHeap.tier);
+    const tx = new LedgerTx('grant.heap');
+    for (let i = 0; i < openingHeap.coins; i++) {
+      const coin = this.entities.mintCoin(openingHeap.tier, value, 'table', 0, now);
+      tx.move('house', 'table', 'coins', value, coin.id);
+    }
+    commit(this.sql, tx, { at: now, idempotencyKey: null });
+    this.setMeta('heap_seeded', '1');
+  }
+
+  private latestSeq(): number | null {
+    return this.sql.exec<{ seq: number | null }>('SELECT MAX(seq) AS seq FROM ledger').one().seq;
   }
 
   private snapshot(): TableSnapshot {
