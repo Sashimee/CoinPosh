@@ -70,7 +70,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-257 | done | task/P-257 (merge d5b674d) | Escape ownership and focus restore for sheets: the open sheet owns Escape wherever focus sits, and a late close restores focus to its trigger only if focus is still inside it (sheetFocus.ts, 8cf66c2); pnpm check green after merge |
 | T-92.01 | done | task/T-92.01 (merge 7e2058c) | Shared contracts for table persistence: TableSnapshot/session/layout schemas in packages/shared/src/api/table.ts, tableSnapshotEndpoint, new error codes and ids (40774ee); session/layout optional until T-92.04/T-92.05/T-92.08 (P-265..P-268); pnpm check green after merge (#92) |
 | P-180 | done | task/P-180 (merge a42fc7b) | mountCrates() wired into main.ts: crates mounted with net, sim port, stage, framing, UI, vfx, haptics, audio, inventory and the systems bus; crates already on the table adopted at boot (bae04e3); follow-up P-269 (cascade multiplier, #112); pnpm check green after merge |
-| T-92.02 | todo | | Ready: no deps. Sim snapshot/restore and pose validation (#92) |
+| T-92.02 | blocked(review: Node/browser parity criterion unmet, no browser round trip or parity harness; restore stability test weaker than the <1 mm asleep criterion; SIM_VERSION 7 note pins hashes that differ from restore.test.ts:183-187) | task/T-92.02 (10aea39) | Fix inside owned paths: add a parity check (e.g. vitest browser project in packages/sim; lockfile change goes to the lead as a request) or get a recorded lead decision deferring it to POLISH; assert per-coin <1 mm vs played-on table and absolute <1 mm for reference-asleep coins, most coins still; correct the SIM_VERSION 7 hash note (#92) |
 | T-92.03 | todo | | Ready: no deps. Crate spawns not re-earned through refunds (#84) |
 | T-92.04 | todo | | Waits on T-92.01, T-92.02, T-92.03 (#92) |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
@@ -287,3 +287,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 14 · 2026-11-08 · P-215 P-238 P-226 · merged P-226 (396836f); 2 rejected (P-215, P-238)
 - wave 15 · 2026-11-09 · P-215 P-247 P-248 · merged P-248 (da920d6), P-247 (849be80); 1 rejected (P-215)
 - wave 16 · 2026-11-09 · P-215 P-253 P-254 P-257 · merged P-253 (44e5e70), P-254 (b55f64f), P-257 (d5b674d), P-215 (237e6ea); 0 rejected
+- wave 17 · 2026-11-09 · T-92.01 T-92.02 P-180 · merged T-92.01 (7e2058c), P-180 (a42fc7b); 1 rejected (T-92.02)
