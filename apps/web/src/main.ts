@@ -1,6 +1,7 @@
 import type { MintedCoin, StateResponse } from '@coinposh/shared';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
+import type * as CratesApi from './game/crates/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
 import { mountUpgrades, netUpgradeApi } from './game/upgrades/index.ts';
@@ -33,6 +34,7 @@ import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
+import { Haptics } from './vfx/haptics.ts';
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
@@ -114,6 +116,9 @@ interface ProbeCounts {
   creditedCoins: number;
   /** Fall claims the server refused, by reason; `unanswered` when the request itself failed. */
   refusedFalls: Record<string, number>;
+  cratesSpawned: number;
+  cratesOpened: number;
+  cratesCollected: number;
 }
 
 declare global {
@@ -134,6 +139,9 @@ const probe: { bridge: SimBridge | null; playable: boolean; counts: ProbeCounts 
     credits: 0,
     creditedCoins: 0,
     refusedFalls: {},
+    cratesSpawned: 0,
+    cratesOpened: 0,
+    cratesCollected: 0,
   },
 };
 window.__coinposh = {
@@ -274,6 +282,8 @@ interface NetBoot {
   readonly net: Net;
   readonly state: StateResponse;
   readonly vault: VaultTracker;
+  /** Re-reads the table from the server, for a wallet change TableSync did not see. */
+  readonly resync: (reason: string) => void;
 }
 
 /**
@@ -306,7 +316,7 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   teardown.push(() => {
     document.removeEventListener('visibilitychange', resyncWhenShown);
   });
-  return { net, state, vault };
+  return { net, state, vault, resync };
 }
 
 /**
@@ -534,22 +544,25 @@ async function bootScene(
   let riviera: typeof RivieraModule;
   let systemsModule: typeof SystemsModule;
   let vfxModule: typeof VfxModule;
+  let cratesApi: typeof CratesApi;
   let sim: StartedSim;
   let started: StartedSim | undefined;
   let built: Stage | undefined;
   const pending: Promise<unknown>[] = [];
   const stopEarlyTaps = answerEarlyTaps(target.id);
   try {
-    const [stageModule, venueModule, simModule, gameSystems, effects] = await Promise.all([
+    const [stageModule, venueModule, simModule, gameSystems, effects, crates] = await Promise.all([
       import('./stage.ts'),
       import('./scene/venues/riviera/index.ts'),
       import('./game/simWorker/index.ts'),
       import('./game/systems/index.ts'),
       import('./vfx/index.ts'),
+      import('./game/crates/index.ts'),
     ]);
     riviera = venueModule;
     systemsModule = gameSystems;
     vfxModule = effects;
+    cratesApi = crates;
     // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
     const simStarted = openingTable(hydrated).then((heap) => {
       started = startSim(simModule, heap);
@@ -605,7 +618,9 @@ async function bootScene(
   const simBacklog = takeEarlyEvents();
   if (!boot || bridge.failure) return;
   stopEarlyTaps();
-  table.use(startPlay(systemsModule, stage, bridge, boot, { heap, simBacklog, vfx }));
+  const systems = startPlay(systemsModule, stage, bridge, boot, { heap, simBacklog, vfx });
+  table.use(systems);
+  mountTableCrates(cratesApi, { stage, venue, bridge, boot, systems, vfx });
   probe.playable = true;
 }
 
@@ -792,6 +807,76 @@ function startPlay(
     for (const off of offs) off();
   });
   return systems;
+}
+
+interface CrateWiring {
+  readonly stage: Stage;
+  readonly venue: RivieraVenue;
+  readonly bridge: SimBridge;
+  readonly boot: NetBoot;
+  readonly systems: GameSystems;
+  readonly vfx: Vfx | null;
+}
+
+/**
+ * Vault Crates on the table: the server spawns them with drops, they ride the pusher to the lip,
+ * and a fall is claimed, opened by the server and played as the unbox. Crates already on the
+ * table when the session loads ride from where the snapshot left them. The reward card flies
+ * into the Vault plaque, and the plaque re-reads the server wallet once the player collects.
+ * Crates are a bonus on top of play, so a failure to mount them is logged, not fatal.
+ */
+function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring): void {
+  const { stage, venue, bridge, boot, systems, vfx } = wiring;
+  const haptics = new Haptics(typeof navigator === 'undefined' ? undefined : navigator, () =>
+    performance.now(),
+  );
+  haptics.enabled = ui.store.getState().settings.haptics;
+  let crates: CratesApi.CratesModule;
+  try {
+    crates = cratesApi.mountCrates({
+      game: systems.events,
+      net: { table: boot.net.table, client: boot.net.client },
+      sim: bridge,
+      stage,
+      framing: (aspect) => venue.cameraPreset(aspect),
+      ui,
+      host: uiRoot,
+      vfx,
+      haptics,
+      audio: () => audio,
+      inventoryTarget: () => uiRoot.querySelector<HTMLElement>('.cp-plaque'),
+    });
+  } catch (error) {
+    console.error(
+      'CoinPosh crates failed to mount; the game continues without Vault Crates.',
+      error,
+    );
+    return;
+  }
+  const { counts } = probe;
+  const offs = [
+    ui.onSettingsChange((settings) => {
+      haptics.enabled = settings.haptics;
+    }),
+    crates.events.on('crate:spawned', () => {
+      counts.cratesSpawned += 1;
+    }),
+    crates.events.on('crate:opened', () => {
+      counts.cratesOpened += 1;
+    }),
+    crates.events.on('crate:collected', () => {
+      counts.cratesCollected += 1;
+      boot.resync('a Vault Crate was collected');
+    }),
+    crates.events.on('crate:failed', ({ crateId, error }) => {
+      console.error(`CoinPosh crates: crate ${crateId} could not be claimed or opened.`, error);
+    }),
+  ];
+  teardown.push(() => {
+    for (const off of offs) off();
+    crates.dispose();
+  });
+  crates.controller.adopt(boot.state.table.crates);
 }
 
 /** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */
