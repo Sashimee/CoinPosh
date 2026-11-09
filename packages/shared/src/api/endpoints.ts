@@ -1,5 +1,16 @@
 import { z } from 'zod';
 import {
+  AccountLinkRequestSchema,
+  AccountLinkResponseSchema,
+  AccountNonceRequestSchema,
+  AccountNonceResponseSchema,
+  AccountResponseSchema,
+  AccountUnlinkRequestSchema,
+  AccountUnlinkResponseSchema,
+  SignInRequestSchema,
+  SignInResponseSchema,
+} from './account.ts';
+import {
   GuestAuthRequestSchema,
   GuestAuthResponseSchema,
   RefreshRequestSchema,
@@ -153,6 +164,30 @@ export const tableSnapshotEndpoint = post(
   TableSnapshotRequestSchema,
   TableSnapshotResponseSchema,
 );
+
+// TODO(lead-architect): spread into `endpoints` with T-10.03, which adds their fixtures to
+// `test/fixtures.ts` and their Demo mock handlers; both are mapped over every EndpointName.
+/** `none` routes serve a device with no session yet: the nonce for a sign-in, and the sign-in. */
+export const accountEndpoints = {
+  accountNonce: post(
+    '/v1/account/nonce',
+    AccountNonceRequestSchema,
+    AccountNonceResponseSchema,
+    'none',
+  ),
+  accountLink: post('/v1/account/link', AccountLinkRequestSchema, AccountLinkResponseSchema),
+  authSignIn: post('/v1/auth/signin', SignInRequestSchema, SignInResponseSchema, 'none'),
+  accountUnlink: post(
+    '/v1/account/unlink',
+    AccountUnlinkRequestSchema,
+    AccountUnlinkResponseSchema,
+  ),
+  account: get('/v1/account', AccountResponseSchema),
+} as const satisfies Record<string, Endpoint>;
+
+export type AccountEndpoints = typeof accountEndpoints;
+export type AccountEndpointName = keyof AccountEndpoints;
+export const ACCOUNT_ENDPOINT_NAMES = Object.keys(accountEndpoints) as AccountEndpointName[];
 
 export type Endpoints = typeof endpoints;
 export type EndpointName = keyof Endpoints;

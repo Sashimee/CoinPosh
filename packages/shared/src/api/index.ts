@@ -1,3 +1,4 @@
+export * from './account.ts';
 export * from './auth.ts';
 export * from './endpoints.ts';
 export * from './fair.ts';

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { endpointFixtures, ids } from '../test/fixtures.ts';
 import { roundTrip } from '../test/roundTrip.ts';
 import {
+  ACCOUNT_ENDPOINT_NAMES,
+  accountEndpoints,
   buildPath,
   ENDPOINT_NAMES,
   endpoints,
@@ -180,6 +182,55 @@ describe('tableSnapshotEndpoint', () => {
     const result = tableSnapshotEndpoint.body.safeParse(withExtraKey(body));
     expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
     expect(endpoint.response.parse(withExtraKey(response))).toEqual(response);
+  });
+});
+
+describe('accountEndpoints', () => {
+  const accountCases: { name: string; endpoint: Endpoint }[] = ACCOUNT_ENDPOINT_NAMES.map(
+    (name) => ({ name, endpoint: accountEndpoints[name] }),
+  );
+  const routeOf = ({ endpoint }: { endpoint: Endpoint }) => `${endpoint.method} ${endpoint.path}`;
+
+  it('covers exactly the account link surface of T-10.01', () => {
+    expect(accountCases.map(routeOf).toSorted()).toEqual(
+      [
+        'POST /v1/account/nonce',
+        'POST /v1/account/link',
+        'POST /v1/auth/signin',
+        'POST /v1/account/unlink',
+        'GET /v1/account',
+      ].toSorted(),
+    );
+  });
+
+  it('does not collide with a registered route or the table snapshot', () => {
+    const taken = new Set([...cases.map(routeOf), routeOf({ endpoint: tableSnapshotEndpoint })]);
+    for (const accountCase of accountCases) {
+      expect(taken.has(routeOf(accountCase)), accountCase.name).toBe(false);
+    }
+  });
+
+  it('lets only a device without a session skip the bearer token', () => {
+    const unauthenticated = accountCases.filter(({ endpoint }) => endpoint.auth === 'none');
+    expect(unauthenticated.map(({ name }) => name).toSorted()).toEqual([
+      'accountNonce',
+      'authSignIn',
+    ]);
+  });
+
+  it('has a strict body and an idempotency key on every POST, and no body on the GET', () => {
+    for (const { name, endpoint } of accountCases) {
+      expect(endpoint.body === null, name).toBe(endpoint.method === 'GET');
+      expect(endpoint.params, name).toBeNull();
+      expect(requiresIdempotencyKey(endpoint), name).toBe(endpoint.method === 'POST');
+      if (endpoint.body !== null) {
+        const result = endpoint.body.safeParse({ value: 1_000_000 });
+        expect(
+          result.error?.issues.map((issue) => issue.code),
+          name,
+        ).toContain('unrecognized_keys');
+      }
+    }
   });
 });
 
