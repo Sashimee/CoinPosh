@@ -4,12 +4,18 @@ import type { UiApp } from '../../app/index.ts';
 import { formatBalance, type InterpolationValues, type Language } from '../../i18n/index.ts';
 import { makePressable } from '../../ui/components/pressable.ts';
 import { feedback, type UiContext } from '../../ui/context.ts';
-import { h, listen, rectOf, restartAnimation } from '../../ui/dom.ts';
+import { fromMarkup, h, listen, rectOf, restartAnimation } from '../../ui/dom.ts';
 import { Localizer } from '../../ui/localize.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../vfx/palette.ts';
 import { PLAQUE_SWELL } from './hint.ts';
 import { cratesKey, registerCratesStrings } from './i18n.ts';
-import { pityOutlook, rewardLines, type RewardLine } from './loot.ts';
+import {
+  pityOutlook,
+  rewardLines,
+  type AlbumProgress,
+  type AlbumProgressMap,
+  type RewardLine,
+} from './loot.ts';
 
 /** How long the card takes to fly into the inventory icon before it is removed. */
 export const CARD_FLY_MS = 520;
@@ -92,6 +98,8 @@ export interface CrateRevealOptions {
   readonly host: HTMLElement;
   readonly rarity: Rarity;
   readonly roll: Roll;
+  /** Set progress for the roll's album cards, when the server's album has already answered. */
+  readonly album?: AlbumProgressMap | null;
   readonly reducedMotion: boolean;
   /** The HUD element the reward flies into; without one the card simply fades. */
   readonly inventoryTarget?: (() => HTMLElement | null) | undefined;
@@ -105,6 +113,8 @@ export interface CrateReveal {
   readonly shown: boolean;
   /** Shows the card: the rarity banner, the rolled lines and Collect. */
   show(): void;
+  /** The server's album answered: album lines gain their set progress. */
+  setAlbum(progress: AlbumProgressMap): void;
   dispose(): void;
 }
 
@@ -126,17 +136,23 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     bus: ui.bus,
     own: (dispose) => disposers.push(dispose),
   };
-  const t = (key: Parameters<typeof cratesKey>[0], values?: InterpolationValues) =>
-    ui.i18n.t(cratesKey(key), values);
+  const t: CratesT = (key, values) => ui.i18n.t(cratesKey(key), values);
   const rarityName = () => t(`rarity.${rarity}`);
 
   const title = h('h2', { class: 'cp-crate-title', attrs: { id: 'cp-crate-title' } });
   const list = h('ul', { class: 'cp-crate-lines' });
   ctx.own(loc.attr(list, 'aria-label', () => t('contents')));
+  let album: AlbumProgressMap | null = options.album ?? null;
   rewardLines(roll.rewards).forEach((line, index) => {
-    const item = h('li', { class: `cp-crate-line cp-crate-line--${line.kind}` });
+    const copy = () =>
+      rewardLineCopy(
+        line,
+        t,
+        ui.i18n.language,
+        line.kind === 'collectible' ? (album?.[line.item] ?? null) : null,
+      );
+    const item = rewardLineItem(line, copy, t, ctx, loc);
     item.style.setProperty('--cp-crate-stagger', `${index * LINE_STAGGER_MS}ms`);
-    ctx.own(loc.text(item, () => lineText(line, t, ui.i18n.language)));
     list.append(item);
   });
   const pity = h('p', { class: 'cp-crate-pity' });
@@ -260,6 +276,11 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
       return shown;
     },
     show,
+    setAlbum(progress) {
+      if (disposed) return;
+      album = progress;
+      loc.refresh();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
@@ -270,23 +291,128 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   };
 }
 
-function lineText(
+export type CratesT = (
+  key: Parameters<typeof cratesKey>[0],
+  values?: InterpolationValues,
+) => string;
+
+/** What one reward line says: the headline, the line under it, and the rarity it wears. */
+export interface RewardLineCopy {
+  readonly name: string;
+  readonly detail: string | null;
+  readonly rarity: Rarity | null;
+  /** The album card just finished its set. */
+  readonly completes: boolean;
+}
+
+/**
+ * The words on a reward line. Charms and album cards are named from the catalogue the server's
+ * ids point into; set progress appears once the server's album has answered.
+ */
+export function rewardLineCopy(
   line: RewardLine,
-  t: (key: Parameters<typeof cratesKey>[0], values?: InterpolationValues) => string,
+  t: CratesT,
   language: Language,
-): string {
+  progress: AlbumProgress | null = null,
+): RewardLineCopy {
   switch (line.kind) {
     case 'currency':
-      return `+${formatBalance(line.amount, language)} ${t(`currency.${line.currency}`)}`;
+      return {
+        name: t(`gain.${line.currency}`, {
+          count: line.amount,
+          value: formatBalance(line.amount, language),
+        }),
+        detail: null,
+        rarity: null,
+        completes: false,
+      };
     case 'charm':
-      return line.duplicate ? t('charmLevel', { level: line.level }) : t('charmNew');
+      return {
+        name: t(`item.${line.item}`),
+        detail: line.duplicate ? t('charmLevel', { level: line.level }) : t('charmNew'),
+        rarity: line.rarity,
+        completes: false,
+      };
+    case 'collectible': {
+      const completes = progress !== null && progress.owned >= progress.total;
+      const values = {
+        set: t(`set.${line.set}`),
+        owned: progress?.owned ?? 0,
+        total: progress?.total ?? 0,
+      };
+      return {
+        name: t(`item.${line.item}`),
+        detail:
+          progress === null
+            ? t('collectible')
+            : t(completes ? 'albumSetComplete' : 'albumSet', values),
+        rarity: line.rarity,
+        completes,
+      };
+    }
     case 'safe':
-      return t('safe');
     case 'scratchCard':
-      return t('scratchCard');
-    case 'collectible':
-      return t('collectible');
+      return { name: t(line.kind), detail: null, rarity: null, completes: false };
   }
+}
+
+const LINE_ICON_BODY = {
+  charm:
+    '<path d="M12 2.8v3.4"/><path d="M6.6 10 12 6.2l5.4 3.8L12 21Z" fill="currentColor" fill-opacity=".22"/><path d="M6.6 10h10.8M12 6.2 10 10l2 11 2-11Z"/>',
+  collectible:
+    '<rect x="5.5" y="3" width="13" height="18" rx="2.2" fill="currentColor" fill-opacity=".18"/><circle cx="12" cy="10.5" r="3.4"/><path d="M8.8 16.8h6.4M10.6 10.5h2.8"/>',
+} as const;
+
+function lineIcon(kind: keyof typeof LINE_ICON_BODY): HTMLElement {
+  const badge = h('span', { class: 'cp-crate-line-icon', attrs: { 'aria-hidden': 'true' } });
+  badge.append(
+    fromMarkup(
+      `<svg class="cp-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${LINE_ICON_BODY[kind]}</svg>`,
+    ),
+  );
+  return badge;
+}
+
+/** One `<li>`: currencies are a single gain, items an icon, a name, a rarity chip and a detail. */
+function rewardLineItem(
+  line: RewardLine,
+  copy: () => RewardLineCopy,
+  t: CratesT,
+  ctx: UiContext,
+  loc: Localizer,
+): HTMLElement {
+  const item = h('li', { class: `cp-crate-line cp-crate-line--${line.kind}` });
+  if (line.kind !== 'charm' && line.kind !== 'collectible') {
+    ctx.own(loc.text(item, () => copy().name));
+    return item;
+  }
+  item.classList.add('cp-crate-line--item');
+  item.dataset.rarity = line.rarity;
+  item.style.setProperty('--cp-crate-line-accent', RARITY_COLORS[line.rarity]);
+  if (line.rarity === 'heirloom') {
+    item.style.setProperty('--cp-crate-prism', HEIRLOOM_PRISM.join(', '));
+  }
+  const name = h('span', { class: 'cp-crate-line-name' });
+  const chip = h('span', { class: 'cp-crate-line-rarity' });
+  const detail = h('span', { class: 'cp-crate-line-detail' });
+  const text = h(
+    'span',
+    { class: 'cp-crate-line-text' },
+    h('span', { class: 'cp-crate-line-head' }, name, chip),
+    detail,
+  );
+  item.append(lineIcon(line.kind), text);
+  ctx.own(loc.text(chip, () => t(`rarity.${line.rarity}`)));
+  ctx.own(
+    loc.bind(() => {
+      const next = copy();
+      if (name.textContent !== next.name) name.textContent = next.name;
+      const words = next.detail ?? '';
+      if (detail.textContent !== words) detail.textContent = words;
+      item.classList.toggle('is-complete', next.completes);
+    }),
+  );
+  return item;
 }
 
 /**

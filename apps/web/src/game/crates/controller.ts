@@ -1,7 +1,15 @@
-import type { CrateId, NudgeDirection, PityCounters, TableCrate, Tick } from '@coinposh/shared';
+import type {
+  CrateId,
+  NudgeDirection,
+  PityCounters,
+  Reward,
+  TableCrate,
+  Tick,
+} from '@coinposh/shared';
 import type { Bus } from '../../app/bus.ts';
 import type { ApiClient, TableEvent, TableSync } from '../../net/index.ts';
 import type { CrateEvents } from './events.ts';
+import { albumProgress, rollHasAlbumCard, type AlbumProgressMap } from './loot.ts';
 import { CrateRide } from './ride.ts';
 
 /** The slice of `SimBridge` crates read: the sim clock for claims and the pusher for the ride. */
@@ -166,5 +174,18 @@ export class CrateController {
       wallet: opened.wallet,
     });
     this.options.events.emit('crate:pity', { pity: opened.roll.pity });
+    if (rollHasAlbumCard(opened.roll.rewards)) await this.readAlbum(crateId, opened.roll.rewards);
+  }
+
+  /** Set progress is the server's album after the open, never a count kept on this client. */
+  private async readAlbum(crateId: CrateId, rewards: readonly Reward[]): Promise<void> {
+    let progress: AlbumProgressMap;
+    try {
+      progress = albumProgress(await this.options.client.call('album'), rewards);
+    } catch (error) {
+      if (!this.disposed) this.options.events.emit('crate:albumFailed', { crateId, error });
+      return;
+    }
+    if (!this.disposed) this.options.events.emit('crate:album', { crateId, progress });
   }
 }

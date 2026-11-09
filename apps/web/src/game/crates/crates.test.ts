@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { crateSpawn, pity as pityConfig } from '@coinposh/economy';
+import { album, crateSpawn, pity as pityConfig } from '@coinposh/economy';
 import {
+  CURRENCIES,
   RARITIES,
   RollSchema,
   WalletSchema,
+  type AlbumResponse,
   type CoinId,
   type CrateId,
   type PlayerId,
@@ -16,6 +18,7 @@ import { createBus } from '../../app/bus.ts';
 import type { ImpactEvent } from '../../audio/index.ts';
 import type { DuckOptions } from '../../audio/index.ts';
 import { createI18n, LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
+import type { ApiClient } from '../../net/client.ts';
 import type { Connectivity, Scheduler } from '../../net/connectivity.ts';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
 import type { MockServer } from '../../net/mock/server.ts';
@@ -46,12 +49,22 @@ import {
   type HintRect,
 } from './hint.ts';
 import { CRATES_STRINGS, cratesKey, registerCratesStrings } from './i18n.ts';
-import { heroOf, pityOutlook, rewardLines } from './loot.ts';
+import {
+  albumPlace,
+  albumProgress,
+  heroOf,
+  pityOutlook,
+  rewardLines,
+  rollHasAlbumCard,
+  type RewardLine,
+} from './loot.ts';
 import {
   CARD_CHROME_GAP,
   CARD_FLY_SCALE,
   crateFlyOffset,
   placeCrateCard,
+  rewardLineCopy,
+  type CratesT,
   type CrateCardLayout,
   type CrateCardPlacement,
 } from './revealCard.ts';
@@ -180,16 +193,25 @@ describe('reward lines', () => {
     {
       kind: 'charm',
       charmId: 'charm_AAAAAAAAAAAAAAAA' as never,
-      charmType: 'butler' as never,
+      charmType: 'captainsBellCharm' as never,
       level: 2,
       duplicate: true,
     },
     { kind: 'currency', currency: 'coins', amount: 12 },
+    { kind: 'collectible', collectibleId: 'navyLacquerCoin' as never },
   ];
 
   it('puts items first and merges currencies in wallet order', () => {
     expect(rewardLines(rewards)).toEqual([
-      { kind: 'charm', level: 2, duplicate: true },
+      {
+        kind: 'charm',
+        level: 2,
+        duplicate: true,
+        item: 'captainsBellCharm',
+        rarity: 'fine',
+        set: 'deckEssentials',
+      },
+      { kind: 'collectible', item: 'navyLacquerCoin', rarity: 'rare', set: 'captainsTable' },
       { kind: 'currency', currency: 'coins', amount: 42 },
       { kind: 'currency', currency: 'pearls', amount: 2 },
     ]);
@@ -221,6 +243,10 @@ describe('crate strings', () => {
       const strings = CRATES_STRINGS[language];
       expect(keys(strings).sort()).toEqual([...english].sort());
       for (const rarity of RARITIES) expect(strings.rarity[rarity].length).toBeGreaterThan(0);
+      for (const set of album) {
+        expect(strings.set[set.id].length).toBeGreaterThan(0);
+        for (const item of set.items) expect(strings.item[item.id].length).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -232,6 +258,186 @@ describe('crate strings', () => {
     );
     i18n.changeLanguage('de');
     expect(i18n.t(cratesKey('rarity.legendary'))).toBe('Legendär');
+  });
+});
+
+describe('album entries on reward lines', () => {
+  it('takes rarity and set from the economy album for every entry', () => {
+    for (const set of album) {
+      for (const item of set.items) {
+        expect(albumPlace(item.id)).toEqual({ item: item.id, rarity: item.rarity, set: set.id });
+      }
+    }
+  });
+
+  it('refuses an entry the economy album does not list instead of showing a nameless line', () => {
+    expect(() => albumPlace('butler')).toThrow(/does not list/);
+    expect(() =>
+      rewardLines([{ kind: 'collectible', collectibleId: 'ghostCoin' as never }]),
+    ).toThrow(/"ghostCoin"/);
+  });
+
+  const deck = album.find((set) => set.id === 'deckEssentials');
+  if (!deck) throw new Error('Expected the deckEssentials album set');
+  const response = (owned: number): AlbumResponse => ({
+    sets: album.map((set) => ({
+      id: set.id as never,
+      entries: set.items.map((item, index) => ({
+        id: item.id as never,
+        kind: 'coinSkin' as const,
+        owned: set.id === deck.id && index < owned,
+        count: set.id === deck.id && index < owned ? 1 : 0,
+      })),
+      completed: set.id === deck.id && owned === set.items.length,
+    })),
+  });
+  const card: Reward = { kind: 'collectible', collectibleId: 'teakDeckCoin' as never };
+
+  it('reads set progress from the server album, not from the roll', () => {
+    expect(albumProgress(response(3), [card])).toEqual({
+      teakDeckCoin: { owned: 3, total: deck.items.length },
+    });
+    expect(albumProgress(response(deck.items.length), [card]).teakDeckCoin).toEqual({
+      owned: deck.items.length,
+      total: deck.items.length,
+    });
+    expect(
+      albumProgress(response(3), [{ kind: 'currency', currency: 'coins', amount: 4 }]),
+    ).toEqual({});
+  });
+
+  it('refuses an album that has no set for a card the server just granted', () => {
+    expect(() => albumProgress({ sets: [] }, [card])).toThrow(/no set holding it/);
+  });
+
+  it('asks for the album only when the roll holds an album card', () => {
+    expect(rollHasAlbumCard([card])).toBe(true);
+    expect(
+      rollHasAlbumCard([
+        { kind: 'currency', currency: 'pearls', amount: 1 },
+        {
+          kind: 'charm',
+          charmId: 'charm_AAAAAAAAAAAAAAAA' as never,
+          charmType: 'captainsBellCharm' as never,
+          level: 1,
+          duplicate: false,
+        },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe('reward line copy', () => {
+  const i18n = createI18n({ language: 'en', resources: { en: {}, fr: {}, de: {} } });
+  registerCratesStrings(i18n);
+  const t: CratesT = (key, values) => i18n.t(cratesKey(key), values);
+  const copyIn = (
+    language: (typeof LANGUAGES)[number],
+    line: RewardLine,
+    progress = null as null | { owned: number; total: number },
+  ) => {
+    i18n.changeLanguage(language);
+    return rewardLineCopy(line, t, language, progress);
+  };
+  const gain = (language: (typeof LANGUAGES)[number], currency: Reward & { kind: 'currency' }) =>
+    copyIn(language, { kind: 'currency', currency: currency.currency, amount: currency.amount })
+      .name;
+  const pearls = (amount: number): Reward & { kind: 'currency' } => ({
+    kind: 'currency',
+    currency: 'pearls',
+    amount,
+  });
+
+  it('pluralises currencies through i18next at the one/other boundary in EN, FR and DE', () => {
+    expect(gain('en', pearls(1))).toBe('+1 Pearl');
+    expect(gain('fr', pearls(1))).toBe('+1 Perle');
+    expect(gain('de', pearls(1))).toBe('+1 Perle');
+    expect(gain('en', pearls(2))).toBe('+2 Pearls');
+    expect(gain('fr', pearls(2))).toBe('+2 Perles');
+    expect(gain('de', pearls(2))).toBe('+2 Perlen');
+    expect(gain('en', { kind: 'currency', currency: 'coins', amount: 1 })).toBe('+1 Coin');
+    expect(gain('de', { kind: 'currency', currency: 'coins', amount: 1_250 })).toBe(
+      '+1.250 Münzen',
+    );
+    expect(gain('en', { kind: 'currency', currency: 'keys', amount: 1 })).toBe('+1 Key');
+    expect(gain('de', { kind: 'currency', currency: 'keys', amount: 3 })).toBe('+3 Schlüssel');
+  });
+
+  it('keeps French round millions plural, where i18next picks the many form', () => {
+    const line = gain('fr', { kind: 'currency', currency: 'coins', amount: 2_000_000 });
+    expect(line.startsWith('+')).toBe(true);
+    expect(line.endsWith(' Pièces')).toBe(true);
+  });
+
+  it('has a singular and a plural for every currency in every language', () => {
+    for (const language of LANGUAGES) {
+      for (const currency of CURRENCIES) {
+        const one = gain(language, { kind: 'currency', currency, amount: 1 });
+        const other = gain(language, { kind: 'currency', currency, amount: 7 });
+        expect(one).toMatch(/^\+1 \S/);
+        expect(other).toMatch(/^\+7 \S/);
+        expect(one).not.toContain('gain.');
+      }
+    }
+  });
+
+  const charm = (duplicate: boolean, level: number): RewardLine => ({
+    kind: 'charm',
+    level,
+    duplicate,
+    ...albumPlace('captainsBellCharm'),
+  });
+
+  it('names a new charm and wears its rarity', () => {
+    expect(copyIn('en', charm(false, 1))).toEqual({
+      name: 'Captain’s Bell',
+      detail: 'New Charm',
+      rarity: 'fine',
+      completes: false,
+    });
+    expect(copyIn('fr', charm(false, 1)).name).toBe('Cloche du capitaine');
+    expect(copyIn('de', charm(true, 3))).toMatchObject({
+      name: 'Kapitänsglocke',
+      detail: 'Glücksbringer auf Stufe 3 verbessert',
+      rarity: 'fine',
+    });
+  });
+
+  const albumCard: RewardLine = { kind: 'collectible', ...albumPlace('teakDeckCoin') };
+
+  it('names an album card and shows its set progress once the album answers', () => {
+    expect(copyIn('en', albumCard)).toEqual({
+      name: 'Teak Deck Coin',
+      detail: 'Album Card',
+      rarity: 'common',
+      completes: false,
+    });
+    expect(copyIn('en', albumCard, { owned: 3, total: 8 }).detail).toBe('Deck Essentials · 3 / 8');
+    expect(copyIn('fr', albumCard, { owned: 3, total: 8 }).detail).toBe(
+      'L’essentiel du pont · 3 / 8',
+    );
+    expect(copyIn('de', albumCard, { owned: 7, total: 8 })).toMatchObject({
+      name: 'Teakdeck-Münze',
+      detail: 'Deck-Grundausstattung · 7 / 8',
+      completes: false,
+    });
+  });
+
+  it('celebrates the card that completes its set', () => {
+    expect(copyIn('en', albumCard, { owned: 8, total: 8 })).toMatchObject({
+      detail: 'Deck Essentials complete · 8 / 8',
+      completes: true,
+    });
+  });
+
+  it('keeps safes and scratch cards as plain lines', () => {
+    expect(copyIn('en', { kind: 'safe' })).toEqual({
+      name: 'Key-locked Safe',
+      detail: null,
+      rarity: null,
+      completes: false,
+    });
+    expect(copyIn('fr', { kind: 'scratchCard' }).name).toBe('Carte à gratter');
   });
 });
 
@@ -674,7 +880,7 @@ describe('crates against the Demo Mode server', () => {
     player = await connectPlayer(server, time);
   });
 
-  async function setup() {
+  async function setup(client: Pick<ApiClient, 'call'> = player.client) {
     const outbox = await Outbox.open(player.store, rethrow);
     const table = new TableSync({
       client: player.client,
@@ -719,7 +925,7 @@ describe('crates against the Demo Mode server', () => {
       events.on(type, record(type));
     }
     events.on('crate:opened', ({ crateId, roll }) => opened.push({ crateId, roll }));
-    const controller = new CrateController({ table, client: player.client, sim, events });
+    const controller = new CrateController({ table, client, sim, events });
     let drops = 0;
     const falling: CoinId[] = [];
 
@@ -801,6 +1007,58 @@ describe('crates against the Demo Mode server', () => {
     expect(spawnSeconds + rideSeconds).toBeLessThan(45);
     expect(game.controller.riding).toHaveLength(0);
     expect(serverWallet(server, playerId).pearls).toBeGreaterThan(0);
+    expectConserved();
+  });
+
+  async function openFtueCrate(game: Awaited<ReturnType<typeof setup>>) {
+    while (game.controller.riding.length === 0) await game.drop();
+    await game.play(CRATE_RIDE_SECONDS.max + 1);
+    const [first] = game.opened;
+    if (!first) throw new Error('Expected the FTUE crate to open');
+    return first;
+  }
+
+  it('reads the server album after an open with an album card and reports its set progress', async () => {
+    const game = await setup();
+    const albums: CrateEvents['crate:album'][] = [];
+    game.events.on('crate:album', (payload) => albums.push(payload));
+    game.events.on('crate:albumFailed', ({ error }) => rethrow(error));
+    const first = await openFtueCrate(game);
+    const cards = first.roll.rewards.flatMap((reward) =>
+      reward.kind === 'collectible' ? [reward.collectibleId] : [],
+    );
+    expect(cards.length).toBeGreaterThan(0);
+    expect(albums).toHaveLength(1);
+    const [report] = albums;
+    expect(report?.crateId).toBe(first.crateId);
+    const served = await player.client.call('album');
+    for (const id of cards) {
+      const set = served.sets.find((candidate) => candidate.entries.some((e) => e.id === id));
+      expect(report?.progress[id]).toEqual({
+        owned: set?.entries.filter((entry) => entry.owned).length,
+        total: set?.entries.length,
+      });
+      expect(report?.progress[id]?.owned).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('reports a failed album read without failing the crate', async () => {
+    const failure = new Error('album offline');
+    const client: Pick<ApiClient, 'call'> = {
+      call: ((...args: Parameters<ApiClient['call']>) =>
+        args[0] === 'album'
+          ? Promise.reject(failure)
+          : player.client.call(...args)) as ApiClient['call'],
+    };
+    const game = await setup(client);
+    const failed: unknown[] = [];
+    game.events.on('crate:albumFailed', ({ error }) => failed.push(error));
+    game.events.on('crate:album', () => {
+      throw new Error('Expected no album progress');
+    });
+    await openFtueCrate(game);
+    expect(failed).toEqual([failure]);
+    expect(game.log.some((entry) => entry.type === 'crate:failed')).toBe(false);
     expectConserved();
   });
 
