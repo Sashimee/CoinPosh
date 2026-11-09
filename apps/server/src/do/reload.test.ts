@@ -261,7 +261,8 @@ describe('a page reload with coins on the table', () => {
   });
 });
 
-describe('crate spawns across a boot refund', () => {
+// Up to 120 real signed drops with reloads between them, which ran past 5 s on CI.
+describe('crate spawns across a boot refund', { timeout: 20_000 }, () => {
   const SCRIPTED = crateSpawn.ftueScriptedDrop;
 
   it('spawns no second crate when the refunded spend is dropped to the threshold again', async () => {

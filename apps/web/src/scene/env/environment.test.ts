@@ -283,7 +283,11 @@ describe('installVenueEnvironment', () => {
     expect(environment.source).toBe('hdri');
     expect(target.version).toBeGreaterThan(version);
     expect(target.image.data).toBe(result.levels[0]);
-    expect((target.mipmaps as Level[]).map((m) => m.data)).toEqual(result.levels);
+    const uploaded = (target.mipmaps as Level[]).map((m) => m.data);
+    expect(uploaded).toHaveLength(result.levels.length);
+    uploaded.forEach((data, k) => {
+      expect(data).toBe(result.levels[k]);
+    });
     expect(environment.blend).toBe(0);
 
     environment.advance(2.5, renderer);

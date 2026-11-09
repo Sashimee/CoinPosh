@@ -32,6 +32,10 @@ describe('percentile', () => {
 describe('runSimulation', () => {
   const options = { days: 3, players: 12, seed: 5 };
   const result = runSimulation(economyConfig, simModel, options);
+  // packages/sim measured 0.87 to 0.94 coins off the front per coin dropped (balance
+  // report T-1.16); the shipped tuning must hold across that whole range, not only at 1.25.
+  const measured = { ...simModel, baseReturnRatio: 0.9 };
+  const measuredResult = runSimulation(economyConfig, measured, options);
   // Seed handling is per player, so determinism and seed variance need only one player;
   // the full 12-player cohort above is reserved for the pacing assertions.
   const small = { days: 2, players: 1, seed: 5 };
@@ -65,10 +69,7 @@ describe('runSimulation', () => {
   });
 
   it('still hits every pacing target at the front-edge return measured on the physics table', () => {
-    // packages/sim measured 0.87 to 0.94 coins off the front per coin dropped (balance
-    // report T-1.16); the shipped tuning must hold across that whole range, not only at 1.25.
-    const measured = runSimulation(economyConfig, { ...simModel, baseReturnRatio: 0.9 }, options);
-    expect(misses(measured.targets)).toEqual([]);
+    expect(misses(measuredResult.targets)).toEqual([]);
   });
 
   it('never reaches the first upgrade from an empty table on 20 starting coins', () => {
@@ -97,15 +98,16 @@ describe('runSimulation', () => {
   it('needs a silver heap to make the first upgrade at the measured return', () => {
     // A copper heap pays no more than the pile it stands in for: at 0.9 coins per drop the
     // trust fund barely grows (balance evidence for P-193).
-    const measured = { ...simModel, baseReturnRatio: 0.9 };
-    const firstUpgrade = (tier: 'copper' | 'silver') =>
-      runSimulation(
-        { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, tier } },
-        measured,
-        options,
-      ).targets.find((t) => t.target.id === 'firstUpgrade');
-    expect(firstUpgrade('copper')?.pass).toBe(false);
-    expect(firstUpgrade('silver')?.pass).toBe(true);
+    const firstUpgrade = (run: ReturnType<typeof runSimulation>) =>
+      run.targets.find((t) => t.target.id === 'firstUpgrade');
+    const copper = runSimulation(
+      { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, tier: 'copper' } },
+      measured,
+      options,
+    );
+    expect(firstUpgrade(copper)?.pass).toBe(false);
+    expect(economyConfig.openingHeap.tier).toBe('silver');
+    expect(firstUpgrade(measuredResult)?.pass).toBe(true);
   });
 
   it('reports one median snapshot per casual day with steady progress', () => {

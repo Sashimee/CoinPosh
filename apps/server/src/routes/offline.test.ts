@@ -126,7 +126,8 @@ function at(ms: number): EpochMs {
   return EpochMsSchema.parse(ms);
 }
 
-describe('Velvet Vault offline earnings', () => {
+// A measured net rate needs real play, up to 72 signed drops and their fusions: over 3.5 s on CI.
+describe('Velvet Vault offline earnings', { timeout: 20_000 }, () => {
   it('pays a player who never played only the starter floor, however long they were away', async () => {
     const session = await newSession();
     await inPlayer(session, (sql, last) => {

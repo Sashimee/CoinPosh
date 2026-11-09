@@ -141,28 +141,35 @@ describe('prefilterEquirect', () => {
 });
 
 describe('prefilterRadianceFile', () => {
-  it('pre-filters the shipped HDRI into half-float levels that keep its sun in place', () => {
-    const file = readFileSync(new URL('./hdri/venice_sunset_512.hdr', import.meta.url));
-    const result = prefilterRadianceFile(
-      file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength),
-    );
-    const { width, height, levels } = PREFILTERED_ENVIRONMENT;
-    expect([result.width, result.height, result.levels.length]).toEqual([width, height, levels]);
-    result.levels.forEach((level, k) => {
-      const w = width >> k;
-      const h = height >> k;
-      expect(level).toBeInstanceOf(Uint16Array);
-      expect(level.length).toBe(w * h * 4);
-      let best = { x: -1, value: -1 };
-      for (let i = 0; i < w * h; i += 1) {
-        const value = DataUtils.fromHalfFloat(level[i * 4] ?? 0);
-        expect(Number.isFinite(value)).toBe(true);
-        if (value > best.value) best = { x: i % w, value };
-      }
-      // The sun is clipped flat in the source, so its peak only settles once a lobe averages it.
-      if (k > 0 && k < levels - 1) expect(Math.abs(best.x - (307 >> k))).toBeLessThanOrEqual(1);
-    });
-  });
+  it(
+    'pre-filters the shipped HDRI into half-float levels that keep its sun in place',
+    // The shipped 512×256 HDRI is the fixture, and its full GGX pre-filter takes seconds on CI.
+    { timeout: 15_000 },
+    () => {
+      const file = readFileSync(new URL('./hdri/venice_sunset_512.hdr', import.meta.url));
+      const result = prefilterRadianceFile(
+        file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength),
+      );
+      const { width, height, levels } = PREFILTERED_ENVIRONMENT;
+      expect([result.width, result.height, result.levels.length]).toEqual([width, height, levels]);
+      result.levels.forEach((level, k) => {
+        const w = width >> k;
+        const h = height >> k;
+        expect(level).toBeInstanceOf(Uint16Array);
+        expect(level.length).toBe(w * h * 4);
+        let best = { x: -1, value: -1 };
+        const nonFinite: number[] = [];
+        for (let i = 0; i < w * h; i += 1) {
+          const value = DataUtils.fromHalfFloat(level[i * 4] ?? 0);
+          if (!Number.isFinite(value)) nonFinite.push(i);
+          if (value > best.value) best = { x: i % w, value };
+        }
+        expect(nonFinite, `non-finite texels in level ${String(k)}`).toEqual([]);
+        // The sun is clipped flat in the source, so its peak only settles once a lobe averages it.
+        if (k > 0 && k < levels - 1) expect(Math.abs(best.x - (307 >> k))).toBeLessThanOrEqual(1);
+      });
+    },
+  );
 
   it('refuses an HDRI that is not 512×256', () => {
     const small = encodeRadiance(equirect(16, () => 1));
