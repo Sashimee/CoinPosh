@@ -106,6 +106,15 @@ function distance(a: Point, b: Point): number {
 /** How far a coin at rest may move over a restore's first 2 s (92-table-persistence 1.4). */
 const STILL = 0.001;
 
+/**
+ * How far a coin the pusher wakes may end from the table played on after those 2 s. Looser
+ * than STILL because positions are stored to 10 µm: moving every asleep coin by that one
+ * unit moves a woken coin by up to 4.35 mm within 120 ticks at tick 180 of the cycle, and
+ * the restored table ends one woken coin 1.08 mm off there. Accepting more than 1 mm for
+ * woken coins awaits a lead decision (P-275).
+ */
+const WOKEN = 0.0015;
+
 /** `snapshot` with every asleep pose one position unit (10 µm) further along +x. */
 function shiftedOneUnit(snapshot: SimTableSnapshot): SimTableSnapshot {
   return {
@@ -225,19 +234,19 @@ describe('Sim.create({ restore })', () => {
    * both tables then run 120 ticks side by side, with nothing falling from either that was
    * not already falling when the snapshot was taken.
    *
-   * Every coin that restores asleep and that the table played on keeps at rest for all
+   * Every coin that restores asleep and that the table played on keeps asleep for all
    * 120 ticks ends less than 1 mm from where the table played on has it, and less than
    * 1 mm from where it restored: in the world, or on the block for a coin riding the
    * pusher top, which carries it the same way on both tables. Woken or not, more than nine
    * in ten of the coins that restore asleep end that still.
    *
-   * The rest are coins the pusher wakes (riders scraped off near the backboard, the pile
-   * at its face), and how closely they can follow the table played on is set by the
-   * format, not by restore: positions are stored to 10 µm, and moving every asleep coin
-   * by that one unit moves a woken coin by up to a few millimetres within 120 ticks at
-   * some phases (4.35 mm at tick 180, against 1.08 mm between the restored table and the
-   * table played on). So a woken coin ends within 1 mm of the table played on, or within
-   * that one-unit spread where the table is that sensitive.
+   * The pusher's contact wakes much of the pile without moving it, so the sleep flag
+   * alone strictly checks as few as 32 of 116 coins. Every coin the table played on ends
+   * less than 1 mm from where it was is also held to 1 mm from the table played on, and
+   * those are more than three in four of the coins that restore asleep.
+   *
+   * The rest are coins the pusher moves (riders scraped off near the backboard, the pile
+   * at its face), which end within WOKEN of the table played on.
    */
   it.each([0, 1, 2, 3].map((quarter) => (quarter * PUSHER.periodTicks) / 4))(
     'restores a table with the pusher at tick %i of its cycle so that over 2 s nothing falls and coins at rest stay within 1 mm',
@@ -254,6 +263,7 @@ describe('Sim.create({ restore })', () => {
       const asleep = snapshot.coins.flatMap((pose, i) => (pose.rest === 'asleep' ? [i] : []));
       const atRest = new Set(asleep.map((i) => snapshot.coins[i]?.id));
       const start = sim.coins();
+      const before = new Map(reference.coins().map((coin) => [coin.id, coin.translation]));
       for (let tick = 0; tick < 120; tick++) {
         expect(sim.step().falls, `restored, tick ${sim.tick}`).toEqual([]);
         shifted.step();
@@ -272,6 +282,7 @@ describe('Sim.create({ restore })', () => {
       const now = sim.coins();
       const spread = shifted.coins();
       let still = 0;
+      let keptStill = 0;
       let wokenWorst = 0;
       let sensitivity = 0;
       for (const i of asleep) {
@@ -279,33 +290,45 @@ describe('Sim.create({ restore })', () => {
         const from = start[i]?.translation;
         const to = now[i]?.translation;
         const played = there.get(id);
+        const was = before.get(id);
         const off = spread[i]?.translation;
-        if (!from || !to || !played || !off) {
+        if (!from || !to || !played || !was || !off) {
           throw new Error(`coin ${id} left a table it never fell from`);
         }
         const fromPlayed = distance(to, played);
         const rides = from.y > PUSHER.height && from.z <= shelfFrontZ;
         const moved = distance(to, { ...from, z: from.z + (rides ? travel : 0) });
         still += moved < STILL ? 1 : 0;
+        const where = `coin ${id}${rides ? ' on the pusher top' : ''}`;
+        const playedMoved = distance(played, { ...was, z: was.z + (rides ? travel : 0) });
         if (atRest.has(id)) {
-          const where = `coin ${id}${rides ? ' on the pusher top' : ''}`;
           expect(fromPlayed, `${where}, from the table played on`).toBeLessThan(STILL);
           expect(moved, `${where}, from where it restored`).toBeLessThan(STILL);
+        } else if (playedMoved < STILL) {
+          keptStill += 1;
+          expect(
+            fromPlayed,
+            `${where}, woken but kept still, from the table played on`,
+          ).toBeLessThan(STILL);
         } else {
           wokenWorst = Math.max(wokenWorst, fromPlayed);
           sensitivity = Math.max(sensitivity, distance(to, off));
         }
       }
-      expect(atRest.size, 'the table played on kept no coin at rest').toBeGreaterThan(
+      expect(atRest.size, 'the table played on kept too few coins asleep').toBeGreaterThan(
         asleep.length / 4,
       );
+      expect(
+        atRest.size + keptStill,
+        `the table played on kept ${atRest.size + keptStill} of ${asleep.length} asleep coins still`,
+      ).toBeGreaterThan(asleep.length * 0.75);
       expect(still, `${still} of ${asleep.length} asleep coins stayed still`).toBeGreaterThan(
         asleep.length * 0.9,
       );
       expect(
         wokenWorst,
         `a woken coin ends ${(wokenWorst * 1000).toFixed(2)} mm from the table played on; one unit moves the table ${(sensitivity * 1000).toFixed(2)} mm`,
-      ).toBeLessThan(Math.max(STILL, sensitivity));
+      ).toBeLessThan(WOKEN);
     },
   );
 
