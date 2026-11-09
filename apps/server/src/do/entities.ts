@@ -1,4 +1,4 @@
-import { coinTiers, coinValue, venues } from '@coinposh/economy';
+import { coinTiers, mintedCoinValue, venues, type UpgradeLevelMap } from '@coinposh/economy';
 import {
   CoinIdSchema,
   CrateIdSchema,
@@ -65,9 +65,9 @@ export function tierDef(tier: CoinTier) {
   return def;
 }
 
-/** The value the server stores, and later credits, for a freshly minted coin of `tier`. */
-export function mintedValue(tier: CoinTier): number {
-  return Math.floor(coinValue(tierDef(tier), HOME_VENUE.coinValueMultiplier));
+/** The value the server stores, and later credits, for a coin of `tier` minted at `levels`. */
+export function mintedValue(tier: CoinTier, levels: UpgradeLevelMap): number {
+  return mintedCoinValue(tierDef(tier), HOME_VENUE, levels);
 }
 
 function toStoredCoin(row: CoinRow): StoredCoin {
@@ -149,6 +149,15 @@ export class Entities {
 
   markPaid(id: CoinId, paid: number): void {
     this.sql.exec("UPDATE coins SET paid = ? WHERE id = ? AND state = 'buffer'", paid, id);
+  }
+
+  /**
+   * Re-mints the reserved coins of `tier` at `value`. A buffered coin's value is not on the
+   * ledger until it is dropped (the buffer account holds only what was paid), so this moves
+   * nothing; the drop then mints the difference.
+   */
+  revalueBuffer(tier: CoinTier, value: number): void {
+    this.sql.exec("UPDATE coins SET value = ? WHERE state = 'buffer' AND tier = ?", value, tier);
   }
 
   /** Only for a reservation nothing paid for: it holds no value and has no ledger legs. */

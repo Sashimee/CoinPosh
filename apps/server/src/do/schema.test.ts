@@ -9,7 +9,7 @@ import { MIGRATIONS } from './schema.ts';
 
 const COPPER = coinTiers[0];
 const STARTING_COINS = 20;
-const DROPPED_VALUE = mintedValue(COPPER.id);
+const DROPPED_VALUE = mintedValue(COPPER.id, {});
 
 function coinId(n: number): string {
   return `${ENTITY_ID_PREFIXES.coin}_${String(n).padStart(20, '0')}`;

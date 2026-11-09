@@ -3,13 +3,24 @@ import {
   cascadeTierFor,
   coinTiers,
   crateSpawn,
+  crateSpawnInterval,
+  dropBufferTarget,
+  dropSpacingTicks,
   fusion,
   fusionValue,
   offline,
   offlineRate,
   offlineVaultCoins,
   openingHeap,
+  mintedCoinValue,
+  pushTravelTicks,
+  rateEnvelope,
+  rateEnvelopeScale,
   starterVaultCoins,
+  upgradeCost,
+  upgradeLines,
+  venues,
+  type UpgradeLevelMap,
 } from '@coinposh/economy';
 import {
   ClaimsResponseSchema,
@@ -1325,5 +1336,255 @@ describe('mock server: every endpoint honours its shared contract', () => {
       token,
     });
     expect(ClaimsResponseSchema.safeParse(claims.body).success).toBe(true);
+  });
+});
+
+describe('mock server: upgrade effects match the authoritative server', () => {
+  const MS_PER_TICK = 1000 / MOCK_RULES.ticksPerSecond;
+  const COPPER = coinTiers[0];
+
+  function line(id: string) {
+    const found = upgradeLines.find((candidate) => candidate.id === id);
+    if (found === undefined) throw new Error(`Economy config has no ${id} line.`);
+    return found;
+  }
+
+  function mockPlayer(player: Player = alice) {
+    const found = server.world.player(requirePlayerId(player));
+    if (found === undefined) throw new Error('Expected the mock to hold the player.');
+    return found;
+  }
+
+  function venue() {
+    const found = venues.find((candidate) => candidate.id === mockPlayer().venueId);
+    if (found === undefined) throw new Error('Expected the player venue in the economy config.');
+    return found;
+  }
+
+  /** Test setup only: puts a line at `level` without paying, to reach the top levels quickly. */
+  function setLevel(lineId: string, level: number): void {
+    const player = mockPlayer();
+    player.levels.set(`${player.venueId}:${lineId}`, level);
+  }
+
+  async function buy(lineId: string, level: number) {
+    return alice.client.call('upgradesBuy', { body: { venueId: venue().id, lineId, level } });
+  }
+
+  /** Wins coins the honest way: opening heap coins off the front lip, inside the fall envelope. */
+  async function collectHeap(count: number): Promise<void> {
+    const heap = (await state()).table.coins.slice(0, count);
+    for (let i = 0; i < heap.length; i += 3) {
+      time.advance(250);
+      const tick = time.tick();
+      for (const result of await claimAt(heap.slice(i, i + 3).map((coin) => fallAt(coin, tick)))) {
+        if (result.status !== 'accepted') throw new Error(`Heap fall refused: ${result.reason}`);
+      }
+    }
+  }
+
+  async function dropFresh() {
+    time.advance(100);
+    return alice.client.call('tableDrop', { body: { x: 0, tick: time.tick() } });
+  }
+
+  async function dropAt(tick: number) {
+    return alice.client.call('tableDrop', { body: { x: 0, tick } });
+  }
+
+  /** Drops `count` buffered coins and returns the 1-based drops that spawned a crate. */
+  async function crateDrops(count: number): Promise<number[]> {
+    const spawned: number[] = [];
+    for (let i = 1; i <= count; i++) {
+      time.advance(100);
+      const coin = await bufferedCoin();
+      const response = await alice.client.call('tableDrop', {
+        body: { x: 0, tick: time.tick(), coinId: coin.id },
+      });
+      if (response.spawnedCrates.length > 0) spawned.push(i);
+    }
+    return spawned;
+  }
+
+  it('values the very next drop at a bought coinValue level, even from the buffer the client holds', async () => {
+    const stale = (await state()).table.buffer;
+    expect(stale.every((coin) => coin.value === mintedCoinValue(COPPER, venue(), {}))).toBe(true);
+    await collectHeap(30);
+    const coinValue = line('coinValue');
+    const doubling = (2 - coinValue.effect.base) / coinValue.effect.perLevel;
+    setLevel('coinValue', doubling - 1);
+    const before = (await state()).wallet.coins;
+    await buy('coinValue', doubling);
+    expect((await state()).wallet.coins).toBe(before - upgradeCost(coinValue, doubling - 1));
+
+    const upgraded = mintedCoinValue(COPPER, venue(), { coinValue: doubling });
+    expect(upgraded).toBe(2 * mintedCoinValue(COPPER, venue(), {}));
+    const staleCoin = stale[0];
+    if (staleCoin === undefined) throw new Error('Expected a buffered coin.');
+    time.advance(100);
+    const dropTick = time.tick();
+    const dropped = await alice.client.call('tableDrop', {
+      body: { x: 0, tick: dropTick, coinId: staleCoin.id },
+    });
+    expect(dropped.coin).toMatchObject({ id: staleCoin.id, value: upgraded });
+    expect(dropped.buffer.every((coin) => coin.value === upgraded)).toBe(true);
+    const travelTicks = Math.ceil(MOCK_RULES.minFallMsAfterDrop / MS_PER_TICK);
+    time.advance(MOCK_RULES.minFallMsAfterDrop + MS_PER_TICK);
+    expect(await claimAt([fallAt(dropped.coin, dropTick + travelTicks)])).toEqual([
+      { status: 'accepted', credited: upgraded, cascade: null, minted: null },
+    ]);
+    expectConserved();
+  });
+
+  it('mints at the top coinValue at the max level and refuses to go past it', async () => {
+    await collectHeap(6);
+    const coinValue = line('coinValue');
+    setLevel('coinValue', coinValue.maxLevel);
+    const top = mintedCoinValue(COPPER, venue(), { coinValue: coinValue.maxLevel });
+    expect(top).toBe(
+      Math.floor(COPPER.value * (1 + coinValue.effect.perLevel * coinValue.maxLevel)),
+    );
+    expect((await dropFresh()).coin.value).toBe(top);
+    await expect(buy('coinValue', coinValue.maxLevel + 1)).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    expectConserved();
+  });
+
+  it('spawns crates at the FTUE drop and every dropsPerCrate drops at level 0', async () => {
+    await collectHeap(30);
+    expect(await crateDrops(crateSpawn.dropsPerCrate)).toEqual([
+      crateSpawn.ftueScriptedDrop,
+      crateSpawn.dropsPerCrate,
+    ]);
+    expectConserved();
+  });
+
+  it('spaces crates closer at the max crateChance level, on the same drops the server picks', async () => {
+    await collectHeap(30);
+    const top: UpgradeLevelMap = { crateChance: line('crateChance').maxLevel };
+    setLevel('crateChance', line('crateChance').maxLevel);
+    const every = crateSpawnInterval(top);
+    expect(every).toBeLessThan(crateSpawn.dropsPerCrate);
+    expect(await crateDrops(2 * every)).toEqual([crateSpawn.ftueScriptedDrop, every, 2 * every]);
+    expectConserved();
+  });
+
+  it('grows the prepaid buffer on the next drop after a dropRate purchase, up to the max size', async () => {
+    expect((await state()).table.buffer).toHaveLength(MOCK_RULES.bufferSize);
+    await collectHeap(30);
+    await buy('dropRate', 1);
+    expect((await dropFresh()).buffer).toHaveLength(
+      dropBufferTarget(MOCK_RULES.bufferSize, { dropRate: 1 }),
+    );
+    const dropRate = line('dropRate');
+    setLevel('dropRate', dropRate.maxLevel);
+    const size = dropBufferTarget(MOCK_RULES.bufferSize, { dropRate: dropRate.maxLevel });
+    expect(size).toBeGreaterThan(MOCK_RULES.bufferSize);
+    expect((await dropFresh()).buffer).toHaveLength(size);
+    expectConserved();
+  });
+
+  it('lets drops come closer together only as far as dropRate allows', async () => {
+    await collectHeap(9);
+    const dropRate = line('dropRate');
+    const fast = dropSpacingTicks(MOCK_RULES.minTicksBetweenDrops, {
+      dropRate: dropRate.maxLevel,
+    });
+    expect(fast).toBeLessThan(MOCK_RULES.minTicksBetweenDrops);
+    await dropFresh();
+    const first = time.tick();
+    time.advance(10 * MS_PER_TICK);
+    await expect(dropAt(first + fast)).rejects.toMatchObject({ code: 'bad_request' });
+
+    setLevel('dropRate', dropRate.maxLevel);
+    await dropAt(first + fast);
+    await expect(dropAt(first + 2 * fast - 1)).rejects.toMatchObject({ code: 'bad_request' });
+    await dropAt(first + 2 * fast);
+    expectConserved();
+  });
+
+  it('lets a dropped coin reach the edge sooner only as far as pusherSpeed allows', async () => {
+    await collectHeap(6);
+    const pusher = line('pusherSpeed');
+    const base = Math.ceil(MOCK_RULES.minFallMsAfterDrop / MS_PER_TICK);
+    const fast = pushTravelTicks(base, { pusherSpeed: pusher.maxLevel });
+    expect(fast).toBeLessThan(base);
+
+    const slow = await dropFresh();
+    const slowTick = time.tick();
+    time.advance(fast * MS_PER_TICK);
+    expect(await claimAt([fallAt(slow.coin, slowTick + fast)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+
+    setLevel('pusherSpeed', pusher.maxLevel);
+    const quick = await dropFresh();
+    const quickTick = time.tick();
+    time.advance(fast * MS_PER_TICK);
+    expect(await claimAt([fallAt(quick.coin, quickTick + fast - 1)])).toEqual([
+      { status: 'rejected', reason: 'over_envelope' },
+    ]);
+    expect(await claimAt([fallAt(quick.coin, quickTick + fast)])).toMatchObject([
+      { status: 'accepted', credited: quick.coin.value },
+    ]);
+    expectConserved();
+  });
+
+  it('stretches the fall envelope with pusherSpeed the way the server rate envelope scales', async () => {
+    const heap = (await state()).table.coins;
+    const pusher = line('pusherSpeed');
+    const scale = rateEnvelopeScale(rateEnvelope.falls, {
+      levels: { pusherSpeed: pusher.maxLevel },
+      venue: venue().id,
+      charms: 0,
+      albumBonus: 0,
+    });
+    const { max, maxPerTick } = MOCK_RULES.fallEnvelope;
+    expect(Math.ceil(max * scale - 1e-9)).toBeGreaterThan(max + maxPerTick);
+
+    const burst = async (from: number) => {
+      time.advance(1_100);
+      const start = time.tick();
+      const statuses: string[] = [];
+      for (let i = 0; i < max + maxPerTick; i += maxPerTick) {
+        const tick = start + i / maxPerTick;
+        const batch = heap.slice(from + i, from + i + maxPerTick);
+        for (const result of await claimAt(batch.map((coin) => fallAt(coin, tick)))) {
+          statuses.push(result.status === 'accepted' ? 'accepted' : result.reason);
+        }
+      }
+      return statuses;
+    };
+    const slow = await burst(0);
+    expect(slow.slice(0, max).every((status) => status === 'accepted')).toBe(true);
+    expect(slow.slice(max)).toEqual(Array.from({ length: maxPerTick }, () => 'over_envelope'));
+
+    setLevel('pusherSpeed', pusher.maxLevel);
+    const fast = await burst(max + maxPerTick);
+    expect(fast).toHaveLength(max + maxPerTick);
+    expect(fast.every((status) => status === 'accepted')).toBe(true);
+    expectConserved();
+  });
+
+  it('caps offline credit at the offlineHours level, up to the hard maximum', async () => {
+    await state();
+    const away = (offline.maxCapHours + 6) * 3_600_000;
+    time.advance(away);
+    expect((await state()).offline?.creditedMs).toBe(offline.baseCapHours * 3_600_000);
+
+    const offlineLine = line('offlineHours');
+    setLevel('offlineHours', 3);
+    time.advance(away);
+    expect((await state()).offline?.creditedMs).toBe(
+      (offlineLine.effect.base + 3 * offlineLine.effect.perLevel) * 3_600_000,
+    );
+
+    setLevel('offlineHours', offlineLine.maxLevel);
+    time.advance(away);
+    const top = (await state()).offline;
+    expect(top?.creditedMs).toBe(offline.maxCapHours * 3_600_000);
+    expect(top?.coins).toBe(starterVaultCoins(offline.maxCapHours));
+    expectConserved();
   });
 });

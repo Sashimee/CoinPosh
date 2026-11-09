@@ -17,7 +17,7 @@ import { Entities, mintedValue } from './entities.ts';
 import { commit, LedgerTx, openWallet } from './ledger.ts';
 import { PREMINT_BUFFER_TARGET, type PlayerDO } from './PlayerDO.ts';
 
-const HEAP_VALUE = mintedValue(openingHeap.tier);
+const HEAP_VALUE = mintedValue(openingHeap.tier, {});
 const COPPER = coinTiers[0];
 
 function startingCoins(): number {
@@ -84,10 +84,10 @@ async function legacyPlayer(options: {
     );
     const entities = new Entities(sql);
     for (let i = 0; i < options.unpaidBuffer; i++) {
-      entities.mintCoin(COPPER.id, mintedValue(COPPER.id), 'buffer', null, 0);
+      entities.mintCoin(COPPER.id, mintedValue(COPPER.id, {}), 'buffer', null, 0);
     }
     for (let i = 0; i < (options.stranded ?? 0); i++) {
-      const coin = entities.mintCoin(COPPER.id, mintedValue(COPPER.id), 'table', i, 0);
+      const coin = entities.mintCoin(COPPER.id, mintedValue(COPPER.id, {}), 'table', i, 0);
       commit(
         sql,
         new LedgerTx('drop.mint')

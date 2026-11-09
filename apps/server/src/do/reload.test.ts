@@ -178,7 +178,7 @@ describe('a page reload with coins on the table', () => {
     const [fromDrops, fromHeap] = fused.results;
     expect(fromDrops).toMatchObject({ status: 'accepted' });
     expect(fromHeap).toMatchObject({ status: 'accepted' });
-    const heapValue = mintedValue(openingHeap.tier);
+    const heapValue = mintedValue(openingHeap.tier, {});
     expect(fromHeap).toMatchObject({
       minted: { value: Math.floor(fusionValue([heapValue, heapValue, heapValue], fusion)) },
     });

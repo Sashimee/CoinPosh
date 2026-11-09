@@ -1,11 +1,13 @@
 import {
   coinTiers,
-  crateSpawn,
+  dropBufferTarget,
+  dropSpawnsCrate,
   fusion,
   fusionValue,
   openingHeap,
   upgradeLines,
   upgradeStat,
+  type UpgradeLevelMap,
 } from '@coinposh/economy';
 import {
   DEFAULT_FEATURE_FLAGS,
@@ -61,9 +63,10 @@ import {
 import { migrate } from './schema.ts';
 
 /**
- * Coin IDs reserved ahead so play survives short network drops. The wallet pays for each
- * one as it is reserved, as the snapshot contract promises, so an offline drop spends
- * coins the player really had when it was made.
+ * Coin IDs reserved ahead so play survives short network drops, at dropRate level 0 (the
+ * dropRate upgrade grows it, see dropBufferTarget). The wallet pays for each one as it is
+ * reserved, as the snapshot contract promises, so an offline drop spends coins the player
+ * really had when it was made.
  */
 export const PREMINT_BUFFER_TARGET = 16;
 export const FLUSH_INTERVAL_MS = 30_000;
@@ -187,7 +190,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       ...Object.fromEntries(
         upgradeLines.filter((line) => line.scope === 'venue').map((line) => [line.id, 0]),
       ),
-      ...readUpgradeLevels(this.sql, HOME_VENUE.id),
+      ...this.levels(),
     };
     const state = {
       serverTime: now,
@@ -225,20 +228,23 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     });
   }
 
-  /** Prices the next level from economy config; the wallet pays the house for it. */
+  /**
+   * Prices the next level from economy config; the wallet pays the house for it. The level
+   * applies from the next action: reserved coins are re-minted at the new coin value, the
+   * buffer is topped up to its new size so the returned wallet is final, and the next drop
+   * spaces crates by the new levels.
+   */
   async buyUpgrade(command: Command<UpgradeBuyRequest>): Promise<DoResult<UpgradeBuyResponse>> {
     return this.mutate(command, (now) => {
-      const quote = quoteUpgrade(
-        readUpgradeLevels(this.sql, HOME_VENUE.id),
-        readWallet(this.sql),
-        command.body,
-      );
+      const quote = quoteUpgrade(this.levels(), readWallet(this.sql), command.body);
       recordUpgrade(this.sql, quote);
+      this.entities.revalueBuffer(DROP_TIER, mintedValue(DROP_TIER, this.levels()));
       commit(
         this.sql,
         new LedgerTx(UPGRADE_TX_KIND).move('wallet', 'house', quote.currency, quote.cost, null),
         { at: now, idempotencyKey: command.idempotencyKey },
       );
+      this.reserveBuffer({ at: now, idempotencyKey: command.idempotencyKey });
       return {
         venueId: quote.venueId,
         lineId: command.body.lineId,
@@ -411,6 +417,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
 
   private applyDrop(body: DropRequest, idempotencyKey: string, now: EpochMs): DropResponse {
     const context = { at: now, idempotencyKey };
+    const levels = this.levels();
     const cost = tierDef(DROP_TIER).value;
     const reserved = body.coinId === undefined ? null : this.bufferedCoin(body.coinId);
     const prepaid = reserved?.paid ?? 0;
@@ -427,7 +434,13 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.entities.placeOnTable(reserved.id, body.tick);
       coin = { ...reserved, state: 'table', droppedTick: body.tick };
     } else {
-      coin = this.entities.mintCoin(DROP_TIER, mintedValue(DROP_TIER), 'table', body.tick, now);
+      coin = this.entities.mintCoin(
+        DROP_TIER,
+        mintedValue(DROP_TIER, levels),
+        'table',
+        body.tick,
+        now,
+      );
     }
     commit(
       this.sql,
@@ -441,7 +454,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const dropCount = Number(this.requireMeta('drop_count')) + 1;
     this.setMeta('drop_count', String(dropCount));
     const spawnedCrates: TableCrate[] = [];
-    if (dropCount === crateSpawn.ftueScriptedDrop || dropCount % crateSpawn.dropsPerCrate === 0) {
+    if (dropSpawnsCrate(dropCount, levels)) {
       const crate = this.entities.spawnCrate('vault', body.tick, now);
       commit(this.sql, new LedgerTx('crate.spawn').move('mint', 'table', 'crate', 1, crate.id), {
         at: now,
@@ -549,18 +562,20 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
    * before buffers were prepaid is paid for too, or let go when the wallet cannot cover it.
    */
   private reserveBuffer(context: CommitContext): void {
+    const levels = this.levels();
     const cost = tierDef(DROP_TIER).value;
+    const target = dropBufferTarget(PREMINT_BUFFER_TARGET, levels);
     const canPay = () => readWallet(this.sql).coins >= cost;
     for (const coin of this.entities.coinsIn('buffer')) {
       if (coin.paid > 0) continue;
       if (canPay()) this.prepay(coin.id, cost, context);
       else this.entities.discardUnpaid(coin.id);
     }
-    for (let held = this.entities.countCoinsIn('buffer'); held < PREMINT_BUFFER_TARGET; held++) {
+    for (let held = this.entities.countCoinsIn('buffer'); held < target; held++) {
       if (!canPay()) break;
       const coin = this.entities.mintCoin(
         DROP_TIER,
-        mintedValue(DROP_TIER),
+        mintedValue(DROP_TIER, levels),
         'buffer',
         null,
         context.at,
@@ -639,7 +654,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   private seedOpeningHeap(now: EpochMs): void {
     if (this.meta('heap_seeded') === '1') return;
     if (this.entities.countCoinsIn('table') > 0) return;
-    const value = mintedValue(openingHeap.tier);
+    const value = mintedValue(openingHeap.tier, this.levels());
     const tx = new LedgerTx('grant.heap');
     for (let i = 0; i < openingHeap.coins; i++) {
       const coin = this.entities.mintCoin(openingHeap.tier, value, 'table', 0, now);
@@ -647,6 +662,10 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     }
     commit(this.sql, tx, { at: now, idempotencyKey: null });
     this.setMeta('heap_seeded', '1');
+  }
+
+  private levels(): UpgradeLevelMap {
+    return readUpgradeLevels(this.sql, HOME_VENUE.id);
   }
 
   private latestSeq(): number | null {
