@@ -67,6 +67,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-247 | done | task/P-247 (merge 849be80) | Side meters collapse to slim edge rails outside the coin floor: meterRail + railLayout with box tests, Cascade expands only while a rank is live, Decorum only once it moves, reduced-motion fade (9b3f7cb); follow-up P-251; pnpm check green after merge |
 | P-253 | done | task/P-253 (merge 44e5e70) | Formal table.bench re-baseline decision recorded in STACK.lock.md: same-host back-to-back rule and 1.3x host factor; pnpm check green after merge |
 | P-254 | done | task/P-254 (merge b55f64f) | creep.test pour front-fall bound APPROVED as falls during the pour <= ceil(POUR_COINS/32) (5 for 160), all falls inside SETTLED_STROKES, strict post-settle zeros kept (decision in POLISH.md P-254/P-215); P-215 re-review checks against it; pnpm check green after merge |
+| P-257 | done | task/P-257 (merge d5b674d) | Escape ownership and focus restore for sheets: the open sheet owns Escape wherever focus sits, and a late close restores focus to its trigger only if focus is still inside it (sheetFocus.ts, 8cf66c2); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
