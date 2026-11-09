@@ -136,6 +136,8 @@ interface DemoRun {
   readonly departures: Departure[];
   /** Over each second from 60 to 90 s, the coins frozen through all of it. */
   readonly resting: number[];
+  /** Over each second from 60 to 90 s, the coins awake through all of it. */
+  readonly awake: number[];
   readonly coinsAt90s: number;
   /** The most a coin frozen through a second moved in it, summed tick by tick. */
   readonly restingWorst: Motion;
@@ -167,6 +169,7 @@ async function demoRun(
     const frontFallTicks: number[] = [];
     const departures: Departure[] = [];
     const resting: number[] = [];
+    const awake: number[] = [];
     const hashes: string[] = [];
     const onTop = new Set<number>();
     const scraped = new Map<number, number>();
@@ -179,6 +182,7 @@ async function demoRun(
     let coinsAt90s = 0;
     let last = new Map<number, CoinState>();
     let path = new Map<number, Motion>();
+    let awakeThrough = new Set<number>();
     let lastFront = sim.pusher.frontZ;
     let dropped = 0;
     for (let tick = 1; tick <= ticks; tick++) {
@@ -236,6 +240,13 @@ async function demoRun(
           }
         }
         path = next;
+        const stillAwake = new Set<number>();
+        for (const coin of coins) {
+          if (!coin.sleeping && (tick % TICK_RATE_HZ === 1 || awakeThrough.has(coin.id))) {
+            stillAwake.add(coin.id);
+          }
+        }
+        awakeThrough = stillAwake;
         for (const coin of coins) {
           const before = last.get(coin.id);
           if (!before || high(coin) || coin.sleeping || coin.translation.z - front < BEYOND_FACE) {
@@ -251,6 +262,7 @@ async function demoRun(
           loose = { ticks: loose.ticks, mm: Math.max(loose.mm, ...looseMm.values()) };
           looseMm.clear();
           resting.push(path.size);
+          awake.push(awakeThrough.size);
           for (const coin of coins) {
             const motion = path.get(coin.id);
             if (!motion) {
@@ -271,7 +283,17 @@ async function demoRun(
         hashes.push(sim.hash());
       }
     }
-    return { frontFallTicks, departures, resting, coinsAt90s, restingWorst, halfOn, loose, hashes };
+    return {
+      frontFallTicks,
+      departures,
+      resting,
+      awake,
+      coinsAt90s,
+      restingWorst,
+      halfOn,
+      loose,
+      hashes,
+    };
   } finally {
     sim.dispose();
   }
@@ -314,16 +336,19 @@ for (const seed of SEEDS) {
     );
 
     it(
-      'keeps most of the table at rest, and a resting coin, even one half on another, where it lies',
+      'keeps most of the table at rest and almost none awake through a second, and a resting coin, even one half on another, where it lies',
       { timeout: 180_000 },
       async () => {
-        const { resting, coinsAt90s, restingWorst, halfOn } = await idleTable(seed);
+        const { resting, awake, coinsAt90s, restingWorst, halfOn } = await idleTable(seed);
         const perSecond = `resting coins per second: ${resting.join(' ')} of ${coinsAt90s}`;
+        const awakePerSecond = `coins awake through each second: ${awake.join(' ')}`;
         expect(resting).toHaveLength(30);
         expect(resting.reduce((a, b) => a + b, 0) / resting.length, perSecond).toBeGreaterThan(
           coinsAt90s / 2,
         );
         expect(Math.min(...resting), perSecond).toBeGreaterThan(coinsAt90s / 4);
+        expect(awake).toHaveLength(30);
+        expect(Math.max(...awake), awakePerSecond).toBeLessThanOrEqual(coinsAt90s / 20);
         expect(restingWorst.mm).toBeLessThan(0.2);
         expect(restingWorst.deg).toBeLessThan(1);
         expect(halfOn.count, 'resting coin-seconds half on another coin').toBeGreaterThan(0);

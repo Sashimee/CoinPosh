@@ -6,36 +6,24 @@ import { PusherTable } from './table.ts';
 import { configureTableWorld } from './tuning.ts';
 
 /**
- * Budget: one tick with 250 coins on the table must stay under 4 ms on desktop. Run
- * with `pnpm --filter @coinposh/sim exec vitest bench --run`.
+ * Budget: one tick with 250 coins on the table must stay under 4 ms at the 99th
+ * percentile on desktop. Run with `pnpm --filter @coinposh/sim exec vitest bench --run`.
  *
- * The table is filled by playing, not by placing coins, so the bench measures the
- * real steady state: a full upper tier riding the pusher, a packed lower tier being
- * shoved over the edge, and a fresh drop every tick that the table is short of 250,
- * which holds it at 224 to 250 coins (a sweep over the edge can take a couple of
- * dozen at once), up to 166 of them frozen at rest (COIN_REST). Measured with the
- * impact brake (COIN_MATERIAL.impactSpeed), the separation pass and the solver
- * settings in TABLE_SOLVER: before coins could rest, 3.01 to 3.06 ms mean and 3.72 to
- * 3.83 ms at the 99th percentile. Rest (P-215) took the tick about a tenth faster, but
- * a second round of runs on the same host, then slower all round, measured the old
- * table at 3.51 to 3.52 ms mean and 4.90 to 4.94 ms at the 99th, the new one at 3.17 to
- * 3.21 ms and 4.63 to 4.72 ms. Finding pressed rest coins through a grid of the awake
- * ones, rather than walking every frozen coin's contact pairs, then measured 2.97 to
- * 2.99 ms mean and 4.59 to 4.63 ms at the 99th against 3.50 ms and 4.91 to 5.00 ms for
- * the old table: compare runs taken back to back on one machine. Shape queries made
- * straight on the WASM shapes in the separation pass (CoinSeparator), on a host that
- * measured the old table at 3.5 ms mean, then gave 2.82 to 2.83 ms mean, 4.18 to 4.22
- * ms at the 99th and 4.45 to 4.52 ms at the 99.5th: the 99th is still over the 4 ms
- * budget there. The tail is the world step on late-return ticks (3.6 to 3.9 ms, with
- * some 150 upper-tier coins held awake by the backboard as the block slides under
- * them) and separation ticks of 20 to 37 passes (1.3 to 3 ms). The rest cascade
- * (COIN_REST), which wakes the frozen coins a push reaches before the tick instead of
- * after it, keeps fewer coins frozen (about 90 against 105) and, back to back on a host
- * slower than the one above, measured 3.01 to 3.06 ms mean and 4.40 to 4.44 ms at the
- * 99th, against 2.82 to 2.83 ms and 4.20 to 4.21 ms without it and 3.53 to 3.55 ms and
- * 4.93 to 4.98 ms for the table before coins could rest (3.72 to 3.83 ms at the 99th on
- * the first host). The coin and sleeping counts over the measured ticks are printed
- * after the run, so the result always says what it measured.
+ * The table is filled by playing, not by placing coins: a full upper tier riding the
+ * pusher, a packed lower tier being shoved over the edge, and a fresh drop every tick
+ * that the table is short of 250, which holds it at 238 to 250 coins, up to 144 of them
+ * frozen at rest (COIN_REST).
+ *
+ * Only the tick is timed. The sleeping count runs once a second in a microtask, after
+ * tinybench has stopped the clock, so it is not in the figures; timing it inside moved
+ * the 99th by under 0.05 ms. Compare only runs taken back to back on one machine.
+ *
+ * On 2026-11-09, back to back on one host: 3.11 to 3.13 ms mean and 4.46 to 4.48 ms at
+ * the 99th, against 3.57 ms and 5.06 ms for the table before coins could rest (2e31a30).
+ * The 99th is over budget. The tail is late-return ticks, where the backboard holds some
+ * 180 upper-tier coins awake as the block slides under them (the world step alone 3.1 to
+ * 3.5 ms), and separation ticks of 17 to 47 passes (1.2 to 2.8 ms). The coin and
+ * sleeping counts are printed after the run.
  */
 const TARGET_COINS = 250;
 const WARMUP_TICKS = 45 * TICK_RATE_HZ;
