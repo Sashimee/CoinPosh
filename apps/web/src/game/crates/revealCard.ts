@@ -53,6 +53,37 @@ export function placeCrateCard(layout: CrateCardLayout): CrateCardPlacement {
   return { top: Math.max(Math.ceil(ceiling + CARD_CHROME_GAP), top), scale };
 }
 
+/** Final `scale()` of the `cp-crate-fly` keyframe in crates.css. */
+export const CARD_FLY_SCALE = 0.15;
+
+export interface CrateFlyRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * The `--cp-crate-fly-x/y` translation that lands the shrunken card's centre on the target's
+ * centre. `from` is the card's on-screen box (fit scale included), `originY` its transform
+ * origin as a fraction of its height; the keyframe translation is applied inside `scale`.
+ */
+export function crateFlyOffset(
+  from: CrateFlyRect,
+  to: CrateFlyRect,
+  scale: number,
+  originY = 0,
+): { readonly x: number; readonly y: number } {
+  const k = scale > 0 ? scale : 1;
+  const originTop = from.top + originY * from.height;
+  const centreY = from.top + from.height / 2;
+  const landedY = originTop + CARD_FLY_SCALE * (centreY - originTop);
+  return {
+    x: (to.left + to.width / 2 - (from.left + from.width / 2)) / k,
+    y: (to.top + to.height / 2 - landedY) / k,
+  };
+}
+
 const DOCK = '[data-testid="hud-dock"]';
 const BALANCE = '[data-testid="hud-balance"]';
 
@@ -259,8 +290,8 @@ function lineText(
 }
 
 /**
- * Sends the card toward the inventory icon; CSS animates the transform it is handed, which
- * applies inside the card's fit `scale`, so the offset is divided back out of it.
+ * Sends the card toward the inventory icon. The fly keyframe shrinks the card about its
+ * transform origin (top centre once placed, centre before), inside the fit `scale`.
  */
 function flyToward(
   card: HTMLElement,
@@ -269,11 +300,8 @@ function flyToward(
   scale: number,
 ): void {
   if (reduced || target === null) return;
-  const from = rectOf(card);
-  const to = rectOf(target);
-  const dx = to.left + to.width / 2 - (from.left + from.width / 2);
-  const dy = to.top + to.height / 2 - (from.top + from.height / 2);
-  const k = scale > 0 ? scale : 1;
-  card.style.setProperty('--cp-crate-fly-x', `${Math.round(dx / k)}px`);
-  card.style.setProperty('--cp-crate-fly-y', `${Math.round(dy / k)}px`);
+  const originY = card.classList.contains('is-placed') ? 0 : 0.5;
+  const fly = crateFlyOffset(rectOf(card), rectOf(target), scale, originY);
+  card.style.setProperty('--cp-crate-fly-x', `${Math.round(fly.x)}px`);
+  card.style.setProperty('--cp-crate-fly-y', `${Math.round(fly.y)}px`);
 }

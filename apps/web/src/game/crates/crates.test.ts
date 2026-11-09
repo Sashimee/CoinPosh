@@ -49,6 +49,8 @@ import { CRATES_STRINGS, cratesKey, registerCratesStrings } from './i18n.ts';
 import { heroOf, pityOutlook, rewardLines } from './loot.ts';
 import {
   CARD_CHROME_GAP,
+  CARD_FLY_SCALE,
+  crateFlyOffset,
   placeCrateCard,
   type CrateCardLayout,
   type CrateCardPlacement,
@@ -511,6 +513,54 @@ describe('crate reward card placement', () => {
     expect(css).toMatch(/\.cp-crate-card\[hidden\]\s*\{\s*display:\s*none;/);
     expect(css).not.toMatch(/margin-top:\s*\d+vh/);
     expect(css).not.toMatch(/\.cp-crate\.is-revealed\s*\{[^}]*place-items/);
+  });
+});
+
+describe('crateFlyOffset', () => {
+  const landedCentre = (
+    from: { left: number; top: number; width: number; height: number },
+    fly: { x: number; y: number },
+    scale: number,
+    originY: number,
+  ) => {
+    const untransformedHeight = from.height / scale;
+    const originX = from.left + from.width / 2;
+    const originTop = from.top + originY * from.height;
+    const centreFromOrigin = untransformedHeight / 2 - originY * untransformedHeight;
+    return {
+      x: originX + scale * fly.x,
+      y: originTop + scale * (fly.y + CARD_FLY_SCALE * centreFromOrigin),
+    };
+  };
+  const plaque = { left: 97, top: 90.1, width: 196, height: 73.5 };
+
+  for (const scale of [1, 0.6]) {
+    it(`lands the shrunken card centre on the target centre at scale ${scale}`, () => {
+      const from = { left: 25, top: 423, width: 340 * scale, height: 338.9 * scale };
+      const fly = crateFlyOffset(from, plaque, scale, 0);
+      const centre = landedCentre(from, fly, scale, 0);
+      expect(centre.x).toBeCloseTo(plaque.left + plaque.width / 2, 6);
+      expect(centre.y).toBeCloseTo(plaque.top + plaque.height / 2, 6);
+    });
+  }
+
+  it('lands on the target from a centre origin before the card is placed', () => {
+    const from = { left: 25, top: 200, width: 340, height: 338.9 };
+    const fly = crateFlyOffset(from, plaque, 1, 0.5);
+    const centre = landedCentre(from, fly, 1, 0.5);
+    expect(centre.x).toBeCloseTo(plaque.left + plaque.width / 2, 6);
+    expect(centre.y).toBeCloseTo(plaque.top + plaque.height / 2, 6);
+  });
+
+  it('treats a non-positive scale as unscaled', () => {
+    const from = { left: 0, top: 0, width: 100, height: 100 };
+    expect(crateFlyOffset(from, plaque, 0, 0)).toEqual(crateFlyOffset(from, plaque, 1, 0));
+  });
+
+  it('matches the shrink the fly keyframe ends on', () => {
+    const css = readFileSync(new URL('./crates.css', import.meta.url), 'utf8');
+    const fly = /@keyframes cp-crate-fly\s*\{[^@]*?scale\(([\d.]+)\)/.exec(css);
+    expect(Number(fly?.[1])).toBe(CARD_FLY_SCALE);
   });
 });
 
