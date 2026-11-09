@@ -1,6 +1,7 @@
 import { stewardAllowance, upgradeLines } from '@coinposh/economy';
 import { affordableCount, upgradeRows } from '../app/model.ts';
 import type { PanelId } from '../app/state.ts';
+import { browserStorage } from '../app/settings.ts';
 import { watch } from '../app/store.ts';
 import { formatInteger } from '../i18n/index.ts';
 import { createBalancePlaque } from './components/balancePlaque.ts';
@@ -10,6 +11,7 @@ import type { MeterRail } from './components/meterRail.ts';
 import { makePressable } from './components/pressable.ts';
 import { coinFloorRect, planMeterRails } from './components/railLayout.ts';
 import { createTierStamp } from './components/tierStamp.ts';
+import { createUpgradeNudge } from './components/upgradeNudge.ts';
 import { tr, type UiContext } from './context.ts';
 import { fromMarkup, h, listen, restartAnimation } from './dom.ts';
 import { icon } from './icons.ts';
@@ -19,7 +21,7 @@ import { SPRINGS } from './motion/spring.ts';
 import { SpringValue } from './motion/value.ts';
 import { createSettingsPanel } from './panels/settingsPanel.ts';
 import { createSheet, type Sheet } from './panels/sheet.ts';
-import { createUpgradesPanel } from './panels/upgradesPanel.ts';
+import { createUpgradesPanel, revealUpgradeLine } from './panels/upgradesPanel.ts';
 
 export interface Hud {
   readonly root: HTMLElement;
@@ -314,6 +316,7 @@ export function createHud(ctx: UiContext): Hud {
   const closePanel = (): void => {
     setPanel(null);
   };
+  const upgradesBody = createUpgradesPanel(ctx);
   const sheets: Record<PanelId, { sheet: Sheet; trigger: HTMLElement }> = {
     upgrades: {
       trigger: upgradesButton,
@@ -321,7 +324,7 @@ export function createHud(ctx: UiContext): Hud {
         id: 'upgrades',
         title: () => tr(ctx, 'upgrades.title'),
         subtitle: () => tr(ctx, 'upgrades.subtitle'),
-        body: createUpgradesPanel(ctx),
+        body: upgradesBody,
         onRequestClose: closePanel,
       }),
     },
@@ -371,6 +374,17 @@ export function createHud(ctx: UiContext): Hud {
     bannerSlot,
     plaque,
     createVaultEmptyNotice(ctx, plaque),
+    createUpgradeNudge(ctx, {
+      trigger: upgradesButton,
+      storage: browserStorage(),
+      playable: isPlayable,
+      openUpgrades() {
+        setPanel('upgrades');
+      },
+      reveal(lineId) {
+        revealUpgradeLine(upgradesBody, lineId);
+      },
+    }),
     createConciergeNotice(ctx),
   );
   const hud = h('div', { class: 'cp-hud' }, hudTop, dock);

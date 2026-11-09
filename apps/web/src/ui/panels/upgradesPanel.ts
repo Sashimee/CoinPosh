@@ -3,7 +3,7 @@ import { upgradeRow, type StatFormat, type UpgradeRow } from '../../app/model.ts
 import { watch } from '../../app/store.ts';
 import { formatDecimal, formatInteger, formatPrice, type Language } from '../../i18n/index.ts';
 import { tr, type UiContext } from '../context.ts';
-import { h, restartAnimation } from '../dom.ts';
+import { h, listen, restartAnimation } from '../dom.ts';
 import { icon } from '../icons.ts';
 import { makePressable } from '../components/pressable.ts';
 import { SPRINGS } from '../motion/spring.ts';
@@ -221,4 +221,50 @@ export function createUpgradesPanel(ctx: UiContext): HTMLElement {
       upgradeLines.filter((line) => line.scope === 'global'),
     ),
   );
+}
+
+/** Space left above a revealed row, so its section title and the row before it stay in view. */
+const REVEAL_HEADROOM = 56;
+const SPOTLIGHT_GLOW = 1.4;
+/** Matches the `cp-spotlight` keyframes; reduced motion holds the static ring this long. */
+const SPOTLIGHT_MS = 1800;
+
+/**
+ * Glides the sheet body to one line and lights it, for a hint that points at that line. Any
+ * touch or wheel on the sheet hands scrolling straight back to the player.
+ */
+export function revealUpgradeLine(panel: HTMLElement, lineId: string): void {
+  const row = panel.querySelector<HTMLElement>(`.cp-upgrade[data-line="${CSS.escape(lineId)}"]`);
+  const body = row?.closest<HTMLElement>('.cp-sheet-body');
+  if (!row || !body) throw new Error(`revealUpgradeLine: no upgrade row for line "${lineId}"`);
+  const bodyRect = body.getBoundingClientRect();
+  const scale = body.offsetHeight > 0 ? bodyRect.height / body.offsetHeight : 1;
+  const rowTop = (row.getBoundingClientRect().top - bodyRect.top) / (scale || 1) + body.scrollTop;
+  const fits = row.offsetHeight + REVEAL_HEADROOM <= body.clientHeight;
+  const target = Math.max(
+    0,
+    Math.min(body.scrollHeight - body.clientHeight, fits ? rowTop - REVEAL_HEADROOM : rowTop),
+  );
+  const scroll = new SpringValue(body.scrollTop, SPRINGS.sheet, (value) => {
+    body.scrollTop = value;
+  });
+  const release: (() => void)[] = [];
+  const handBack = (): void => {
+    scroll.stop();
+    for (const off of release.splice(0)) off();
+  };
+  release.push(
+    listen(body, 'pointerdown', handBack, { passive: true }),
+    listen(body, 'wheel', handBack, { passive: true }),
+  );
+  void scroll.to(target).then(handBack);
+
+  const glow = new SpringValue(SPOTLIGHT_GLOW, SPRINGS.gentle, (value) => {
+    row.style.setProperty('--cp-glow', String(Math.max(0, value)));
+  });
+  void glow.to(0);
+  restartAnimation(row, 'is-spotlit');
+  setTimeout(() => {
+    row.classList.remove('is-spotlit');
+  }, SPOTLIGHT_MS);
 }
