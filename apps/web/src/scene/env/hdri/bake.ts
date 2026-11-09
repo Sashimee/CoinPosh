@@ -1,24 +1,20 @@
 import { FloatType } from 'three/webgpu';
 import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
+import { downsampleHalf, type RadianceImage } from '../radiance.ts';
+
+export { downsampleHalf, type RadianceImage } from '../radiance.ts';
 
 /**
  * Offline HDRI preparation, run by `bake-hdri.mjs` (never at runtime). The venue only uses the
- * HDRI for PMREM-blurred lighting and reflections, so the shipped file is graded once and
+ * HDRI for pre-filtered lighting and reflections, so the shipped file is graded once and
  * downsampled here instead of being decoded at full size and graded on the main thread.
  */
-
-export interface RadianceImage {
-  readonly width: number;
-  readonly height: number;
-  /** Linear RGBA, row-major, top row first. */
-  readonly data: Float32Array;
-}
 
 export interface RadianceGrade {
   /**
    * Caps every texel's brightest channel, preserving hue. The venue lights its sun with an
    * analytic rim light, so the HDRI's own sun is clipped to stop it flooding rough surfaces
-   * with a second, unshadowed sun once PMREM-blurred.
+   * with a second, unshadowed sun once pre-filtered.
    */
   readonly maxRadiance: number;
   /** Linear RGB multiplier, so a photographed sky can be warmed to match the painted one. */
@@ -59,27 +55,6 @@ export function gradeRadiance(data: Float32Array, grade: RadianceGrade): number 
     data[i + 2] = b * scale;
   }
   return clipped;
-}
-
-/** Halves both dimensions with a 2×2 box filter in linear light. */
-export function downsampleHalf(image: RadianceImage): RadianceImage {
-  const { width, height, data } = image;
-  if (width % 2 !== 0 || height % 2 !== 0) {
-    throw new RangeError(`downsampleHalf needs even dimensions, got ${width}×${height}`);
-  }
-  const w = width / 2;
-  const h = height / 2;
-  const out = new Float32Array(w * h * 4);
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      for (let c = 0; c < 4; c += 1) {
-        const at = (sx: number, sy: number): number => data[(sy * width + sx) * 4 + c] ?? 0;
-        const sum = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1);
-        out[(y * w + x) * 4 + c] = (sum + at(2 * x + 1, 2 * y + 1)) / 4;
-      }
-    }
-  }
-  return { width: w, height: h, data: out };
 }
 
 function toRgbe(r: number, g: number, b: number, out: Uint8Array, at: number): void {
