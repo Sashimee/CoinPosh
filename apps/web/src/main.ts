@@ -12,6 +12,7 @@ import type {
   SimBridgeStats,
   SimEventBatch,
 } from './game/simWorker/index.ts';
+import { holdBackVenue } from './heldVenue.ts';
 import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
 import {
   createNet,
@@ -54,6 +55,9 @@ const COIN_CAPACITY: Readonly<Record<CoinTierId, number>> = {
  * TODO(lead-architect): seed the sim from the server table session once the API exposes one.
  */
 const TABLE_SEED = 0xc0196051;
+
+/** The longest the stage waits for the sim to be ready, so a slow worker download never blanks the table. */
+const SIM_HEAD_START_MS = 1500;
 
 /** Waits between attempts to load the player's table at boot, doubling up to the ceiling. */
 const STATE_RETRY = { firstDelayMs: 1000, maxDelayMs: 30_000 } as const;
@@ -554,10 +558,19 @@ async function bootScene(
   const pending: Promise<unknown>[] = [];
   const stopEarlyTaps = answerEarlyTaps(target.id);
   try {
+    const simModuleLoaded = import('./game/simWorker/index.ts');
+    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
+    const simStarted = Promise.all([simModuleLoaded, openingTable(hydrated)]).then(
+      ([simModule, heap]) => {
+        started = startSim(simModule, heap);
+        return started;
+      },
+    );
+    pending.push(simStarted);
     const [stageModule, venueModule, simModule, gameSystems, effects, crates] = await Promise.all([
       import('./stage.ts'),
       import('./scene/venues/riviera/index.ts'),
-      import('./game/simWorker/index.ts'),
+      simModuleLoaded,
       import('./game/systems/index.ts'),
       import('./vfx/index.ts'),
       import('./game/crates/index.ts'),
@@ -567,11 +580,13 @@ async function bootScene(
     systemsModule = gameSystems;
     vfxModule = effects;
     cratesApi = crates;
-    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
-    const simStarted = openingTable(hydrated).then((heap) => {
-      started = startSim(simModule, heap);
-      return started;
-    });
+    // On a software GPU the stage's first frames hold the main thread for seconds, and a worker's
+    // first messages wait for the main thread, so Rapier gets a bounded head start before them.
+    await Promise.race([
+      simStarted.then((early) => early.bridge.ready).catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
+    ]);
+    markBoot('sim-head-start');
     const stageBuilt = stageModule
       .createStage(target, {
         look: riviera.RIVIERA_RENDER_LOOK,
@@ -583,7 +598,7 @@ async function bootScene(
         built = created;
         return created;
       });
-    pending.push(simStarted, stageBuilt);
+    pending.push(stageBuilt);
     [stage, sim] = await Promise.all([stageBuilt, simStarted]);
     teardownStage(stage);
   } catch (error) {
@@ -609,7 +624,7 @@ async function bootScene(
     return;
   }
   markBoot('venue');
-  const revealVenue = holdBackVenue(venue);
+  const revealVenue = holdBackVenue(venue.root);
   attachVenue(stage, venue, riviera.applyCameraPreset);
   stage.castCoinShadowsFrom(venue.lighting.key);
   watchReducedMotion((reduced) => {
@@ -637,6 +652,12 @@ async function bootScene(
   attachTable(stage, venue, bridge).use(systems);
   probe.playable = true;
   markBoot('playable');
+  measureBoot('total', 'ui', 'playable');
+  measureBoot('modules', 'ui', 'modules');
+  measureBoot('sim-head-start', 'modules', 'sim-head-start');
+  measureBoot('stage', 'sim-head-start', 'stage');
+  measureBoot('venue', 'stage', 'venue');
+  measureBoot('reveal', 'venue', 'playable');
 }
 
 /** The opening heap the server minted onto the table, in every net mode. */
@@ -922,6 +943,7 @@ function startSim(simModule: typeof SimWorkerModule, heap: readonly MintedCoin[]
   bridge.ready.then(
     () => {
       markBoot('sim-ready');
+      measureBoot('sim', 'sim-start', 'sim-ready');
     },
     () => undefined,
   );
@@ -993,27 +1015,7 @@ function markBoot(step: string): void {
   performance.mark(`coinposh:boot:${step}`);
 }
 
-/** A layer no camera sees, holding the venue's meshes until play can start. */
-const HELD_LAYER = 31;
-
-/**
- * Keeps the venue's meshes out of the frames drawn while play is still being set up, so their
- * shaders are linked once, in the first frame after everything that adds a light has run. The
- * lights keep their layers, so those frames already light the scene as it will be drawn.
- * Returns the function that shows the venue again.
- */
-function holdBackVenue(venue: RivieraVenue): () => void {
-  const held: { readonly object: Object3DLike; readonly mask: number }[] = [];
-  venue.root.traverse((object) => {
-    if ((object as { readonly isLight?: boolean }).isLight === true) return;
-    held.push({ object, mask: object.layers.mask });
-    object.layers.set(HELD_LAYER);
-  });
-  return () => {
-    for (const { object, mask } of held) object.layers.mask = mask;
-  };
-}
-
-interface Object3DLike {
-  readonly layers: { mask: number };
+/** Spans the e2e boot budget reads back, named `coinposh:boot:span:<name>`. */
+function measureBoot(name: string, from: string, to: string): void {
+  performance.measure(`coinposh:boot:span:${name}`, `coinposh:boot:${from}`, `coinposh:boot:${to}`);
 }
