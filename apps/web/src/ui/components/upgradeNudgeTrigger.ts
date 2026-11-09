@@ -4,6 +4,18 @@ import type { SettingsStorage } from '../../app/settings.ts';
 
 export const UPGRADE_NUDGE_STORAGE_KEY = 'coinposh.nudge.firstUpgrade.v1';
 
+export interface ActivationNavigator {
+  readonly userActivation?: { readonly hasBeenActive: boolean } | undefined;
+}
+
+/**
+ * Whether the page has had a user gesture, so audio and vibrate() will be allowed. Browsers
+ * without the User Activation API (Safari < 16.4, Firefox < 120) count as activated.
+ */
+export function hasBeenActivated(nav: ActivationNavigator | undefined): boolean {
+  return nav?.userActivation?.hasBeenActive ?? true;
+}
+
 export interface NudgeSnapshot extends Wallet {
   readonly upgradeLevels: Readonly<Record<string, number>>;
   /** False until the table is hydrated: a wallet seen before the levels arrive proves nothing. */

@@ -9,7 +9,7 @@ import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { makePressable } from './pressable.ts';
-import { createFirstUpgradeNudge } from './upgradeNudgeTrigger.ts';
+import { createFirstUpgradeNudge, hasBeenActivated } from './upgradeNudgeTrigger.ts';
 
 /** The line folds away after this long; the dock keeps its glow until Upgrades is opened. */
 const HINT_LINGER_MS = 12_000;
@@ -82,7 +82,7 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
       restartAnimation(trigger, 'is-beckoning');
     }
     // Before the first gesture audio is still locked and Chrome logs an error for vibrate().
-    if (navigator.userActivation.hasBeenActive) feedback(ctx, 'open');
+    if (hasBeenActivated(navigator)) feedback(ctx, 'open');
     linger = setTimeout(fold, HINT_LINGER_MS);
   };
   const fold = (): void => {

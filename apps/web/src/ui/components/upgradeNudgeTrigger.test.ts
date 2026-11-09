@@ -6,6 +6,7 @@ import {
   UPGRADE_NUDGE_STORAGE_KEY,
   cheapestAffordable,
   createFirstUpgradeNudge,
+  hasBeenActivated,
   type NudgeSnapshot,
 } from './upgradeNudgeTrigger.ts';
 
@@ -145,5 +146,18 @@ describe('createFirstUpgradeNudge', () => {
     expect(nudge.evaluate(snapshot({ coins: 10_000 }))).not.toBe(null);
     expect(nudge.evaluate(snapshot({ coins: 10_000 }))).toBe(null);
     expect(warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('hasBeenActivated', () => {
+  it('follows userActivation.hasBeenActive where the API exists', () => {
+    expect(hasBeenActivated({ userActivation: { hasBeenActive: false } })).toBe(false);
+    expect(hasBeenActivated({ userActivation: { hasBeenActive: true } })).toBe(true);
+  });
+
+  it('treats a browser without the User Activation API as activated instead of throwing', () => {
+    expect(hasBeenActivated({})).toBe(true);
+    expect(hasBeenActivated({ userActivation: undefined })).toBe(true);
+    expect(hasBeenActivated(undefined)).toBe(true);
   });
 });
