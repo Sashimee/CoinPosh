@@ -1,18 +1,39 @@
 # Design: server-side table persistence (#92)
 
-Status: proposal, not implemented. Refs #92, and it touches #10, #84, #85 and #88.
+Status: accepted, scheduled as T-92.01..T-92.10 in `04-ROADMAP.md`. Refs #92, and it
+touches #10, #84, #85 and #88.
 Author: lead-architect. Date: 2026-11-09.
+
+## Decisions (2026-11-09)
+
+The founder answered the open questions of the first draft. The coordinator set the
+defaults marked as such.
+
+| # | Question | Decision |
+| --- | --- | --- |
+| D1 | Browser storage | IndexedDB may hold the last unsent snapshot, as a transport buffer only. The table itself lives on the server. (coordinator default) |
+| D2 | Several tabs | The newest boot wins. The old tab shows a "Play here" button that takes the table back. |
+| D3 | Demo Mode | Stays fresh on every reload. The mock implements the contract but persists nothing. |
+| D4 | Heap coin without a valid pose | Laid again at its own heap slot, not returned to the house. |
+| D5 | Crates (#88) | In scope. Crate ride state is posed, uploaded and restored like coins. |
+| D6 | Data budget | Full snapshots for now. A delta format is a later perf item. (coordinator default) |
+| D7 | Cadence | Settle 1 s, at least 3 s between uploads, heartbeat 10 s, server limit 1 per 2 s with a burst of 3. (coordinator default) |
+
+After these decisions a boot refunds only **non-heap coins without a valid pose**. Heap
+coins and crates are always back on the table: either at their pose or at their start
+position (heap slot, crate chute).
 
 ## Goal
 
 A reload restores the table exactly as the player left it: the same coins, in the same
 places, at rest. The founder chose server-side storage. The server keeps the last
-accepted pose of every coin on the table and returns it on boot. The client restores
-the sim from those poses. Only coins without a usable pose are refunded, through the
-existing `hydrate=boot` rule.
+accepted pose of every coin and crate on the table and returns it on boot. The client
+restores the sim and the crate rides from those poses. Only non-heap coins without a
+usable pose are refunded, through the existing `hydrate=boot` rule.
 
-Not in scope: crate poses (the sim does not model crates yet, see #88), mid-flight
-velocities, and cross-device play beyond what the session lease below gives us.
+Not in scope: mid-flight velocities, cross-device play beyond what the session lease
+below gives us, and the other two points of #88 (buffer size 16 vs 12, and the prepaid
+buffer blocking upgrades). #88 stays open for those.
 
 ## Invariants this design keeps
 
@@ -101,34 +122,57 @@ Sim.create({
   seed,
   mechanics,
   restore?: {
-    snapshot: SimTableSnapshot;
-    tiers: readonly CoinTier[];                    // tiers[i] is for snapshot.coins[i]
+    pusherTickInCycle: number;
+    coins: readonly RestoreEntry[];                // entry i becomes sim id i
   },
   openingHeap?: ...,                               // mutually exclusive with restore
 });
+
+type RestoreEntry =
+  | { kind: 'pose'; pose: CoinPose; tier?: CoinTier }
+  | { kind: 'heapSlot'; slot: number; tier?: CoinTier };   // D4
 ```
+
+A `heapSlot` entry is a heap coin with no valid pose. It is laid again at its own slot
+of the opening heap: slot `k` is the `k`-th pose `heapPoses` returns, computed exactly
+as on the boot that first laid the heap. That means the pusher at phase 0,
+`heapLayout(config)`, and a PRNG seeded from `seed`. `heapPoses` draws in slot order,
+so pose `k` does not depend on how many coins are laid after it. A coin keeps its slot
+for life: the server stores it when it seeds the heap (3.1). This relies on the table
+seed being the same on every boot, which it is today (`TABLE_SEED` in `main.ts`). If
+the seed is ever made per session (the TODO there), the heap seed must be stored with
+the heap and sent in `layout`.
 
 Restore rules, in order:
 
-1. Validate with `validateSnapshot` (1.3). Any failure throws: the caller has already
-   filtered poses on the server, so a failure here is a bug and must be loud.
-2. Reset the tick to 0 and reseed the PRNG from `seed`. A restore is a new session, not
-   a continuation.
-3. Add the coins in snapshot order with `addCoin(translation, rotation)`, using the
-   dequantized values. Sim ids are `0..n-1` in snapshot order. That is the same
-   convention as the heap: sim id `i` is `table.coins[i]` of the boot response.
-   `nextCoinId = n`.
-4. Set `pusherTickInCycle`.
-5. Run one `CoinSeparator` pass to remove any quantization overlap.
-6. Put `asleep` coins to sleep, except a coin that fails a support probe: a 1 mm
+1. Validate the pose entries with `validateSnapshot` (1.3). Any failure throws: the
+   server has already filtered the poses, so a failure here is a bug and must be loud.
+2. Reset the tick to 0 and seed the PRNG from `seed`. A restore is a new session, not a
+   continuation. Heap slots are computed with their own PRNG seeded from `seed`, so the
+   main PRNG's state does not depend on which slots are used.
+3. Set `pusherTickInCycle`.
+4. Add the `pose` entries in order with `addCoin(translation, rotation)`, using the
+   dequantized values.
+5. Add the `heapSlot` entries at their slot pose. A slot that would overlap a coin
+   already added, or the pusher at the restored phase, is lifted straight up until it
+   clears, and that coin restores awake so it settles onto whatever is below.
+6. Sim ids are `0..n-1` in entry order: sim id `i` is `table.coins[i]` of the boot
+   response, the same convention as the heap today. `nextCoinId = n`. (Adding poses
+   before slots does not change the ids: they are assigned from the entry index.)
+7. Run one `CoinSeparator` pass to remove any quantization overlap.
+8. Put `asleep` coins to sleep, except a coin that fails a support probe: a 1 mm
    downward shape cast that hits neither the floor nor another coin. Such a coin
    restores awake, so a floating coin never hangs in the air.
-7. If mechanics are enabled: fusion streaks reset (they are not posed). A Sim with a
+9. If mechanics are enabled: fusion streaks reset (they are not posed). A Sim with a
    champagne tower refuses `restore` in v1. Neither is live in the worker today
    (`fusion: null, tower: null`).
 
+A restore where every entry is `heapSlot 0..n-1` lays the same table as
+`openingHeap: { coins: n }` today. That case needs a test, because "no snapshot was
+ever stored" boots through it (4.1).
+
 `sim.snapshot()` of a freshly restored sim gives back the same quantized values for
-every coin that restored asleep: `quantize(restore(q)) == q`.
+every coin that restored asleep from a pose: `quantize(restore(q)) == q`.
 
 ### 1.3 Pose validation, shared with the server
 
@@ -158,6 +202,42 @@ Reasons: `non_finite`, `bad_rotation`, `out_of_bounds`, `in_pusher`, `overlap`,
 `frozen_unsupported`. For an overlapping pair, the coin with the higher id is the one
 dropped.
 
+The same module also exports the crate ride bounds and `checkCratePose` (1.5), so the
+server judges crates from the same numbers as the client.
+
+### 1.5 Crate ride state (D5)
+
+The sim has no crate body. A crate is a kinematic passenger of the pusher, driven by
+`CrateRide` in `apps/web/src/game/crates/ride.ts`. Its state is small and fully
+described by four values, so a crate pose is that state, not a rigid-body pose:
+
+```ts
+export interface CratePose {
+  readonly x: number;          // int, 10 µm units
+  readonly z: number;          // int, 10 µm units
+  readonly elapsedMs: number;  // int, ride time so far
+  readonly phase: 'riding' | 'teeter';
+}
+```
+
+- `lastStroke` is not stored. On restore it is read from the restored pusher phase, so
+  the first stroke after a reload does not jump the crate.
+- A `fell` crate is never posed: its claim is already in the outbox.
+- `CrateRide` gets `snapshot(): CratePose` and a `CrateRide.restore(crate, pose, stroke)`
+  factory. This is client gameplay code, not the deterministic sim, so it needs no hash
+  test, but it gets a round-trip test (the same path after restore as without a reload).
+- The ride bounds (`CRATE_SIZE`, spawn z, step z, teeter z, tip z, side limit and the
+  creep and carry rates) move into `@coinposh/sim/snapshot` as `CRATE_RIDE`, derived
+  from `PLAYFIELD` and `PUSHER`. `ride.ts` imports them from there. The server then
+  judges crates from the same numbers. `CRATE_SIZE` in
+  `apps/web/src/vfx/cinematics/unbox/stage.ts` should then import it too (a follow-up
+  for vfx-juice, which owns that file).
+
+`checkCratePose(pose)` is valid when every value is a finite integer,
+`|x| <= sideLimit`, `spawnZ <= z < tipZ`, `phase` matches `z` (`teeter` exactly when
+`z >= teeterZ`), and `0 <= elapsedMs <= crateFallSeconds.max * 1000` (from
+`packages/economy`, passed in by the caller, because sim does not depend on economy).
+
 ### 1.4 Determinism tests (extending the hash suite)
 
 - **Round trip:** run 600 ticks from the heap, snapshot, restore twice into two fresh
@@ -173,7 +253,11 @@ dropped.
 - **Parity:** the round-trip hash is equal in Node and in the browser (the existing
   parity harness).
 - **Validation:** table-driven tests for every reason in 1.3, including boundary values
-  exactly on each limit.
+  exactly on each limit, and the same for `checkCratePose`.
+- **Heap slots:** a restore of all slots `0..n-1` hashes the same as
+  `openingHeap: { coins: n }`. A restore that mixes poses and slots is deterministic
+  (two runs hash equal). A slot that overlaps a posed coin is lifted, restores awake,
+  and settles within 120 ticks with no spurious fall.
 
 ---
 
@@ -198,11 +282,20 @@ export const TableSnapshotRequestSchema = z.strictObject({
   tick: TickSchema,
   pusher: z.strictObject({ tickInCycle: z.int().nonnegative() }),
   coins: z.array(PoseTupleSchema).max(MAX_SNAPSHOT_COINS),
+  crates: z.array(CratePoseTupleSchema).max(MAX_SNAPSHOT_CRATES),
 });
+
+export const MAX_SNAPSHOT_CRATES = 16;
+export const CratePoseTupleSchema = z.tuple([
+  CrateIdSchema,
+  z.int(), z.int(),                            // x, z in 10 µm units, |v| <= 100_000
+  z.int().nonnegative(),                       // elapsedMs, <= 600_000
+  z.enum(['riding', 'teeter']),
+]);
 
 export const TableSnapshotResponseSchema = z.object({
   seq: z.int().positive(),
-  stored: AmountSchema,        // poses accepted
+  stored: AmountSchema,        // coin and crate poses accepted
   ignored: AmountSchema,       // poses dropped (unknown, gone, implausible)
 });
 ```
@@ -211,8 +304,10 @@ export const TableSnapshotResponseSchema = z.object({
   `CoinId` through its ledger. There is no value, tier or wallet field, and `strictObject`
   rejects extra keys.
 - **Size.** One tuple is about 80 bytes of JSON, so 250 coins is about 20 KB and 320 is
-  about 26 KB. That is well under `MAX_BODY_BYTES`, and under the 64 KiB keepalive quota
-  even with a claims batch in flight. `frozen` is not on the wire in v1.
+  about 26 KB. Crates add about 60 bytes each. That is well under `MAX_BODY_BYTES`, and
+  under the 64 KiB keepalive quota even with a claims batch in flight. `frozen` is not on
+  the wire in v1. Full snapshots are sent every time (D6). A delta format is a later perf
+  item.
 - **Range limits** (`|v| <= 100_000`, int16) are transport limits and live in shared.
   Whether a pose is physically plausible is decided by `checkPose` from the sim.
 - **Errors:** new codes in `packages/shared/src/errors.ts`:
@@ -220,7 +315,7 @@ export const TableSnapshotResponseSchema = z.object({
   - `stale_snapshot` (409): `seq` or `tick` is not newer than what was stored;
   - `rate_limited` (429, existing) with `retryAfterMs`.
 
-### 2.2 Cadence and triggers (client)
+### 2.2 Cadence and triggers (client, D7)
 
 | Trigger | When | Notes |
 | --- | --- | --- |
@@ -249,7 +344,7 @@ the snapshot changes, the client signs it in the background and keeps one ready
 kept, and it is always ordered after every drop and claim queued before it. The outbox
 is persisted, so a snapshot that missed `pagehide` is still sent on the next boot
 (2.3). The browser stores only this pending request, as a transport buffer. The table
-itself lives on the server (see open question Q1).
+itself lives on the server (D1).
 
 ### 2.3 `GET /v1/state` returns the poses
 
@@ -257,22 +352,32 @@ itself lives on the server (see open question Q1).
 
 ```ts
 session: TableSessionIdSchema,              // rotated by every boot
-layout: z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('heap') }),
-  z.strictObject({
-    kind: z.literal('poses'),
-    pusher: z.strictObject({ tickInCycle: z.int().nonnegative() }),
-    poses: z.array(PoseTupleSchema),        // poses[i] is for coins[i], same CoinId
-  }),
-]).nullable(),                              // null unless hydrate=boot
+layout: z.strictObject({
+  pusher: z.strictObject({ tickInCycle: z.int().nonnegative() }),
+  coins: z.array(CoinPlacementSchema),      // coins[i] places table.coins[i]
+  crates: z.array(CratePlacementSchema),    // crates[i] places table.crates[i]
+}).nullable(),                              // null unless hydrate=boot
+
+CoinPlacementSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('pose'), pose: PoseTupleSchema }),
+  z.strictObject({ kind: z.literal('heapSlot'), slot: z.int().nonnegative() }),
+]);
+CratePlacementSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('pose'), pose: CratePoseTupleSchema }),
+  z.strictObject({ kind: z.literal('chute') }),   // ride starts again from the spawn point
+]);
 ```
 
 - `layout` is set only on `hydrate=boot`. On a plain resync the client keeps its own
   live sim, so `layout` is `null`.
-- With `kind: 'poses'`, every coin in `coins` has a pose, in the same order. Any coin
-  without one has already been refunded and is not in `coins` (section 4).
-- With `kind: 'heap'`, `coins` are heap-tier coins only, laid out by `placeHeap`, which
-  is what happens today.
+- Every coin in `coins` has exactly one placement, in the same order, and the ids in
+  `pose` tuples must equal `coins[i].id` (a schema refinement). A non-heap coin without
+  a valid pose has already been refunded and is not in `coins` (section 4).
+- A heap coin without a valid pose gets `heapSlot` (D4). With no snapshot ever stored,
+  every coin is a heap coin with `heapSlot`, and `pusher.tickInCycle` is 0. That lays
+  the same table as today's `placeHeap`.
+- A crate without a valid pose gets `chute`: its ride starts again from the spawn point
+  with `elapsedMs = 0` (D5).
 - `TableSessionIdSchema` is a new branded entity id (prefix `session`) in `ids.ts`.
 
 **Boot ordering.** On boot the client drains the persisted outbox (the claims and the
@@ -301,10 +406,19 @@ CREATE TABLE table_snapshot (
   tick        INTEGER NOT NULL,
   pusher_tick INTEGER NOT NULL,
   poses       TEXT    NOT NULL,   -- canonical JSON array of accepted PoseTuples
+  crate_poses TEXT    NOT NULL,   -- canonical JSON array of accepted CratePoseTuples
   coin_count  INTEGER NOT NULL,
   received_at INTEGER NOT NULL
 );
+
+ALTER TABLE coins ADD COLUMN heap_slot INTEGER;   -- NULL for every non-heap coin
 ```
+
+- **Heap slots (D4).** `seedOpeningHeap` writes `heap_slot = 0..n-1` in the order it
+  mints the heap, which is the order `placeHeap` lays it. The migration backfills
+  existing heap coins by `rowid` rank within the latest `grant.heap` transaction, which
+  is the same order. A table that is reseeded after it empties starts a new heap with
+  slots from 0 again.
 
 - **One row, one write per snapshot.** DO SQLite bills per row written. A row per coin
   would be 250 upserts × about 10 per minute, while a single JSON row is one write. We
@@ -344,10 +458,16 @@ key returns the stored response and writes nothing.
    cascade travel, `slack` = 2 cm, and Δt from the ticks), keep the old pose and
    increment `snapshot.teleport`. A coin with no previous pose (a new drop) is only
    checked by step 6.
-8. **Store:** replace the row with the accepted poses plus the kept old poses. Coins
-   on the table that this snapshot does not mention keep their previous pose: omitting
-   a coin never deletes it.
-9. **Never** touches the wallet, ledger, coins, crates or drop counts.
+8. **Crates (D5):** the same ownership rule against `crates` rows (on the table: kept;
+   claimed or lost: ignored silently; unknown: ignored and `snapshot.foreign`
+   incremented), then `checkCratePose`. Against the previous stored crate pose: `z`
+   never decreases, `z` grows by at most `CRATE_RIDE` carry plus creep plus one forward
+   nudge per Δt plus 1 cm of slack, and `elapsedMs` grows by at most Δt plus 1 s.
+   Otherwise the old pose is kept and `snapshot.teleport` is incremented.
+9. **Store:** replace the row with the accepted poses plus the kept old poses. Coins
+   and crates on the table that this snapshot does not mention keep their previous
+   pose: omitting one never deletes it.
+10. **Never** touches the wallet, ledger, coins, crates or drop counts.
 
 ### 3.3 Anti-cheat analysis
 
@@ -363,14 +483,17 @@ claim could not already do. Case by case:
 | **Teleporting** a coin across the table | Step 7 keeps the old pose and flags it. Small creep under the bound is possible over many snapshots, but the bound is about the pusher's real speed and the rate limit caps how often it applies. | Bounded drift. Anything it enables is again only a fall claim. |
 | **Coins the client does not own** | Step 5 ignores them and flags them. | None. |
 | **Buffer coins** posed onto the table | Ignored: a buffer coin is not on the table until its drop is accepted. | None. |
-| **Omitting coins** to force refunds on boot | An omitted coin keeps its last pose (step 8). A coin never posed is refunded at `min(paidByVault, value)` to the wallet: never more than it cost. Heap coins without a pose refund 0 to the wallet. | None, except crates (#84 below). |
+| **Omitting coins** to force refunds on boot | An omitted coin keeps its last pose (step 9). A non-heap coin never posed is refunded at `min(paidByVault, value)` to the wallet: never more than it cost. A heap coin never posed is laid again at its heap slot (D4), not refunded. | None, except crates (#84 below). |
+| **Heap slot reset**: break a heap coin's pose on purpose so it returns to its slot | The slot is where the coin started on this table, so the player already had that position once. The pusher moves coins forward, so a slot is almost always further from the lip than the coin's current pose. | At most a coin back where it started. Bounded by the heap size and not repeatable per coin beyond its own slot. |
+| **Crate lip farming**: upload a crate at the teeter point | `z` may only grow at the ride's real rate (step 8) and `elapsedMs` with real time, so a crate cannot reach the lip sooner than an honest ride. A crate whose pose is dropped returns to the chute, further from the lip. The crate claim is still judged by its own envelope (`crateFallSeconds`, #10). | None. |
 | **Stale or replayed snapshots** | Idempotency returns the first response. Lower `seq` or a tick before a settled claim gives `stale_snapshot`. | None. |
 | **Multiple tabs** (#85) | The newest boot rotates the session. Older tabs get `session_superseded` on every table mutation, so two sims can never write the same table. | None, and it fixes today's cross-tab refund. |
 | **Flood** | 64 KiB body cap, 320 tuples, rate limit 1 per 2 s, one row write each. | Bounded cost. |
 
 **The crate exception (#84).** Today the boot refund leaves `drop_count` and spawned
 crates intact, so drop, refund and drop again can re-earn crate spawns. Persistence
-makes refunds rarer but not impossible (an unposed coin is still refunded). So T-92.03
+makes refunds rarer but not impossible (an unposed non-heap coin is still refunded). So
+T-92.03
 fixes #84 first: crate spawns are driven by a high-water mark over net non-refunded
 drops, and a refund lowers the count, so a refunded coin can never earn a crate twice.
 
@@ -394,29 +517,31 @@ token bucket with the same numbers.
 
 1. **Rotate the session:** a new `table_session` id and
    `table_session_started_at = now`. Reset `table_session_max_tick = 0`.
-2. **If a `table_snapshot` row exists:**
-   - each on-table coin that has a pose, and whose pose still passes `checkPose`
-     (re-checked in case the geometry changed under a new SIM_VERSION), is restored.
-     Its `dropped_tick` is rebased to 0, so claims in the new session (whose ticks
-     start at 0) pass `coinOnTable`;
-   - each on-table coin without a valid pose goes through `refundStranded` unchanged.
-     A heap coin without a pose has `paidByVault = 0`, so its whole value goes back to
-     the house;
-   - the response carries `layout: { kind: 'poses', ... }` in `rowid` order.
-3. **If no snapshot was ever stored** (first boot after this ships, or a new player):
-   today's behaviour. Heap coins stay and are laid out by `placeHeap`
-   (`layout: { kind: 'heap' }`), and everything else is refunded.
-4. `seedOpeningHeap` still runs only when the table is empty, unchanged. A fresh heap
-   has no poses, so it gets `kind: 'heap'`.
-5. `reserveBuffer` is unchanged. Buffer coins are never posed.
-6. Crates: unchanged by this design. They stay on the table without poses until the sim
-   models them (#88).
-7. The stored row is cleared and replaced by the restored set, with `seq = 0` under the
-   new session.
+2. **Place every on-table coin**, in `rowid` order. The stored poses are re-checked with
+   `checkPose` and `validateSnapshot`, in case the geometry changed under a new
+   SIM_VERSION. Then each coin falls into one case:
+   - **valid pose:** restored with `{ kind: 'pose' }`;
+   - **heap coin (`heap_slot` set) without a valid pose:** laid again with
+     `{ kind: 'heapSlot', slot }` (D4). Nothing is refunded;
+   - **any other coin without a valid pose:** goes through `refundStranded` unchanged
+     and is left out of `coins`.
 
-A table can never mix heap layout and poses: either every coin has a pose or the
-response is `kind: 'heap'`. If some heap coins have poses and others do not, the ones
-without are refunded, so the poses case still holds.
+   Every coin that stays has its `dropped_tick` rebased to 0, so claims in the new
+   session (whose ticks start at 0) pass `coinOnTable`. With no snapshot row (the first
+   boot after this ships, or a new player) every coin has no pose. Heap coins are laid at
+   their slots and everything else is refunded, which is today's behaviour.
+3. **Place every on-table crate (D5):** a valid stored crate pose gives
+   `{ kind: 'pose' }`, otherwise `{ kind: 'chute' }`. Either way `spawned_tick` is rebased
+   to 0 for the same reason as coins. A crate is never refunded: it was minted by the
+   house, not paid for, and it stays on the table until it is claimed or lost. This
+   covers the "crates in flight" point of #88.
+4. `seedOpeningHeap` still runs only when the table is empty, unchanged except that it
+   writes `heap_slot`. The fresh heap is all `heapSlot` entries.
+5. `reserveBuffer` is unchanged. Buffer coins are never posed.
+6. The `table_snapshot` row is replaced by exactly what was restored (poses only, not
+   slots or chutes), with `seq = 0` under the new session. A copy is kept as the
+   session's audit start state (3.3).
+7. `layout.pusher.tickInCycle` is the stored pusher phase, or 0 without a snapshot.
 
 ### 4.2 Client
 
@@ -426,13 +551,15 @@ without are refunded, so the poses case still holds.
    outcome when another tab owns the table.
 2. `GET /v1/state?hydrate=boot`, keeping the current retry with backoff.
 3. `openingTableCoins` (`apps/web/src/net/openingTable.ts`) becomes
-   `openingLayout(state)`. It returns `{ kind: 'heap', coins }` or
-   `{ kind: 'poses', snapshot, tiers }`, and it throws if `coins` and `poses` do not line
-   up.
-4. The worker bridge init takes `restore` instead of `openingHeap` when the layout is
-   poses. The worker runs `Sim.create({ seed, mechanics, restore })`.
+   `openingLayout(state)`. It returns the sim `restore` input (pusher phase plus one
+   `RestoreEntry` per coin, with its tier) and the crate placements. It throws if `coins`
+   and `layout.coins`, or `crates` and `layout.crates`, do not line up.
+4. The worker bridge init takes `restore` in place of `openingHeap`. The worker runs
+   `Sim.create({ seed, mechanics, restore })`. `openingHeap` stays for tests and tools.
 5. The game systems bind sim id `i` to `coins[i]`, the same as the heap today.
-6. `TableSync` stores `session` and puts it on every table op.
+6. The crate controller starts each crate with `CrateRide.restore` for a `pose` and a
+   fresh `CrateRide` for `chute`.
+7. `TableSync` stores `session` and puts it on every table op.
 
 ### 4.3 Demo Mode (the mock)
 
@@ -442,8 +569,9 @@ contract parity and lets the e2e suite drive the full restore path without a ser
 
 Persistence across reloads does not change in Demo Mode: tokens live in memoryStore,
 so every reload is a new guest with a fresh heap. That matches the architecture, which
-keeps Demo Mode stateless. Whether demo players should keep their table is open
-question Q3.
+keeps Demo Mode stateless, and it stays that way (D3). The mock's restore path is
+exercised by an in-page re-boot against the same mock instance (T-92.09), not by a page
+reload.
 
 ### 4.4 Superseded tab
 
@@ -458,127 +586,37 @@ all tabs, the outbox must be partitioned by session (the key becomes
 
 ## 5. Task breakdown
 
-Each task follows the `04-ROADMAP.md` format. Tasks marked **parallel** can start at the
-same time as the others in their group.
+The tasks are scheduled in `04-ROADMAP.md` under "M9: Table persistence (#92)" and
+tracked in `STATUS.md`. The roadmap block is the source of truth. The summary here is
+for reading the design in one place.
 
-### T-92.01 · Shared contracts for table persistence  (parallel with T-92.02, T-92.03)
-- **agent:** lead-architect
-- **deps:** none
-- **owns:** `packages/shared/src/api/table.ts`, `packages/shared/src/api/endpoints.ts`, `packages/shared/src/ids.ts`, `packages/shared/src/errors.ts`, `packages/shared/test/**`
-- **accept:**
-  - `TableSnapshotRequest`/`Response`, `PoseTuple` and `MAX_SNAPSHOT_COINS` are added, and `POST /v1/table/snapshot` is in the endpoints map with `requiresIdempotencyKey`;
-  - `TableSessionId` and the `session` field are on drop, claims and nudge requests;
-  - `TableSnapshot` gains `session` and `layout`;
-  - the `session_superseded` and `stale_snapshot` error codes exist;
-  - schema tests cover the size limits (320 accepted, 321 rejected), extra keys, int ranges and the `layout` alignment;
-  - `pnpm check` is green.
+| ID | Agent | Deps | Scope | Parallel |
+| --- | --- | --- | --- | --- |
+| T-92.01 | lead-architect | none | Shared contracts: snapshot endpoint, coin and crate pose tuples, `layout`, session, error codes | yes (ready) |
+| T-92.02 | physics-engineer | none | Sim snapshot and restore with heap slots, `@coinposh/sim/snapshot` with `checkPose`, `validateSnapshot`, `CRATE_RIDE`, `checkCratePose`, hash tests | yes (ready) |
+| T-92.03 | backend-engineer | none | #84: crate spawns cannot be re-earned through refunds | yes (ready) |
+| T-92.04 | backend-engineer | .01, .02, .03 | Migration 5 (`table_snapshot`, `heap_slot`), snapshot endpoint and validation for coins and crates, boot placement | after .03 |
+| T-92.05 | backend-engineer | .01, .02 | Net layer: snapshot outbox op, cadence, keepalive pre-signing, drain before boot, session, `openingLayout`, mock parity | with .04 |
+| T-92.06 | physics-engineer | .02 | Worker bridge `restore` init and `snapshot()` | with .04, .05 |
+| T-92.10 | gameplay-engineer | .02 | `CrateRide` snapshot and restore on `CRATE_RIDE` | with .04, .05, .06 |
+| T-92.07 | gameplay-engineer | .05, .06, .10 | Boot glue, sim and crate binding, snapshot triggers, "Play here" overlay | after .05, .06, .10 |
+| T-92.08 | backend-engineer | .04 | Session lease on every table op (#85) | with .05, .07 |
+| T-92.09 | qa-perf | .07, .08, T-1.17 | E2E: restore after re-boot, two tabs | last |
 
-### T-92.02 · Sim snapshot, restore and pose validation  (parallel with T-92.01, T-92.03)
-- **agent:** physics-engineer
-- **deps:** none
-- **owns:** `packages/sim/src/snapshot/**`, `packages/sim/src/sim.ts`, `packages/sim/src/table/table.ts`, `packages/sim/src/table/pusher.ts`, `packages/sim/package.json` (subpath export), `packages/sim/test/**`
-- **accept:**
-  - `sim.snapshot()` and `Sim.create({ restore })` work as in section 1;
-  - `@coinposh/sim/snapshot` exports `checkPose` and `validateSnapshot` and does not import Rapier (checked by a test);
-  - every test in 1.4 passes: round trip, pinned hash with a SIM_VERSION bump, quantization fixed point, restore stability at four pusher phases, and Node/browser parity;
-  - `pnpm --filter @coinposh/sim check` is green.
+Critical path: T-92.02 → T-92.04 → T-92.08, and T-92.02 → T-92.05 → T-92.07 → T-92.09.
+T-92.03, T-92.04 and T-92.08 all edit `apps/server/src/do/PlayerDO.ts`, so they run one
+after another by their deps. T-92.09 also waits on T-1.17, which brings the Playwright
+harness and is blocked today.
 
-### T-92.03 · Crate spawns cannot be re-earned through refunds (#84)  (parallel with T-92.01, T-92.02)
-- **agent:** backend-engineer
-- **deps:** none
-- **owns:** `apps/server/src/do/PlayerDO.ts` (crate spawn path), `apps/server/src/do/schema.ts`, `apps/server/test/**`
-- **accept:**
-  - crate spawns use a high-water mark over net non-refunded drops;
-  - a test drops, boot-refunds and drops again, and gets no second crate for the same spend;
-  - closes #84.
+## Follow-ups (not scheduled here)
 
-### T-92.04 · Server: pose storage, snapshot endpoint, boot restore
-- **agent:** backend-engineer
-- **deps:** T-92.01, T-92.02, T-92.03
-- **owns:** `apps/server/src/do/schema.ts` (migration 5), `apps/server/src/do/PlayerDO.ts`, `apps/server/src/do/entities.ts`, `apps/server/src/do/snapshot.ts`, `apps/server/src/routes/table.ts`, `apps/server/test/**`
-- **accept:**
-  - migration 5 applies on top of an existing v4 DO;
-  - the validation pipeline in 3.2, with one test per step and per row of the 3.3 table;
-  - boot restores posed coins with `dropped_tick = 0` and refunds only unposed ones (wallet gets at most what it paid; unposed heap coins go to the house);
-  - a claim at new-session tick 0 is accepted for a restored coin;
-  - an idempotent replay writes no row;
-  - no snapshot path writes to the ledger (checked by a test);
-  - `pnpm --filter @coinposh/server check` is green.
-
-### T-92.05 · Net layer: snapshot op, cadence, keepalive, drain before boot, mock  (parallel with T-92.04)
-- **agent:** backend-engineer
-- **deps:** T-92.01
-- **owns:** `apps/web/src/net/**`
-- **accept:**
-  - a coalescing snapshot outbox op is ordered after drops and claims;
-  - the outbox is partitioned by session;
-  - the triggers in 2.2 work and are tested with a fake clock;
-  - one pre-signed keepalive request is kept for `pagehide` and rebuilt when the token refreshes;
-  - the outbox drains before `hydrate=boot`;
-  - `session` is on every table op;
-  - the mock implements the endpoint, the session and the layout, with contract tests shared with the server;
-  - `openingLayout` replaces `openingTableCoins`.
-
-### T-92.06 · Worker bridge: restore init  (parallel with T-92.05 once T-92.02 lands)
-- **agent:** physics-engineer
-- **deps:** T-92.02
-- **owns:** `apps/web/src/game/simWorker/**`
-- **accept:**
-  - the init message takes `restore` (mutually exclusive with `openingHeap`) and validates it;
-  - the worker exposes `snapshot()` to the main thread at the cadence's request;
-  - a bridge test restores, steps and hashes the same as `Sim` directly.
-
-### T-92.07 · Boot glue, binding and superseded overlay
-- **agent:** gameplay-engineer
-- **deps:** T-92.05, T-92.06
-- **owns:** `apps/web/src/main.ts`, `apps/web/src/game/systems/**`, `apps/web/src/ui/overlays/TableElsewhere.tsx`, `apps/web/src/i18n/locales/*/table.json`
-- **accept:**
-  - boot picks heap or restore from `layout` and binds sim id `i` to `coins[i]`;
-  - snapshot triggers are wired to the sim's settle and fall events and to `visibilitychange`/`pagehide`;
-  - the superseded overlay has "Play here", EN/FR/DE strings and a reduced-motion variant;
-  - no console errors.
-
-### T-92.08 · Session lease enforcement on all table ops (#85)
-- **agent:** backend-engineer
-- **deps:** T-92.01, T-92.04
-- **owns:** `apps/server/src/do/PlayerDO.ts`, `apps/server/src/routes/table.ts`, `apps/server/test/**`
-- **accept:**
-  - drop, claims, nudge and snapshot from a non-current session return `session_superseded` and write nothing;
-  - a second boot fences the first session;
-  - a boot no longer refunds coins another live tab is playing (they are restored from its poses);
-  - closes #85.
-
-### T-92.09 · E2E: reload restores the table
-- **agent:** qa-perf
-- **deps:** T-92.07, T-92.08
-- **owns:** `apps/web/e2e/table-persistence.spec.ts`
-- **accept:**
-  - in Demo Mode with the mock: drop 20 coins, wait for the settle upload, then reload in the same mock session. Every coin's position matches within 1 mm, the wallet is unchanged, and no refund happened;
-  - two tabs: the first shows the overlay, and "Play here" takes the lease back;
-  - frame time on boot stays within the existing budget.
-
-Critical path: T-92.02 → T-92.04 → T-92.08 → T-92.09, with T-92.01 and T-92.03 running
-alongside T-92.02, and T-92.05, T-92.06 and T-92.07 running alongside T-92.04.
-
----
-
-## Open questions for the founder
-
-- **Q1. Browser storage as a transport buffer.** The design keeps the last unsent
-  snapshot (and pending claims, as today) in IndexedDB, so a missed `pagehide` is sent
-  on the next boot. The table itself lives on the server. Is that acceptable, or must
-  the browser hold nothing at all (in which case a missed `pagehide` falls back to the
-  last periodic snapshot, at most about 10 s old)?
-- **Q2. Takeover.** The newest boot wins and the older tab shows "Play here". Or should
-  the newer tab ask first, or should play be refused while another session is live?
-- **Q3. Demo Mode persistence.** Demo stays stateless on reload. Should demo players
-  keep their table, which would need demo identity in local storage?
-- **Q4. Data budget.** Full snapshots are about 20 KB every few seconds while playing.
-  Is that fine on mobile data, or do we want a delta format (v2) before launch?
-- **Q5. Unposed heap coins.** A heap coin with no valid pose goes back to the house
-  (the wallet never paid for it). Or should it be re-laid by `placeHeap` instead?
-- **Q6. Crates.** They stay out of scope until the sim models them (#88). Do you want
-  them in this wave, which would add a sim crate body first?
-- **Q7. Cadence numbers.** Settle 1 s, a minimum of 3 s between uploads, heartbeat 10 s,
-  and a server rate of 1 per 2 s (burst 3). Do these match how often you want a reload
-  to be exact?
+- vfx-juice: `CRATE_SIZE` in `apps/web/src/vfx/cinematics/unbox/stage.ts` should import
+  `CRATE_RIDE.size` from `@coinposh/sim/snapshot` once T-92.02 lands, so the cinematic
+  and the ride cannot drift apart.
+- physics-engineer: the replay verifier (T-4.03) must start a segment from the
+  session's restored snapshot through `Sim.create({ restore })`.
+- perf: a delta snapshot format (D6) once real traffic numbers exist.
+- #88: the buffer size mismatch (16 vs 12) and the prepaid buffer blocking upgrades are
+  still open.
+- lead-architect: consider raising CORS `maxAge` from 600 to 7200 so the `pagehide`
+  keepalive more often finds a warm preflight (2.2).

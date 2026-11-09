@@ -217,3 +217,67 @@ them using Demo Mode / mocks until the human completes them.
 ### T-8.01 · Store catalog + IAP abstraction (RevenueCat-ready, Noop default) — **agent:** backend-engineer — **deps:** T-7.03 — **owns:** `apps/server/src/store/**`, `apps/web/src/store/**`
 ### T-8.02 · Rewarded ads interface + placements (Noop) — **agent:** gameplay-engineer — **deps:** T-7.02 — **owns:** `apps/web/src/ads/**`
 ### T-8.03 · Region policy + spend caps + premium pass gate — **agent:** economy-designer — **deps:** T-8.01 — **owns:** `packages/economy/src/policy/**`
+
+## M9: Table persistence (#92)
+
+Design: `docs/plan/design/92-table-persistence.md` (decisions D1..D7). A reload restores every coin and crate from server-stored poses; only non-heap coins without a valid pose are refunded. T-92.01, T-92.02 and T-92.03 run in parallel.
+
+### T-92.01 · Shared contracts for table persistence
+- **agent:** lead-architect
+- **deps:** none
+- **owns:** `packages/shared/src/api/table.ts`, `packages/shared/src/api/table.test.ts`, `packages/shared/src/api/endpoints.ts`, `packages/shared/src/api/endpoints.test.ts`, `packages/shared/src/ids.ts`, `packages/shared/src/ids.test.ts`, `packages/shared/src/errors.ts`, `packages/shared/src/errors.test.ts`
+- **accept:** design section 2. `PoseTupleSchema`, `CratePoseTupleSchema`, `MAX_SNAPSHOT_COINS = 320`, `MAX_SNAPSHOT_CRATES = 16`, `TableSnapshotRequest`/`Response`; `POST /v1/table/snapshot` in the endpoints map (signed, Idempotency-Key); `TableSessionId` (prefix `session`) and a `session` field on drop, claims, nudge and snapshot requests; `TableSnapshot` gains `session` and a nullable `layout` (`pusher`, coin placements `pose | heapSlot`, crate placements `pose | chute`) with a refinement that pose ids match `coins[i]`/`crates[i]`; error codes `session_superseded` (409) and `stale_snapshot` (409). Tests cover 320/321 and 16/17 limits, extra keys, int ranges, placement alignment. No value, tier or wallet field on any upload. `pnpm check` green.
+
+### T-92.02 · Sim snapshot, restore and pose validation
+- **agent:** physics-engineer
+- **deps:** none
+- **owns:** `packages/sim/src/snapshot/**`, `packages/sim/src/sim.ts`, `packages/sim/src/sim.test.ts`, `packages/sim/src/table/**`, `packages/sim/src/constants.ts`, `packages/sim/package.json`
+- **accept:** design section 1. `sim.snapshot()` (quantized: 10 µm positions, int16 quaternions with w >= 0, awake/asleep, pusher tickInCycle); `Sim.create({ restore })` with `pose` and `heapSlot` entries, zero velocities, one separation pass, support probe, lifted heap slots restore awake, tower refuses restore; Rapier-free `@coinposh/sim/snapshot` subpath exporting `checkPose`, `validateSnapshot`, `CRATE_RIDE` and `checkCratePose` (a test proves it does not import Rapier). Tests from 1.4 pass: round trip then 3600 ticks equal, pinned hash with a SIM_VERSION bump, quantization fixed point, restore stability at 4 pusher phases (asleep coins move < 1 mm in 120 ticks, no spurious falls), all-heap-slot restore hashes equal to `openingHeap`, Node/browser parity, boundary tests for every rejection reason. `pnpm --filter @coinposh/sim check` green.
+
+### T-92.03 · Crate spawns cannot be re-earned through refunds (#84)
+- **agent:** backend-engineer
+- **deps:** none
+- **owns:** `apps/server/src/do/PlayerDO.ts`, `apps/server/src/do/schema.ts`, `apps/server/src/do/schema.test.ts`, `apps/server/src/do/reload.test.ts`
+- **accept:** crate spawns are driven by a high-water mark over net non-refunded drops, so a boot refund cannot let the same spend spawn a second crate; a test drops to the spawn threshold, boot-refunds, drops again and gets no extra crate; ledger conservation holds. Closes #84. `pnpm --filter @coinposh/server check` green.
+
+### T-92.04 · Server: pose storage, snapshot endpoint, boot placement
+- **agent:** backend-engineer
+- **deps:** T-92.01, T-92.02, T-92.03
+- **owns:** `apps/server/src/do/schema.ts`, `apps/server/src/do/schema.test.ts`, `apps/server/src/do/PlayerDO.ts`, `apps/server/src/do/entities.ts`, `apps/server/src/do/snapshot.ts`, `apps/server/src/do/snapshot.test.ts`, `apps/server/src/do/reload.test.ts`, `apps/server/src/do/openingHeap.test.ts`, `apps/server/src/routes/table.ts`, `apps/server/src/routes/table.test.ts`, `apps/server/package.json`
+- **accept:** design sections 3 and 4.1. Migration 5 (`table_snapshot` single row with coin and crate poses, `coins.heap_slot` with backfill) applies on an existing v4 DO; `seedOpeningHeap` writes heap slots; the snapshot pipeline (session, seq/tick ordering, 1 per 2 s burst 3, structure, ownership, `checkPose`/`validateSnapshot`, teleport bound, crate rules, omitted entries keep their pose) has one test per step and per row of the 3.3 table; boot places posed coins, lays unposed heap coins at their `heapSlot` (no refund), refunds only unposed non-heap coins (wallet gets at most what it paid), places crates as `pose` or `chute`, rebases `dropped_tick`/`spawned_tick` to 0; a claim at new-session tick 0 is accepted for a restored coin and crate; an idempotent replay writes nothing; no snapshot path writes to the ledger (test). `pnpm --filter @coinposh/server check` green.
+
+### T-92.05 · Net layer: snapshot op, cadence, keepalive, drain before boot, mock
+- **agent:** backend-engineer
+- **deps:** T-92.01, T-92.02
+- **owns:** `apps/web/src/net/**`
+- **accept:** design sections 2.2, 2.3, 4.2 and 4.3. A coalescing snapshot outbox op ordered after drops and claims; the outbox key partitioned by session; triggers (settle 1 s, >= 3 s apart, heartbeat 10 s only on change, skip unchanged, immediate on hidden) tested with a fake clock; one pre-signed keepalive request kept for `pagehide` and rebuilt on token refresh (no `sendBeacon`); the persisted outbox drains before `hydrate=boot`; `session` on every table op and `session_superseded` surfaced as an event; `openingLayout` replaces `openingTableCoins`; the mock implements the endpoint, session rotation, validation and `layout` in memory (Demo Mode stays fresh on reload) with contract tests shared with the server. `pnpm --filter @coinposh/web check` green.
+
+### T-92.06 · Worker bridge: restore init and snapshot
+- **agent:** physics-engineer
+- **deps:** T-92.02
+- **owns:** `apps/web/src/game/simWorker/**`
+- **accept:** the init message takes `restore` (mutually exclusive with `openingHeap`) and validates it; the bridge exposes `snapshot()` to the main thread; a bridge test restores, steps and hashes the same as `Sim` directly. `pnpm --filter @coinposh/web check` green.
+
+### T-92.10 · Crate ride snapshot and restore
+- **agent:** gameplay-engineer
+- **deps:** T-92.02
+- **owns:** `apps/web/src/game/crates/**`
+- **accept:** design section 1.5. `CrateRide.snapshot()` returns a `CratePose`; `CrateRide.restore(crate, pose, stroke)` resumes the ride; `ride.ts` takes its bounds from `CRATE_RIDE` in `@coinposh/sim/snapshot`; a test shows a ride snapshotted and restored mid-way reaches teeter and fell on the same steps as an uninterrupted one, and every snapshot it emits passes `checkCratePose`. `pnpm --filter @coinposh/web check` green.
+
+### T-92.07 · Boot glue, binding, snapshot triggers and "Play here"
+- **agent:** gameplay-engineer
+- **deps:** T-92.05, T-92.06, T-92.10
+- **owns:** `apps/web/src/main.ts`, `apps/web/src/game/systems/**`, `apps/web/src/game/session/**`
+- **accept:** boot restores from `layout` through the bridge and binds sim id `i` to `coins[i]`; crates start from `pose` or `chute`; snapshot triggers wired to the sim's settle and fall events and to `visibilitychange`/`pagehide`; on `session_superseded` input stops and a "This table is open elsewhere" overlay with "Play here" re-boots and takes the table back (EN/FR/DE strings, reduced-motion variant); Demo Mode boots fresh; no console errors. `pnpm check` green.
+
+### T-92.08 · Session lease on every table op (#85)
+- **agent:** backend-engineer
+- **deps:** T-92.04
+- **owns:** `apps/server/src/do/PlayerDO.ts`, `apps/server/src/do/reload.test.ts`, `apps/server/src/routes/table.ts`, `apps/server/src/routes/table.test.ts`
+- **accept:** drop, claims, nudge and snapshot from a non-current session return `session_superseded` and write nothing; a second boot fences the first session; a boot restores the other tab's coins from its poses instead of refunding them. Closes #85. `pnpm --filter @coinposh/server check` green.
+
+### T-92.09 · E2E: the table survives a re-boot
+- **agent:** qa-perf
+- **deps:** T-92.07, T-92.08, T-1.17
+- **owns:** `apps/web/e2e/table-persistence.spec.ts`
+- **accept:** in Demo Mode, drop 20 coins and wait for a crate, wait for the settle upload, then re-boot in-page against the same mock instance: every coin is within 1 mm of its pose, the crate resumes its ride, the wallet is unchanged and nothing was refunded; two pages on one mock: the first shows the overlay and "Play here" takes the table back; boot frame time stays within the T-1.17 budget.
