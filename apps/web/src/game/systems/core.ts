@@ -8,10 +8,12 @@ import type {
   NudgeDirection,
   StateResponse,
   Tick,
+  VenueId,
 } from '@coinposh/shared';
 import { createBus, type Bus } from '../../app/bus.ts';
 import type { DecorumState } from '../../app/model.ts';
-import type { FeedbackKind } from '../../app/state.ts';
+import type { FeedbackKind, UiState } from '../../app/state.ts';
+import { watch, type Store } from '../../app/store.ts';
 import type { ServerClock, TableEvent, TableSync } from '../../net/index.ts';
 import type { CoinTierId } from '../../scene/coins/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
@@ -40,6 +42,7 @@ import {
   POUR_STREAM_TICKS,
   POUR_TARGET_MS,
   decorumCapacity,
+  pourStreamTicks,
 } from './tuning.ts';
 
 /** The slice of `SimBridge` the glue drives. */
@@ -96,6 +99,13 @@ export interface FusionReport {
   readonly tier: CoinTier;
 }
 
+/** The parameters the systems derive from the table's upgrade levels. */
+export interface UpgradeTuning {
+  readonly decorumCapacity: number;
+  /** Sim ticks between two coins of a pour, fractional. */
+  readonly pourStreamTicks: number;
+}
+
 export interface PourView {
   readonly pouring: boolean;
   readonly progress: number;
@@ -112,12 +122,15 @@ export interface SystemsCore {
   endPour(): PourResult | null;
   cancelPour(): void;
   pourView(): PourView;
+  readonly tuning: UpgradeTuning;
   nudge(direction: NudgeDirection, strength: number, source: NudgeSource): boolean;
   /** Writes this frame's coins into `target` through the sim, and settles what changed. */
   sync(target: CoinTransformTarget): void;
   /** Runs the timers: combo window, pour stream, decorum decay, freeze countdown. */
   update(): void;
+  /** Takes the table's freeze and venue; the levels come only from `setUpgradeLevels`. */
   hydrate(state: StateResponse): void;
+  /** Applies purchased levels live: Decorum capacity at once, pour cadence from the next coin. */
   setUpgradeLevels(levels: Readonly<Record<string, number>>): void;
   reportContact(contact: ContactReport): void;
   reportFusion(fusion: FusionReport): void;
@@ -159,6 +172,23 @@ interface HeldFall {
 
 const NOTHING_GONE: ReadonlyMap<number, TablePoint> = new Map();
 
+/**
+ * Keeps the systems on the UI store's upgrade levels, the ones a confirmed purchase or a state
+ * refresh writes, so a level applies the moment the server confirms it.
+ */
+export function followUpgradeLevels(
+  store: Store<UiState>,
+  core: Pick<SystemsCore, 'setUpgradeLevels'>,
+): () => void {
+  return watch(
+    store,
+    (state) => state.upgradeLevels,
+    (levels) => {
+      core.setUpgradeLevels(levels);
+    },
+  );
+}
+
 export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const { sim, table, clock, ui, now } = options;
   const events = createBus<GameEvents>();
@@ -166,9 +196,17 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const ledger = new CoinLedger();
   const combo = new CascadeCombo(CASCADE, CASCADE_WINDOW_TICKS);
   const pour = new PourTimer(POUR_TARGET_MS, PERFECT_POUR_HALF_WINDOW_MS);
+  let levels: Readonly<Record<string, number>> = options.upgradeLevels ?? {};
+  /** The drop envelope is per venue, so the pour keeps its base cadence until hydrate names it. */
+  let venue: VenueId | null = null;
+  const tuneFor = (): UpgradeTuning => ({
+    decorumCapacity: decorumCapacity(levels),
+    pourStreamTicks: venue === null ? POUR_STREAM_TICKS : pourStreamTicks(levels, venue),
+  });
+  let tuning = tuneFor();
   const decorum = new DecorumModel(
     { perNudge: DECORUM_PER_NUDGE, decayPerSecond: DECORUM_DECAY_PER_SECOND },
-    decorumCapacity(options.upgradeLevels ?? {}),
+    tuning.decorumCapacity,
     now(),
   );
   const awaitingMint = new Map<IdempotencyKey, PendingDrop>();
@@ -621,13 +659,19 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       }
       pourStream();
     },
+    get tuning() {
+      return tuning;
+    },
     hydrate(state) {
       requireLive('hydrate');
-      decorum.setCapacity(decorumCapacity(state.venue.upgrades), now());
+      venue = state.venue.id;
+      retune();
       applyFreeze(state.table.decorum, state.table.frozenUntil);
     },
-    setUpgradeLevels(levels) {
-      decorum.setCapacity(decorumCapacity(levels), now());
+    setUpgradeLevels(next) {
+      if (disposed) return;
+      levels = next;
+      retune();
       refreshDecorum(true);
     },
     reportContact: contact,
@@ -643,13 +687,19 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     },
   };
 
+  function retune(): void {
+    tuning = tuneFor();
+    decorum.setCapacity(tuning.decorumCapacity, now());
+  }
+
   function pourStream(): void {
     if (!pour.pouring) return;
     const current = tick();
     if (current < nextPourTick) return;
     if (sendDrop(aim, true)) {
       pourDrops += 1;
-      nextPourTick = current + POUR_STREAM_TICKS;
+      // Carried forward, not restarted from `current`, so a fractional cadence keeps its rate.
+      nextPourTick = Math.max(nextPourTick, current - 1) + tuning.pourStreamTicks;
     }
   }
 }
