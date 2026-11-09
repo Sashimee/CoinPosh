@@ -206,6 +206,64 @@ describe('mock server: value is minted and conserved server-side', () => {
     );
   });
 
+  it('pays 10 chained copper falls 11 through Chic, Lavish and Opulent, like the server', async () => {
+    const coins: MintedCoin[] = [];
+    for (let i = 0; i < 10; i++) coins.push(await dropBuffered());
+    expect(coins.every((coin) => coin.tier === coinTiers[0].id && coin.value === 1)).toBe(true);
+    travel();
+    const start = time.tick();
+    const ledgerBefore = server.ledger().length;
+    const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i)));
+    const accepted = results.map((result) => {
+      if (result.status !== 'accepted') throw new Error(`Fall refused: ${result.reason}`);
+      return result;
+    });
+    expect(accepted.map((result) => result.cascade)).toEqual([
+      null,
+      null,
+      'chic',
+      'chic',
+      'chic',
+      'lavish',
+      'lavish',
+      'lavish',
+      'lavish',
+      'opulent',
+    ]);
+    const total = accepted.reduce((sum, result) => sum + result.credited, 0);
+    expect(total).toBeGreaterThan(10);
+    expect(total).toBe(11);
+    const paid = server
+      .ledger()
+      .slice(ledgerBefore)
+      .filter((entry) => entry.reason === 'claim.fall');
+    expect(paid.reduce((sum, entry) => sum + (entry.delta.coins ?? 0), 0)).toBe(11);
+    expectConserved();
+  });
+
+  it('does not advance the cascade chain or the carry for a replayed claim', async () => {
+    const coins = [await dropBuffered(), await dropBuffered(), await dropBuffered()];
+    travel();
+    const start = time.tick();
+    const player = server.world.player(requirePlayerId(alice));
+    if (player === undefined) throw new Error('Expected Alice in the mock world.');
+    const body = { claims: coins.slice(0, 2).map((coin, i) => fallAt(coin, start + i)) };
+    const key = newIdempotencyKey();
+    const once = await alice.client.call('tableClaims', { body }, { idempotencyKey: key });
+    const chain = player.cascadeChain;
+    const carry = player.cascadeCarry;
+    const again = await alice.client.call('tableClaims', { body }, { idempotencyKey: key });
+    expect(again).toEqual(once);
+    expect(player.cascadeChain).toEqual(chain);
+    expect(player.cascadeCarry).toBe(carry);
+    const third = coins[2];
+    if (third === undefined) throw new Error('Expected three coins.');
+    expect(await claimAt([fallAt(third, start + 2)])).toMatchObject([
+      { status: 'accepted', cascade: 'chic' },
+    ]);
+    expectConserved();
+  });
+
   it('credits nothing for coins that slide off the side gutters', async () => {
     const coin = await dropBuffered();
     travel();
@@ -760,7 +818,8 @@ describe('mock server: attacks from a compromised client', () => {
       creditedMs: 2 * 3_600_000,
       coins: offlineVaultCoins(8, offline.baseCapHours, rate),
     });
-    expect(resumed.offline?.coins).toBeCloseTo(2 * offline.activeRateFactor * rate, 6);
+    // The heap falls chain into a Chic cascade, so the rate is not whole and the Vault pays its floor.
+    expect(resumed.offline?.coins).toBe(Math.floor(2 * offline.activeRateFactor * rate + 1e-9));
     expectConserved();
   });
 

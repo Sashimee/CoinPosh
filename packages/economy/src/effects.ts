@@ -1,6 +1,12 @@
-import { crateSpawn, offline, upgradeLines } from './config/index.ts';
-import { coinValue, upgradeStat } from './formulas.ts';
-import type { CoinTierDef, UpgradeLineDef, UpgradeStatId, VenueDef } from './types.ts';
+import { cascade, crateSpawn, offline, upgradeLines } from './config/index.ts';
+import { cascadeMultiplier, coinValue, upgradeStat } from './formulas.ts';
+import type {
+  CascadeConfig,
+  CoinTierDef,
+  UpgradeLineDef,
+  UpgradeStatId,
+  VenueDef,
+} from './types.ts';
 
 /**
  * How upgrade levels change play. The authoritative server and the Demo mock both read their
@@ -112,6 +118,47 @@ export function repriceReserved(
     return { value: coin.value + credit.value, micros };
   });
   return { reserved: repriced, carry: next };
+}
+
+/** Front falls in a row, each within the cascade window of the one before. */
+export interface CascadeChain {
+  readonly lastTick: number;
+  readonly count: number;
+}
+
+/** Sim ticks the cascade window spans at `ticksPerSecond`. */
+export function cascadeWindowTicks(
+  ticksPerSecond: number,
+  config: CascadeConfig = cascade,
+): number {
+  if (!Number.isSafeInteger(ticksPerSecond) || ticksPerSecond < 1) {
+    throw new RangeError(
+      `cascadeWindowTicks: ticks per second must be an integer ≥ 1, got ${ticksPerSecond}`,
+    );
+  }
+  return Math.ceil((config.windowMs * ticksPerSecond) / 1000);
+}
+
+/** The chain after a front fall at `tick`: one longer inside the window, else a new chain of one. */
+export function extendCascade(
+  chain: CascadeChain | null,
+  tick: number,
+  windowTicks: number,
+): CascadeChain {
+  const count = chain !== null && tick - chain.lastTick <= windowTicks ? chain.count + 1 : 1;
+  return { lastTick: tick, count };
+}
+
+/** A front fall's credit, in millionths, for a coin of `value` that is the `count`-th of a chain. */
+export function cascadeCreditMicros(
+  value: number,
+  count: number,
+  config: CascadeConfig = cascade,
+): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`cascadeCreditMicros: value must be an integer ≥ 0, got ${value}`);
+  }
+  return Math.round(value * cascadeMultiplier(count, config) * MINT_MICROS_PER_COIN);
 }
 
 /** Drops between Vault Crates: the base spacing shortened by the crateChance lines. */

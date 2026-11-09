@@ -1,12 +1,15 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { coinTiers, crateSpawn, offline, upgradeLines, venues } from './config/index.ts';
+import { cascade, coinTiers, crateSpawn, offline, upgradeLines, venues } from './config/index.ts';
 import {
+  cascadeCreditMicros,
+  cascadeWindowTicks,
   crateSpawnInterval,
   creditMintMicros,
   dropBufferTarget,
   dropSpacingTicks,
   dropSpawnsCrate,
+  extendCascade,
   MINT_MICROS_PER_COIN,
   mintedCoinMicros,
   mintedCoinValue,
@@ -195,6 +198,70 @@ describe('repriceReserved', () => {
   it('refuses to lower a reserved coin', () => {
     const l2 = mintedCoinMicros(copper, home, { coinValue: 2 });
     expect(() => repriceReserved([{ value: 1, micros: l2 }], base, 0)).toThrow(/cannot drop/);
+  });
+});
+
+describe('cascade chain', () => {
+  const window = cascadeWindowTicks(60);
+
+  /** Credits a run of front falls of `value`-coins `gap` ticks apart from a zero carry. */
+  function chainRun(count: number, gap: number, value = 1): number[] {
+    let chain = null;
+    let carry = 0;
+    const credited: number[] = [];
+    for (let i = 0; i < count; i++) {
+      chain = extendCascade(chain, i * gap, window);
+      const credit = creditMintMicros(cascadeCreditMicros(value, chain.count), carry);
+      carry = credit.carry;
+      credited.push(credit.value);
+    }
+    return credited;
+  }
+
+  it('spans the configured window in 60 Hz ticks', () => {
+    expect(window).toBe(Math.ceil((cascade.windowMs * 60) / 1000));
+    expect(() => cascadeWindowTicks(0)).toThrow(/ticks per second/);
+  });
+
+  it('grows inside the window, including at its last tick, and restarts after it', () => {
+    const first = extendCascade(null, 100, window);
+    expect(first).toEqual({ lastTick: 100, count: 1 });
+    const edge = extendCascade(first, 100 + window, window);
+    expect(edge.count).toBe(2);
+    expect(extendCascade(edge, 100 + 2 * window + 1, window)).toEqual({
+      lastTick: 100 + 2 * window + 1,
+      count: 1,
+    });
+  });
+
+  it('pays 10 chained copper falls 11: ×1 ×1 then Chic ×1.1, Lavish ×1.25, Opulent ×1.5', () => {
+    const credited = chainRun(10, 1);
+    expect(sum(credited)).toBe(Math.floor(2 + 3 * 1.1 + 4 * 1.25 + 1.5));
+    expect(sum(credited)).toBe(11);
+  });
+
+  it('pays 10 copper falls 10 when every one starts a new chain', () => {
+    expect(sum(chainRun(10, window + 1))).toBe(10);
+  });
+
+  it('credits the floor of every multiplied value over a run, never less than the coins', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 60 }),
+        fc.constantFrom(...coinTiers.map((tier) => tier.value)),
+        (count, value) => {
+          const credited = chainRun(count, 1, value);
+          let exact = 0;
+          for (let i = 1; i <= count; i++) exact += cascadeCreditMicros(value, i);
+          expect(sum(credited)).toBe(Math.floor(exact / MINT_MICROS_PER_COIN));
+          expect(credited.every((paid) => paid >= value)).toBe(true);
+        },
+      ),
+    );
+  });
+
+  it('rejects a non-integer coin value', () => {
+    expect(() => cascadeCreditMicros(1.5, 1)).toThrow(/value must be an integer/);
   });
 });
 

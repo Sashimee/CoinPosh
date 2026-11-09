@@ -73,6 +73,7 @@ async function legacyPlayer(options: {
       fair_client_seed: 'legacyclientseed',
       fair_nonce: '0',
       mint_carry: '0',
+      cascade_carry: '0',
     };
     for (const [key, value] of Object.entries(meta)) {
       sql.exec('INSERT INTO meta (key, value) VALUES (?, ?)', key, value);

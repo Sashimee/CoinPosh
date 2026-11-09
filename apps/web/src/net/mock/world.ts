@@ -5,7 +5,9 @@ import {
   bullion,
   bullionFromValue,
   cascade,
+  cascadeCreditMicros,
   cascadeTierFor,
+  cascadeWindowTicks,
   coinTiers,
   crateRewards,
   crateIncomeCoins,
@@ -15,6 +17,7 @@ import {
   dropSpacingTicks,
   dropSpawnsCrate,
   dropTables,
+  extendCascade,
   fusion,
   fusionValue,
   initialPityState,
@@ -39,6 +42,7 @@ import {
   upgradeLines,
   upgradeStatAt,
   venues,
+  type CascadeChain,
   type CrateRewardDef,
   type DropSourceId,
   type PityState,
@@ -184,7 +188,9 @@ export interface MockPlayer {
   /** Ticks of recently accepted falls (any edge) and fusions, oldest first. */
   recentFalls: number[];
   recentFusions: number[];
-  cascadeChain: { lastTick: number; count: number } | null;
+  cascadeChain: CascadeChain | null;
+  /** The fraction of a coin, in millionths, the cascade bonus carries to the next front fall. */
+  cascadeCarry: number;
   /** The fraction of a coin, in millionths, the next minted coin starts from (as the server). */
   mintCarry: number;
   lifetimeValue: number;
@@ -209,7 +215,7 @@ function ticksFor(ms: number): number {
   return Math.ceil(ms / MS_PER_TICK);
 }
 
-const CASCADE_WINDOW_TICKS = ticksFor(cascade.windowMs);
+const CASCADE_WINDOW_TICKS = cascadeWindowTicks(MOCK_RULES.ticksPerSecond);
 const MIN_FALL_TICKS = {
   drop: ticksFor(MOCK_RULES.minFallMsAfterDrop),
   fusion: ticksFor(MOCK_RULES.minFallMsAfterFusion),
@@ -379,6 +385,7 @@ export class MockWorld {
       recentFalls: [],
       recentFusions: [],
       cascadeChain: null,
+      cascadeCarry: 0,
       mintCarry: 0,
       lifetimeValue: 0,
       lifetimeBullion: 0,
@@ -1104,14 +1111,15 @@ export class MockWorld {
         this.#forget(player, claim.coinId, now);
         if (claim.edge !== 'front')
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
-        const chain = player.cascadeChain;
-        const count =
-          chain !== null && claim.tick - chain.lastTick <= CASCADE_WINDOW_TICKS
-            ? chain.count + 1
-            : 1;
-        player.cascadeChain = { lastTick: claim.tick, count };
-        const tier = cascadeTierFor(count, cascade);
-        const credited = Math.floor(record.coin.value * (tier?.multiplier ?? 1));
+        const chain = extendCascade(player.cascadeChain, claim.tick, CASCADE_WINDOW_TICKS);
+        player.cascadeChain = chain;
+        const tier = cascadeTierFor(chain.count, cascade);
+        const credit = creditMintMicros(
+          cascadeCreditMicros(record.coin.value, chain.count),
+          player.cascadeCarry,
+        );
+        player.cascadeCarry = credit.carry;
+        const credited = credit.value;
         this.#earn(player, now, 'claim.fall', credited, claim.coinId);
         return { status: 'accepted', credited, cascade: tier?.id ?? null, minted: null };
       }

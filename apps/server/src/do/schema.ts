@@ -96,6 +96,10 @@ export const MIGRATIONS: readonly string[] = [
   INSERT INTO meta (key, value)
     SELECT 'mint_carry', '0' WHERE EXISTS (SELECT 1 FROM meta WHERE key = 'player_id');
   `,
+  `
+  INSERT INTO meta (key, value)
+    SELECT 'cascade_carry', '0' WHERE EXISTS (SELECT 1 FROM meta WHERE key = 'player_id');
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {

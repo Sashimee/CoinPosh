@@ -1,14 +1,20 @@
 import {
+  cascade,
+  cascadeCreditMicros,
+  cascadeTierFor,
+  cascadeWindowTicks,
   coinTiers,
   creditMintMicros,
   dropBufferTarget,
   dropSpawnsCrate,
+  extendCascade,
   fusion,
   fusionValue,
   openingHeap,
   repriceReserved,
   upgradeLines,
   upgradeStat,
+  type CascadeChain,
   type UpgradeLevelMap,
 } from '@coinposh/economy';
 import {
@@ -121,7 +127,14 @@ type MetaKey =
   | 'fair_client_seed'
   | 'fair_nonce'
   | 'heap_seeded'
-  | 'mint_carry';
+  | 'mint_carry'
+  | 'cascade_last_tick'
+  | 'cascade_count'
+  | 'cascade_carry';
+
+/** The client sim's fixed step (packages/sim TICK_RATE_HZ, the 60 Hz of the shared `Tick`). */
+const SIM_TICKS_PER_SECOND = 60;
+const CASCADE_WINDOW_TICKS = cascadeWindowTicks(SIM_TICKS_PER_SECOND);
 
 function startingCoins(): number {
   const line = upgradeLines.find((candidate) => candidate.effect.stat === 'startingCoins');
@@ -159,6 +172,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.setMeta('fair_client_seed', randomBase62(16));
       this.setMeta('fair_nonce', '0');
       this.setMeta('mint_carry', '0');
+      this.setMeta('cascade_carry', '0');
       openWallet(this.sql);
       commit(
         this.sql,
@@ -490,20 +504,36 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       case 'fall': {
         const coin = this.entities.coinOnTable(claim.coinId, claim.tick);
         if (typeof coin === 'string') return { status: 'rejected', reason: coin };
-        const paid = claim.edge === 'front';
-        this.entities.settleCoin(coin.id, paid ? 'claimed' : 'lost', now);
+        if (claim.edge !== 'front') {
+          this.entities.settleCoin(coin.id, 'lost', now);
+          commit(
+            this.sql,
+            new LedgerTx('claim.fall').move('table', 'house', 'coins', coin.value, coin.id),
+            context,
+          );
+          return { status: 'accepted', credited: 0, cascade: null, minted: null };
+        }
+        const chain = extendCascade(this.cascadeChain(), claim.tick, CASCADE_WINDOW_TICKS);
+        this.setCascadeChain(chain);
+        const credit = creditMintMicros(
+          cascadeCreditMicros(coin.value, chain.count),
+          Number(this.requireMeta('cascade_carry')),
+        );
+        this.setMeta('cascade_carry', String(credit.carry));
+        this.entities.settleCoin(coin.id, 'claimed', now);
         commit(
           this.sql,
-          new LedgerTx('claim.fall').move(
-            'table',
-            paid ? 'wallet' : 'house',
-            'coins',
-            coin.value,
-            coin.id,
-          ),
+          new LedgerTx('claim.fall')
+            .move('table', 'wallet', 'coins', coin.value, coin.id)
+            .move('mint', 'wallet', 'coins', credit.value - coin.value, coin.id),
           context,
         );
-        return { status: 'accepted', credited: paid ? coin.value : 0, cascade: null, minted: null };
+        return {
+          status: 'accepted',
+          credited: credit.value,
+          cascade: cascadeTierFor(chain.count, cascade)?.id ?? null,
+          minted: null,
+        };
       }
       case 'fusion': {
         const inputs: StoredCoin[] = [];
@@ -610,6 +640,18 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.entities.repriceBuffered(coin.id, next.value, next.micros);
     });
     this.setMeta('mint_carry', String(repriced.carry));
+  }
+
+  private cascadeChain(): CascadeChain | null {
+    const lastTick = this.meta('cascade_last_tick');
+    const count = this.meta('cascade_count');
+    if (lastTick === null || count === null) return null;
+    return { lastTick: Number(lastTick), count: Number(count) };
+  }
+
+  private setCascadeChain(chain: CascadeChain): void {
+    this.setMeta('cascade_last_tick', String(chain.lastTick));
+    this.setMeta('cascade_count', String(chain.count));
   }
 
   private mintCarry(): number {
