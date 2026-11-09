@@ -9,6 +9,8 @@ import {
   type Texture,
 } from 'three/webgpu';
 import {
+  abs,
+  dot,
   float,
   floor,
   fract,
@@ -16,7 +18,9 @@ import {
   hash,
   min,
   mix,
+  normalView,
   positionLocal,
+  positionView,
   pow,
   saturate,
   smoothstep,
@@ -25,6 +29,7 @@ import {
   vec3,
 } from 'three/tsl';
 import { decodeNoise, NOISE_CHANNELS, sampleNoiseAtlas } from '../../env/noise-texture.ts';
+import { RIVIERA_TABLE } from './layout.ts';
 import { rivieraTokens, rivieraTones } from './palette.ts';
 
 /** `low` drops the costliest per-pixel layers for weak GPUs; `high` is the full look. */
@@ -146,6 +151,127 @@ export function createVarnishedTeak(noise: Texture): MeshPhysicalNodeMaterial {
   return material;
 }
 
+/** Inset of the gold pinstripe from the playfield's side walls and payout edge, metres. */
+const PINSTRIPE_INSET = 0.011;
+const PINSTRIPE_HALF_WIDTH = 0.0006;
+
+/**
+ * Midnight baize for the coin floor: a fine nap, a navy sheen that lifts at grazing angles, a
+ * gold pinstripe inlaid just inside the walls and the payout edge, and an occlusion falloff
+ * into the walls and the backboard so the floor sits inside the cabinet rather than reading
+ * as a uniformly lit slab.
+ */
+export function createFeltFloor(noise: Texture, quality: RivieraQuality): MeshPhysicalNodeMaterial {
+  const sheen = quality === 'high' ? 0.35 : 0;
+  const material = new MeshPhysicalNodeMaterial({
+    name: 'riviera/felt',
+    color: new Color(rivieraTones.felt),
+    metalness: 0,
+    roughness: 0.92,
+    specularIntensity: 0.12,
+    sheen,
+    sheenColor: new Color(rivieraTones.feltSheen),
+    sheenRoughness: 0.6,
+  });
+  const p = positionLocal;
+  const { speckle, cloud } = NOISE_CHANNELS;
+  const plane = vec2(p.x, p.z);
+  const nap = decodeNoise(sampleNoiseAtlas(noise, plane.mul(900 / speckle.cellsX)), speckle);
+  const mottle = decodeNoise(sampleNoiseAtlas(noise, plane.mul(7 / cloud.cellsX)), cloud);
+
+  const t = RIVIERA_TABLE;
+  const toSide = float(t.fieldHalfWidth).sub(abs(p.x));
+  const toFront = float(t.fieldFrontZ).sub(p.z);
+  const toBack = p.z.sub(t.backboardFrontZ);
+  const occlusion = smoothstep(0, 0.05, toSide)
+    .mul(smoothstep(0, 0.09, toBack))
+    .mul(0.35)
+    .add(0.65);
+  const lineDistance = abs(min(toSide, toFront).sub(PINSTRIPE_INSET));
+  const stripe = float(1).sub(
+    smoothstep(PINSTRIPE_HALF_WIDTH, fwidth(lineDistance).add(PINSTRIPE_HALF_WIDTH), lineDistance),
+  );
+
+  const baize = linear(rivieraTones.felt)
+    .mul(nap.mul(0.16).add(mottle.mul(0.06)).add(1))
+    .mul(occlusion);
+  material.colorNode = mix(baize, linear(rivieraTokens['gold-brushed']), stripe);
+  material.metalnessNode = stripe;
+  material.roughnessNode = mix(float(0.92), float(0.3), stripe);
+  if (sheen > 0) {
+    material.sheenNode = linear(rivieraTones.feltSheen)
+      .mul(sheen)
+      .mul(occlusion)
+      .mul(float(1).sub(stripe));
+  }
+  return material;
+}
+
+/**
+ * A ridge of half-width `width` (field units) along the zero set of `field`. Where a pixel
+ * covers more of the field than the ridge is wide, the ridge dims by the fraction it actually
+ * covers instead of breaking into dashes, which is what keeps veins steady at distance and at
+ * grazing angles.
+ */
+function ridgeLine(field: Node<'float'>, width: Node<'float'>): Node<'float'> {
+  const footprint = fwidth(field);
+  const d = abs(field);
+  const core = float(1).sub(smoothstep(width.mul(0.3), width.add(footprint), d));
+  return core.mul(saturate(width.mul(2).div(width.mul(2).add(footprint))));
+}
+
+/**
+ * Nero Marquina under a mirror clearcoat: near-black stone crossed by champagne-gold veins.
+ * The domain is stretched along one diagonal so veins run as a flow rather than closing into
+ * loops; a slow presence field swells, tapers and breaks each vein; and on the high tier fine
+ * branch veins split off only near the main ones. Dresses the crest cap, consoles and pusher.
+ */
+export function createBlackMarble(
+  noise: Texture,
+  quality: RivieraQuality,
+): MeshPhysicalNodeMaterial {
+  const high = quality === 'high';
+  const material = new MeshPhysicalNodeMaterial({
+    name: 'riviera/marble',
+    color: new Color(rivieraTones.marble),
+    metalness: 0,
+    roughness: 0.2,
+    specularIntensity: 0.6,
+    clearcoat: high ? 0.5 : 0,
+    clearcoatRoughness: 0.05,
+  });
+  const { cloud, streak } = NOISE_CHANNELS;
+  const p = boxProjection(4.5 / cloud.cellsX);
+  const along = p.x.mul(0.8).add(p.y.mul(0.6));
+  const across = p.y.mul(0.8).sub(p.x.mul(0.6));
+  const flow = vec2(along.mul(0.32), across.mul(1.25));
+
+  const warpSample = sampleNoiseAtlas(noise, flow.mul(0.6).add(vec2(0.37, 0.11)));
+  const warp = vec2(decodeNoise(warpSample, cloud), decodeNoise(warpSample, streak));
+  const coord = flow.add(warp.mul(0.2));
+  const mainSample = sampleNoiseAtlas(noise, coord);
+  const main = decodeNoise(mainSample, cloud);
+  const presence = smoothstep(-0.5, 0.45, decodeNoise(mainSample, streak).add(warp.x.mul(0.5)));
+  const mainWidth = mix(float(0.004), float(0.026), presence.mul(presence));
+  let vein = ridgeLine(main, mainWidth).mul(presence.mul(0.85).add(0.15));
+  const halo = float(1).sub(smoothstep(float(0), mainWidth.mul(7), abs(main)));
+
+  if (high) {
+    const branch = decodeNoise(sampleNoiseAtlas(noise, coord.mul(2.6).add(0.71)), cloud);
+    const nearMain = float(1).sub(smoothstep(float(0.02), float(0.16), abs(main)));
+    vein = vein.add(ridgeLine(branch, float(0.0035)).mul(nearMain).mul(presence).mul(0.6));
+  }
+
+  const viewDir = positionView.normalize().negate();
+  const facing = smoothstep(0.02, 0.2, abs(dot(normalView, viewDir)));
+  const strength = saturate(vein).mul(facing);
+  const stone = linear(rivieraTones.marble).mul(warp.y.mul(0.25).add(1));
+  const glow = halo.mul(presence).mul(0.07).mul(facing);
+  material.colorNode = mix(stone, linear(rivieraTones.marbleVein), strength.mul(0.8).add(glow));
+  material.roughnessNode = mix(float(0.2), float(0.32), strength);
+  return material;
+}
+
 /**
  * Oiled teak deck with black-caulked seams and staggered butt joints. The low tier drops the
  * oil's faint clearcoat: the deck covers much of the frame and the second lobe barely shows.
@@ -164,7 +290,7 @@ export function createDeckTeak(noise: Texture, quality: RivieraQuality): MeshPhy
     seamColor: rivieraTones.caulk,
     buttJoints: true,
   });
-  material.colorNode = wood.color.mul(0.55);
+  material.colorNode = wood.color.mul(0.38);
   material.roughnessNode = mix(float(0.74).add(wood.grain.mul(0.08)), float(0.9), wood.seam);
   return material;
 }
@@ -187,7 +313,7 @@ export function createBrushedGold(noise: Texture): MeshPhysicalNodeMaterial {
     speckle,
   );
   material.roughnessNode = float(0.27).add(brush.mul(0.07));
-  material.colorNode = linear(rivieraTokens['gold-brushed']).mul(brush.mul(0.05).add(1));
+  material.colorNode = linear(rivieraTokens['gold-brushed']).mul(brush.mul(0.05).add(0.9));
   return material;
 }
 
@@ -215,6 +341,7 @@ export function createVelvet(noise: Texture): MeshPhysicalNodeMaterial {
     color: new Color(rivieraTones.velvet),
     metalness: 0,
     roughness: 0.95,
+    specularIntensity: 0.2,
     sheen: 0.5,
     sheenColor: sheen,
     sheenRoughness: 0.55,
@@ -270,6 +397,8 @@ export function createGelcoat(): MeshPhysicalNodeMaterial {
 export interface RivieraMaterials {
   readonly lacquer: MeshPhysicalNodeMaterial;
   readonly teak: MeshPhysicalNodeMaterial;
+  readonly felt: MeshPhysicalNodeMaterial;
+  readonly marble: MeshPhysicalNodeMaterial;
   readonly deck: MeshPhysicalNodeMaterial;
   readonly gold: MeshPhysicalNodeMaterial;
   readonly goldPolished: MeshPhysicalNodeMaterial;
@@ -284,6 +413,8 @@ export function createRivieraMaterials(options: RivieraMaterialOptions): Riviera
   return {
     lacquer: createNavyLacquer(noise),
     teak: createVarnishedTeak(noise),
+    felt: createFeltFloor(noise, quality),
+    marble: createBlackMarble(noise, quality),
     deck: createDeckTeak(noise, quality),
     gold: createBrushedGold(noise),
     goldPolished: createPolishedGold(),
