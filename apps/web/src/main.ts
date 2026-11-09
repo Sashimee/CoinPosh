@@ -751,7 +751,6 @@ function startPlay(
     net: { table: boot.net.table, clock: boot.net.clock },
     ui,
     canvas: () => stage.canvas,
-    upgradeLevels: boot.state.venue.upgrades,
     simBacklog: start.simBacklog,
     openingHeap: start.heap,
   });
