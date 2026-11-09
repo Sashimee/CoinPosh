@@ -110,8 +110,9 @@ const STILL = 0.001;
  * How far a coin the pusher wakes may end from the table played on after those 2 s. Looser
  * than STILL because positions are stored to 10 µm: moving every asleep coin by that one
  * unit moves a woken coin by up to 4.35 mm within 120 ticks at tick 180 of the cycle, and
- * the restored table ends one woken coin 1.08 mm off there. Accepting more than 1 mm for
- * woken coins awaits a lead decision (P-275).
+ * the restored table ends one woken coin 1.08 mm off there. The 1.5 mm bound is the lead
+ * decision recorded in 92-table-persistence 1.4 ("Woken-coin bound"); velocities are not
+ * stored (P-275).
  */
 const WOKEN = 0.0015;
 
