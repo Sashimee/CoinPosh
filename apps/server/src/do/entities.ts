@@ -1,4 +1,11 @@
-import { coinTiers, coinValue, venues } from '@coinposh/economy';
+import {
+  coinTiers,
+  MINT_MICROS_PER_COIN,
+  mintedCoinMicros,
+  mintedCoinValue,
+  venues,
+  type UpgradeLevelMap,
+} from '@coinposh/economy';
 import {
   CoinIdSchema,
   CrateIdSchema,
@@ -28,6 +35,7 @@ interface CoinRow extends Record<string, SqlStorageValue> {
   state: CoinState;
   dropped_tick: number | null;
   paid: number;
+  mint_micros: number | null;
 }
 
 interface CrateRow extends Record<string, SqlStorageValue> {
@@ -42,6 +50,11 @@ export interface StoredCoin extends MintedCoin {
   readonly droppedTick: Tick | null;
   /** What the wallet prepaid to reserve this coin in the buffer; 0 for every other coin. */
   readonly paid: number;
+  /**
+   * The millionths of a coin this coin drew from the player's mint carry, or null when it was
+   * not minted from the carry (a fusion, or a coin stored before the carry existed).
+   */
+  readonly mintMicros: number | null;
 }
 
 export interface StoredCrate extends TableCrate {
@@ -65,9 +78,19 @@ export function tierDef(tier: CoinTier) {
   return def;
 }
 
-/** The value the server stores, and later credits, for a freshly minted coin of `tier`. */
-export function mintedValue(tier: CoinTier): number {
-  return Math.floor(coinValue(tierDef(tier), HOME_VENUE.coinValueMultiplier));
+/** What one coin of `tier` minted at `levels` is worth on its own, before the mint carry. */
+export function mintedValue(tier: CoinTier, levels: UpgradeLevelMap): number {
+  return mintedCoinValue(tierDef(tier), HOME_VENUE, levels);
+}
+
+/** The millionths of a coin a coin of `tier` minted at `levels` adds to the mint carry. */
+export function mintedMicros(tier: CoinTier, levels: UpgradeLevelMap): number {
+  return mintedCoinMicros(tierDef(tier), HOME_VENUE, levels);
+}
+
+/** The millionths a stored coin was minted at; a coin from before the carry held its whole value. */
+export function storedMicros(coin: StoredCoin): number {
+  return coin.mintMicros ?? coin.value * MINT_MICROS_PER_COIN;
 }
 
 function toStoredCoin(row: CoinRow): StoredCoin {
@@ -78,6 +101,7 @@ function toStoredCoin(row: CoinRow): StoredCoin {
     state: row.state,
     droppedTick: row.dropped_tick,
     paid: row.paid,
+    mintMicros: row.mint_micros,
   };
 }
 
@@ -104,7 +128,7 @@ export class Entities {
   coin(id: CoinId): StoredCoin | null {
     const row = this.sql
       .exec<CoinRow>(
-        'SELECT id, tier, value, state, dropped_tick, paid FROM coins WHERE id = ?',
+        'SELECT id, tier, value, state, dropped_tick, paid, mint_micros FROM coins WHERE id = ?',
         id,
       )
       .toArray()[0];
@@ -114,7 +138,7 @@ export class Entities {
   coinsIn(state: CoinState): StoredCoin[] {
     return this.sql
       .exec<CoinRow>(
-        'SELECT id, tier, value, state, dropped_tick, paid FROM coins WHERE state = ? ORDER BY rowid',
+        'SELECT id, tier, value, state, dropped_tick, paid, mint_micros FROM coins WHERE state = ? ORDER BY rowid',
         state,
       )
       .toArray()
@@ -130,16 +154,26 @@ export class Entities {
   mintCoin(
     tier: CoinTier,
     value: number,
+    mintMicros: number | null,
     state: 'buffer' | 'table',
     droppedTick: Tick | null,
     at: EpochMs,
   ): StoredCoin {
-    const coin: StoredCoin = { id: newCoinId(), tier, value, state, droppedTick, paid: 0 };
+    const coin: StoredCoin = {
+      id: newCoinId(),
+      tier,
+      value,
+      state,
+      droppedTick,
+      paid: 0,
+      mintMicros,
+    };
     this.sql.exec(
-      'INSERT INTO coins (id, tier, value, state, dropped_tick, minted_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO coins (id, tier, value, mint_micros, state, dropped_tick, minted_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       coin.id,
       tier,
       value,
+      mintMicros,
       state,
       droppedTick,
       at,
@@ -149,6 +183,20 @@ export class Entities {
 
   markPaid(id: CoinId, paid: number): void {
     this.sql.exec("UPDATE coins SET paid = ? WHERE id = ? AND state = 'buffer'", paid, id);
+  }
+
+  /**
+   * Re-mints a reserved coin at `value`. A buffered coin's value is not on the ledger until it
+   * is dropped (the buffer account holds only what was paid), so this moves nothing; the drop
+   * then mints the difference.
+   */
+  repriceBuffered(id: CoinId, value: number, mintMicros: number): void {
+    this.sql.exec(
+      "UPDATE coins SET value = ?, mint_micros = ? WHERE id = ? AND state = 'buffer'",
+      value,
+      mintMicros,
+      id,
+    );
   }
 
   /** Only for a reservation nothing paid for: it holds no value and has no ledger legs. */

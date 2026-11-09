@@ -1,9 +1,11 @@
 import {
   measuredActiveRatePerHour,
   offline,
+  offlineCapHours,
   offlineRate,
   offlineVaultCoins,
   playWindowStart,
+  type UpgradeLevelMap,
 } from '@coinposh/economy';
 import type { EpochMs, OfflineSettlement } from '@coinposh/shared';
 import type { TxKind } from '../do/ledger.ts';
@@ -78,18 +80,19 @@ export function measuredActiveRate(sql: SqlStorage): number {
  * never a client timestamp. A measured rate below `offlineRate.starterRatePerHour` (a fresh
  * profile, or play that lost coins) pays on that starter floor instead. Returns null when
  * nothing is owed, so repeated state reads during play stay free; once recorded, a
- * settlement marks everything before it as paid.
+ * settlement marks everything before it as paid. The hours paid for are capped by the
+ * venue's offlineHours level in `levels`.
  */
 export function quoteOffline(
   sql: SqlStorage,
   now: EpochMs,
-  capHours: number,
+  levels: UpgradeLevelMap,
 ): OfflineSettlement | null {
   const since = settledThrough(sql);
   if (since === null) return null;
   const awayMs = now - since;
   if (awayMs < OFFLINE_MIN_AWAY_MS) return null;
-  const cap = Math.min(Math.max(capHours, offline.baseCapHours), offline.maxCapHours);
+  const cap = offlineCapHours(levels);
   const creditedMs = Math.min(awayMs, cap * HOUR_MS);
   const coins = offlineVaultCoins(
     awayMs / HOUR_MS,

@@ -314,7 +314,7 @@ describe('POST /v1/table/claims', () => {
     expect(result.wallet).toEqual(before.wallet);
     expect(await droppedOnTable(session)).toEqual([]);
     const report = await playerStub(session.tokens.playerId).conservation();
-    const heapStake = openingHeap.coins * mintedValue(openingHeap.tier);
+    const heapStake = openingHeap.coins * mintedValue(openingHeap.tier, {});
     expect(report.ledger.house).toBe(left.value + right.value - heapStake);
     await expectConserved(session);
   });

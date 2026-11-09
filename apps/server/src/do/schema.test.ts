@@ -9,7 +9,7 @@ import { MIGRATIONS } from './schema.ts';
 
 const COPPER = coinTiers[0];
 const STARTING_COINS = 20;
-const DROPPED_VALUE = mintedValue(COPPER.id);
+const DROPPED_VALUE = mintedValue(COPPER.id, {});
 
 function coinId(n: number): string {
   return `${ENTITY_ID_PREFIXES.coin}_${String(n).padStart(20, '0')}`;
@@ -113,6 +113,16 @@ describe('a player stored by the v1 schema', () => {
       expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
         version: MIGRATIONS.length,
       });
+      expect(
+        sql
+          .exec(
+            "SELECT key, value FROM meta WHERE key IN ('mint_carry', 'cascade_carry') ORDER BY key",
+          )
+          .toArray(),
+      ).toEqual([
+        { key: 'cascade_carry', value: '0' },
+        { key: 'mint_carry', value: '0' },
+      ]);
       const vault = () => {
         const report = player.conservation();
         return report.walletCoins + report.bufferPaid;
