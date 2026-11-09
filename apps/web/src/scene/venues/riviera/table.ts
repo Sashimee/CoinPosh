@@ -19,6 +19,7 @@ import {
   roundedBox,
   roundedRectPath,
   sweepProfile,
+  type Profile,
 } from './geometry.ts';
 import { RIVIERA_TABLE, type RivieraTableLayout } from './layout.ts';
 import type { RivieraMaterials } from './materials.ts';
@@ -34,10 +35,10 @@ const LIP_DEPTH = 0.026;
 const LIP_TOP_FRACTION = 0.3;
 /** Overlap that seats the tray box under the body so no seam opens at the payout edge. */
 const TRAY_SEAT = 0.03;
-/** The backboard crest: a lacquer moulding under a varnished teak cap rail, as on the yacht. */
+/** The backboard crest: a lacquer moulding under a black marble cap rail. */
 const CREST_CAP_BOTTOM = 0.014;
 const CREST_TOP = 0.026;
-/** The body front sits a hair behind the teak so the two never fight over one plane. */
+/** The body front sits a hair behind the coin floor so the two never fight over one plane. */
 const BODY_FRONT_INSET = 0.002;
 const GLASS_THICKNESS = 0.006;
 /**
@@ -53,12 +54,22 @@ const FLUTE_PITCH = 0.016;
 const FLUTE_DEPTH = 0.0075;
 const FLUTE_BEAD_RADIUS = 0.0065;
 const FLUTE_FOOT = 0.045;
+/**
+ * Marble-topped consoles flank the cabinet out to WING_X, under a back wall of framed lacquer
+ * panels, so a landscape frame shows furniture to its edges instead of bare deck either side
+ * of a narrow cabinet. The console top sits below the brass wall rail, which stays a parapet.
+ */
+const WING_X = 0.9;
+const CONSOLE_TOP = 0.034;
+const CONSOLE_SLAB = 0.014;
+const WING_PANEL_INSET = 0.035;
 
 interface Dimensions {
   readonly t: RivieraTableLayout;
   readonly fieldX: number;
   readonly gutterX: number;
   readonly outerX: number;
+  readonly wingX: number;
   readonly wallX: number;
   readonly backZ: number;
   readonly boardBackZ: number;
@@ -89,6 +100,7 @@ function dimensions(t: RivieraTableLayout): Dimensions {
     fieldX,
     gutterX,
     outerX,
+    wingX: Math.max(WING_X, outerX + 0.1),
     wallX: (gutterX + outerX) / 2,
     backZ: t.cabinetBackZ,
     boardBackZ: t.backboardFrontZ - t.backboardDepth,
@@ -181,10 +193,27 @@ function lacquerPieces(d: Dimensions): BufferGeometry[] {
     ),
     ...reeds(d),
     box(
-      new Vector3(-d.outerX + 0.012, t.deckY, d.backZ + 0.015),
-      new Vector3(d.outerX - 0.012, d.plinthTop + 0.01, t.cabinetFrontZ - 0.015),
+      new Vector3(-d.wingX + 0.012, t.deckY, d.backZ + 0.015),
+      new Vector3(d.wingX - 0.012, d.plinthTop + 0.01, t.cabinetFrontZ - 0.015),
       0.01,
     ),
+    ...[-1, 1].flatMap((side) => {
+      const inner = d.outerX - 0.004;
+      const lo = (a: number, b: number): number => (side < 0 ? -b : a);
+      const hi = (a: number, b: number): number => (side < 0 ? -a : b);
+      return [
+        box(
+          new Vector3(lo(inner, d.wingX), d.plinthTop, d.backZ),
+          new Vector3(hi(inner, d.wingX), CONSOLE_TOP + 0.002, t.cabinetFrontZ - 0.004),
+          0.016,
+        ),
+        box(
+          new Vector3(lo(inner, d.wingX), CONSOLE_TOP, d.boardBackZ),
+          new Vector3(hi(inner, d.wingX), d.boardTop, t.backboardFrontZ - 0.004),
+          0.008,
+        ),
+      ];
+    }),
     ...[-1, 1].flatMap((side) => [
       box(
         new Vector3(side < 0 ? -d.outerX : d.gutterX, d.trayFloor - 0.005, d.backZ),
@@ -208,14 +237,14 @@ function lacquerPieces(d: Dimensions): BufferGeometry[] {
       0.01,
     ),
     box(
-      new Vector3(-d.outerX - 0.01, d.boardTop - 0.004, d.boardBackZ - 0.008),
-      new Vector3(d.outerX + 0.01, d.boardTop + CREST_CAP_BOTTOM, t.backboardFrontZ + 0.013),
+      new Vector3(-d.wingX - 0.01, d.boardTop - 0.004, d.boardBackZ - 0.008),
+      new Vector3(d.wingX + 0.01, d.boardTop + CREST_CAP_BOTTOM, t.backboardFrontZ + 0.013),
       0.008,
     ),
   ];
 }
 
-function teakPieces(d: Dimensions): BufferGeometry[] {
+function floorPieces(d: Dimensions): BufferGeometry[] {
   return [
     box(
       new Vector3(-d.fieldX, d.bodyTop - 0.01, d.backZ),
@@ -223,11 +252,28 @@ function teakPieces(d: Dimensions): BufferGeometry[] {
       0.003,
       2,
     ),
+  ];
+}
+
+function marblePieces(d: Dimensions): BufferGeometry[] {
+  return [
     box(
-      new Vector3(-d.outerX - 0.004, d.boardTop + CREST_CAP_BOTTOM - 0.002, d.boardBackZ - 0.003),
-      new Vector3(d.outerX + 0.004, d.boardTop + CREST_TOP, d.t.backboardFrontZ + 0.008),
+      new Vector3(-d.wingX - 0.004, d.boardTop + CREST_CAP_BOTTOM - 0.002, d.boardBackZ - 0.003),
+      new Vector3(d.wingX + 0.004, d.boardTop + CREST_TOP, d.t.backboardFrontZ + 0.008),
       0.004,
       2,
+    ),
+    ...[-1, 1].map((side) =>
+      box(
+        new Vector3(side < 0 ? -d.wingX - 0.008 : d.outerX, CONSOLE_TOP, d.backZ),
+        new Vector3(
+          side < 0 ? -d.outerX : d.wingX + 0.008,
+          CONSOLE_TOP + CONSOLE_SLAB,
+          d.t.cabinetFrontZ + 0.006,
+        ),
+        0.004,
+        2,
+      ),
     ),
   ];
 }
@@ -258,8 +304,8 @@ function sunburstRays(d: Dimensions): BufferGeometry[] {
   const count = 32;
   for (let i = 0; i < count; i += 1) {
     const long = i % 2 === 0;
-    const length = (long ? 0.095 : 0.07) * k;
-    const ray = new BoxGeometry(0.009 * k, length, 0.003 * k, 1, 4, 1);
+    const length = (long ? 0.088 : 0.062) * k;
+    const ray = new BoxGeometry(0.006 * k, length, 0.0025 * k, 1, 4, 1);
     const pos = ray.getAttribute('position');
     for (let v = 0; v < pos.count; v += 1) {
       const s = (pos.getY(v) + length / 2) / length;
@@ -326,14 +372,14 @@ function goldPieces(d: Dimensions): BufferGeometry[] {
     ),
     ...[t.backboardFrontZ + 0.013, d.boardBackZ - 0.008].map((z) =>
       rod(
-        new Vector3(-d.outerX - 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
-        new Vector3(d.outerX + 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
+        new Vector3(-d.wingX - 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
+        new Vector3(d.wingX + 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
         0.0055,
       ),
     ),
     rod(
-      new Vector3(-d.outerX - 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
-      new Vector3(d.outerX + 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
+      new Vector3(-d.wingX - 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
+      new Vector3(d.wingX + 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
       0.004,
     ),
     sweepProfile(
@@ -341,7 +387,7 @@ function goldPieces(d: Dimensions): BufferGeometry[] {
         new Vector3(0, d.plinthTop + 0.004, (d.backZ + t.cabinetFrontZ) / 2),
         X,
         Z,
-        (d.outerX + 0.012) * 2,
+        (d.wingX + 0.012) * 2,
         t.cabinetFrontZ - d.backZ + 0.004,
         0.02,
       ),
@@ -372,13 +418,39 @@ function goldPieces(d: Dimensions): BufferGeometry[] {
     ),
     ...[d.fluteTop, d.fluteBottom].map((y) =>
       rod(
-        new Vector3(-d.outerX - 0.002, y, t.cabinetFrontZ + 0.002),
-        new Vector3(d.outerX + 0.002, y, t.cabinetFrontZ + 0.002),
+        new Vector3(-d.wingX - 0.002, y, t.cabinetFrontZ + 0.002),
+        new Vector3(d.wingX + 0.002, y, t.cabinetFrontZ + 0.002),
         FLUTE_BEAD_RADIUS,
       ),
     ),
+    ...wingPanelFrames(d, beadAndCoveProfile(0.009, 0.0045), 0),
   );
   return pieces;
+}
+
+/** One moulded frame per back-wall panel, `inset` further in than the panel's own margin. */
+function wingPanelFrames(d: Dimensions, profile: Profile, inset: number): BufferGeometry[] {
+  const bottom = CONSOLE_TOP + CONSOLE_SLAB;
+  const width = d.wingX - d.outerX - 2 * (WING_PANEL_INSET + inset);
+  const height = d.boardTop - bottom - 2 * (WING_PANEL_INSET + inset);
+  return [-1, 1].map((side) =>
+    sweepProfile(
+      roundedRectPath(
+        new Vector3(
+          (side * (d.wingX + d.outerX)) / 2,
+          (bottom + d.boardTop) / 2,
+          d.t.backboardFrontZ - 0.004,
+        ),
+        X,
+        Y,
+        width,
+        height,
+        0.012,
+      ),
+      profile,
+      { up: Z, closed: true },
+    ),
+  );
 }
 
 function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
@@ -387,18 +459,18 @@ function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
   const pieces: BufferGeometry[] = [];
   for (const side of [-1, 1]) {
     pieces.push(
-      ball(new Vector3(side * d.wallX, t.wallHeight + 0.004, t.cabinetFrontZ + 0.002), 0.022),
+      ball(new Vector3(side * d.wallX, t.wallHeight + 0.006, t.cabinetFrontZ - 0.004), 0.0115),
       ball(
-        new Vector3(side * (d.outerX + 0.007), d.trayFloor + 0.01, t.cabinetFrontZ + 0.007),
-        0.011,
+        new Vector3(side * (d.outerX + 0.007), d.trayFloor + 0.008, t.cabinetFrontZ + 0.007),
+        0.0085,
       ),
       rod(
-        new Vector3(side * d.wallX, t.wallHeight + 0.016, d.glassFrontZ),
+        new Vector3(side * d.wallX, t.wallHeight + 0.012, d.glassFrontZ),
         new Vector3(side * d.wallX, d.glassTop, d.glassFrontZ),
-        0.0055,
+        0.0038,
         Z,
       ),
-      ball(new Vector3(side * d.wallX, d.glassTop + 0.005, d.glassFrontZ), 0.0095),
+      ball(new Vector3(side * d.wallX, d.glassTop + 0.004, d.glassFrontZ), 0.0065),
       rod(
         new Vector3(side * (d.fieldX + 0.0035), t.wallHeight, t.backboardFrontZ),
         new Vector3(side * (d.fieldX + 0.0035), t.wallHeight, t.gutterStartZ - 0.004),
@@ -438,6 +510,18 @@ function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
       halfRoundProfile(0.0035 * k, 8),
       { up: Z, closed: true },
     ),
+    ...wingPanelFrames(d, halfRoundProfile(0.0028, 8), 0.022),
+    ...[-1, 1].map((side) =>
+      rod(
+        new Vector3(side * d.outerX, CONSOLE_TOP + CONSOLE_SLAB * 0.5, d.t.cabinetFrontZ + 0.007),
+        new Vector3(
+          side * (d.wingX + 0.008),
+          CONSOLE_TOP + CONSOLE_SLAB * 0.5,
+          d.t.cabinetFrontZ + 0.007,
+        ),
+        0.0042,
+      ),
+    ),
   );
   return pieces;
 }
@@ -468,29 +552,17 @@ function glassPieces(d: Dimensions): BufferGeometry[] {
   ]);
 }
 
-function pusherPieces(d: Dimensions): {
-  lacquer: BufferGeometry[];
-  teak: BufferGeometry[];
-  gold: BufferGeometry[];
-} {
+function pusherPieces(d: Dimensions): { marble: BufferGeometry[]; gold: BufferGeometry[] } {
   const { t, fieldX } = d;
   const front = t.pusherFrontZ;
   const back = front - t.pusherDepth;
   const inset = 0.004;
   return {
-    lacquer: [
+    marble: [
       box(
         new Vector3(-fieldX + inset, 0.0005, back),
-        new Vector3(fieldX - inset, t.pusherHeight - 0.008, front),
-        0.008,
-      ),
-    ],
-    teak: [
-      box(
-        new Vector3(-fieldX + inset, t.pusherHeight - 0.012, back),
-        new Vector3(fieldX - inset, t.pusherHeight, front - 0.004),
-        0.003,
-        2,
+        new Vector3(fieldX - inset, t.pusherHeight, front - 0.003),
+        0.005,
       ),
     ],
     gold: [
@@ -534,7 +606,8 @@ export function createRivieraTable(
 
   const statics = [
     mesh(mergeAll(lacquerPieces(d), 'table/lacquer'), materials.lacquer, 'table-lacquer', shadows),
-    mesh(mergeAll(teakPieces(d), 'table/teak'), materials.teak, 'table-teak', shadows),
+    mesh(mergeAll(floorPieces(d), 'table/floor'), materials.felt, 'table-floor', shadows),
+    mesh(mergeAll(marblePieces(d), 'table/marble'), materials.marble, 'table-marble', shadows),
     mesh(mergeAll(velvetPieces(d), 'table/velvet'), materials.velvet, 'table-velvet', shadows),
     mesh(mergeAll(goldPieces(d), 'table/gold'), materials.gold, 'table-gold', shadows),
     mesh(
@@ -554,8 +627,7 @@ export function createRivieraTable(
 
   const parts = pusherPieces(d);
   const pusherMeshes = [
-    mesh(mergeAll(parts.lacquer, 'pusher/lacquer'), materials.lacquer, 'pusher-lacquer', shadows),
-    mesh(mergeAll(parts.teak, 'pusher/teak'), materials.teak, 'pusher-teak', shadows),
+    mesh(mergeAll(parts.marble, 'pusher/marble'), materials.marble, 'pusher-marble', shadows),
     mesh(mergeAll(parts.gold, 'pusher/gold'), materials.gold, 'pusher-gold', shadows),
   ];
   pusher.add(...pusherMeshes);
@@ -582,7 +654,7 @@ export function createRivieraTable(
 const RIVIERA = dimensions(RIVIERA_TABLE);
 
 export const TABLE_BOUNDS = {
-  halfWidth: RIVIERA.outerX + 0.012,
+  halfWidth: RIVIERA.wingX + 0.012,
   frontZ: RIVIERA_TABLE.cabinetFrontZ + 0.03,
   backZ: RIVIERA.backZ,
   top: RIVIERA.boardTop + CREST_TOP,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   Color,
   DirectionalLight,
+  InstancedMesh,
   Matrix4,
   PerspectiveCamera,
   Quaternion,
@@ -58,9 +59,9 @@ describe('tiers', () => {
 });
 
 describe('CoinField', () => {
-  it('builds one near and one far instanced mesh per tier plus one shadow caster', () => {
+  it('builds one near and one far instanced mesh per tier plus contact occlusion and a shadow caster', () => {
     const coins = field({ capacity: 4 });
-    expect(coins.object.children).toHaveLength(COIN_TIER_IDS.length * 2 + 1);
+    expect(coins.object.children).toHaveLength(COIN_TIER_IDS.length * 2 + 2);
     for (const tier of COIN_TIER_IDS) {
       const near = coins.mesh(tier, 'near');
       const far = coins.mesh(tier, 'far');
@@ -155,13 +156,37 @@ describe('CoinField', () => {
     for (const child of coins.object.children) expect(child.visible).toBe(false);
   });
 
+  it('lays one contact disc flat under each coin, vanishing as the coin stands on its rim', () => {
+    const coins = field({ capacity: 2, radius: 0.5 });
+    const flat = [0, 0, 0, 1];
+    const onRim = [Math.SQRT1_2, 0, 0, Math.SQRT1_2];
+    coins.setTransforms('gold', [1, 0.05, -3, 2, 0.5, -3], [...flat, ...onRim], 2, [1, 2]);
+    coins.update(lookingDownMinusZ(), 720);
+    const contact = coins.object.getObjectByName('coins-contact-occlusion');
+    if (!(contact instanceof InstancedMesh)) throw new Error('no contact occlusion mesh');
+    expect(contact.count).toBe(2);
+    expect(contact.visible).toBe(true);
+    const m = new Matrix4();
+    const position = new Vector3();
+    const scale = new Vector3();
+    contact.getMatrixAt(0, m);
+    m.decompose(position, new Quaternion(), scale);
+    expect(scale.x).toBeCloseTo(0.5, 6);
+    expect(position.x).toBeCloseTo(1, 6);
+    expect(position.y).toBeLessThan(0.05);
+    expect(position.y).toBeGreaterThan(0);
+    contact.getMatrixAt(1, m);
+    m.decompose(position, new Quaternion(), scale);
+    expect(scale.x).toBeCloseTo(0, 6);
+  });
+
   it('partitions coins into near, far and culled with one draw call per populated mesh', () => {
     const coins = field({ capacity: 4, radius: 0.5 });
     const q = [0, 0, 0, 1];
     coins.setTransforms('gold', [0, 0, -3, 0, 0, -400, 0, 0, 10], [...q, ...q, ...q], 3, [1, 2, 3]);
     coins.setTransforms('copper', [0, 0, -400], q, 1, [1]);
     const stats = coins.update(lookingDownMinusZ(), 720);
-    expect(stats).toEqual({ near: 1, far: 2, culled: 1, drawCalls: 3 });
+    expect(stats).toEqual({ near: 1, far: 2, culled: 1, drawCalls: 4 });
     expect(coins.mesh('gold', 'near').count).toBe(1);
     expect(coins.mesh('gold', 'far').count).toBe(1);
     expect(coins.mesh('copper', 'far').visible).toBe(true);
@@ -316,7 +341,7 @@ describe('CoinField', () => {
   it('refuses a shadow light when built without a caster', () => {
     const coins = field({ capacity: 1, castShadow: false });
     expect(coins.shadowCasterMesh).toBeNull();
-    expect(coins.object.children).toHaveLength(COIN_TIER_IDS.length * 2);
+    expect(coins.object.children).toHaveLength(COIN_TIER_IDS.length * 2 + 1);
     expect(() => {
       coins.castShadowsFrom(new DirectionalLight());
     }).toThrow(/castShadow/);

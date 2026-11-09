@@ -32,8 +32,8 @@ export const VFX_COLORS = {
 
 /** Each Cascade tier climbs the palette towards gold, and OBSCENE throws everything. */
 export const CASCADE_COLORS: Readonly<Record<CascadeTier, readonly string[]>> = {
-  chic: [VFX_COLORS.seaGlass, VFX_COLORS.ivory],
-  lavish: [VFX_COLORS.champagne, VFX_COLORS.seaGlass],
+  chic: [VFX_COLORS.champagne, VFX_COLORS.ivory],
+  lavish: [VFX_COLORS.champagne, VFX_COLORS.gold],
   opulent: [VFX_COLORS.gold, VFX_COLORS.champagne],
   decadent: [VFX_COLORS.coral, VFX_COLORS.gold],
   obscene: [VFX_COLORS.gold, VFX_COLORS.coral, VFX_COLORS.champagne, VFX_COLORS.seaGlass],

@@ -1,6 +1,7 @@
-import { uniform } from 'three/tsl';
+import { float, pow, smoothstep, uniform, uv, vec3 } from 'three/tsl';
 import {
   BufferGeometry,
+  CircleGeometry,
   Frustum,
   Group,
   InstancedBufferAttribute,
@@ -41,6 +42,75 @@ export interface CoinFieldOptions {
  * `CoinField.castShadowsFrom`.
  */
 export const COIN_SHADOW_LAYER = 30;
+
+/** Reach of a coin's contact occlusion, in coin radii, and its darkest opacity at the rim. */
+const CONTACT_REACH = 1.55;
+const CONTACT_OPACITY = 0.62;
+/** Lifts the contact disc off whatever the coin rests on, metres per unit radius. */
+const CONTACT_LIFT = 0.02;
+
+/**
+ * A soft dark ring under every coin, one draw call for the whole field: it grounds coins on
+ * the felt and darkens the seam between stacked coins, which the shadow map is too coarse to
+ * resolve (and which the low tier draws without coin shadows at all).
+ */
+function createContactOcclusion(capacity: number): InstancedMesh {
+  const geometry = new CircleGeometry(CONTACT_REACH, 28);
+  geometry.rotateX(-Math.PI / 2);
+  const material = new MeshBasicNodeMaterial({
+    name: 'coins/contact-occlusion',
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const r = uv()
+    .sub(0.5)
+    .length()
+    .mul(2 * CONTACT_REACH);
+  material.colorNode = vec3(0, 0, 0);
+  material.opacityNode = pow(float(1).sub(smoothstep(0.92, CONTACT_REACH, r)), 1.6).mul(
+    CONTACT_OPACITY,
+  );
+  const mesh = new InstancedMesh(geometry, material, Math.max(capacity, 1));
+  mesh.name = 'coins-contact-occlusion';
+  mesh.count = 0;
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  mesh.renderOrder = 1;
+  return mesh;
+}
+
+/**
+ * Lays a coin's contact disc flat under its lower face. The disc shrinks with the coin's tilt
+ * so a coin standing on its rim leaves no dark pancake hanging beside it.
+ */
+function writeContact(
+  target: Float32Array,
+  slot: number,
+  positions: Float32Array,
+  quaternions: Float32Array,
+  index: number,
+  radius: number,
+  halfThickness: number,
+): void {
+  const x = quaternions[index * 4] ?? 0;
+  const z = quaternions[index * 4 + 2] ?? 0;
+  const upY = Math.abs(1 - 2 * (x * x + z * z));
+  const scale = radius * upY * upY;
+  const o = slot * 16;
+  target.fill(0, o, o + 16);
+  target[o] = scale;
+  target[o + 5] = scale;
+  target[o + 10] = scale;
+  target[o + 12] = positions[index * 3] ?? 0;
+  target[o + 13] = (positions[index * 3 + 1] ?? 0) - radius * (halfThickness * upY - CONTACT_LIFT);
+  target[o + 14] = positions[index * 3 + 2] ?? 0;
+  target[o + 15] = 1;
+}
 
 export interface CoinFieldStats {
   readonly near: number;
@@ -154,6 +224,7 @@ export class CoinField {
   private readonly motion = uniform(1);
   private readonly frustum = new Frustum();
   private readonly shadowCaster: InstancedMesh | null;
+  private readonly contact: InstancedMesh;
   private shadowsEnabled = false;
   private readonly carriedLod = new Map<number, number>();
   private readonly incomingIds = new Set<number>();
@@ -224,6 +295,9 @@ export class CoinField {
       });
       totalSlots += slots;
     }
+
+    this.contact = createContactOcclusion(totalSlots);
+    this.object.add(this.contact);
 
     this.shadowCaster = null;
     if (options.castShadow ?? true) {
@@ -409,6 +483,7 @@ export class CoinField {
       drawCalls += (batch.lists.nearCount > 0 ? 1 : 0) + (batch.lists.farCount > 0 ? 1 : 0);
     }
     if (this.shadowCaster && this.shadowsEnabled) this.uploadShadowCaster(this.shadowCaster);
+    if (this.uploadContact() > 0) drawCalls += 1;
     const stats = this.lastStats;
     stats.near = near;
     stats.far = far;
@@ -430,6 +505,9 @@ export class CoinField {
   }
 
   dispose(): void {
+    this.contact.geometry.dispose();
+    (this.contact.material as MeshBasicNodeMaterial).dispose();
+    this.contact.dispose();
     if (this.shadowCaster) {
       this.shadowCaster.geometry.dispose();
       (this.shadowCaster.material as MeshBasicNodeMaterial).dispose();
@@ -482,6 +560,35 @@ export class CoinField {
     caster.instanceMatrix.clearUpdateRanges();
     caster.instanceMatrix.addUpdateRange(0, written * 16);
     caster.instanceMatrix.needsUpdate = true;
+  }
+
+  private uploadContact(): number {
+    const contact = this.contact;
+    const matrices = contact.instanceMatrix.array as Float32Array;
+    const halfThickness = FAR_COIN_GEOMETRY.halfThickness;
+    let written = 0;
+    for (const batch of this.batches.values()) {
+      for (let i = 0; i < batch.count; i += 1) {
+        writeContact(
+          matrices,
+          written,
+          batch.positions,
+          batch.quaternions,
+          i,
+          this.radius,
+          halfThickness,
+        );
+        written += 1;
+      }
+    }
+    contact.count = written;
+    contact.visible = written > 0;
+    if (written > 0) {
+      contact.instanceMatrix.clearUpdateRanges();
+      contact.instanceMatrix.addUpdateRange(0, written * 16);
+      contact.instanceMatrix.needsUpdate = true;
+    }
+    return written;
   }
 
   private batch(tier: CoinTierId): TierBatch {
