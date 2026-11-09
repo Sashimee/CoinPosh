@@ -75,6 +75,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-264 | done | task/P-264 (merge 2f4a90c) | Cascade rank card fits its rank name and stays clear of the flute: railLayout box helpers, comboLadder/meterRail fit the longest EN/FR/DE rank names inside the card, with box tests at 390x844 and 360x780 (4326ffa); pnpm check green after merge |
 | P-288 | done | task/P-288 (merge 815cfac) | Vault Crate arrival hint clears the Vault balance on phones: hint placed past the payout lip, clear of hud-balance and side rails, at most two lines in EN/FR/DE at 390x844 and 360x780, spring-in with reduced-motion fade (c601033); pnpm check green after merge |
 | P-231 | done | task/P-231 (merge 7d07031) | Do not gate playable on the environment bake (rework after review): boot on an inlined HDRI fallback and crossfade the baked HDRI in later, HDRI handoff held off the boot path and aborted on dispose (5e618e7); pnpm check green after merge; follow-ups P-292, P-293 |
+| P-284 | blocked(review: heldVenue.ts/heldVenue.test.ts outside owns; initial bundle +145 B gzip vs base 8d43b5b (measureBoot spans, head-start race); commit body profile describes e921bcf, not b6b976b) | task/P-284 (b6b976b, not merged) | Fix: inline holdBackVenue into main.ts or have the lead extend owns to apps/web/src/heldVenue*.ts (keep the test); get initial JS at or below 8d43b5b (drop measureBoot calls or lazy-load boot instrumentation); re-measure and restate the profile in the final commit body; reviewer idle-host firstDrop p50 1924 / p90 2058 / max 2546 ms vs base p50 2600; follow-ups P-294..P-298 |
+| P-286 | blocked(review: alone fails pnpm check lint on apps/web/e2e/*.ts without T-1.17's apps/web/package.json devDependencies; boot.perf 4841 ms and frames.perf p95 850 ms red under load, budgets correctly unchanged) | task/P-286 (fc51ecc, not merged) | Fix: integrate together with T-1.17's apps/web/package.json (@playwright/test 1.64.1, @types/node 24.19.2, e2e/perf/bundle:check scripts, typecheck -p e2e, keep test:perf) and pnpm-lock.yaml, merging only P-286's copies of apps/web/e2e; re-gate on an idle runner after P-284 lands; follow-ups P-298..P-303 |
 | T-92.04 | todo | | Waits on T-92.01, T-92.02, T-92.03 (#92) |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
@@ -95,7 +97,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
 | T-10.01 | done | task/T-10.01 (merge 75e63f3) | Account link contracts: packages/shared/src/api/account.ts, accountEndpoints in endpoints.ts, new error codes (e91c834); wiring into `endpoints`, fixtures and Demo mock queued as P-281 for T-10.03; pnpm check green after merge |
-| T-10.02 | todo | | Waits on T-10.01. Server: verify ID tokens, link, sign in on a new device |
+| T-10.02 | blocked(review: commit 68f7c5f appends P-292..P-294 to docs/plan/POLISH.md, outside owns; the integrator queues out-of-scope requests) | task/T-10.02 (68f7c5f, not merged) | Fix: drop the POLISH.md hunk so the diff against task/T-92.02 no longer touches docs/plan/POLISH.md and report the items in the implementer summary; code needs no change; follow-ups P-304..P-306 |
 | T-10.03 | todo | | Waits on T-10.01, T-92.05. Net layer + Demo mock for account link |
 | T-10.04 | todo | | Waits on T-10.03. Account UI: link, sign in, progress choice |
 | H-10.01 | todo | | Human step: Google Cloud OAuth web client (origins `https://sashimee.github.io`, `https://devcoinposh.bas.lu`, localhost) → Worker secret `GOOGLE_CLIENT_ID`, repo variable `VITE_GOOGLE_CLIENT_ID` |
@@ -292,3 +294,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 16 · 2026-11-09 · P-215 P-253 P-254 P-257 · merged P-253 (44e5e70), P-254 (b55f64f), P-257 (d5b674d), P-215 (237e6ea); 0 rejected
 - wave 17 · 2026-11-09 · T-92.01 T-92.02 P-180 · merged T-92.01 (7e2058c), P-180 (a42fc7b); 1 rejected (T-92.02)
 - wave 18 · 2026-11-09 · T-92.02 T-92.03 T-10.01 P-231 P-264 · merged T-10.01 (75e63f3), T-92.03 (0f3b434), P-264 (2f4a90c); 2 rejected (T-92.02, P-231)
+- wave 19 · 2026-11-09 · P-284 P-231 P-286 T-10.02 P-288 · merged P-288 (815cfac), P-231 (7d07031); 3 rejected (P-284, P-286, T-10.02)
