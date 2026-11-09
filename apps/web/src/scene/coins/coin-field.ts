@@ -1,4 +1,4 @@
-import { float, pow, smoothstep, uniform, uv, vec3 } from 'three/tsl';
+import { attribute, float, pow, smoothstep, uniform, uv, vec3 } from 'three/tsl';
 import {
   BufferGeometry,
   CircleGeometry,
@@ -48,6 +48,17 @@ const CONTACT_REACH = 1.55;
 const CONTACT_OPACITY = 0.62;
 /** Lifts the contact disc off whatever the coin rests on, metres per unit radius. */
 const CONTACT_LIFT = 0.02;
+/**
+ * Vertical travel between two transform updates, in coin radii, over which a coin goes from
+ * resting to airborne. Settled coins jitter far below the floor; a coin a few frames into a
+ * fall already moves several times the ceiling.
+ */
+const AIRBORNE_FLOOR = 0.04;
+const AIRBORNE_CEILING = 0.15;
+/** How much airborne-ness survives each update, so a landed coin's disc eases back in. */
+const AIRBORNE_DECAY = 0.82;
+const AIRBORNE_SNAP = 0.01;
+const CONTACT_HIDDEN = 0.99;
 
 /**
  * A soft dark ring under every coin, one draw call for the whole field: it grounds coins on
@@ -55,8 +66,13 @@ const CONTACT_LIFT = 0.02;
  * resolve (and which the low tier draws without coin shadows at all).
  */
 function createContactOcclusion(capacity: number): InstancedMesh {
+  const slots = Math.max(capacity, 1);
   const geometry = new CircleGeometry(CONTACT_REACH, 28);
   geometry.rotateX(-Math.PI / 2);
+  geometry.setAttribute(
+    'contactStrength',
+    new InstancedBufferAttribute(new Float32Array(slots), 1),
+  );
   const material = new MeshBasicNodeMaterial({
     name: 'coins/contact-occlusion',
     transparent: true,
@@ -70,10 +86,10 @@ function createContactOcclusion(capacity: number): InstancedMesh {
     .length()
     .mul(2 * CONTACT_REACH);
   material.colorNode = vec3(0, 0, 0);
-  material.opacityNode = pow(float(1).sub(smoothstep(0.92, CONTACT_REACH, r)), 1.6).mul(
-    CONTACT_OPACITY,
-  );
-  const mesh = new InstancedMesh(geometry, material, Math.max(capacity, 1));
+  material.opacityNode = pow(float(1).sub(smoothstep(0.92, CONTACT_REACH, r)), 1.6)
+    .mul(CONTACT_OPACITY)
+    .mul(attribute('contactStrength', 'float'));
+  const mesh = new InstancedMesh(geometry, material, slots);
   mesh.name = 'coins-contact-occlusion';
   mesh.count = 0;
   mesh.visible = false;
@@ -86,7 +102,8 @@ function createContactOcclusion(capacity: number): InstancedMesh {
 
 /**
  * Lays a coin's contact disc flat under its lower face. The disc shrinks with the coin's tilt
- * so a coin standing on its rim leaves no dark pancake hanging beside it.
+ * so a coin standing on its rim leaves no dark pancake hanging beside it, and shrinks further
+ * while the coin is airborne (`air` 0..1), as its opacity fades with it.
  */
 function writeContact(
   target: Float32Array,
@@ -96,11 +113,12 @@ function writeContact(
   index: number,
   radius: number,
   halfThickness: number,
+  air: number,
 ): void {
   const x = quaternions[index * 4] ?? 0;
   const z = quaternions[index * 4 + 2] ?? 0;
   const upY = Math.abs(1 - 2 * (x * x + z * z));
-  const scale = radius * upY * upY;
+  const scale = radius * upY * upY * (1 - 0.5 * air);
   const o = slot * 16;
   target.fill(0, o, o + 16);
   target[o] = scale;
@@ -126,6 +144,7 @@ interface TierBatch {
   readonly quaternions: Float32Array;
   readonly ids: Float64Array;
   readonly lodState: Uint8Array;
+  readonly air: Float32Array;
   readonly seeds: Float32Array;
   readonly lists: LodOutput;
   readonly near: InstancedMesh;
@@ -143,6 +162,12 @@ const MAX_EMBOSS_RESOLUTION = 4096;
 const projection = new Matrix4();
 const worldToLocal = new Matrix4();
 const cameraLocal = new Vector3();
+
+function airborneFromTravel(travel: number, radius: number): number {
+  const t = (travel / radius - AIRBORNE_FLOOR) / (AIRBORNE_CEILING - AIRBORNE_FLOOR);
+  const c = t <= 0 ? 0 : t >= 1 ? 1 : t;
+  return c * c * (3 - 2 * c);
+}
 
 function instancedGeometry(base: BufferGeometry, capacity: number): BufferGeometry {
   const geometry = new BufferGeometry();
@@ -226,7 +251,12 @@ export class CoinField {
   private readonly shadowCaster: InstancedMesh | null;
   private readonly contact: InstancedMesh;
   private shadowsEnabled = false;
+  private contactDirty = true;
+  private populated = false;
+  private readonly lastContactView = new Matrix4();
   private readonly carriedLod = new Map<number, number>();
+  private readonly carriedY = new Map<number, number>();
+  private readonly carriedAir = new Map<number, number>();
   private readonly incomingIds = new Set<number>();
   private readonly view: MutableLodView = {
     cameraX: 0,
@@ -280,6 +310,7 @@ export class CoinField {
         quaternions: new Float32Array(slots * 4).map((_, i) => (i % 4 === 3 ? 1 : 0)),
         ids: new Float64Array(slots),
         lodState: new Uint8Array(slots).fill(CoinLod.unset),
+        air: new Float32Array(slots),
         seeds: new Float32Array(slots).map((_, i) => i),
         lists: {
           near: new Uint32Array(slots),
@@ -363,19 +394,48 @@ export class CoinField {
     incoming.clear();
 
     const carried = this.carriedLod;
+    const carriedY = this.carriedY;
+    const carriedAir = this.carriedAir;
     for (let i = 0; i < batch.count; i += 1) {
-      carried.set(batch.ids[i] ?? 0, batch.lodState[i] ?? CoinLod.unset);
+      const id = batch.ids[i] ?? 0;
+      carried.set(id, batch.lodState[i] ?? CoinLod.unset);
+      carriedY.set(id, batch.positions[i * 3 + 1] ?? 0);
+      carriedAir.set(id, batch.air[i] ?? 0);
     }
+    let changed = count !== batch.count;
     for (let i = 0; i < count; i += 1) {
       const id = ids[i] ?? 0;
+      if (batch.ids[i] !== id) changed = true;
       batch.ids[i] = id;
       batch.lodState[i] = carried.get(id) ?? CoinLod.unset;
       batch.seeds[i] = ((id % SEED_RANGE) + SEED_RANGE) % SEED_RANGE;
+      const lastY = carriedY.get(id);
+      const lastAir = carriedAir.get(id);
+      // A coin that shows up after the first drawn frame was dropped in, so it starts airborne.
+      let air = this.populated ? 1 : 0;
+      if (lastY !== undefined && lastAir !== undefined) {
+        const travel = Math.abs((positions[i * 3 + 1] ?? 0) - lastY);
+        air = Math.max(airborneFromTravel(travel, this.radius), lastAir * AIRBORNE_DECAY);
+        if (air < AIRBORNE_SNAP) air = 0;
+      }
+      if (air > 0 || (lastAir ?? 0) > 0) changed = true;
+      batch.air[i] = air;
     }
     carried.clear();
-    for (let i = 0; i < count * 3; i += 1) batch.positions[i] = positions[i] ?? 0;
-    for (let i = 0; i < count * 4; i += 1) batch.quaternions[i] = quaternions[i] ?? 0;
+    carriedY.clear();
+    carriedAir.clear();
+    for (let i = 0; i < count * 3; i += 1) {
+      const value = positions[i] ?? 0;
+      if (batch.positions[i] !== value) changed = true;
+      batch.positions[i] = value;
+    }
+    for (let i = 0; i < count * 4; i += 1) {
+      const value = quaternions[i] ?? 0;
+      if (batch.quaternions[i] !== value) changed = true;
+      batch.quaternions[i] = value;
+    }
     batch.count = count;
+    if (changed) this.contactDirty = true;
   }
 
   /** The id of the coin in `slot` from the last `setTransforms`, or undefined past the count. */
@@ -483,7 +543,13 @@ export class CoinField {
       drawCalls += (batch.lists.nearCount > 0 ? 1 : 0) + (batch.lists.farCount > 0 ? 1 : 0);
     }
     if (this.shadowCaster && this.shadowsEnabled) this.uploadShadowCaster(this.shadowCaster);
-    if (this.uploadContact() > 0) drawCalls += 1;
+    if (!this.lastContactView.equals(projection)) {
+      this.lastContactView.copy(projection);
+      this.contactDirty = true;
+    }
+    if (this.contactDirty) this.uploadContact();
+    if (this.contact.count > 0) drawCalls += 1;
+    if (total > 0) this.populated = true;
     const stats = this.lastStats;
     stats.near = near;
     stats.far = far;
@@ -502,6 +568,10 @@ export class CoinField {
 
   get shadowCasterMesh(): InstancedMesh | null {
     return this.shadowCaster;
+  }
+
+  get contactMesh(): InstancedMesh {
+    return this.contact;
   }
 
   dispose(): void {
@@ -562,33 +632,49 @@ export class CoinField {
     caster.instanceMatrix.needsUpdate = true;
   }
 
-  private uploadContact(): number {
+  /** Writes a disc for every coin the camera can see that is not mid-air. */
+  private uploadContact(): void {
+    this.contactDirty = false;
     const contact = this.contact;
     const matrices = contact.instanceMatrix.array as Float32Array;
+    const strength = contact.geometry.getAttribute('contactStrength') as InstancedBufferAttribute;
+    const strengths = strength.array as Float32Array;
     const halfThickness = FAR_COIN_GEOMETRY.halfThickness;
     let written = 0;
     for (const batch of this.batches.values()) {
-      for (let i = 0; i < batch.count; i += 1) {
-        writeContact(
-          matrices,
-          written,
-          batch.positions,
-          batch.quaternions,
-          i,
-          this.radius,
-          halfThickness,
-        );
-        written += 1;
+      const { lists } = batch;
+      for (const [slots, count] of [
+        [lists.near, lists.nearCount],
+        [lists.far, lists.farCount],
+      ] as const) {
+        for (let k = 0; k < count; k += 1) {
+          const index = slots[k] ?? 0;
+          const air = batch.air[index] ?? 0;
+          if (air >= CONTACT_HIDDEN) continue;
+          writeContact(
+            matrices,
+            written,
+            batch.positions,
+            batch.quaternions,
+            index,
+            this.radius,
+            halfThickness,
+            air,
+          );
+          strengths[written] = 1 - air;
+          written += 1;
+        }
       }
     }
     contact.count = written;
     contact.visible = written > 0;
-    if (written > 0) {
-      contact.instanceMatrix.clearUpdateRanges();
-      contact.instanceMatrix.addUpdateRange(0, written * 16);
-      contact.instanceMatrix.needsUpdate = true;
-    }
-    return written;
+    if (written === 0) return;
+    contact.instanceMatrix.clearUpdateRanges();
+    contact.instanceMatrix.addUpdateRange(0, written * 16);
+    contact.instanceMatrix.needsUpdate = true;
+    strength.clearUpdateRanges();
+    strength.addUpdateRange(0, written);
+    strength.needsUpdate = true;
   }
 
   private batch(tier: CoinTierId): TierBatch {

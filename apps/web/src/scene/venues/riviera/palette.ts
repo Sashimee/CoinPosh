@@ -21,7 +21,7 @@ export const rivieraTones = {
   holly: '#CDB88E',
   caulk: '#16130F',
   velvet: '#0A1730',
-  felt: '#0B1A33',
+  felt: '#0A1B42',
   feltSheen: '#26406A',
   marble: '#0A0A0D',
   marbleVein: '#C9A86A',
