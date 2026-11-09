@@ -2,7 +2,9 @@ import {
   cascade,
   rateEnvelope,
   rateEnvelopeDerivation,
+  rateEnvelopeFor,
   upgradeLines,
+  type VenueId,
   upgradeStat,
 } from '@coinposh/economy';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
@@ -33,6 +35,19 @@ export const POUR_STREAM_TICKS = Math.max(
   MIN_TICKS_BETWEEN_DROPS,
   ticksFor(rateEnvelope.drops.windowMs / rateEnvelope.drops.max),
 );
+
+/**
+ * Sim ticks between two coins of a pour, fractional: the base cadence sped up by as much as the
+ * drop envelope the server enforces for these levels, so every dropRate level pours faster and
+ * keeps the base cadence's headroom under the cap. The server's tap cooldown is the floor.
+ */
+export function pourStreamTicks(levels: Readonly<Record<string, number>>, venue: VenueId): number {
+  const { drops } = rateEnvelopeFor({ levels, venue, charms: 0, albumBonus: 0 });
+  return Math.max(
+    MIN_TICKS_BETWEEN_DROPS,
+    (POUR_STREAM_TICKS * rateEnvelope.drops.max) / drops.max,
+  );
+}
 
 /** The beat marker sits at the economy's mean pour length, the pour the envelope assumes. */
 export const POUR_TARGET_MS = rateEnvelopeDerivation.meanPourSeconds * 1000;

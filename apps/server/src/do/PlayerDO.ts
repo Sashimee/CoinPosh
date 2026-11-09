@@ -1,11 +1,21 @@
 import {
+  cascade,
+  cascadeCreditMicros,
+  cascadeTierFor,
+  cascadeWindowTicks,
   coinTiers,
-  crateSpawn,
+  creditMintMicros,
+  dropBufferTarget,
+  dropSpawnsCrate,
+  extendCascade,
   fusion,
   fusionValue,
   openingHeap,
+  repriceReserved,
   upgradeLines,
   upgradeStat,
+  type CascadeChain,
+  type UpgradeLevelMap,
 } from '@coinposh/economy';
 import {
   DEFAULT_FEATURE_FLAGS,
@@ -17,6 +27,7 @@ import {
   type ClaimsRequest,
   type ClaimsResponse,
   type CoinId,
+  type CoinTier,
   type DropRequest,
   type DropResponse,
   type EpochMs,
@@ -27,6 +38,7 @@ import {
   type StateResponse,
   type TableCrate,
   type TableSnapshot,
+  type Tick,
   type UpgradeBuyRequest,
   type UpgradeBuyResponse,
 } from '@coinposh/shared';
@@ -37,9 +49,10 @@ import { ApiFailure } from '../http/errors.ts';
 import {
   Entities,
   HOME_VENUE,
-  mintedValue,
+  mintedMicros,
   publicCoin,
   publicCrate,
+  storedMicros,
   tierDef,
   type StoredCoin,
 } from './entities.ts';
@@ -61,9 +74,10 @@ import {
 import { migrate } from './schema.ts';
 
 /**
- * Coin IDs reserved ahead so play survives short network drops. The wallet pays for each
- * one as it is reserved, as the snapshot contract promises, so an offline drop spends
- * coins the player really had when it was made.
+ * Coin IDs reserved ahead so play survives short network drops, at dropRate level 0 (the
+ * dropRate upgrade grows it, see dropBufferTarget). The wallet pays for each one as it is
+ * reserved, as the snapshot contract promises, so an offline drop spends coins the player
+ * really had when it was made.
  */
 export const PREMINT_BUFFER_TARGET = 16;
 export const FLUSH_INTERVAL_MS = 30_000;
@@ -112,7 +126,15 @@ type MetaKey =
   | 'fair_server_seed_hash'
   | 'fair_client_seed'
   | 'fair_nonce'
-  | 'heap_seeded';
+  | 'heap_seeded'
+  | 'mint_carry'
+  | 'cascade_last_tick'
+  | 'cascade_count'
+  | 'cascade_carry';
+
+/** The client sim's fixed step (packages/sim TICK_RATE_HZ, the 60 Hz of the shared `Tick`). */
+const SIM_TICKS_PER_SECOND = 60;
+const CASCADE_WINDOW_TICKS = cascadeWindowTicks(SIM_TICKS_PER_SECOND);
 
 function startingCoins(): number {
   const line = upgradeLines.find((candidate) => candidate.effect.stat === 'startingCoins');
@@ -149,6 +171,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.setMeta('fair_server_seed_hash', serverSeedHash);
       this.setMeta('fair_client_seed', randomBase62(16));
       this.setMeta('fair_nonce', '0');
+      this.setMeta('mint_carry', '0');
+      this.setMeta('cascade_carry', '0');
       openWallet(this.sql);
       commit(
         this.sql,
@@ -163,7 +187,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
 
   /**
    * The player's snapshot. A boot one (`hydrate=boot`) is what a freshly loaded client lays its table from,
-   * so it first refunds the coins that client cannot lay again (see refundStranded). Every
+   * so it first refunds the coins that client cannot lay again (see refundStranded) and ends the
+   * cascade chain, since that client's ticks start over. Every
    * one lays the opening heap for a player who never had one and settles the buffer against
    * the wallet.
    */
@@ -173,7 +198,10 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const now = Date.now();
     const committed = this.ctx.storage.transactionSync(() => {
       const before = this.latestSeq();
-      if (query.hydrate === 'boot') this.refundStranded(now);
+      if (query.hydrate === 'boot') {
+        this.refundStranded(now);
+        this.clearCascadeChain();
+      }
       this.seedOpeningHeap(now);
       this.reserveBuffer({ at: now, idempotencyKey: null });
       return this.latestSeq() !== before;
@@ -187,7 +215,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       ...Object.fromEntries(
         upgradeLines.filter((line) => line.scope === 'venue').map((line) => [line.id, 0]),
       ),
-      ...readUpgradeLevels(this.sql, HOME_VENUE.id),
+      ...this.levels(),
     };
     const state = {
       serverTime: now,
@@ -225,20 +253,23 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     });
   }
 
-  /** Prices the next level from economy config; the wallet pays the house for it. */
+  /**
+   * Prices the next level from economy config; the wallet pays the house for it. The level
+   * applies from the next action: reserved coins are re-minted at the new coin value, the
+   * buffer is topped up to its new size so the returned wallet is final, and the next drop
+   * spaces crates by the new levels.
+   */
   async buyUpgrade(command: Command<UpgradeBuyRequest>): Promise<DoResult<UpgradeBuyResponse>> {
     return this.mutate(command, (now) => {
-      const quote = quoteUpgrade(
-        readUpgradeLevels(this.sql, HOME_VENUE.id),
-        readWallet(this.sql),
-        command.body,
-      );
+      const quote = quoteUpgrade(this.levels(), readWallet(this.sql), command.body);
       recordUpgrade(this.sql, quote);
+      this.repriceBuffer();
       commit(
         this.sql,
         new LedgerTx(UPGRADE_TX_KIND).move('wallet', 'house', quote.currency, quote.cost, null),
         { at: now, idempotencyKey: command.idempotencyKey },
       );
+      this.reserveBuffer({ at: now, idempotencyKey: command.idempotencyKey });
       return {
         venueId: quote.venueId,
         lineId: command.body.lineId,
@@ -411,6 +442,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
 
   private applyDrop(body: DropRequest, idempotencyKey: string, now: EpochMs): DropResponse {
     const context = { at: now, idempotencyKey };
+    const levels = this.levels();
     const cost = tierDef(DROP_TIER).value;
     const reserved = body.coinId === undefined ? null : this.bufferedCoin(body.coinId);
     const prepaid = reserved?.paid ?? 0;
@@ -427,7 +459,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.entities.placeOnTable(reserved.id, body.tick);
       coin = { ...reserved, state: 'table', droppedTick: body.tick };
     } else {
-      coin = this.entities.mintCoin(DROP_TIER, mintedValue(DROP_TIER), 'table', body.tick, now);
+      coin = this.mintFromCarry(DROP_TIER, levels, 'table', body.tick, now);
     }
     commit(
       this.sql,
@@ -441,7 +473,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const dropCount = Number(this.requireMeta('drop_count')) + 1;
     this.setMeta('drop_count', String(dropCount));
     const spawnedCrates: TableCrate[] = [];
-    if (dropCount === crateSpawn.ftueScriptedDrop || dropCount % crateSpawn.dropsPerCrate === 0) {
+    if (dropSpawnsCrate(dropCount, levels)) {
       const crate = this.entities.spawnCrate('vault', body.tick, now);
       commit(this.sql, new LedgerTx('crate.spawn').move('mint', 'table', 'crate', 1, crate.id), {
         at: now,
@@ -476,20 +508,36 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       case 'fall': {
         const coin = this.entities.coinOnTable(claim.coinId, claim.tick);
         if (typeof coin === 'string') return { status: 'rejected', reason: coin };
-        const paid = claim.edge === 'front';
-        this.entities.settleCoin(coin.id, paid ? 'claimed' : 'lost', now);
+        if (claim.edge !== 'front') {
+          this.entities.settleCoin(coin.id, 'lost', now);
+          commit(
+            this.sql,
+            new LedgerTx('claim.fall').move('table', 'house', 'coins', coin.value, coin.id),
+            context,
+          );
+          return { status: 'accepted', credited: 0, cascade: null, minted: null };
+        }
+        const chain = extendCascade(this.cascadeChain(), claim.tick, CASCADE_WINDOW_TICKS);
+        this.setCascadeChain(chain);
+        const credit = creditMintMicros(
+          cascadeCreditMicros(coin.value, chain.count),
+          Number(this.requireMeta('cascade_carry')),
+        );
+        this.setMeta('cascade_carry', String(credit.carry));
+        this.entities.settleCoin(coin.id, 'claimed', now);
         commit(
           this.sql,
-          new LedgerTx('claim.fall').move(
-            'table',
-            paid ? 'wallet' : 'house',
-            'coins',
-            coin.value,
-            coin.id,
-          ),
+          new LedgerTx('claim.fall')
+            .move('table', 'wallet', 'coins', coin.value, coin.id)
+            .move('mint', 'wallet', 'coins', credit.value - coin.value, coin.id),
           context,
         );
-        return { status: 'accepted', credited: paid ? coin.value : 0, cascade: null, minted: null };
+        return {
+          status: 'accepted',
+          credited: credit.value,
+          cascade: cascadeTierFor(chain.count, cascade)?.id ?? null,
+          minted: null,
+        };
       }
       case 'fusion': {
         const inputs: StoredCoin[] = [];
@@ -510,7 +558,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
             fusion,
           ),
         );
-        const fused = this.entities.mintCoin(next, value, 'table', claim.tick, now);
+        const fused = this.entities.mintCoin(next, value, null, 'table', claim.tick, now);
         const tx = new LedgerTx('claim.fusion');
         let inputValue = 0;
         for (const coin of inputs) {
@@ -549,24 +597,74 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
    * before buffers were prepaid is paid for too, or let go when the wallet cannot cover it.
    */
   private reserveBuffer(context: CommitContext): void {
+    const levels = this.levels();
     const cost = tierDef(DROP_TIER).value;
+    const target = dropBufferTarget(PREMINT_BUFFER_TARGET, levels);
     const canPay = () => readWallet(this.sql).coins >= cost;
     for (const coin of this.entities.coinsIn('buffer')) {
       if (coin.paid > 0) continue;
       if (canPay()) this.prepay(coin.id, cost, context);
       else this.entities.discardUnpaid(coin.id);
     }
-    for (let held = this.entities.countCoinsIn('buffer'); held < PREMINT_BUFFER_TARGET; held++) {
+    for (let held = this.entities.countCoinsIn('buffer'); held < target; held++) {
       if (!canPay()) break;
-      const coin = this.entities.mintCoin(
-        DROP_TIER,
-        mintedValue(DROP_TIER),
-        'buffer',
-        null,
-        context.at,
-      );
+      const coin = this.mintFromCarry(DROP_TIER, levels, 'buffer', null, context.at);
       this.prepay(coin.id, cost, context);
     }
+  }
+
+  /** Mints a coin worth its share of the multiplier: the fraction a floor drops is carried on. */
+  private mintFromCarry(
+    tier: CoinTier,
+    levels: UpgradeLevelMap,
+    state: 'buffer' | 'table',
+    droppedTick: Tick | null,
+    at: EpochMs,
+  ): StoredCoin {
+    const micros = mintedMicros(tier, levels);
+    const credit = creditMintMicros(micros, this.mintCarry());
+    this.setMeta('mint_carry', String(credit.carry));
+    return this.entities.mintCoin(tier, credit.value, micros, state, droppedTick, at);
+  }
+
+  /**
+   * Re-mints the reserved drop coins at the current levels, crediting each only the raise
+   * through the carry, so the coins already minted are not counted twice.
+   */
+  private repriceBuffer(): void {
+    const reserved = this.entities.coinsIn('buffer').filter((coin) => coin.tier === DROP_TIER);
+    const repriced = repriceReserved(
+      reserved.map((coin) => ({ value: coin.value, micros: storedMicros(coin) })),
+      mintedMicros(DROP_TIER, this.levels()),
+      this.mintCarry(),
+    );
+    reserved.forEach((coin, i) => {
+      const next = repriced.reserved[i];
+      if (next === undefined) throw new Error('repriceReserved returned fewer coins than it got.');
+      this.entities.repriceBuffered(coin.id, next.value, next.micros);
+    });
+    this.setMeta('mint_carry', String(repriced.carry));
+  }
+
+  private cascadeChain(): CascadeChain | null {
+    const lastTick = this.meta('cascade_last_tick');
+    const count = this.meta('cascade_count');
+    if (lastTick === null || count === null) return null;
+    return { lastTick: Number(lastTick), count: Number(count) };
+  }
+
+  /** A booting client's sim restarts its ticks, so no fall after a boot may join a chain from before. */
+  private clearCascadeChain(): void {
+    this.sql.exec("DELETE FROM meta WHERE key IN ('cascade_last_tick', 'cascade_count')");
+  }
+
+  private setCascadeChain(chain: CascadeChain): void {
+    this.setMeta('cascade_last_tick', String(chain.lastTick));
+    this.setMeta('cascade_count', String(chain.count));
+  }
+
+  private mintCarry(): number {
+    return Number(this.requireMeta('mint_carry'));
   }
 
   private prepay(id: CoinId, cost: number, context: CommitContext): void {
@@ -639,14 +737,18 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   private seedOpeningHeap(now: EpochMs): void {
     if (this.meta('heap_seeded') === '1') return;
     if (this.entities.countCoinsIn('table') > 0) return;
-    const value = mintedValue(openingHeap.tier);
+    const levels = this.levels();
     const tx = new LedgerTx('grant.heap');
     for (let i = 0; i < openingHeap.coins; i++) {
-      const coin = this.entities.mintCoin(openingHeap.tier, value, 'table', 0, now);
-      tx.move('house', 'table', 'coins', value, coin.id);
+      const coin = this.mintFromCarry(openingHeap.tier, levels, 'table', 0, now);
+      tx.move('house', 'table', 'coins', coin.value, coin.id);
     }
     commit(this.sql, tx, { at: now, idempotencyKey: null });
     this.setMeta('heap_seeded', '1');
+  }
+
+  private levels(): UpgradeLevelMap {
+    return readUpgradeLevels(this.sql, HOME_VENUE.id);
   }
 
   private latestSeq(): number | null {

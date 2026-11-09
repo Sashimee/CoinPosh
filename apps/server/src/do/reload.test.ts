@@ -134,7 +134,7 @@ describe('a page reload with coins on the table', () => {
     const before = await vaultCoins(session);
     await runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) => {
       const sql = ctx.storage.sql;
-      const coin = new Entities(sql).mintCoin(COPPER.id, 2, 'table', 0, 0);
+      const coin = new Entities(sql).mintCoin(COPPER.id, 2, null, 'table', 0, 0);
       commit(
         sql,
         new LedgerTx('drop.mint')
@@ -178,7 +178,7 @@ describe('a page reload with coins on the table', () => {
     const [fromDrops, fromHeap] = fused.results;
     expect(fromDrops).toMatchObject({ status: 'accepted' });
     expect(fromHeap).toMatchObject({ status: 'accepted' });
-    const heapValue = mintedValue(openingHeap.tier);
+    const heapValue = mintedValue(openingHeap.tier, {});
     expect(fromHeap).toMatchObject({
       minted: { value: Math.floor(fusionValue([heapValue, heapValue, heapValue], fusion)) },
     });

@@ -91,6 +91,15 @@ export const MIGRATIONS: readonly string[] = [
   INSERT INTO meta (key, value)
     SELECT 'heap_seeded', '1' WHERE EXISTS (SELECT 1 FROM ledger WHERE kind = 'grant.heap');
   `,
+  `
+  ALTER TABLE coins ADD COLUMN mint_micros INTEGER CHECK (mint_micros >= 0);
+  INSERT INTO meta (key, value)
+    SELECT 'mint_carry', '0' WHERE EXISTS (SELECT 1 FROM meta WHERE key = 'player_id');
+  `,
+  `
+  INSERT INTO meta (key, value)
+    SELECT 'cascade_carry', '0' WHERE EXISTS (SELECT 1 FROM meta WHERE key = 'player_id');
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {

@@ -68,8 +68,9 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-253 | done | task/P-253 (merge 44e5e70) | Formal table.bench re-baseline decision recorded in STACK.lock.md: same-host back-to-back rule and 1.3x host factor; pnpm check green after merge |
 | P-254 | done | task/P-254 (merge b55f64f) | creep.test pour front-fall bound APPROVED as falls during the pour <= ceil(POUR_COINS/32) (5 for 160), all falls inside SETTLED_STROKES, strict post-settle zeros kept (decision in POLISH.md P-254/P-215); P-215 re-review checks against it; pnpm check green after merge |
 | P-257 | done | task/P-257 (merge d5b674d) | Escape ownership and focus restore for sheets: the open sheet owns Escape wherever focus sits, and a late close restores focus to its trigger only if focus is still inside it (sheetFocus.ts, 8cf66c2); pnpm check green after merge |
-| T-92.01 | todo | | Ready: no deps. Shared contracts for table persistence (#92) |
-| T-92.02 | todo | | Ready: no deps. Sim snapshot/restore and pose validation (#92) |
+| T-92.01 | done | task/T-92.01 (merge 7e2058c) | Shared contracts for table persistence: TableSnapshot/session/layout schemas in packages/shared/src/api/table.ts, tableSnapshotEndpoint, new error codes and ids (40774ee); session/layout optional until T-92.04/T-92.05/T-92.08 (P-265..P-268); pnpm check green after merge (#92) |
+| P-180 | done | task/P-180 (merge a42fc7b) | mountCrates() wired into main.ts: crates mounted with net, sim port, stage, framing, UI, vfx, haptics, audio, inventory and the systems bus; crates already on the table adopted at boot (bae04e3); follow-up P-269 (cascade multiplier, #112); pnpm check green after merge |
+| T-92.02 | blocked(review: Node/browser parity criterion unmet, no browser round trip or parity harness; restore stability test weaker than the <1 mm asleep criterion; SIM_VERSION 7 note pins hashes that differ from restore.test.ts:183-187) | task/T-92.02 (10aea39) | Fix inside owned paths: add a parity check (e.g. vitest browser project in packages/sim; lockfile change goes to the lead as a request) or get a recorded lead decision deferring it to POLISH; assert per-coin <1 mm vs played-on table and absolute <1 mm for reference-asleep coins, most coins still; correct the SIM_VERSION 7 hash note (#92) |
 | T-92.03 | todo | | Ready: no deps. Crate spawns not re-earned through refunds (#84) |
 | T-92.04 | todo | | Waits on T-92.01, T-92.02, T-92.03 (#92) |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
@@ -78,6 +79,193 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-92.08 | todo | | Waits on T-92.04 (#85) |
 | T-92.09 | todo | | Waits on T-92.07, T-92.08, T-1.17 (#92) |
 | T-92.10 | todo | | Waits on T-92.02 (#92, crates) |
+| T-2.01 | todo | | Waits on T-1.18. Key-locked Safes (server + client + cinematic) |
+| T-2.02 | todo | | Waits on T-1.18. Scratch Cards (GPU scratch mask) |
+| T-2.03 | todo | | Waits on T-1.18. Gacha Capsule Machine |
+| T-2.04 | todo | | Waits on T-1.18. Odds & "Certified Fair" UI |
+| T-2.05 | todo | | Waits on T-1.18. Inventory & item cards; founder wants next, gated by T-1.18 (open question: relax deps) |
+| T-3.01 | todo | | Waits on T-2.05. Charm Board (sockets, 6 charms, synergy tags) |
+| T-3.02 | todo | | Waits on T-2.05. Charm models & effects |
+| T-3.03 | todo | | Waits on T-2.05. Collection Album + Heirloom coins |
+| T-3.04 | todo | | Waits on T-2.05. Venue Ascension (prestige) + Family Office; founder wants next, gated by T-1.18 (open question: relax deps) |
+| T-3.05 | todo | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag) |
+| T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
+| T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
+| T-10.01 | todo | | Ready: no deps. Account link contracts |
+| T-10.02 | todo | | Waits on T-10.01. Server: verify ID tokens, link, sign in on a new device |
+| T-10.03 | todo | | Waits on T-10.01, T-92.05. Net layer + Demo mock for account link |
+| T-10.04 | todo | | Waits on T-10.03. Account UI: link, sign in, progress choice |
+| H-10.01 | todo | | Human step: Google Cloud OAuth web client (origins `https://sashimee.github.io`, `https://devcoinposh.bas.lu`, localhost) → Worker secret `GOOGLE_CLIENT_ID`, repo variable `VITE_GOOGLE_CLIENT_ID` |
+| H-10.02 | todo | | Human step: Apple Developer membership (same account as H-7.01, pulled forward), Services ID and Sign in with Apple key → Worker secrets `APPLE_SERVICES_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, repo variable `VITE_APPLE_SERVICES_ID` |
+| T-11.01 | todo | | Waits on T-92.07, T-92.08, T-10.02, T-10.03. Feature-module seams |
+| T-11.02 | todo | | Waits on T-92.02. Sim prop seam |
+| T-11.03 | todo | | Waits on T-11.01. Collecting contracts |
+| T-11.04 | todo | | Waits on T-11.03, T-3.07. Collecting numbers |
+| T-11.05 | todo | | Waits on T-11.02, T-11.03. Sim: prize bodies |
+| T-11.06 | todo | | Waits on T-11.04. Server: prizes and coin variants |
+| T-11.07 | todo | | Waits on T-11.03. Prize and variant looks |
+| T-11.08 | todo | | Waits on T-11.05, T-11.06, T-11.07. Prize flow and juice |
+| T-11.09 | todo | | Waits on T-11.06, T-3.03. Collection book UI |
+| T-11.10 | todo | | Waits on T-11.07, T-3.03. Trophy lounge scene |
+| T-11.11 | todo | | Waits on T-11.10. Lounge UI and share |
+| T-11.12 | todo | | Waits on T-11.04. Server: wine cellar |
+| T-11.13 | todo | | Waits on T-11.12. Wine cellar UI |
+| T-11.14 | todo | | Waits on T-11.03. Collecting audio |
+| T-11.15 | todo | | Waits on T-11.08, T-11.09, T-11.11, T-11.13, T-11.14. Collecting wiring |
+| T-11.16 | todo | | Waits on T-11.15, T-1.17. E2E: collecting |
+| T-12.01 | todo | | Waits on T-11.01. Standing contracts |
+| T-12.02 | todo | | Waits on T-12.01, T-3.07. Standing numbers |
+| T-12.03 | todo | | Waits on T-12.02. Server: Repute, ranks, titles, perks |
+| T-12.04 | todo | | Waits on T-12.02. Server: achievements |
+| T-12.05 | todo | | Waits on T-12.02, T-3.01. Server: mastery |
+| T-12.06 | todo | | Waits on T-12.02, T-11.12. Server: staff |
+| T-12.07 | todo | | Waits on T-12.06. Staff on the table |
+| T-12.08 | todo | | Waits on T-12.01. Staff figures |
+| T-12.09 | todo | | Waits on T-12.03, T-12.04. Ranks and achievements UI |
+| T-12.10 | todo | | Waits on T-12.05, T-12.06. Mastery and staff UI |
+| T-12.11 | todo | | Waits on T-12.01. Standing juice and audio |
+| T-12.12 | todo | | Waits on T-12.01. Standing sounds |
+| T-12.13 | todo | | Waits on T-12.07, T-12.08, T-12.09, T-12.10, T-12.11, T-12.12, T-11.15. Standing wiring |
+| T-12.14 | todo | | Waits on T-12.13. E2E: standing |
+| T-13.01 | todo | | Waits on T-11.01. Live events contracts |
+| T-13.02 | todo | | Waits on T-13.01, T-3.07. Live events numbers |
+| T-13.03 | todo | | Waits on T-13.02. Server: login calendars |
+| T-13.04 | todo | | Waits on T-13.03. Calendar UI |
+| T-13.05 | todo | | Waits on T-11.02. Sim: daily puzzle goals |
+| T-13.06 | todo | | Waits on T-13.02, T-13.05, T-4.01, T-4.03. Server: daily puzzle and board |
+| T-13.07 | todo | | Waits on T-13.06. Daily puzzle UI |
+| T-13.08 | todo | | Waits on T-13.02, T-4.02. Server: boss events |
+| T-13.09 | todo | | Waits on T-13.01. Boss presence |
+| T-13.10 | todo | | Waits on T-13.02, T-4.02. Server: holiday events and seasonal tie-ins |
+| T-13.11 | todo | | Waits on T-13.10. Holiday themes: first two |
+| T-13.12 | todo | | Waits on T-13.08, T-13.10. Live events UI |
+| T-13.13 | todo | | Waits on T-13.01. Live events juice and sound |
+| T-13.14 | todo | | Waits on T-13.01. Live events audio |
+| T-13.15 | todo | | Waits on T-13.04, T-13.07, T-13.09, T-13.11, T-13.12, T-13.13, T-13.14, T-12.13. Live events wiring |
+| T-13.16 | todo | | Waits on T-13.15. E2E: live events |
+| T-14.01 | todo | | Waits on T-11.01. World contracts |
+| T-14.02 | todo | | Waits on T-11.01. Concierge brain |
+| T-14.03 | todo | | Waits on T-14.02. Concierge character and lines |
+| T-14.04 | todo | | Waits on T-14.02. Concierge voice |
+| T-14.05 | todo | | Waits on T-14.01, T-3.07. World numbers |
+| T-14.06 | todo | | Waits on T-14.05. Server: guest stories and pets |
+| T-14.07 | todo | | Waits on T-14.06. Guest letters UI |
+| T-14.08 | todo | | Waits on T-11.02, T-14.01. Sim: pet fetch |
+| T-14.09 | todo | | Waits on T-14.01. Pets |
+| T-14.10 | todo | | Waits on T-14.01. Server: venue conditions |
+| T-14.11 | todo | | Waits on T-14.10. Day/night and weather rendering |
+| T-14.12 | todo | | Waits on T-14.03, T-14.04, T-14.07, T-14.08, T-14.09, T-14.11, T-13.15. World wiring |
+| T-14.13 | todo | | Waits on T-14.12. E2E: world |
+| T-15.01 | todo | | Waits on T-11.01. Retention contracts |
+| T-15.02 | todo | | Waits on T-15.01, T-12.02. Retention numbers |
+| T-15.03 | todo | | Waits on T-15.02. Server: comeback, catch-up, rested |
+| T-15.04 | todo | | Waits on T-15.02, T-12.04. Server: weekly chest and goals |
+| T-15.05 | todo | | Waits on T-15.03, T-15.04. Retention UI |
+| T-15.06 | todo | | Waits on T-15.05, T-14.12. Retention wiring and e2e |
+| T-16.01 | todo | | Waits on T-11.01. Table mechanics contracts |
+| T-16.02 | todo | | Waits on T-16.01, T-3.07. Table mechanics numbers |
+| T-16.03 | todo | | Waits on T-11.02. Sim: bonus targets |
+| T-16.04 | todo | | Waits on T-11.02. Sim: peg field |
+| T-16.05 | todo | | Waits on T-11.02. Sim: moving parts and venue layouts |
+| T-16.06 | todo | | Waits on T-11.02. Sim: jackpot ball |
+| T-16.07 | todo | | Waits on T-16.02. Server: targets and jackpot ball |
+| T-16.08 | todo | | Waits on T-16.01. Mechanics models |
+| T-16.09 | todo | | Waits on T-16.01. Mechanics juice |
+| T-16.10 | todo | | Waits on T-16.01. Mechanics audio |
+| T-16.11 | todo | | Waits on T-16.02, T-16.03, T-16.04, T-16.05, T-16.06. Rate envelope for mechanics |
+| T-16.12 | todo | | Waits on T-4.03, T-16.03, T-16.04, T-16.05, T-16.06. Verifier replays mechanics |
+| T-16.13 | todo | | Waits on T-16.07, T-16.08, T-16.09, T-16.10, T-16.11, T-15.06. Table mechanics wiring |
+| T-16.14 | todo | | Waits on T-16.13. E2E: table mechanics |
+| T-17.01 | todo | | Waits on T-16.06. Director camera |
+| T-17.02 | todo | | Ready: deps done. Adaptive music |
+| T-17.03 | todo | | Waits on T-7.02. Haptic pattern library |
+| T-17.04 | todo | | Waits on T-17.01, T-17.02, T-17.03. Game feel wiring |
+| T-18.01 | todo | | Waits on T-11.01. Comfort contracts |
+| T-18.02 | todo | | Waits on T-18.01. Server: stats |
+| T-18.03 | todo | | Waits on T-18.02. Stats UI |
+| T-18.04 | todo | | Waits on T-18.01, T-12.03. Auto-drop |
+| T-18.05 | todo | | Waits on T-11.02. Sim: replay recorder |
+| T-18.06 | todo | | Waits on T-18.05. Big-win replays |
+| T-18.07 | todo | | Waits on T-18.06. Cinematic replay camera |
+| T-18.08 | todo | | Waits on T-18.03, T-18.04, T-18.07, T-16.13. Comfort wiring and e2e |
+| T-19.01 | todo | | Waits on T-6.02, T-10.04. Parental settings |
+| T-19.02 | todo | | Waits on T-19.01. Server: parental policy |
+| T-19.03 | todo | | Waits on T-6.02. Left-hand and Zen modes |
+| T-19.04 | todo | | Waits on T-19.03. Landscape tablet layout |
+| T-19.05 | todo | | Ready: deps done. Keyboard and mouse controls |
+| T-19.06 | todo | | Waits on T-19.02, T-19.04, T-19.05, T-18.08. Accessibility wiring and e2e |
+| T-20.01 | todo | | Waits on T-11.01, T-4.01. Community contracts |
+| T-20.02 | todo | | Waits on T-20.01, T-3.07. Community numbers |
+| T-20.03 | todo | | Waits on T-20.02, T-10.02. Server: gifts |
+| T-20.04 | todo | | Waits on T-20.02, T-10.02. Server: clubs |
+| T-20.05 | todo | | Waits on T-20.02, T-92.04. Server: visits |
+| T-20.06 | todo | | Waits on T-20.05, T-92.07. Visit view |
+| T-20.07 | todo | | Waits on T-18.06. Photo mode and auto-clips |
+| T-20.08 | todo | | Waits on T-20.03, T-20.04, T-20.06. Social UI |
+| T-20.09 | todo | | Waits on T-20.07, T-20.08, T-19.06. Social wiring and e2e |
+| T-21.01 | todo | | Waits on T-11.01, T-4.01. Competitive contracts |
+| T-21.02 | todo | | Waits on T-21.01, T-3.07. Competitive numbers |
+| T-21.03 | todo | | Waits on T-21.02. Server: weekly leagues |
+| T-21.04 | todo | | Waits on T-21.02, T-4.03. Server: weekend tournaments |
+| T-21.05 | todo | | Waits on T-21.04, T-18.05. Ghost races |
+| T-21.06 | todo | | Waits on T-21.04. Server: spectate |
+| T-21.07 | todo | | Waits on T-21.03, T-21.04, T-21.06. Competitive UI |
+| T-21.08 | todo | | Waits on T-21.05, T-21.07, T-20.09. Competitive wiring and e2e |
+| T-22.01 | todo | | Waits on T-11.03. Economy depth contracts |
+| T-22.02 | todo | | Waits on T-22.01, T-11.04. Economy depth numbers |
+| T-22.03 | todo | | Waits on T-22.02. Server: workshop and smelting |
+| T-22.04 | todo | | Waits on T-22.02. Server: charity gala |
+| T-22.05 | todo | | Waits on T-22.02, T-20.03. Server: player trading |
+| T-22.06 | todo | | Waits on T-22.03, T-22.04, T-22.05. Workshop, gala and trading UI |
+| T-22.07 | todo | | Waits on T-22.06, T-21.08. Economy depth wiring and e2e |
+| T-23.01 | todo | | Waits on T-11.01. Side games contracts |
+| T-23.02 | todo | | Waits on T-23.01, T-3.07. Side games numbers |
+| T-23.03 | todo | | Waits on T-11.02. Sim: claw machine |
+| T-23.04 | todo | | Waits on T-23.02. Server: claw, auction, treasure, stocks |
+| T-23.05 | todo | | Waits on T-23.01. Claw cabinet and vault table |
+| T-23.06 | todo | | Waits on T-23.03, T-23.04, T-23.05. Claw play |
+| T-23.07 | todo | | Waits on T-23.04. Side games UI |
+| T-23.08 | todo | | Waits on T-23.06, T-23.07, T-22.07. Side games wiring and e2e |
+| T-24.01 | todo | | Waits on T-16.01. Creation contracts |
+| T-24.02 | todo | | Waits on T-24.01, T-16.11. Creation numbers |
+| T-24.03 | todo | | Waits on T-16.05. Sim: layout validation |
+| T-24.04 | todo | | Waits on T-24.02, T-24.03. Server: layouts, loadouts, puzzles, votes |
+| T-24.05 | todo | | Waits on T-24.04. Table editor |
+| T-24.06 | todo | | Waits on T-24.04. Creation UI |
+| T-24.07 | todo | | Waits on T-24.05, T-24.06, T-23.08. Creation wiring and e2e |
+| T-25.01 | todo | | Waits on T-11.01. Cosmetics contracts |
+| T-25.02 | todo | | Waits on T-25.01, T-12.02. Cosmetics numbers |
+| T-25.03 | todo | | Waits on T-25.02. Server: cosmetics |
+| T-25.04 | todo | | Waits on T-25.01, T-11.10. Table and pusher skins, lounge decor |
+| T-25.05 | todo | | Waits on T-25.01. Monograms and crests |
+| T-25.06 | todo | | Waits on T-25.01. Drop trails |
+| T-25.07 | todo | | Waits on T-25.01. Sound packs |
+| T-25.08 | todo | | Waits on T-25.03. Wardrobe UI |
+| T-25.09 | todo | | Waits on T-25.04, T-25.05, T-25.06, T-25.07, T-25.08, T-24.07. Cosmetics wiring and e2e |
+| T-26.01 | todo | | Waits on T-11.01. Meta contracts |
+| T-26.02 | todo | | Waits on T-26.01, T-3.07. Meta numbers |
+| T-26.03 | todo | | Waits on T-26.02, T-3.04. Server: empire, dynasty, Society Pages |
+| T-26.04 | todo | | Waits on T-26.01. Empire map |
+| T-26.05 | todo | | Waits on T-26.03. Dynasty and Society Pages UI |
+| T-26.06 | todo | | Waits on T-26.04, T-26.05, T-25.09. Meta wiring and e2e |
+| T-27.01 | todo | | Waits on T-1.18. Installable PWA with offline Demo play |
+| T-27.02 | todo | | Waits on T-10.02, T-10.03. QR session move |
+| T-27.03 | todo | | Waits on T-7.02. Home-screen widgets |
+| T-27.04 | todo | | Waits on T-27.01, T-6.04. Desktop shell (Electron) |
+| T-27.05 | todo | | Waits on T-27.04, T-12.04. Steam integration |
+| H-27.01 | todo | | Human step: Steamworks partner account, app fee, App ID and depot → repo secrets `STEAM_APP_ID`, `STEAM_WEB_API_KEY` |
+| H-27.02 | todo | | Human step: Apple and Windows code-signing certificates for the desktop builds |
+| T-28.01 | todo | | Waits on T-11.01. Content contracts |
+| T-28.02 | todo | | Waits on T-28.01, T-3.07. Venues 6–9 and challenge numbers |
+| T-28.03 | todo | | Waits on T-28.01, T-16.05. Monaco Grand Prix |
+| T-28.04 | todo | | Waits on T-28.01, T-16.05. Venetian Palazzo |
+| T-28.05 | todo | | Waits on T-28.01, T-16.05. Dubai Sky Villa |
+| T-28.06 | todo | | Waits on T-28.01, T-16.05. Desert Oasis Train |
+| T-28.07 | todo | | Waits on T-11.02. Sim: challenge modifiers |
+| T-28.08 | todo | | Waits on T-28.02, T-28.07. Server: challenges, jukebox, codex |
+| T-28.09 | todo | | Waits on T-28.01. Jukebox |
+| T-28.10 | todo | | Waits on T-28.08. Challenge, jukebox and codex UI |
+| T-28.11 | todo | | Waits on T-28.03, T-28.04, T-28.05, T-28.06, T-28.09, T-28.10, T-26.06. Content wiring and e2e |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
@@ -99,3 +287,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 14 · 2026-11-08 · P-215 P-238 P-226 · merged P-226 (396836f); 2 rejected (P-215, P-238)
 - wave 15 · 2026-11-09 · P-215 P-247 P-248 · merged P-248 (da920d6), P-247 (849be80); 1 rejected (P-215)
 - wave 16 · 2026-11-09 · P-215 P-253 P-254 P-257 · merged P-253 (44e5e70), P-254 (b55f64f), P-257 (d5b674d), P-215 (237e6ea); 0 rejected
+- wave 17 · 2026-11-09 · T-92.01 T-92.02 P-180 · merged T-92.01 (7e2058c), P-180 (a42fc7b); 1 rejected (T-92.02)
