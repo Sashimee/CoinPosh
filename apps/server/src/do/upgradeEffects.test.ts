@@ -303,21 +303,26 @@ describe('coinValue pays its fraction through the mint carry', () => {
 });
 
 describe('crateChance upgrade on the server', () => {
-  it('spawns the FTUE crate and then one every dropsPerCrate drops at level 0', async () => {
-    const session = await newSession();
-    await fund(session, 200);
-    const responses = await dropFrom(
-      session,
-      (await state(session)).table.buffer,
-      2 * crateSpawn.dropsPerCrate,
-    );
-    expect(crateDrops(responses)).toEqual([
-      crateSpawn.ftueScriptedDrop,
-      crateSpawn.dropsPerCrate,
-      2 * crateSpawn.dropsPerCrate,
-    ]);
-    await expectConserved(session);
-  });
+  it(
+    'spawns the FTUE crate and then one every dropsPerCrate drops at level 0',
+    // Seeing a second dropsPerCrate interval takes 80 real signed drops through the worker.
+    { timeout: 20_000 },
+    async () => {
+      const session = await newSession();
+      await fund(session, 200);
+      const responses = await dropFrom(
+        session,
+        (await state(session)).table.buffer,
+        2 * crateSpawn.dropsPerCrate,
+      );
+      expect(crateDrops(responses)).toEqual([
+        crateSpawn.ftueScriptedDrop,
+        crateSpawn.dropsPerCrate,
+        2 * crateSpawn.dropsPerCrate,
+      ]);
+      await expectConserved(session);
+    },
+  );
 
   it('spaces crates closer from the next drop once the max level is bought', async () => {
     const session = await newSession();
