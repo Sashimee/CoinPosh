@@ -6,6 +6,7 @@ import { bindUpgradeFeedback } from './feedback.ts';
 import { registerUpgradeStrings } from './i18n.ts';
 import { createUpgradeNotice } from './notice.ts';
 
+export { netUpgradeApi } from './api.ts';
 export { bindUpgrades, classifyRejection } from './controller.ts';
 export type { BindUpgradesOptions, UpgradeApi, UpgradeUi } from './controller.ts';
 export type { UpgradeEvents, UpgradeRejection } from './events.ts';

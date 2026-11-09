@@ -3,6 +3,7 @@ import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
+import { mountUpgrades, netUpgradeApi } from './game/upgrades/index.ts';
 import type * as SimWorkerModule from './game/simWorker/index.ts';
 import type {
   OpeningHeap,
@@ -284,22 +285,74 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   const vault = trackVault(app, net.table, state);
   net.table.hydrate(state);
   app.setUpgradeLevels(state.venue.upgrades);
-  const resyncWhenShown = (): void => {
-    if (document.visibilityState !== 'visible') return;
+  const resync = (reason: string): void => {
     net.table.resume().then(
       () => {
         vault.resumed();
       },
       (error: unknown) => {
-        console.error('CoinPosh net: the table did not resync after the tab came back.', error);
+        console.error(`CoinPosh net: the table did not resync after ${reason}.`, error);
       },
     );
+  };
+  mountUpgradePurchases(net, app, state, () => {
+    resync('an upgrade purchase');
+  });
+  const resyncWhenShown = (): void => {
+    if (document.visibilityState !== 'visible') return;
+    resync('the tab came back');
   };
   document.addEventListener('visibilitychange', resyncWhenShown);
   teardown.push(() => {
     document.removeEventListener('visibilitychange', resyncWhenShown);
   });
   return { net, state, vault };
+}
+
+/**
+ * Turns the upgrades panel's confirms into server purchases. The Vault plaque counts the drop
+ * buffer on top of the wallet, so a purchase re-reads the table instead of showing the bare
+ * wallet the purchase returns. Stale levels re-read the state without `hydrate=boot`, which
+ * would refund the coins in play.
+ */
+function mountUpgradePurchases(
+  net: Net,
+  app: UiApp,
+  state: StateResponse,
+  walletChanged: () => void,
+): void {
+  const upgrades = mountUpgrades({
+    ui: {
+      store: app.store,
+      bus: app.bus,
+      i18n: app.i18n,
+      bannerSlot: app.bannerSlot,
+      onUpgradeRequest: (handler) => app.onUpgradeRequest(handler),
+      resolveUpgrade: (levels) => {
+        app.resolveUpgrade(levels);
+      },
+      setWallet: walletChanged,
+    },
+    api: netUpgradeApi(net.client),
+    venueId: state.venue.id,
+    audio: () => audio,
+    refresh: () => {
+      net.client.call('state').then(
+        (fresh) => {
+          app.setUpgradeLevels(fresh.venue.upgrades);
+        },
+        (error: unknown) => {
+          console.error('CoinPosh net: the upgrade levels did not refresh.', error);
+        },
+      );
+    },
+    onError: (error) => {
+      console.error('CoinPosh net: an upgrade purchase failed.', error);
+    },
+  });
+  teardown.push(() => {
+    upgrades.dispose();
+  });
 }
 
 /**
