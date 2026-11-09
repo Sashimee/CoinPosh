@@ -188,7 +188,7 @@ describe('determinism', () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate SIM_VERSION bump.
-    expect(SIM_VERSION).toBe(6);
+    expect(SIM_VERSION).toBe(7);
     expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"bdd732e82cbaab2c"`);
   });
 
@@ -558,6 +558,6 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"996bcdc84b3175fb"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"5659c314480b9ede"`);
   });
 });

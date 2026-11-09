@@ -78,9 +78,16 @@ export class PusherClock {
   #tickInCycle = 0;
   #cycles = 0;
 
-  constructor(motion: PusherMotion = DEFAULT_PUSHER_MOTION) {
+  /** `tickInCycle` starts the clock part way into its first cycle, as a restored table does. */
+  constructor(motion: PusherMotion = DEFAULT_PUSHER_MOTION, tickInCycle = 0) {
     assertValidPusherMotion(motion);
+    if (!Number.isInteger(tickInCycle) || tickInCycle < 0 || tickInCycle >= motion.periodTicks) {
+      throw new RangeError(
+        `Pusher tickInCycle must be an integer in [0, ${motion.periodTicks}), got ${tickInCycle}`,
+      );
+    }
     this.#motion = { ...motion };
+    this.#tickInCycle = tickInCycle;
   }
 
   get motion(): PusherMotion {

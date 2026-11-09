@@ -34,11 +34,13 @@ export {
   type FallEvent,
   type PusherState,
   PusherTable,
+  type RestoreCoin,
   type TableCoin,
   type TableOptions,
 } from './table.ts';
 export {
   COIN_MATERIAL,
+  COIN_RESTORE,
   configureTableWorld,
   CONTACT_EVENTS,
   NUDGE,

@@ -196,6 +196,24 @@ export const NUDGE = {
 } as const;
 
 /**
+ * Laying a restored table (PusherTable.restore), in metres:
+ *
+ * - liftStep 0.5 mm: a heap slot that overlaps a coin already placed, or the pusher, is
+ *   raised this much at a time until it clears, so it drops at most 0.5 mm further than
+ *   it has to: a soft landing well under COIN_MATERIAL.impactSpeed.
+ * - probe 1 mm: how far down a coin that was asleep is cast to look for what holds it.
+ *   Settled coins lie a contact skin (0.3 mm) clear of their support, well inside it.
+ * - probeGrip 0.25: the cast must drive the coin at least this share of the probe into
+ *   what it hits, so a neighbour touching it from the side (contact normal more than
+ *   75° from vertical) does not count as holding it up.
+ */
+export const COIN_RESTORE = {
+  liftStep: 0.0005,
+  probe: 0.001,
+  probeGrip: 0.25,
+} as const;
+
+/**
  * Contact events for the renderer and audio: a coin striking something at or above
  * COIN_MATERIAL.impactSpeed (0.3 m/s) is braked by the impact brake (PusherTable),
  * which knows the closing speed and what was struck, so that is where the event comes
