@@ -8,6 +8,7 @@ import {
   Node,
   RepeatWrapping,
   RGBAFormat,
+  Vector3,
   type NodeBuilder,
   type Renderer,
   type Scene,
@@ -16,14 +17,10 @@ import {
   clamp,
   equirectUV,
   float,
-  Fn,
-  If,
   materialEnvRotation,
-  mix,
   renderGroup,
   texture,
   uniform,
-  vec3,
   vec4,
 } from 'three/tsl';
 import veniceSunsetUrl from './hdri/venice_sunset_512.hdr?url';
@@ -60,51 +57,131 @@ export const SUNSET_HDRI: HdriAsset = {
   sunYaw: (307.25 / 512 - 0.5) * 2 * Math.PI,
 };
 
-/** Fetches an HDRI and pre-filters it (see `PREFILTERED_ENVIRONMENT`) without touching the scene. */
-export type EnvironmentLoader = (hdri: HdriAsset) => Promise<PrefilteredEnvironment>;
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The environment load was aborted', 'AbortError');
+}
 
-/** Runs the fetch, decode and GGX pre-filter in a Web Worker, so no frame ever waits on it. */
-export const prefilterHdriInWorker: EnvironmentLoader = (hdri) =>
+/**
+ * Fetches an HDRI and pre-filters it (see `PREFILTERED_ENVIRONMENT`) without touching the scene.
+ * When `signal` aborts, the loader stops its work and rejects with `signal.reason`.
+ */
+export type EnvironmentLoader = (
+  hdri: HdriAsset,
+  signal: AbortSignal,
+) => Promise<PrefilteredEnvironment>;
+
+/**
+ * Runs the fetch, decode and GGX pre-filter in a Web Worker, so no frame ever waits on it.
+ * Aborting terminates the worker, so a disposed venue leaves no pre-filter running.
+ */
+export const prefilterHdriInWorker: EnvironmentLoader = (hdri, signal) =>
   new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
     const worker = new Worker(new URL('./prefilter.worker.ts', import.meta.url), {
       type: 'module',
       name: 'coinposh-environment',
     });
-    worker.addEventListener('message', (event: MessageEvent<PrefilterReply>) => {
+    const stop = () => {
       worker.terminate();
+      signal.removeEventListener('abort', abort);
+      worker.removeEventListener('message', message);
+      worker.removeEventListener('error', error);
+    };
+    const abort = () => {
+      stop();
+      reject(abortReason(signal));
+    };
+    const message = (event: MessageEvent<PrefilterReply>) => {
+      stop();
       const reply = event.data;
       if (reply.ok) resolve(reply);
       else reject(new Error(`The environment worker failed: ${reply.message}`));
-    });
-    worker.addEventListener('error', (event) => {
-      worker.terminate();
+    };
+    const error = (event: ErrorEvent) => {
+      stop();
       reject(
         new Error(
           `The environment worker did not start (${event.message || event.type}); check that its chunk was bundled`,
         ),
       );
-    });
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    worker.addEventListener('message', message);
+    worker.addEventListener('error', error);
     const request: PrefilterRequest = { url: new URL(hdri.url, document.baseURI).href };
     worker.postMessage(request);
   });
 
 /**
- * When the HDRI takes over. Its fetch and pre-filter wait until the first frames of play are
- * on screen, so they never compete with boot, then it crossfades in so the light blooms
- * instead of popping.
+ * When the HDRI takes over. Its fetch and pre-filter wait until play has rendered smoothly for
+ * a while, so they never compete with boot or the first drops, then its reflections pull into
+ * focus from the fallback's blur so the light sharpens instead of popping.
  */
 export const ENVIRONMENT_HANDOFF = {
   settleFrames: 6,
-  settleSeconds: 0.75,
+  /** Counted in frame time capped at `maxFadeStep`, so boot's compile stalls do not count. */
+  settleSeconds: 1,
   fadeSeconds: 0.8,
-  /** Frame deltas past this are a stall, not fade time. */
+  /** Frame deltas past this are a stall, not settle or fade time. */
   maxFadeStep: 1 / 30,
 } as const;
 
-/** Box-filtered mips past this blur up and down together, which irradiance must not do. */
-const FALLBACK_MAX_LEVEL = 3;
-const FALLBACK_LEVELS_PER_ROUGHNESS = 3.3;
+/**
+ * How a roughness becomes a mip level of the environment texture,
+ * `clamp(roughness * scale + bias, 0, max)`.
+ */
+interface LevelMapping {
+  readonly scale: number;
+  readonly bias: number;
+  readonly max: number;
+}
+
 const HDRI_MAX_LEVEL = PREFILTERED_ENVIRONMENT.levels - 1;
+
+/**
+ * Where the 32 px fallback sits in the environment texture: the level of its size, followed by
+ * one level that holds its 4 px box blur for the roughest surfaces and irradiance.
+ */
+export const FALLBACK_LEVEL = Math.log2(PREFILTERED_ENVIRONMENT.width / 32);
+
+/** Roughness from which the fallback reads only its blurred level. */
+const FALLBACK_FULL_BLUR_ROUGHNESS = 0.9;
+
+const FALLBACK_LEVELS: LevelMapping = {
+  scale: 1 / FALLBACK_FULL_BLUR_ROUGHNESS,
+  bias: FALLBACK_LEVEL,
+  max: FALLBACK_LEVEL + 1,
+};
+
+/**
+ * The fallback's look read from the pre-filtered HDRI: its 32 px texels (about 11°) match the
+ * GGX lobe of level 2 and its 4 px blur the irradiance in the last level. The handoff starts
+ * here, so the first HDRI frame is as soft as the last fallback one.
+ */
+const HDRI_SOFT_LEVELS: LevelMapping = { scale: 3.3, bias: 2, max: HDRI_MAX_LEVEL };
+
+/** Level `k` holds roughness `k / (levels - 1)`; see `PREFILTERED_ENVIRONMENT`. */
+const HDRI_LEVELS: LevelMapping = { scale: HDRI_MAX_LEVEL, bias: 0, max: HDRI_MAX_LEVEL };
+
+function setLevels(target: Vector3, mapping: LevelMapping): Vector3 {
+  return target.set(mapping.scale, mapping.bias, mapping.max);
+}
+
+/** The HDRI's level mapping `focus` (0 to 1, eased) of the way from soft to sharp. */
+function focusLevels(target: Vector3, focus: number): Vector3 {
+  const eased = focus * focus * (3 - 2 * focus);
+  const lerp = (from: number, to: number) => from + (to - from) * eased;
+  return target.set(
+    lerp(HDRI_SOFT_LEVELS.scale, HDRI_LEVELS.scale),
+    lerp(HDRI_SOFT_LEVELS.bias, HDRI_LEVELS.bias),
+    lerp(HDRI_SOFT_LEVELS.max, HDRI_LEVELS.max),
+  );
+}
 
 export type EnvironmentSource = 'fallback' | 'hdri';
 
@@ -120,18 +197,23 @@ export interface VenueEnvironmentOptions {
 }
 
 export interface VenueEnvironment {
-  /** The scene's `environmentNode`: the fallback crossfading into the pre-filtered HDRI. */
+  /** The scene's `environmentNode`: one trilinear sample of `map` per lookup. */
   readonly node: Node<'vec3'>;
-  readonly fallback: DataTexture;
   /**
-   * The pre-filtered HDRI. Allocated empty up front so every material binds it from its first
-   * compile; its texels are uploaded in place when the worker delivers them.
+   * The one texture the environment samples, at the pre-filtered HDRI's size from the first
+   * frame. Until the handoff only `FALLBACK_LEVEL` and the level after it hold texels; the
+   * handoff uploads the HDRI's levels into it in place, so no binding ever changes.
    */
-  readonly hdri: DataTexture;
-  /** 0 while the fallback lights the scene, 1 once the HDRI has fully taken over. */
+  readonly map: DataTexture;
+  /** What `map` holds now. */
+  readonly source: EnvironmentSource;
+  /**
+   * 0 until the handoff, then rising to 1 as the HDRI's reflections pull into focus from the
+   * fallback's softness.
+   */
   readonly blend: number;
   /**
-   * Resolves `hdri` once the HDRI has fully faded in, or `fallback` when it failed to load or
+   * Resolves `hdri` once the HDRI is in full focus, or `fallback` when it failed to load or
    * upload (logged as an error) or the environment was disposed first. Never rejects.
    */
   readonly ready: Promise<EnvironmentSource>;
@@ -157,16 +239,15 @@ function isSampleContext(context: unknown): context is EnvironmentSampleContext 
 }
 
 /**
- * Samples both equirects through the rotation and roughness the environment lighting asks
- * for, each behind a branch on the uniform `blend`: before the handoff only the fallback is
- * read, after it only the HDRI, and both only during the fade. Both are bound from the first
- * compile, so the handoff never rebuilds a material.
+ * One trilinear sample of the environment equirect through the rotation and roughness the
+ * environment lighting asks for and the uniform roughness-to-level mapping `levels` (scale,
+ * bias, max). The handoff only rewrites the texture's texels and moves `levels`: it rebuilds no
+ * material and rebinds no texture, and every shader compiles one sampler and no branch.
  */
 class HandoffEnvironmentNode extends Node<'vec3'> {
   constructor(
-    private readonly fallback: DataTexture,
-    private readonly hdri: DataTexture,
-    private readonly blend: Node<'float'>,
+    private readonly map: DataTexture,
+    private readonly levels: Node<'vec3'>,
   ) {
     super('vec3');
   }
@@ -180,20 +261,8 @@ class HandoffEnvironmentNode extends Node<'vec3'> {
     }
     const direction = materialEnvRotation.mul(vec4(context.getUV(this, builder), 0)).xyz;
     const roughness = context.getTextureLevel?.(this) ?? float(0);
-    const blend = this.blend;
-    return Fn(() => {
-      const uv = equirectUV(direction).toVar();
-      const color = vec3(0).toVar();
-      If(blend.lessThan(1), () => {
-        const level = clamp(roughness.mul(FALLBACK_LEVELS_PER_ROUGHNESS), 0, FALLBACK_MAX_LEVEL);
-        color.assign(texture(this.fallback, uv).level(level).rgb);
-      });
-      If(blend.greaterThan(0), () => {
-        const level = clamp(roughness.mul(HDRI_MAX_LEVEL), 0, HDRI_MAX_LEVEL);
-        color.assign(mix(color, texture(this.hdri, uv).level(level).rgb, blend));
-      });
-      return color;
-    })();
+    const level = clamp(roughness.mul(this.levels.x).add(this.levels.y), 0, this.levels.z);
+    return texture(this.map, equirectUV(direction)).level(level).rgb;
   }
 }
 
@@ -219,26 +288,6 @@ function equirectTexture(name: string, levels: HalfLevel[]): DataTexture {
   map.flipY = true;
   map.needsUpdate = true;
   return map;
-}
-
-function prefilteredLevels(width: number, height: number, count: number): HalfLevel[] {
-  return Array.from({ length: count }, (_, k) => ({
-    data: new Uint16Array(0),
-    width: width >> k,
-    height: height >> k,
-  }));
-}
-
-/**
- * The HDRI texture at its final size with no texels: the GPU allocates it on first use and
- * skips the upload, so the boot frame neither copies nor clears it and the later upload lands
- * in the texture every compiled material already binds.
- */
-function createHdriTexture(): DataTexture {
-  const { width, height, levels } = PREFILTERED_ENVIRONMENT;
-  const hdri = equirectTexture('venue-hdri', prefilteredLevels(width, height, levels));
-  hdri.source.dataReady = false;
-  return hdri;
 }
 
 function checkPrefiltered(result: PrefilteredEnvironment): void {
@@ -293,40 +342,82 @@ function halve(image: RadianceImage): RadianceImage {
   return { width, height, data };
 }
 
+/** Bilinear resample of an equirect, wrapping in longitude and clamping at the poles. */
+function resample(image: RadianceImage, width: number, height: number): RadianceImage {
+  const data = new Float32Array(width * height * 4);
+  const texel = (x: number, y: number, c: number) => {
+    const column = ((x % image.width) + image.width) % image.width;
+    const row = Math.min(Math.max(y, 0), image.height - 1);
+    return image.data[(row * image.width + column) * 4 + c] ?? 0;
+  };
+  for (let y = 0; y < height; y += 1) {
+    const v = ((y + 0.5) / height) * image.height - 0.5;
+    const y0 = Math.floor(v);
+    const fy = v - y0;
+    for (let x = 0; x < width; x += 1) {
+      const u = ((x + 0.5) / width) * image.width - 0.5;
+      const x0 = Math.floor(u);
+      const fx = u - x0;
+      for (let c = 0; c < 4; c += 1) {
+        const top = texel(x0, y0, c) * (1 - fx) + texel(x0 + 1, y0, c) * fx;
+        const bottom = texel(x0, y0 + 1, c) * (1 - fx) + texel(x0 + 1, y0 + 1, c) * fx;
+        data[(y * width + x) * 4 + c] = top * (1 - fy) + bottom * fy;
+      }
+    }
+  }
+  return { width, height, data };
+}
+
 function toHalf(image: RadianceImage): HalfLevel {
   return { data: toHalfFloats(image.data), width: image.width, height: image.height };
 }
 
 /**
- * Decodes an inlined HDRI into a half-float equirect with a full box-filtered mip chain, so
- * rough surfaces read a blurred sky without any pre-filtering.
+ * The environment texture for boot: the pre-filtered HDRI's size and level count, with the
+ * inlined fallback decoded into `FALLBACK_LEVEL` and its 4 px box blur, resampled, into the
+ * next. The larger levels are zero; the boot level mapping never reads them, and the handoff
+ * overwrites every level.
  */
-export function decodeFallbackEnvironment(dataUrl: string): DataTexture {
-  let level = decodeRgbe(decodeDataUrl(dataUrl));
-  const mipmaps = [toHalf(level)];
-  while (level.width > 1 || level.height > 1) {
-    level = halve(level);
-    mipmaps.push(toHalf(level));
+export function createEnvironmentTexture(fallbackDataUrl: string): DataTexture {
+  const { width, height, levels } = PREFILTERED_ENVIRONMENT;
+  const fallback = decodeRgbe(decodeDataUrl(fallbackDataUrl));
+  const fallbackWidth = width >> FALLBACK_LEVEL;
+  const fallbackHeight = height >> FALLBACK_LEVEL;
+  if (fallback.width !== fallbackWidth || fallback.height !== fallbackHeight) {
+    throw new Error(
+      `The venue environment fallback is ${String(fallback.width)}×${String(fallback.height)}, not ${String(fallbackWidth)}×${String(fallbackHeight)}; regenerate it with hdri/bake-fallback.mjs`,
+    );
   }
-  return equirectTexture('venue-hdri-fallback', mipmaps);
+  let blur = fallback;
+  while (blur.width > 4) blur = halve(blur);
+  const zero = new Uint16Array(width * height * 4);
+  const mipmaps = Array.from({ length: levels }, (_, k): HalfLevel => {
+    const size = { width: width >> k, height: height >> k };
+    if (k === FALLBACK_LEVEL) return toHalf(fallback);
+    if (k === FALLBACK_LEVEL + 1) return toHalf(resample(blur, size.width, size.height));
+    return { data: zero.subarray(0, size.width * size.height * 4), ...size };
+  });
+  return equirectTexture('venue-environment', mipmaps);
 }
 
 /**
  * Lights `scene` with image-based lighting that is ready on the first frame: a 32 px copy of
- * the HDRI inlined in the bundle, sampled directly. A few frames into play a worker fetches
- * the full HDRI and GGX pre-filters it into an equirect mip chain, which is uploaded in place
- * and crossfaded in through `scene.environmentNode`. The visible backdrop stays procedural;
- * the strength, `scene.environmentIntensity`, belongs to the render look (`applyRenderLook`).
+ * the HDRI inlined in the bundle, sampled from the small levels of the environment texture.
+ * Once play has run smoothly for a while, a worker fetches the full HDRI and GGX pre-filters it
+ * into an equirect mip chain, which is uploaded into the same texture, as soft as the fallback
+ * at first and then pulling into focus. The visible backdrop stays procedural; the strength,
+ * `scene.environmentIntensity`, belongs to the render look (`applyRenderLook`).
  */
 export function installVenueEnvironment(
   scene: Scene,
   options: VenueEnvironmentOptions,
 ): VenueEnvironment {
   const load = options.load ?? prefilterHdriInWorker;
-  const fallback = decodeFallbackEnvironment(options.hdri.fallback);
-  const hdri = createHdriTexture();
+  const map = createEnvironmentTexture(options.hdri.fallback);
 
+  const abort = new AbortController();
   let disposed = false;
+  let source: EnvironmentSource = 'fallback';
   let blend = 0;
   let settledFrames = 0;
   let settledSeconds = 0;
@@ -351,7 +442,7 @@ export function installVenueEnvironment(
     loading = true;
     let pending: Promise<PrefilteredEnvironment>;
     try {
-      pending = load(options.hdri);
+      pending = load(options.hdri, abort.signal);
     } catch (error) {
       fail('the HDRI did not load', error);
       return;
@@ -366,6 +457,8 @@ export function installVenueEnvironment(
     );
   };
 
+  const lod = setLevels(new Vector3(), FALLBACK_LEVELS);
+
   const upload = (result: PrefilteredEnvironment, uploader: EnvironmentUploader) => {
     checkPrefiltered(result);
     const levels = result.levels.map((data, k) => ({
@@ -373,35 +466,40 @@ export function installVenueEnvironment(
       width: result.width >> k,
       height: result.height >> k,
     }));
-    hdri.image = levels[0] ?? hdri.image;
-    hdri.mipmaps = levels;
-    hdri.source.dataReady = true;
-    hdri.needsUpdate = true;
-    uploader.initTexture(hdri);
+    map.image = levels[0] ?? map.image;
+    map.mipmaps = levels;
+    map.needsUpdate = true;
+    uploader.initTexture(map);
+    focusLevels(lod, 0);
+    source = 'hdri';
   };
 
   // Render group: object-group uniforms are only re-uploaded for objects the material observer
-  // sees change, so most of the venue would keep sampling the fallback.
-  const blendUniform = uniform(0)
+  // sees change, so most of the venue would keep the boot mapping.
+  const lodUniform = uniform(lod)
     .setGroup(renderGroup)
     .onFrameUpdate((frame) => {
       environment.advance(frame.deltaTime, frame.renderer);
-      return blend;
+      return lod;
     });
-  const node = new HandoffEnvironmentNode(fallback, hdri, blendUniform);
+  const node = new HandoffEnvironmentNode(map, lodUniform);
   node.name = 'venue-environment';
 
   const environment: VenueEnvironment = {
     node,
-    fallback,
-    hdri,
+    map,
+    get source() {
+      return source;
+    },
     get blend() {
       return blend;
     },
     ready,
     advance(deltaSeconds, renderer) {
       if (disposed || failed || blend >= 1) return;
-      const dt = Number.isFinite(deltaSeconds) ? Math.max(deltaSeconds, 0) : 0;
+      const dt = Number.isFinite(deltaSeconds)
+        ? Math.min(Math.max(deltaSeconds, 0), ENVIRONMENT_HANDOFF.maxFadeStep)
+        : 0;
       if (!loading) {
         settledFrames += 1;
         settledSeconds += dt;
@@ -424,20 +522,17 @@ export function installVenueEnvironment(
         delivered = null;
         return;
       }
-      blend = Math.min(
-        1,
-        blend + Math.min(dt, ENVIRONMENT_HANDOFF.maxFadeStep) / ENVIRONMENT_HANDOFF.fadeSeconds,
-      );
-      blendUniform.value = blend;
+      blend = Math.min(1, blend + dt / ENVIRONMENT_HANDOFF.fadeSeconds);
+      focusLevels(lod, blend);
       if (blend >= 1) finish('hdri');
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       delivered = null;
+      abort.abort(new DOMException('The venue environment was disposed', 'AbortError'));
       if (scene.environmentNode === node) scene.environmentNode = null;
-      fallback.dispose();
-      hdri.dispose();
+      map.dispose();
       finish('fallback');
     },
   };

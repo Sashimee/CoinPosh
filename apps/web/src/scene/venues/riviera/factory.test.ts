@@ -76,9 +76,9 @@ const uploader = () => ({ initTexture: vi.fn() });
 
 /** Steps the environment past its settle window, which is when it starts loading. */
 function settleEnvironment(venue: RivieraVenue, renderer = uploader()) {
-  for (let i = 0; i < ENVIRONMENT_HANDOFF.settleFrames; i += 1) {
-    venue.environment.advance(ENVIRONMENT_HANDOFF.settleSeconds, renderer);
-  }
+  const { settleFrames, settleSeconds, maxFadeStep } = ENVIRONMENT_HANDOFF;
+  const count = Math.max(settleFrames, Math.ceil(settleSeconds / maxFadeStep) + 1);
+  for (let i = 0; i < count; i += 1) venue.environment.advance(maxFadeStep, renderer);
   return renderer;
 }
 
@@ -117,7 +117,7 @@ describe('createRivieraVenue', () => {
     expect(environment.load).not.toHaveBeenCalled();
     expect(scene.environmentNode?.name).toBe('venue-environment');
     expect(venue.environment.node).toBe(scene.environmentNode);
-    expect(venue.environment.hdri.type).toBe(HalfFloatType);
+    expect(venue.environment.map.type).toBe(HalfFloatType);
     expect(scene.children).toContain(venue.root);
     expect(venue.quality).toBe('high');
     venue.dispose();
@@ -131,7 +131,7 @@ describe('createRivieraVenue', () => {
     environment.resolve();
     await Promise.resolve();
     for (let i = 0; i < 60; i += 1) venue.environment.advance(1 / 60, renderer);
-    expect(renderer.initTexture).toHaveBeenCalledExactlyOnceWith(venue.environment.hdri);
+    expect(renderer.initTexture).toHaveBeenCalledExactlyOnceWith(venue.environment.map);
     await expect(venue.environmentReady).resolves.toBe('hdri');
     venue.dispose();
   });
@@ -258,9 +258,9 @@ describe('createRivieraVenue', () => {
     expect(materialDispose).toHaveBeenCalled();
     expect(geometryDispose).toHaveBeenCalled();
     expect(
-      textureDispose.mock.contexts.some((t) => (t as Texture).name === 'venue-hdri-fallback'),
+      textureDispose.mock.contexts.some((t) => (t as Texture).name === 'venue-environment'),
     ).toBe(true);
-    expect(textureDispose.mock.contexts).toContain(venue.environment.hdri);
+    expect(textureDispose.mock.contexts).toContain(venue.environment.map);
     environment.resolve();
     await venue.environmentReady;
     await Promise.resolve();
