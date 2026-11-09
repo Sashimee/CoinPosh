@@ -485,6 +485,17 @@ describe('prefilterHdriInWorker', () => {
     expect(workers[0]?.terminate).toHaveBeenCalledOnce();
   });
 
+  it('rejects and terminates when the worker reply cannot be deserialized', async () => {
+    const workers = stubWorkers();
+    const pending = prefilterHdriInWorker(SUNSET_HDRI, new AbortController().signal);
+    const worker = workers[0];
+    worker?.dispatchEvent(new MessageEvent('messageerror'));
+    await expect(pending).rejects.toThrow(/reply could not be deserialized/);
+    expect(worker?.terminate).toHaveBeenCalledOnce();
+    worker?.reply({ ok: false, message: 'late' });
+    expect(worker?.terminate).toHaveBeenCalledOnce();
+  });
+
   it('terminates the worker mid-filter when the signal aborts, and ignores a late reply', async () => {
     const workers = stubWorkers();
     const controller = new AbortController();

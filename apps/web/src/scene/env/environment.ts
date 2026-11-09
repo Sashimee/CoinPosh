@@ -91,6 +91,7 @@ export const prefilterHdriInWorker: EnvironmentLoader = (hdri, signal) =>
       signal.removeEventListener('abort', abort);
       worker.removeEventListener('message', message);
       worker.removeEventListener('error', error);
+      worker.removeEventListener('messageerror', unreadable);
     };
     const abort = () => {
       stop();
@@ -110,9 +111,18 @@ export const prefilterHdriInWorker: EnvironmentLoader = (hdri, signal) =>
         ),
       );
     };
+    const unreadable = () => {
+      stop();
+      reject(
+        new Error(
+          'The environment worker reply could not be deserialized; check that the worker posts plain typed arrays',
+        ),
+      );
+    };
     signal.addEventListener('abort', abort, { once: true });
     worker.addEventListener('message', message);
     worker.addEventListener('error', error);
+    worker.addEventListener('messageerror', unreadable);
     const request: PrefilterRequest = { url: new URL(hdri.url, document.baseURI).href };
     worker.postMessage(request);
   });
