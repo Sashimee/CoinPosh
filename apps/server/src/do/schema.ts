@@ -1,7 +1,7 @@
 import { UPGRADE_LEVELS_SQL } from '../routes/upgrades.ts';
 
 /** PlayerDO SQLite migrations, applied in order; `schema_version` records how many ran. */
-const MIGRATIONS: readonly string[] = [
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -87,6 +87,10 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX ledger_ref ON ledger (ref);
   `,
   UPGRADE_LEVELS_SQL,
+  `
+  INSERT INTO meta (key, value)
+    SELECT 'heap_seeded', '1' WHERE EXISTS (SELECT 1 FROM ledger WHERE kind = 'grant.heap');
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {

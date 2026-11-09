@@ -448,6 +448,27 @@ describe('mock server: attacks from a compromised client', () => {
     expect(errorCode(response)).toBe('invalid_signature');
   });
 
+  it('accepts the boot flag on state and refuses a query outside the contract', async () => {
+    const token = await accessToken();
+    const boot = await forge(server, alice.device, {
+      method: 'GET',
+      path: '/v1/state?hydrate=boot',
+      body: null,
+      token,
+    });
+    expect(boot.status).toBe(200);
+    for (const path of ['/v1/state?hydrate=yes', '/v1/state?refund=all']) {
+      const response = await forge(server, alice.device, {
+        method: 'GET',
+        path,
+        body: null,
+        token,
+      });
+      expect(response.status, path).toBe(400);
+      expect(errorCode(response)).toBe('validation_failed');
+    }
+  });
+
   it('rejects a missing or garbage signature', async () => {
     const token = await accessToken();
     const response = await forge(server, alice.device, {

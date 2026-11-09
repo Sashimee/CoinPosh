@@ -244,14 +244,14 @@ describe('opening heap for players who signed up before it was seeded', () => {
       walletCoins: startingCoins(),
       drops: 0,
     });
-    const first = await stub.state();
+    const first = await stub.state({});
     if (!first.ok) throw new Error(first.error.message);
     expect(first.body.table.coins).toHaveLength(openingHeap.coins);
     expect(first.body.table.coins.every((coin) => coin.tier === openingHeap.tier)).toBe(true);
     expect(first.body.table.buffer).toHaveLength(PREMINT_BUFFER_TARGET);
     expect(first.body.wallet.coins).toBe(startingCoins() - PREMINT_BUFFER_TARGET * COPPER.value);
 
-    const second = await stub.state();
+    const second = await stub.state({});
     if (!second.ok) throw new Error(second.error.message);
     expect(second.body.table.coins).toEqual(first.body.table.coins);
     expect(second.body.table.buffer).toEqual(first.body.table.buffer);
@@ -262,7 +262,7 @@ describe('opening heap for players who signed up before it was seeded', () => {
 
   it('lets go of old reservations the wallet cannot pay for', async () => {
     const stub = await legacyPlayer({ unpaidBuffer: 5, walletCoins: 2, drops: 0 });
-    const result = await stub.state();
+    const result = await stub.state({});
     if (!result.ok) throw new Error(result.error.message);
     expect(result.body.table.buffer).toHaveLength(2);
     expect(result.body.wallet.coins).toBe(0);
@@ -271,8 +271,7 @@ describe('opening heap for players who signed up before it was seeded', () => {
 
   it('refunds the drops stranded on the table, then lays the heap, once', async () => {
     const stub = await legacyPlayer({ unpaidBuffer: 3, walletCoins: 36, drops: 36, stranded: 36 });
-    await stub.signedIn();
-    const first = await stub.state();
+    const first = await stub.state({ hydrate: 'boot' });
     if (!first.ok) throw new Error(first.error.message);
     expect(first.body.table.coins).toHaveLength(openingHeap.coins);
     expect(first.body.table.coins.every((coin) => coin.tier === openingHeap.tier)).toBe(true);
@@ -281,8 +280,7 @@ describe('opening heap for players who signed up before it was seeded', () => {
     expect(report.walletCoins + report.bufferPaid).toBe(36);
     expect(report.ledger.house).toBe(-openingHeap.coins * HEAP_VALUE);
 
-    await stub.signedIn();
-    const second = await stub.state();
+    const second = await stub.state({ hydrate: 'boot' });
     if (!second.ok) throw new Error(second.error.message);
     expect(second.body.table.coins).toEqual(first.body.table.coins);
     expect(second.body.wallet).toEqual(first.body.wallet);

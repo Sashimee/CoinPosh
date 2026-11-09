@@ -6,6 +6,7 @@ import {
   authenticate,
   fingerprint,
   parseBody,
+  parseQuery,
   requireIdempotencyKey,
   respond,
 } from '../http/signed.ts';
@@ -18,7 +19,8 @@ export function playerStub(env: Env, playerId: PlayerId) {
 
 tableRoutes.get(endpoints.state.path, async (c) => {
   const { grant } = await authenticate(c);
-  const result = await playerStub(c.env, grant.playerId).state();
+  const query = parseQuery(endpoints.state.query, c);
+  const result = await playerStub(c.env, grant.playerId).state(query);
   return respond(c, endpoints.state.response, result);
 });
 

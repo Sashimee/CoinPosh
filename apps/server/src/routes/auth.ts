@@ -127,7 +127,6 @@ authRoutes.post(endpoints.authGuest.path, async (c) => {
     locale: body.locale,
     createdAt: player.createdAt,
   });
-  await stub.signedIn();
   const refreshToken = await issueRefreshToken(c, player.playerId, crypto.randomUUID(), now);
   const grant: AccessGrant = { playerId: player.playerId, deviceKey: body.devicePublicKey };
   return c.json(
@@ -187,7 +186,6 @@ authRoutes.post(endpoints.authRefresh.path, async (c) => {
   }
 
   const playerId = PlayerIdSchema.parse(row.player_id);
-  await c.env.PLAYER.get(c.env.PLAYER.idFromName(playerId)).signedIn();
   const refreshToken = await issueRefreshToken(c, playerId, row.family_id, now);
   return c.json(
     endpoints.authRefresh.response.parse(

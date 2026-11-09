@@ -3,6 +3,7 @@ import {
   type ClaimsResponse,
   type DropResponse,
   type PlayerId,
+  type StateQuery,
   type StateResponse,
 } from '@coinposh/shared';
 import { env } from 'cloudflare:workers';
@@ -13,8 +14,12 @@ export function playerStub(playerId: PlayerId) {
   return env.PLAYER.get(env.PLAYER.idFromName(playerId));
 }
 
-export async function state(session: Session): Promise<StateResponse> {
-  const response = await session.call(endpoints.state.path);
+export async function state(session: Session, query: StateQuery = {}): Promise<StateResponse> {
+  const response = await session.call(
+    query.hydrate === undefined
+      ? endpoints.state.path
+      : `${endpoints.state.path}?hydrate=${query.hydrate}`,
+  );
   expect(response.status).toBe(200);
   return endpoints.state.response.parse(await response.json());
 }
@@ -77,8 +82,11 @@ export async function expectConserved(session: Session): Promise<void> {
   expect(report).toMatchObject({ conserved: true });
 }
 
-/** What a page reload does before it hydrates: sign in again, since the access token lived in memory. */
+/**
+ * What a page reload does: sign in again, since the access token lived in memory, then lay the
+ * table from a boot snapshot.
+ */
 export async function reload(session: Session): Promise<StateResponse> {
   expect((await guestSignIn(session.device)).status).toBe(200);
-  return state(session);
+  return state(session, { hydrate: 'boot' });
 }

@@ -13,13 +13,15 @@ import { newSession, send, type Session } from '../test/client.ts';
 import {
   claims,
   dropAsClient,
+  expectError,
   expectConserved,
   playerStub,
   reload,
   state,
   vaultCoins,
 } from '../test/game.ts';
-import { mintedValue } from './entities.ts';
+import { Entities, mintedValue } from './entities.ts';
+import { commit, LedgerTx } from './ledger.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
 const COPPER = coinTiers[0];
@@ -78,15 +80,78 @@ describe('a page reload with coins on the table', () => {
     await expectConserved(session);
   });
 
-  it('works through the refresh token a reload really uses', async () => {
+  it('leaves coins in play alone when a mid-session token refresh is followed by a snapshot', async () => {
     const session = await newSession();
-    await dropped(session, 3);
+    const coins = await dropped(session, 3);
     const response = await send(session.device, endpoints.authRefresh.path, {
       body: { refreshToken: session.tokens.refreshToken },
     });
     expect(response.status).toBe(200);
-    await state(session);
+    const { accessToken } = endpoints.authRefresh.response.parse(await response.json());
+    const resumed = await send(session.device, endpoints.state.path, { accessToken });
+    expect(resumed.status).toBe(200);
+
+    expect(await refunds(session)).toEqual([]);
+    expect(await vaultCoins(session)).toBe(startingCoins() - 3 * COPPER.value);
+    const [first] = coins;
+    if (first === undefined) throw new Error('The drop failed.');
+    const result = await claims(session, [
+      { kind: 'fall', coinId: first.id, tick: 9, edge: 'front' },
+    ]);
+    expect(result.results[0]).toMatchObject({ status: 'accepted', credited: first.value });
+    await expectConserved(session);
+  });
+
+  it('refunds on a boot snapshot alone, with no sign-in before it, and only once', async () => {
+    const session = await newSession();
+    await dropped(session, 4);
+    await state(session, { hydrate: 'boot' });
+    const rows = await refunds(session);
+    expect(credited(rows, 'wallet')).toBe(4 * COPPER.value);
     expect(await vaultCoins(session)).toBe(startingCoins());
+
+    await state(session, { hydrate: 'boot' });
+    expect(await refunds(session)).toEqual(rows);
+    expect(await vaultCoins(session)).toBe(startingCoins());
+    await expectConserved(session);
+  });
+
+  it('refuses a hydrate value or a query field outside the contract', async () => {
+    const session = await newSession();
+    await dropped(session, 2);
+    for (const search of ['hydrate=yes', 'hydrate=boot&refund=all', 'reload=1']) {
+      await expectError(
+        await session.call(`${endpoints.state.path}?${search}`),
+        400,
+        'validation_failed',
+      );
+    }
+    expect(await refunds(session)).toEqual([]);
+  });
+
+  it('never refunds more than a coin is worth, and the house then takes nothing', async () => {
+    const session = await newSession();
+    const before = await vaultCoins(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      const coin = new Entities(sql).mintCoin(COPPER.id, 2, 'table', 0, 0);
+      commit(
+        sql,
+        new LedgerTx('drop.mint')
+          .post('wallet', 'coins', -3, coin.id)
+          .post('table', 'coins', 2, coin.id)
+          .post('mint', 'coins', 1, coin.id),
+        { at: 0, idempotencyKey: null },
+      );
+    });
+    expect(await vaultCoins(session)).toBe(before - 3);
+
+    await state(session, { hydrate: 'boot' });
+    const rows = await refunds(session);
+    expect(credited(rows, 'wallet')).toBe(2);
+    expect(credited(rows, 'house')).toBe(0);
+    expect(await vaultCoins(session)).toBe(before - 1);
+    await expectConserved(session);
   });
 
   it('refuses a claim of a refunded coin, so it never pays twice', async () => {

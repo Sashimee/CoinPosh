@@ -315,7 +315,7 @@ async function loadState(net: Net, app: UiApp): Promise<StateResponse> {
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await net.client.call('state');
+        return await net.client.call('state', { query: { hydrate: 'boot' } });
       } catch (error) {
         if (stopped.signal.aborted) throw error;
         const delayMs = Math.min(STATE_RETRY.firstDelayMs * 2 ** attempt, STATE_RETRY.maxDelayMs);
