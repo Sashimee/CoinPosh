@@ -11,23 +11,31 @@ import {
   crateIncomeCoins,
   crateSpawn,
   currencies,
+  dropBufferTarget,
+  dropSpacingTicks,
+  dropSpawnsCrate,
   dropTables,
   fusion,
   fusionValue,
   initialPityState,
   measuredActiveRatePerHour,
+  mintedCoinValue,
   offline,
+  offlineCapHours,
   offlineRate,
   offlineVaultCoins,
   openingHeap,
   pity,
+  pushTravelTicks,
   playStretchOf,
+  rateEnvelope,
+  rateEnvelopeScale,
   playWindowStart,
   rollDrop,
   season,
   upgradeCost,
   upgradeLines,
-  upgradeStat,
+  upgradeStatAt,
   venues,
   type CrateRewardDef,
   type DropSourceId,
@@ -35,6 +43,7 @@ import {
   type PlayEntry,
   type RarityId,
   type Rng,
+  type UpgradeLevelMap,
   type UpgradeLineDef,
   type UpgradeStatId,
   type VenueDef,
@@ -266,16 +275,30 @@ function levelKey(player: MockPlayer, def: UpgradeLineDef): string {
   return def.scope === 'global' ? def.id : `${player.venueId}:${def.id}`;
 }
 
+/** The levels in play at the player's current venue, global lines included. */
+function levelMap(player: MockPlayer): UpgradeLevelMap {
+  const levels: Record<string, number> = {};
+  for (const def of upgradeLines) levels[def.id] = player.levels.get(levelKey(player, def)) ?? 0;
+  return levels;
+}
+
 function stat(player: MockPlayer, statId: UpgradeStatId): number {
-  let value = 1;
-  let found = false;
-  for (const def of upgradeLines) {
-    if (def.effect.stat !== statId) continue;
-    const level = player.levels.get(levelKey(player, def)) ?? 0;
-    value = found ? value * upgradeStat(def, level) : upgradeStat(def, level);
-    found = true;
-  }
-  return value;
+  return upgradeStatAt(levelMap(player), statId);
+}
+
+/** The base envelope `max` stretched by the player's upgrades, as the server's envelope does. */
+function envelopeMax(
+  player: MockPlayer,
+  base: number,
+  metric: (typeof rateEnvelope)['falls' | 'fusions'],
+): number {
+  const scale = rateEnvelopeScale(metric, {
+    levels: levelMap(player),
+    venue: player.venueId,
+    charms: 0,
+    albumBonus: 0,
+  });
+  return Math.ceil(base * scale - 1e-9);
 }
 
 function emptyWallet(): Wallet {
@@ -420,11 +443,7 @@ export class MockWorld {
     const def = coinTiers.find((candidate) => candidate.id === tier);
     if (def === undefined)
       throw new Error(`Mock: coin tier "${tier}" missing from economy config.`);
-    const multiplier =
-      venueDef(player.venueId).coinValueMultiplier *
-      stat(player, 'coinValue') *
-      stat(player, 'globalCoinValue');
-    return Math.floor(def.value * multiplier);
+    return mintedCoinValue(def, venueDef(player.venueId), levelMap(player));
   }
 
   #mint(
@@ -467,10 +486,24 @@ export class MockWorld {
     }
   }
 
+  /**
+   * Buffered coins are paid for but their value is minted on drop, so a coinValue purchase
+   * reprices them and the very next drop carries the bought level, as on the server.
+   */
+  #revalueBuffer(player: MockPlayer): void {
+    const value = this.#coinValue(player, DROP_TIER.id);
+    for (const record of player.coins.values()) {
+      if (record.place === 'buffer' && record.coin.tier === DROP_TIER.id) {
+        record.coin = { ...record.coin, value };
+      }
+    }
+  }
+
   /** Tops the buffer up with coins paid for now, so an offline drop never creates value later. */
   #refillBuffer(player: MockPlayer, now: number): void {
     let buffered = this.#buffer(player).length;
-    while (buffered < MOCK_RULES.bufferSize && player.wallet.coins >= DROP_TIER.value) {
+    const target = dropBufferTarget(MOCK_RULES.bufferSize, levelMap(player));
+    while (buffered < target && player.wallet.coins >= DROP_TIER.value) {
       const coin = this.#mint(
         player,
         DROP_TIER.id,
@@ -586,7 +619,7 @@ export class MockWorld {
   }
 
   #settleOffline(player: MockPlayer, awayMs: number, now: number) {
-    const capHours = stat(player, 'offlineHours');
+    const capHours = offlineCapHours(levelMap(player));
     const coins = offlineVaultCoins(
       awayMs / 3_600_000,
       capHours,
@@ -595,12 +628,7 @@ export class MockWorld {
       offline,
     );
     if (coins < 1) return null;
-    const creditedMs = Math.min(
-      awayMs,
-      Math.round(
-        Math.min(Math.max(capHours, offline.baseCapHours), offline.maxCapHours) * 3_600_000,
-      ),
-    );
+    const creditedMs = Math.min(awayMs, Math.round(capHours * 3_600_000));
     this.#credit(player, now, 'offline.vault', { coins });
     return { awayMs, creditedMs, coins };
   }
@@ -696,7 +724,8 @@ export class MockWorld {
       this.#checkActionTick(player, 'Drop', body.tick, now);
       if (
         player.lastDropTick !== null &&
-        body.tick < player.lastDropTick + MOCK_RULES.minTicksBetweenDrops
+        body.tick <
+          player.lastDropTick + dropSpacingTicks(MOCK_RULES.minTicksBetweenDrops, levelMap(player))
       ) {
         throw new MockFailure('bad_request', 'Drops arrive faster than the table allows.');
       }
@@ -733,14 +762,7 @@ export class MockWorld {
       }
       const spawnedCrates: TableCrate[] = [];
       const ftue = player.drops === crateSpawn.ftueScriptedDrop;
-      const every = Math.max(
-        1,
-        Math.round(
-          crateSpawn.dropsPerCrate /
-            (stat(player, 'crateChance') * stat(player, 'globalCrateChance')),
-        ),
-      );
-      if (ftue || player.drops % every === 0) {
+      if (dropSpawnsCrate(player.drops, levelMap(player))) {
         const crate: TableCrate = {
           id: CrateIdSchema.parse(entityId(ENTITY_ID_PREFIXES.crate)),
           kind: 'vault',
@@ -807,6 +829,8 @@ export class MockWorld {
         `${body.level}`,
       );
       player.levels.set(key, body.level);
+      this.#revalueBuffer(player);
+      this.#refillBuffer(player, now);
       return {
         venueId: body.venueId,
         lineId: body.lineId,
@@ -1041,10 +1065,10 @@ export class MockWorld {
         ) {
           return reject('not_on_table');
         }
-        if (claim.tick < record.spawnTick + MIN_FALL_TICKS[record.origin]) {
-          return reject('over_envelope');
-        }
-        const { max, maxPerTick } = MOCK_RULES.fallEnvelope;
+        const travel = pushTravelTicks(MIN_FALL_TICKS[record.origin], levelMap(player));
+        if (claim.tick < record.spawnTick + travel) return reject('over_envelope');
+        const { maxPerTick } = MOCK_RULES.fallEnvelope;
+        const max = envelopeMax(player, MOCK_RULES.fallEnvelope.max, rateEnvelope.falls);
         const sameTick = player.recentFalls.filter((tick) => tick === claim.tick).length;
         if (
           sameTick >= maxPerTick ||
@@ -1096,7 +1120,7 @@ export class MockWorld {
             player.recentFusions,
             claim.tick,
             FUSION_WINDOW_TICKS,
-            MOCK_RULES.fusionEnvelope.max,
+            envelopeMax(player, MOCK_RULES.fusionEnvelope.max, rateEnvelope.fusions),
           )
         ) {
           return reject('over_envelope');

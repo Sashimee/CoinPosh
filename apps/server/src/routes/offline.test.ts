@@ -3,11 +3,14 @@ import {
   offlineEarnings,
   offlineRate,
   starterVaultCoins,
+  upgradeLines,
+  upgradeStat,
   vaultRatePerHour,
 } from '@coinposh/economy';
 import { EpochMsSchema, type CoinId, type EpochMs } from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { HOME_VENUE } from '../do/entities.ts';
 import type { PlayerDO } from '../do/PlayerDO.ts';
 import { newSession, type Session } from '../test/client.ts';
 import { claims, dropAsClient, playerStub, vaultCoins } from '../test/game.ts';
@@ -18,8 +21,14 @@ import {
   quoteOffline,
   recordOffline,
 } from './offline.ts';
+import { readUpgradeLevels, recordUpgrade } from './upgrades.ts';
 
 const MINUTE = 60_000;
+const OFFLINE_LINE = (() => {
+  const line = upgradeLines.find((candidate) => candidate.id === 'offlineHours');
+  if (line === undefined) throw new Error('Economy config has no offlineHours line.');
+  return line;
+})();
 const HOUR = 60 * MINUTE;
 
 type Edge = 'front' | 'left';
@@ -122,7 +131,7 @@ describe('Velvet Vault offline earnings', () => {
     const session = await newSession();
     await inPlayer(session, (sql, last) => {
       expect(measuredActiveRate(sql)).toBe(0);
-      const settlement = quoteOffline(sql, at(last + 12 * HOUR), 2);
+      const settlement = quoteOffline(sql, at(last + 12 * HOUR), {});
       expect(settlement).toEqual({
         awayMs: 12 * HOUR,
         creditedMs: 2 * HOUR,
@@ -142,7 +151,7 @@ describe('Velvet Vault offline earnings', () => {
       expect(rate).toBeCloseTo((net * HOUR) / offlineRate.minSpanMs);
       expect(rate).toBeGreaterThan(offlineRate.starterRatePerHour);
 
-      const settlement = quoteOffline(sql, at(last + 8 * HOUR), 2);
+      const settlement = quoteOffline(sql, at(last + 8 * HOUR), {});
       expect(settlement).toEqual({
         awayMs: 8 * HOUR,
         creditedMs: 2 * HOUR,
@@ -157,13 +166,33 @@ describe('Velvet Vault offline earnings', () => {
     await play(session, 4);
     await inPlayer(session, (sql, last) => {
       const away = at(last + 20 * HOUR);
-      const base = quoteOffline(sql, away, 2);
-      const upgraded = quoteOffline(sql, away, 5);
-      const beyond = quoteOffline(sql, away, 40);
-      expect(base?.creditedMs).toBe(2 * HOUR);
-      expect(upgraded?.creditedMs).toBe(5 * HOUR);
-      expect(beyond?.creditedMs).toBe(offline.maxCapHours * HOUR);
+      const base = quoteOffline(sql, away, {});
+      const upgraded = quoteOffline(sql, away, { offlineHours: 3 });
+      const top = quoteOffline(sql, away, { offlineHours: OFFLINE_LINE.maxLevel });
+      expect(base?.creditedMs).toBe(offline.baseCapHours * HOUR);
+      expect(upgraded?.creditedMs).toBe(upgradeStat(OFFLINE_LINE, 3) * HOUR);
+      expect(top?.creditedMs).toBe(offline.maxCapHours * HOUR);
       expect(upgraded?.coins ?? 0).toBeGreaterThan(base?.coins ?? 0);
+      expect(top?.coins ?? 0).toBeGreaterThan(upgraded?.coins ?? 0);
+    });
+  });
+
+  it('takes the cap from the stored offlineHours level as soon as it is bought', async () => {
+    const session = await newSession();
+    await play(session, 4);
+    await inPlayer(session, (sql, last) => {
+      const away = at(last + 20 * HOUR);
+      const before = quoteOffline(sql, away, readUpgradeLevels(sql, HOME_VENUE.id));
+      recordUpgrade(sql, {
+        venueId: HOME_VENUE.id,
+        lineId: 'offlineHours',
+        level: 4,
+        currency: 'coins',
+        cost: 0,
+      });
+      const after = quoteOffline(sql, away, readUpgradeLevels(sql, HOME_VENUE.id));
+      expect(before?.creditedMs).toBe(offline.baseCapHours * HOUR);
+      expect(after?.creditedMs).toBe(upgradeStat(OFFLINE_LINE, 4) * HOUR);
     });
   });
 
@@ -171,11 +200,11 @@ describe('Velvet Vault offline earnings', () => {
     const session = await newSession();
     await play(session, 4);
     await inPlayer(session, (sql, last) => {
-      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS - 1), 2)).toBeNull();
-      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS), 2)?.creditedMs).toBe(
+      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS - 1), {})).toBeNull();
+      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS), {})?.creditedMs).toBe(
         OFFLINE_MIN_AWAY_MS,
       );
-      expect(quoteOffline(sql, at(last - HOUR), 2)).toBeNull();
+      expect(quoteOffline(sql, at(last - HOUR), {})).toBeNull();
     });
   });
 
@@ -199,7 +228,7 @@ describe('Velvet Vault offline earnings', () => {
     expect(spent).toBeGreaterThan(won);
     await inPlayer(session, (sql, last) => {
       expect(measuredActiveRate(sql)).toBe(0);
-      expect(quoteOffline(sql, at(last + 8 * HOUR), 2)?.coins).toBe(starterVaultCoins(2));
+      expect(quoteOffline(sql, at(last + 8 * HOUR), {})?.coins).toBe(starterVaultCoins(2));
     });
   });
 
@@ -210,7 +239,7 @@ describe('Velvet Vault offline earnings', () => {
     expect(spent).toBeGreaterThan(0);
     await inPlayer(session, (sql, last) => {
       expect(measuredActiveRate(sql)).toBe(0);
-      expect(quoteOffline(sql, at(last + 8 * HOUR), 2)?.coins).toBe(starterVaultCoins(2));
+      expect(quoteOffline(sql, at(last + 8 * HOUR), {})?.coins).toBe(starterVaultCoins(2));
     });
   });
 
@@ -221,7 +250,7 @@ describe('Velvet Vault offline earnings', () => {
     await inPlayer(session, (sql, last) => {
       const rate = measuredActiveRate(sql);
       expect(rate).toBeCloseTo((net * HOUR) / offlineRate.minSpanMs);
-      const coins = quoteOffline(sql, at(last + 3 * HOUR), 2)?.coins;
+      const coins = quoteOffline(sql, at(last + 3 * HOUR), {})?.coins;
       expect(coins).toBe(Math.floor(2 * offline.activeRateFactor * vaultRatePerHour(rate)));
       expect(coins).toBeGreaterThanOrEqual(starterVaultCoins(2));
     });
@@ -232,13 +261,13 @@ describe('Velvet Vault offline earnings', () => {
     await play(session, 4);
     await inPlayer(session, (sql, last) => {
       const returned = at(last + 8 * HOUR);
-      const first = quoteOffline(sql, returned, 2);
+      const first = quoteOffline(sql, returned, {});
       if (first === null) throw new Error('expected a settlement after 8 hours away');
       recordOffline(sql, returned, first);
 
-      expect(quoteOffline(sql, returned, 2)).toBeNull();
-      expect(quoteOffline(sql, at(returned + MINUTE), 2)).toBeNull();
-      const again = quoteOffline(sql, at(returned + 3 * HOUR), 2);
+      expect(quoteOffline(sql, returned, {})).toBeNull();
+      expect(quoteOffline(sql, at(returned + MINUTE), {})).toBeNull();
+      const again = quoteOffline(sql, at(returned + 3 * HOUR), {});
       expect(again).toEqual({ ...first, awayMs: 3 * HOUR });
     });
   });
