@@ -67,7 +67,10 @@ import {
 
 export type HttpMethod = 'GET' | 'POST';
 
-/** `none` endpoints are still device-signed; they just carry no bearer access token. */
+/**
+ * `none` endpoints carry no bearer access token but are still device-signed: the verifying key
+ * travels in the body (`devicePublicKey`) or is looked up from the refresh-token row.
+ */
 export type AuthMode = 'none' | 'bearer';
 
 export interface Endpoint<
@@ -165,9 +168,10 @@ export const tableSnapshotEndpoint = post(
   TableSnapshotResponseSchema,
 );
 
-// TODO(lead-architect): spread into `endpoints` with T-10.03, which adds their fixtures to
-// `test/fixtures.ts` and their Demo mock handlers; both are mapped over every EndpointName.
-/** `none` routes serve a device with no session yet: the nonce for a sign-in, and the sign-in. */
+// TODO(lead-architect): spread into `endpoints` in the same change that adds their fixtures to
+// `test/fixtures.ts` and their Demo handlers to `apps/web/src/net/mock/world.ts`; both are mapped
+// over every EndpointName (https://github.com/Sashimee/CoinPosh/issues/119).
+/** `none` routes serve a device with no session yet and carry the signing key in the body. */
 export const accountEndpoints = {
   accountNonce: post(
     '/v1/account/nonce',

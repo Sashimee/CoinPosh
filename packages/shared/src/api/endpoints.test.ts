@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { endpointFixtures, ids } from '../test/fixtures.ts';
 import { roundTrip } from '../test/roundTrip.ts';
 import {
@@ -216,6 +217,19 @@ describe('accountEndpoints', () => {
       'accountNonce',
       'authSignIn',
     ]);
+  });
+
+  it('carries the signing key in the body of every route without a session', () => {
+    for (const { name, endpoint } of accountCases) {
+      if (endpoint.auth !== 'none') {
+        continue;
+      }
+      expect(endpoint.body, name).toBeInstanceOf(z.ZodObject);
+      const shape = (endpoint.body as z.ZodObject).shape as Record<string, z.ZodType>;
+      const key = shape.devicePublicKey;
+      expect(key, name).toBeDefined();
+      expect(key?.safeParse(undefined).success, name).toBe(false);
+    }
   });
 
   it('has a strict body and an idempotency key on every POST, and no body on the GET', () => {

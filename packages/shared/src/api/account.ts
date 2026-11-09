@@ -31,9 +31,14 @@ export const NONCE_PURPOSES = ['link', 'signin'] as const;
 export const NoncePurposeSchema = z.enum(NONCE_PURPOSES);
 export type NoncePurpose = z.infer<typeof NoncePurposeSchema>;
 
+/**
+ * Device-signed with the key in the body, so a device with no session can ask. The server binds
+ * the nonce to that key's thumbprint and rejects a link or sign-in signed by any other key.
+ */
 export const AccountNonceRequestSchema = z.strictObject({
   provider: IdentityProviderSchema,
   purpose: NoncePurposeSchema,
+  devicePublicKey: DevicePublicKeySchema,
 });
 export type AccountNonceRequest = z.infer<typeof AccountNonceRequestSchema>;
 
@@ -62,7 +67,13 @@ export const AccountSchema = z.object({
       'A player links each provider at most once.',
     ),
   /** Providers the server can verify right now; the others answer `provider_unavailable`. */
-  available: z.array(IdentityProviderSchema).max(IDENTITY_PROVIDERS.length),
+  available: z
+    .array(IdentityProviderSchema)
+    .max(IDENTITY_PROVIDERS.length)
+    .refine(
+      (providers) => new Set(providers).size === providers.length,
+      'Each provider is listed as available at most once.',
+    ),
 });
 export type Account = z.infer<typeof AccountSchema>;
 

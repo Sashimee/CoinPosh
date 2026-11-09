@@ -51,7 +51,7 @@ const choice = {
 
 const fixtures: Record<AccountEndpointName, { body?: unknown; response: unknown }> = {
   accountNonce: {
-    body: { provider: 'apple', purpose: 'signin' },
+    body: { provider: 'apple', purpose: 'signin', devicePublicKey },
     response: { nonce, expiresAt: 1_762_473_900_000 },
   },
   accountLink: { body: { provider: 'google', idToken, nonce }, response: account },
@@ -73,20 +73,34 @@ function withKey(value: unknown, key: string, extra: unknown): Record<string, un
   return { ...value, [key]: extra };
 }
 
+const leafSchemas = [z.ZodString, z.ZodNumber, z.ZodBoolean, z.ZodEnum, z.ZodLiteral];
+
 function fieldNames(schema: z.ZodType): string[] {
-  if (schema instanceof z.ZodOptional) {
+  if (
+    schema instanceof z.ZodOptional ||
+    schema instanceof z.ZodNullable ||
+    schema instanceof z.ZodDefault
+  ) {
     return fieldNames(schema.unwrap() as z.ZodType);
   }
   if (schema instanceof z.ZodArray) {
     return fieldNames(schema.element as z.ZodType);
   }
-  if (!(schema instanceof z.ZodObject)) {
+  if (schema instanceof z.ZodUnion || schema instanceof z.ZodDiscriminatedUnion) {
+    return (schema.options as z.ZodType[]).flatMap(fieldNames);
+  }
+  if (schema instanceof z.ZodObject) {
+    return Object.entries(schema.shape as Record<string, z.ZodType>).flatMap(([key, field]) => [
+      key,
+      ...fieldNames(field),
+    ]);
+  }
+  if (leafSchemas.some((leaf) => schema instanceof leaf)) {
     return [];
   }
-  return Object.entries(schema.shape as Record<string, z.ZodType>).flatMap(([key, field]) => [
-    key,
-    ...fieldNames(field),
-  ]);
+  throw new Error(
+    `fieldNames: unhandled schema type ${schema.constructor.name}; teach the walker its children.`,
+  );
 }
 
 interface AccountCase {
@@ -144,6 +158,26 @@ describe.each(cases)('$name round-trip', ({ endpoint, fixture }) => {
   }
 });
 
+describe('fieldNames', () => {
+  it('walks union, nullable and default wrappers', () => {
+    const schema = z.object({
+      a: z.union([z.object({ wallet: z.string() }), z.object({ b: z.number() })]),
+      c: z.discriminatedUnion('kind', [z.object({ kind: z.literal('x'), d: z.boolean() })]),
+      e: z.object({ f: z.string() }).nullable(),
+      g: z.object({ h: z.string() }).default({ h: '' }),
+    });
+    expect(fieldNames(schema).toSorted()).toEqual(
+      ['a', 'wallet', 'b', 'c', 'kind', 'd', 'e', 'f', 'g', 'h'].toSorted(),
+    );
+  });
+
+  it('throws on a schema type it cannot see into', () => {
+    expect(() => fieldNames(z.record(z.string(), z.object({ value: z.number() })))).toThrow(
+      /unhandled schema type/,
+    );
+  });
+});
+
 describe('account requests', () => {
   const forbidden = new Set([
     ...Object.keys(WalletSchema.shape),
@@ -185,11 +219,23 @@ describe('account requests', () => {
     expect(IdTokenSchema.safeParse(huge).success).toBe(false);
   });
 
-  it('asks for a nonce bound to one provider and one purpose', () => {
-    expect(AccountNonceRequestSchema.safeParse({ provider: 'google' }).success).toBe(false);
+  it('asks for a nonce bound to one provider, one purpose and one device key', () => {
     expect(
-      AccountNonceRequestSchema.safeParse({ provider: 'google', purpose: 'merge' }).success,
+      AccountNonceRequestSchema.safeParse({ provider: 'google', devicePublicKey }).success,
     ).toBe(false);
+    expect(
+      AccountNonceRequestSchema.safeParse({ provider: 'google', purpose: 'merge', devicePublicKey })
+        .success,
+    ).toBe(false);
+    expect(
+      AccountNonceRequestSchema.safeParse({ provider: 'google', purpose: 'link' }).success,
+    ).toBe(false);
+  });
+
+  it('refuses a nonce request whose device key leaks the private scalar', () => {
+    const leaked = { ...devicePublicKey, d: 'jpsQnnGQmL-YBIffH1136cspYG6-0iY7X1fCE9-E9LI' };
+    const body = { provider: 'google', purpose: 'link', devicePublicKey: leaked };
+    expect(AccountNonceRequestSchema.safeParse(body).success).toBe(false);
   });
 
   it('refuses a sign-in whose device key leaks the private scalar', () => {
@@ -206,6 +252,12 @@ describe('AccountSchema', () => {
       identities: [],
       available: [],
     });
+  });
+
+  it('rejects the same provider listed as available twice', () => {
+    expect(AccountSchema.safeParse({ ...account, available: ['google', 'google'] }).success).toBe(
+      false,
+    );
   });
 
   it('rejects the same provider linked twice', () => {
