@@ -16,6 +16,9 @@
     "test": {
       "outputs": []
     },
+    "test:perf": {
+      "outputs": []
+    },
     "e2e": {
       "dependsOn": ["build"],
       "cache": false
