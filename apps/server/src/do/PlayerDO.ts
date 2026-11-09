@@ -187,7 +187,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
 
   /**
    * The player's snapshot. A boot one (`hydrate=boot`) is what a freshly loaded client lays its table from,
-   * so it first refunds the coins that client cannot lay again (see refundStranded). Every
+   * so it first refunds the coins that client cannot lay again (see refundStranded) and ends the
+   * cascade chain, since that client's ticks start over. Every
    * one lays the opening heap for a player who never had one and settles the buffer against
    * the wallet.
    */
@@ -197,7 +198,10 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const now = Date.now();
     const committed = this.ctx.storage.transactionSync(() => {
       const before = this.latestSeq();
-      if (query.hydrate === 'boot') this.refundStranded(now);
+      if (query.hydrate === 'boot') {
+        this.refundStranded(now);
+        this.clearCascadeChain();
+      }
       this.seedOpeningHeap(now);
       this.reserveBuffer({ at: now, idempotencyKey: null });
       return this.latestSeq() !== before;
@@ -647,6 +651,11 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const count = this.meta('cascade_count');
     if (lastTick === null || count === null) return null;
     return { lastTick: Number(lastTick), count: Number(count) };
+  }
+
+  /** A booting client's sim restarts its ticks, so no fall after a boot may join a chain from before. */
+  private clearCascadeChain(): void {
+    this.sql.exec("DELETE FROM meta WHERE key IN ('cascade_last_tick', 'cascade_count')");
   }
 
   private setCascadeChain(chain: CascadeChain): void {

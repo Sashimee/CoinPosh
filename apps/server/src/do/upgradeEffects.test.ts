@@ -248,6 +248,19 @@ describe('coinValue pays its fraction through the mint carry', () => {
     await expectConserved(session);
   });
 
+  it('reprices a reserved coin stored before the carry existed only by the raise', async () => {
+    const session = await newSession();
+    await runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) => {
+      ctx.storage.sql.exec("UPDATE coins SET mint_micros = NULL WHERE state = 'buffer'");
+    });
+    await reachCoinValue(session, 2);
+    const buffer = (await state(session)).table.buffer;
+    expect(buffer.slice(0, 5).map((coin) => coin.value)).toEqual([1, 1, 2, 1, 2]);
+    const dropped = await dropFrom(session, buffer, 5);
+    expect(dropped.reduce((total, response) => total + response.coin.value, 0)).toBe(7);
+    await expectConserved(session);
+  });
+
   it('reprices the buffer once: a replayed purchase does not move the carry', async () => {
     const session = await newSession();
     await setLevel(session, 'coinValue', 0);

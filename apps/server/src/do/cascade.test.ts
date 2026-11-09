@@ -3,7 +3,7 @@ import { endpoints, type ClaimsResponse, type DropResponse } from '@coinposh/sha
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { newIdempotencyKey, newSession, send, type Session } from '../test/client.ts';
-import { claims, dropAsClient, expectConserved, playerStub, state } from '../test/game.ts';
+import { claims, dropAsClient, expectConserved, playerStub, reload, state } from '../test/game.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
 const COPPER = coinTiers[0];
@@ -97,6 +97,38 @@ describe('cascade multiplier on the server', () => {
     const fell = await claims(session, list);
     expect(credited(fell)).toEqual([1, 0, 1, 1]);
     expect(tiers(fell)).toEqual([null, null, null, 'chic']);
+    await expectConserved(session);
+  });
+
+  it('starts a new chain for a fall at an earlier tick instead of extending the old one', async () => {
+    const session = await newSession();
+    const dropped = await dropAsClient(session, 6);
+    const ticks = [100, 101, 102, 99, 98, 97];
+    const fell = await claims(
+      session,
+      frontFalls(dropped, (i) => ticks[i] ?? Number.NaN),
+    );
+    expect(tiers(fell)).toEqual([null, null, 'chic', null, null, null]);
+    expect(credited(fell)).toEqual([1, 1, 1, 1, 1, 1]);
+    await expectConserved(session);
+  });
+
+  it('drops the chain on a boot snapshot, so a reloaded sim never joins the old one', async () => {
+    const session = await newSession();
+    const before = await dropAsClient(session, 5);
+    await claims(
+      session,
+      frontFalls(before, (i) => 500 + i),
+    );
+    expect(await cascadeMeta(session)).toMatchObject({ cascade_count: '5' });
+    await reload(session);
+    expect(await cascadeMeta(session)).not.toHaveProperty('cascade_count');
+    const after = await dropAsClient(session, 3, () => 505);
+    const fell = await claims(
+      session,
+      frontFalls(after, (i) => 505 + i),
+    );
+    expect(tiers(fell)).toEqual([null, null, 'chic']);
     await expectConserved(session);
   });
 

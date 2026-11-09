@@ -139,13 +139,19 @@ export function cascadeWindowTicks(
   return Math.ceil((config.windowMs * ticksPerSecond) / 1000);
 }
 
-/** The chain after a front fall at `tick`: one longer inside the window, else a new chain of one. */
+/**
+ * The chain after a front fall at `tick`: one longer when the fall is at or after the last one
+ * and inside the window, else a new chain of one. An earlier tick never extends a chain: the sim
+ * restarts at tick 0 on reload, and a forged client could otherwise keep a chain alive forever.
+ */
 export function extendCascade(
   chain: CascadeChain | null,
   tick: number,
   windowTicks: number,
 ): CascadeChain {
-  const count = chain !== null && tick - chain.lastTick <= windowTicks ? chain.count + 1 : 1;
+  const continues =
+    chain !== null && chain.lastTick <= tick && tick - chain.lastTick <= windowTicks;
+  const count = continues ? chain.count + 1 : 1;
   return { lastTick: tick, count };
 }
 

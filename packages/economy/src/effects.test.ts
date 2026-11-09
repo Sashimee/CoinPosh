@@ -234,6 +234,19 @@ describe('cascade chain', () => {
     });
   });
 
+  it('starts a new chain for a tick before the last one, however close', () => {
+    const chain = { lastTick: 1_000, count: 25 };
+    expect(extendCascade(chain, 999, window)).toEqual({ lastTick: 999, count: 1 });
+    expect(extendCascade(chain, 0, window)).toEqual({ lastTick: 0, count: 1 });
+    expect(extendCascade(chain, 1_000, window)).toEqual({ lastTick: 1_000, count: 26 });
+  });
+
+  it('cannot be kept alive with ever-decreasing ticks', () => {
+    let chain = extendCascade(null, 10_000, window);
+    for (let tick = 9_999; tick > 9_900; tick--) chain = extendCascade(chain, tick, window);
+    expect(chain.count).toBe(1);
+  });
+
   it('pays 10 chained copper falls 11: ×1 ×1 then Chic ×1.1, Lavish ×1.25, Opulent ×1.5', () => {
     const credited = chainRun(10, 1);
     expect(sum(credited)).toBe(Math.floor(2 + 3 * 1.1 + 4 * 1.25 + 1.5));
