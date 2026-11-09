@@ -28,7 +28,7 @@ interface CratesStrings extends CratesFlatStrings, ResourceTree {
 export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
   en: {
     title: 'Vault Crate',
-    arrived: 'A Vault Crate is on the table. Push it over the edge!',
+    arrived: 'Push it over the edge!',
     opened: '{{rarity}} Vault Crate opened',
     collect: 'Collect',
     skip: 'Tap to skip',
@@ -61,7 +61,7 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
   },
   fr: {
     title: 'Caisse du Coffre',
-    arrived: 'Une Caisse du Coffre est sur la table. Poussez-la par-dessus bord !',
+    arrived: 'Poussez-la par-dessus bord !',
     opened: 'Caisse du Coffre {{rarity}} ouverte',
     collect: 'Encaisser',
     skip: 'Touchez pour passer',
@@ -94,7 +94,7 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
   },
   de: {
     title: 'Tresorkiste',
-    arrived: 'Eine Tresorkiste liegt auf dem Tisch. Schieben Sie sie über die Kante!',
+    arrived: 'Schieben Sie sie über die Kante!',
     opened: 'Tresorkiste ({{rarity}}) geöffnet',
     collect: 'Einsammeln',
     skip: 'Tippen zum Überspringen',
