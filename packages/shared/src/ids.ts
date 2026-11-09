@@ -53,6 +53,7 @@ export const ENTITY_ID_PREFIXES = {
   quest: 'quest',
   season: 'season',
   event: 'event',
+  tableSession: 'session',
 } as const;
 
 export const PlayerIdSchema = z.uuid().brand<'PlayerId'>();
@@ -82,6 +83,10 @@ export type SeasonId = z.infer<typeof SeasonIdSchema>;
 
 export const EventIdSchema = entityId(ENTITY_ID_PREFIXES.event, 'EventId');
 export type EventId = z.infer<typeof EventIdSchema>;
+
+/** Rotated by every boot; the newest boot owns the table and older sessions are fenced off. */
+export const TableSessionIdSchema = entityId(ENTITY_ID_PREFIXES.tableSession, 'TableSessionId');
+export type TableSessionId = z.infer<typeof TableSessionIdSchema>;
 
 export const VenueIdSchema = z.enum(VENUE_IDS);
 export type VenueId = z.infer<typeof VenueIdSchema>;
