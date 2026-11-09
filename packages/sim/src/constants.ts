@@ -56,5 +56,14 @@ export const SOLVER = {
  *   idle 10 minutes 2c475ed06fbdb4fb and 2 minutes of drops 30afd7256494fcfe, against
  *   a044318612a6692b and d12afc06736517d7 for the 160-coin pour they replaced.
  *   Mechanics digest 729f6f15f07d6198 is unchanged.
+ * - 7: tables restore from snapshots (Sim.create({ restore }), T-92.02), and the opening
+ *   heap is laid through the same path, as every heap slot in order. Restoring the
+ *   checked-in settled-table fixture
+ *   hashes bb870ee1fb671645, c01adfd9be924908 after a second of drops and
+ *   c2fef5284a571c67 after a minute. Fused heap 5659c314480b9ede (was
+ *   996bcdc84b3175fb), idle Demo table 3e6951ced226e46a (was 2c475ed06fbdb4fb), 2
+ *   minutes of drops b4f254b6bc329ea8 (was 30afd7256494fcfe); the scripted minute
+ *   bdd732e82cbaab2c, nudge 4df094d60c3198e0, opening heap 53ff5809aefa4642 and Demo
+ *   pour bb41e00c43e62270 are unchanged.
  */
-export const SIM_VERSION = 6;
+export const SIM_VERSION = 7;

@@ -132,6 +132,24 @@ describe('PusherClock', () => {
     expect(fastest).toBeGreaterThan(0.95 * peak);
   });
 
+  it('starts part way into a cycle exactly where a clock run from zero would be', () => {
+    const fresh = new PusherClock();
+    offsets(fresh, 137);
+    const started = new PusherClock(DEFAULT_PUSHER_MOTION, 137);
+    expect(started.tickInCycle).toBe(137);
+    expect(started.offset).toBe(fresh.offset);
+    expect(offsets(started, PUSHER.periodTicks)).toEqual(offsets(fresh, PUSHER.periodTicks));
+    expect(new PusherClock(DEFAULT_PUSHER_MOTION, PUSHER.periodTicks - 1).tickInCycle).toBe(
+      PUSHER.periodTicks - 1,
+    );
+  });
+
+  it.each([-1, PUSHER.periodTicks, 1.5, Number.NaN])('rejects a start tick of %s', (tick) => {
+    expect(() => new PusherClock(DEFAULT_PUSHER_MOTION, tick)).toThrow(
+      /tickInCycle must be an integer in \[0, 240\)/,
+    );
+  });
+
   it('keeps the phase when the speed changes, so the block does not jump', () => {
     const clock = new PusherClock();
     offsets(clock, 60);
