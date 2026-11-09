@@ -132,14 +132,11 @@ export interface BootOptions {
 }
 
 /**
- * The game URL for `query`, always with `webgl=1`, the WebGL2 switch the preview pages read:
- * WebGPU on headless SwiftShader loses its device mid-run (P-287). The game itself lands on
- * WebGL2 here because headless Chromium exposes no WebGPU adapter, which boot.spec.ts asserts.
+ * The game URL for `query`. The game lands on WebGL2 here only because headless Chromium exposes
+ * no WebGPU adapter, so stage.ts falls back; boot.spec.ts asserts that fallback.
  */
 export function gameUrl(query = ''): string {
-  const url = new URL(query, GAME_URL);
-  url.searchParams.set('webgl', '1');
-  return url.href;
+  return new URL(query, GAME_URL).href;
 }
 
 /** Opens the Demo Mode build and waits until the table takes drops. */
