@@ -185,6 +185,110 @@ describe('coinValue upgrade on the server', () => {
   });
 });
 
+/** Test inspection only: the fraction of a coin the player's next mint starts from. */
+function mintCarry(session: Session): Promise<number> {
+  return runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) =>
+    Number(
+      ctx.storage.sql
+        .exec<{ value: string }>("SELECT value FROM meta WHERE key = 'mint_carry'")
+        .one().value,
+    ),
+  );
+}
+
+/** Puts coinValue at `level` the way a player gets there: the last level bought for real. */
+async function reachCoinValue(session: Session, level: number): Promise<void> {
+  if (level === 0) return;
+  await setLevel(session, 'coinValue', level - 1);
+  await buyNext(session, 'coinValue', level - 1);
+}
+
+describe('coinValue pays its fraction through the mint carry', () => {
+  it('credits 5, 6, 7, 8, 9, 10 over five copper drops and falls at levels 0..5', async () => {
+    const totals: number[] = [];
+    for (let level = 0; level <= 5; level++) {
+      const session = await newSession();
+      await reachCoinValue(session, level);
+      const dropped = await dropFrom(session, (await state(session)).table.buffer, 5);
+      const fell = await claims(
+        session,
+        dropped.map((response, i) => ({
+          kind: 'fall',
+          coinId: response.coin.id,
+          tick: 10 + i,
+          edge: 'front',
+        })),
+      );
+      const credited = fell.results.map((result) =>
+        result.status === 'accepted' ? result.credited : Number.NaN,
+      );
+      expect(credited).toEqual(dropped.map((response) => response.coin.value));
+      totals.push(credited.reduce((total, value) => total + value, 0));
+      await expectConserved(session);
+    }
+    expect(totals).toEqual([5, 6, 7, 8, 9, 10]);
+  });
+
+  it('pays ×1.2 from L1 on: the buffer repriced at purchase reads 1, 1, 1, 1, 2', async () => {
+    const session = await newSession();
+    await reachCoinValue(session, 1);
+    const buffer = (await state(session)).table.buffer;
+    expect(buffer.slice(0, 5).map((coin) => coin.value)).toEqual([1, 1, 1, 1, 2]);
+    const dropped = await dropFrom(session, buffer, 5);
+    expect(dropped.map((response) => response.coin.value)).toEqual([1, 1, 1, 1, 2]);
+    await expectConserved(session);
+  });
+
+  it('carries the fraction across the buffer refill: 20 drops at L2 credit floor(20 × 1.4)', async () => {
+    const session = await newSession();
+    await reachCoinValue(session, 2);
+    await fund(session, 100);
+    const dropped = await dropFrom(session, (await state(session)).table.buffer, 20);
+    expect(dropped.reduce((total, response) => total + response.coin.value, 0)).toBe(28);
+    await expectConserved(session);
+  });
+
+  it('reprices the buffer once: a replayed purchase does not move the carry', async () => {
+    const session = await newSession();
+    await setLevel(session, 'coinValue', 0);
+    await fund(session, upgradeCost(line('coinValue'), 0));
+    const key = newIdempotencyKey();
+    expect((await buy(session, 'coinValue', 1, key)).status).toBe(200);
+    const carry = await mintCarry(session);
+    const once = (await state(session)).table.buffer;
+    expect((await buy(session, 'coinValue', 1, key)).status).toBe(200);
+    expect(await mintCarry(session)).toBe(carry);
+    expect((await state(session)).table.buffer).toEqual(once);
+    await expectConserved(session);
+  });
+
+  it('does not advance the carry for a replayed drop', async () => {
+    const session = await newSession();
+    await reachCoinValue(session, 1);
+    const buffer = (await state(session)).table.buffer;
+    const body = { x: 0, tick: 0, coinId: buffer[0]?.id };
+    const key = newIdempotencyKey();
+    const first = await send(session.device, endpoints.tableDrop.path, {
+      accessToken: session.tokens.accessToken,
+      idempotencyKey: key,
+      body,
+    });
+    expect(first.status, await first.clone().text()).toBe(200);
+    const carry = await mintCarry(session);
+    const after = await state(session);
+    const replay = await send(session.device, endpoints.tableDrop.path, {
+      accessToken: session.tokens.accessToken,
+      idempotencyKey: key,
+      body,
+    });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(await first.json());
+    expect(await mintCarry(session)).toBe(carry);
+    expect((await state(session)).table.buffer).toEqual(after.table.buffer);
+    await expectConserved(session);
+  });
+});
+
 describe('crateChance upgrade on the server', () => {
   it('spawns the FTUE crate and then one every dropsPerCrate drops at level 0', async () => {
     const session = await newSession();

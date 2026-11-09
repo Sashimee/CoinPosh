@@ -3,16 +3,20 @@ import { describe, expect, it } from 'vitest';
 import { coinTiers, crateSpawn, offline, upgradeLines, venues } from './config/index.ts';
 import {
   crateSpawnInterval,
+  creditMintMicros,
   dropBufferTarget,
   dropSpacingTicks,
   dropSpawnsCrate,
+  MINT_MICROS_PER_COIN,
+  mintedCoinMicros,
   mintedCoinValue,
   pushTravelTicks,
+  repriceReserved,
   offlineCapHours,
   upgradeStatAt,
 } from './effects.ts';
 import { upgradeStat } from './formulas.ts';
-import type { UpgradeStatId } from './types.ts';
+import type { CoinTierDef, UpgradeStatId } from './types.ts';
 
 function lineFor(stat: UpgradeStatId) {
   const line = upgradeLines.find((candidate) => candidate.effect.stat === stat);
@@ -93,6 +97,104 @@ describe('mintedCoinValue', () => {
     expect(mintedCoinValue(copper, home, { coinValue: doubling - 1 })).toBe(
       mintedCoinValue(copper, home, {}),
     );
+  });
+});
+
+/** Mints `count` coins of `tier` from a zero carry and returns each credited value. */
+function mintRun(
+  count: number,
+  levels: Record<string, number>,
+  tier: CoinTierDef = copper,
+): number[] {
+  const micros = mintedCoinMicros(tier, home, levels);
+  let carry = 0;
+  return Array.from({ length: count }, () => {
+    const credit = creditMintMicros(micros, carry);
+    carry = credit.carry;
+    return credit.value;
+  });
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
+describe('carried mint value', () => {
+  it('pays every coinValue level over five copper drops: L0..L5 → 5, 6, 7, 8, 9, 10', () => {
+    expect([0, 1, 2, 3, 4, 5].map((level) => sum(mintRun(5, { coinValue: level })))).toEqual([
+      5, 6, 7, 8, 9, 10,
+    ]);
+    expect(mintRun(5, { coinValue: 1 })).toEqual([1, 1, 1, 1, 2]);
+    expect(mintRun(5, { coinValue: 2 })).toEqual([1, 1, 2, 1, 2]);
+  });
+
+  it('credits the floor of everything minted over any run, so the carry stays under one coin', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: coinValueLine.maxLevel }),
+        fc.integer({ min: 0, max: oldMoney.maxLevel }),
+        fc.constantFrom(...coinTiers),
+        fc.integer({ min: 1, max: 200 }),
+        (level, global, tier, count) => {
+          const levels = { [coinValueLine.id]: level, [oldMoney.id]: global };
+          const micros = mintedCoinMicros(tier, home, levels);
+          expect(sum(mintRun(count, levels, tier))).toBe(
+            Math.floor((micros * count) / MINT_MICROS_PER_COIN),
+          );
+        },
+      ),
+    );
+  });
+
+  it('is exact for the configured coinValue steps (no float drift in the millionths)', () => {
+    expect(mintedCoinMicros(copper, home, { coinValue: 1 })).toBe(
+      Math.round(copper.value * home.coinValueMultiplier * 1.2 * MINT_MICROS_PER_COIN),
+    );
+  });
+
+  it('rejects a negative mint and a carry outside [0, one coin)', () => {
+    expect(() => creditMintMicros(-1, 0)).toThrow(/micros must be an integer/);
+    expect(() => creditMintMicros(0.5, 0)).toThrow(/micros must be an integer/);
+    expect(() => creditMintMicros(1, -1)).toThrow(/carry must be an integer/);
+    expect(() => creditMintMicros(1, MINT_MICROS_PER_COIN)).toThrow(/carry must be an integer/);
+  });
+});
+
+describe('repriceReserved', () => {
+  const base = mintedCoinMicros(copper, home, {});
+
+  it('credits reserved coins only the raise, through the carry', () => {
+    const reserved = Array.from({ length: 5 }, () => ({ value: 1, micros: base }));
+    const l1 = mintedCoinMicros(copper, home, { coinValue: 1 });
+    const once = repriceReserved(reserved, l1, 0);
+    expect(once.reserved.map((coin) => coin.value)).toEqual([1, 1, 1, 1, 2]);
+    expect(once.carry).toBe(0);
+    expect(repriceReserved(once.reserved, l1, once.carry)).toEqual(once);
+  });
+
+  it('matches minting the same coins fresh at the new level', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: coinValueLine.maxLevel }),
+        fc.integer({ min: 1, max: 40 }),
+        (level, count) => {
+          const reserved = Array.from({ length: count }, () => ({ value: 1, micros: base }));
+          const repriced = repriceReserved(
+            reserved,
+            mintedCoinMicros(copper, home, { coinValue: level }),
+            0,
+          );
+          expect(repriced.reserved.map((coin) => coin.value)).toEqual(
+            mintRun(count, { coinValue: level }),
+          );
+        },
+      ),
+    );
+  });
+
+  it('refuses to lower a reserved coin', () => {
+    const l2 = mintedCoinMicros(copper, home, { coinValue: 2 });
+    expect(() => repriceReserved([{ value: 1, micros: l2 }], base, 0)).toThrow(/cannot drop/);
   });
 });
 

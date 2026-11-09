@@ -1451,6 +1451,90 @@ describe('mock server: upgrade effects match the authoritative server', () => {
     expectConserved();
   });
 
+  /** Puts coinValue at `level` the way a player gets there: the last level bought for real. */
+  async function reachCoinValue(level: number): Promise<void> {
+    if (level === 0) return;
+    setLevel('coinValue', level - 1);
+    await buy('coinValue', level);
+  }
+
+  /** Drops `count` buffered coins, lets each fall off the front, and returns what each paid. */
+  async function dropAndCollect(count: number): Promise<number[]> {
+    const credited: number[] = [];
+    time.advance(MOCK_RULES.fallEnvelope.windowMs);
+    for (let i = 0; i < count; i++) {
+      const coin = await dropBuffered();
+      time.advance(MOCK_RULES.minFallMsAfterDrop + Math.ceil(MS_PER_TICK));
+      const [result] = await claimAt([fallAt(coin, time.tick())]);
+      if (result?.status !== 'accepted') throw new Error(`Fall ${i} refused: ${result?.reason}`);
+      expect(result.credited).toBe(coin.value);
+      credited.push(result.credited);
+    }
+    return credited;
+  }
+
+  it('credits 5, 6, 7, 8, 9, 10 over five copper drops at coinValue levels 0..5, like the server', async () => {
+    const totals: number[] = [];
+    for (let level = 0; level <= 5; level++) {
+      time = new FakeTime();
+      server = createMockServer({ now: time.now });
+      alice = await connectPlayer(server, time);
+      await collectHeap(30);
+      await reachCoinValue(level);
+      totals.push((await dropAndCollect(5)).reduce((total, value) => total + value, 0));
+      expectConserved();
+    }
+    expect(totals).toEqual([5, 6, 7, 8, 9, 10]);
+  });
+
+  it('reprices the buffer at purchase through the carry: L1 reads 1, 1, 1, 1, 2', async () => {
+    await collectHeap(30);
+    await reachCoinValue(1);
+    expect((await state()).table.buffer.slice(0, 5).map((coin) => coin.value)).toEqual([
+      1, 1, 1, 1, 2,
+    ]);
+    expect(await dropAndCollect(5)).toEqual([1, 1, 1, 1, 2]);
+    expectConserved();
+  });
+
+  it('carries the fraction across the buffer refill: 20 drops at L2 credit floor(20 × 1.4)', async () => {
+    await collectHeap(30);
+    await reachCoinValue(2);
+    const credited = await dropAndCollect(20);
+    expect(credited.reduce((total, value) => total + value, 0)).toBe(28);
+    expectConserved();
+  });
+
+  it('does not advance the carry for a replayed drop', async () => {
+    await collectHeap(30);
+    await reachCoinValue(1);
+    const coin = await bufferedCoin();
+    time.advance(100);
+    const body = { x: 0, tick: time.tick(), coinId: coin.id };
+    const key = newIdempotencyKey();
+    const first = await alice.client.call('tableDrop', { body }, { idempotencyKey: key });
+    const carry = mockPlayer().mintCarry;
+    const buffer = (await state()).table.buffer;
+    const again = await alice.client.call('tableDrop', { body }, { idempotencyKey: key });
+    expect(again).toEqual(first);
+    expect(mockPlayer().mintCarry).toBe(carry);
+    expect((await state()).table.buffer).toEqual(buffer);
+    expectConserved();
+  });
+
+  it('reprices the buffer once: a replayed purchase does not move the carry', async () => {
+    await collectHeap(30);
+    const key = newIdempotencyKey();
+    const body = { venueId: venue().id, lineId: 'coinValue', level: 1 };
+    await alice.client.call('upgradesBuy', { body }, { idempotencyKey: key });
+    const carry = mockPlayer().mintCarry;
+    const buffer = (await state()).table.buffer;
+    await alice.client.call('upgradesBuy', { body }, { idempotencyKey: key });
+    expect(mockPlayer().mintCarry).toBe(carry);
+    expect((await state()).table.buffer).toEqual(buffer);
+    expectConserved();
+  });
+
   it('spawns crates at the FTUE drop and every dropsPerCrate drops at level 0', async () => {
     await collectHeap(30);
     expect(await crateDrops(crateSpawn.dropsPerCrate)).toEqual([

@@ -72,6 +72,7 @@ async function legacyPlayer(options: {
       fair_server_seed_hash: 'ab'.repeat(32),
       fair_client_seed: 'legacyclientseed',
       fair_nonce: '0',
+      mint_carry: '0',
     };
     for (const [key, value] of Object.entries(meta)) {
       sql.exec('INSERT INTO meta (key, value) VALUES (?, ?)', key, value);
@@ -84,10 +85,10 @@ async function legacyPlayer(options: {
     );
     const entities = new Entities(sql);
     for (let i = 0; i < options.unpaidBuffer; i++) {
-      entities.mintCoin(COPPER.id, mintedValue(COPPER.id, {}), 'buffer', null, 0);
+      entities.mintCoin(COPPER.id, mintedValue(COPPER.id, {}), null, 'buffer', null, 0);
     }
     for (let i = 0; i < (options.stranded ?? 0); i++) {
-      const coin = entities.mintCoin(COPPER.id, mintedValue(COPPER.id, {}), 'table', i, 0);
+      const coin = entities.mintCoin(COPPER.id, mintedValue(COPPER.id, {}), null, 'table', i, 0);
       commit(
         sql,
         new LedgerTx('drop.mint')

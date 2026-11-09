@@ -18,8 +18,9 @@ import {
   fusion,
   fusionValue,
   initialPityState,
+  creditMintMicros,
   measuredActiveRatePerHour,
-  mintedCoinValue,
+  mintedCoinMicros,
   offline,
   offlineCapHours,
   offlineRate,
@@ -28,6 +29,7 @@ import {
   pity,
   pushTravelTicks,
   playStretchOf,
+  repriceReserved,
   rateEnvelope,
   rateEnvelopeScale,
   playWindowStart,
@@ -120,6 +122,8 @@ interface CoinRecord {
   place: 'buffer' | 'table';
   spawnTick: number | null;
   origin: 'drop' | 'fusion' | 'heap';
+  /** Millionths of a coin this coin drew from the mint carry; null for a fused coin. */
+  mintMicros: number | null;
 }
 
 interface TickAnchor {
@@ -181,6 +185,8 @@ export interface MockPlayer {
   recentFalls: number[];
   recentFusions: number[];
   cascadeChain: { lastTick: number; count: number } | null;
+  /** The fraction of a coin, in millionths, the next minted coin starts from (as the server). */
+  mintCarry: number;
   lifetimeValue: number;
   lifetimeBullion: number;
   /**
@@ -373,6 +379,7 @@ export class MockWorld {
       recentFalls: [],
       recentFusions: [],
       cascadeChain: null,
+      mintCarry: 0,
       lifetimeValue: 0,
       lifetimeBullion: 0,
       playLog: [],
@@ -439,17 +446,18 @@ export class MockWorld {
     this.#checkpoints.set(entry.playerId, totals);
   }
 
-  #coinValue(player: MockPlayer, tier: CoinTier): number {
+  #coinMicros(player: MockPlayer, tier: CoinTier): number {
     const def = coinTiers.find((candidate) => candidate.id === tier);
     if (def === undefined)
       throw new Error(`Mock: coin tier "${tier}" missing from economy config.`);
-    return mintedCoinValue(def, venueDef(player.venueId), levelMap(player));
+    return mintedCoinMicros(def, venueDef(player.venueId), levelMap(player));
   }
 
   #mint(
     player: MockPlayer,
     tier: CoinTier,
     value: number,
+    mintMicros: number | null,
     place: CoinRecord['place'],
     spawnTick: number | null,
     origin: CoinRecord['origin'] = 'drop',
@@ -459,8 +467,22 @@ export class MockWorld {
       tier,
       value,
     };
-    player.coins.set(coin.id, { coin, place, spawnTick, origin });
+    player.coins.set(coin.id, { coin, place, spawnTick, origin, mintMicros });
     return coin;
+  }
+
+  /** Mints a coin worth its share of the multiplier: the fraction a floor drops is carried on. */
+  #mintFromCarry(
+    player: MockPlayer,
+    tier: CoinTier,
+    place: CoinRecord['place'],
+    spawnTick: number | null,
+    origin: CoinRecord['origin'] = 'drop',
+  ) {
+    const micros = this.#coinMicros(player, tier);
+    const credit = creditMintMicros(micros, player.mintCarry);
+    player.mintCarry = credit.carry;
+    return this.#mint(player, tier, credit.value, micros, place, spawnTick, origin);
   }
 
   #buffer(player: MockPlayer): MintedCoin[] {
@@ -480,23 +502,36 @@ export class MockWorld {
    * may fall from tick 0. The sim lays them first, so they hold sim ids 0..n-1.
    */
   #seedOpeningHeap(player: MockPlayer): void {
-    const value = this.#coinValue(player, openingHeap.tier);
     for (let i = 0; i < openingHeap.coins; i++) {
-      this.#mint(player, openingHeap.tier, value, 'table', 0, 'heap');
+      this.#mintFromCarry(player, openingHeap.tier, 'table', 0, 'heap');
     }
   }
 
   /**
    * Buffered coins are paid for but their value is minted on drop, so a coinValue purchase
-   * reprices them and the very next drop carries the bought level, as on the server.
+   * reprices them and the very next drop carries the bought level, as on the server. Each is
+   * credited only the raise, through the carry, so what was already minted is not counted twice.
    */
   #revalueBuffer(player: MockPlayer): void {
-    const value = this.#coinValue(player, DROP_TIER.id);
-    for (const record of player.coins.values()) {
-      if (record.place === 'buffer' && record.coin.tier === DROP_TIER.id) {
-        record.coin = { ...record.coin, value };
-      }
-    }
+    const reserved = [...player.coins.values()].filter(
+      (record) => record.place === 'buffer' && record.coin.tier === DROP_TIER.id,
+    );
+    const repriced = repriceReserved(
+      reserved.map((record) => {
+        if (record.mintMicros === null)
+          throw new Error('Mock: a buffered coin has no mint micros.');
+        return { value: record.coin.value, micros: record.mintMicros };
+      }),
+      this.#coinMicros(player, DROP_TIER.id),
+      player.mintCarry,
+    );
+    reserved.forEach((record, i) => {
+      const next = repriced.reserved[i];
+      if (next === undefined) throw new Error('Mock: repriceReserved returned fewer coins.');
+      record.coin = { ...record.coin, value: next.value };
+      record.mintMicros = next.micros;
+    });
+    player.mintCarry = repriced.carry;
   }
 
   /** Tops the buffer up with coins paid for now, so an offline drop never creates value later. */
@@ -504,13 +539,7 @@ export class MockWorld {
     let buffered = this.#buffer(player).length;
     const target = dropBufferTarget(MOCK_RULES.bufferSize, levelMap(player));
     while (buffered < target && player.wallet.coins >= DROP_TIER.value) {
-      const coin = this.#mint(
-        player,
-        DROP_TIER.id,
-        this.#coinValue(player, DROP_TIER.id),
-        'buffer',
-        null,
-      );
+      const coin = this.#mintFromCarry(player, DROP_TIER.id, 'buffer', null);
       this.#credit(player, now, 'drop.prepay', { coins: -DROP_TIER.value }, coin.id);
       buffered++;
     }
@@ -732,13 +761,7 @@ export class MockWorld {
       let coin: MintedCoin;
       if (body.coinId === undefined) {
         this.#credit(player, now, 'drop.debit', { coins: -DROP_TIER.value });
-        coin = this.#mint(
-          player,
-          DROP_TIER.id,
-          this.#coinValue(player, DROP_TIER.id),
-          'table',
-          body.tick,
-        );
+        coin = this.#mintFromCarry(player, DROP_TIER.id, 'table', body.tick);
       } else {
         const record = player.coins.get(body.coinId);
         if (record === undefined) {
@@ -1134,7 +1157,7 @@ export class MockWorld {
             fusion,
           ),
         );
-        const minted = this.#mint(player, next, value, 'table', claim.tick, 'fusion');
+        const minted = this.#mint(player, next, value, null, 'table', claim.tick, 'fusion');
         return { status: 'accepted', credited: 0, cascade: null, minted };
       }
       case 'crate': {

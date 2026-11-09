@@ -113,6 +113,9 @@ describe('a player stored by the v1 schema', () => {
       expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
         version: MIGRATIONS.length,
       });
+      expect(sql.exec("SELECT value FROM meta WHERE key = 'mint_carry'").one()).toEqual({
+        value: '0',
+      });
       const vault = () => {
         const report = player.conservation();
         return report.walletCoins + report.bufferPaid;

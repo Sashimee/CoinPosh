@@ -1,10 +1,12 @@
 import {
   coinTiers,
+  creditMintMicros,
   dropBufferTarget,
   dropSpawnsCrate,
   fusion,
   fusionValue,
   openingHeap,
+  repriceReserved,
   upgradeLines,
   upgradeStat,
   type UpgradeLevelMap,
@@ -19,6 +21,7 @@ import {
   type ClaimsRequest,
   type ClaimsResponse,
   type CoinId,
+  type CoinTier,
   type DropRequest,
   type DropResponse,
   type EpochMs,
@@ -29,6 +32,7 @@ import {
   type StateResponse,
   type TableCrate,
   type TableSnapshot,
+  type Tick,
   type UpgradeBuyRequest,
   type UpgradeBuyResponse,
 } from '@coinposh/shared';
@@ -39,9 +43,10 @@ import { ApiFailure } from '../http/errors.ts';
 import {
   Entities,
   HOME_VENUE,
-  mintedValue,
+  mintedMicros,
   publicCoin,
   publicCrate,
+  storedMicros,
   tierDef,
   type StoredCoin,
 } from './entities.ts';
@@ -115,7 +120,8 @@ type MetaKey =
   | 'fair_server_seed_hash'
   | 'fair_client_seed'
   | 'fair_nonce'
-  | 'heap_seeded';
+  | 'heap_seeded'
+  | 'mint_carry';
 
 function startingCoins(): number {
   const line = upgradeLines.find((candidate) => candidate.effect.stat === 'startingCoins');
@@ -152,6 +158,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.setMeta('fair_server_seed_hash', serverSeedHash);
       this.setMeta('fair_client_seed', randomBase62(16));
       this.setMeta('fair_nonce', '0');
+      this.setMeta('mint_carry', '0');
       openWallet(this.sql);
       commit(
         this.sql,
@@ -238,7 +245,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     return this.mutate(command, (now) => {
       const quote = quoteUpgrade(this.levels(), readWallet(this.sql), command.body);
       recordUpgrade(this.sql, quote);
-      this.entities.revalueBuffer(DROP_TIER, mintedValue(DROP_TIER, this.levels()));
+      this.repriceBuffer();
       commit(
         this.sql,
         new LedgerTx(UPGRADE_TX_KIND).move('wallet', 'house', quote.currency, quote.cost, null),
@@ -434,13 +441,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       this.entities.placeOnTable(reserved.id, body.tick);
       coin = { ...reserved, state: 'table', droppedTick: body.tick };
     } else {
-      coin = this.entities.mintCoin(
-        DROP_TIER,
-        mintedValue(DROP_TIER, levels),
-        'table',
-        body.tick,
-        now,
-      );
+      coin = this.mintFromCarry(DROP_TIER, levels, 'table', body.tick, now);
     }
     commit(
       this.sql,
@@ -523,7 +524,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
             fusion,
           ),
         );
-        const fused = this.entities.mintCoin(next, value, 'table', claim.tick, now);
+        const fused = this.entities.mintCoin(next, value, null, 'table', claim.tick, now);
         const tx = new LedgerTx('claim.fusion');
         let inputValue = 0;
         for (const coin of inputs) {
@@ -573,15 +574,46 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     }
     for (let held = this.entities.countCoinsIn('buffer'); held < target; held++) {
       if (!canPay()) break;
-      const coin = this.entities.mintCoin(
-        DROP_TIER,
-        mintedValue(DROP_TIER, levels),
-        'buffer',
-        null,
-        context.at,
-      );
+      const coin = this.mintFromCarry(DROP_TIER, levels, 'buffer', null, context.at);
       this.prepay(coin.id, cost, context);
     }
+  }
+
+  /** Mints a coin worth its share of the multiplier: the fraction a floor drops is carried on. */
+  private mintFromCarry(
+    tier: CoinTier,
+    levels: UpgradeLevelMap,
+    state: 'buffer' | 'table',
+    droppedTick: Tick | null,
+    at: EpochMs,
+  ): StoredCoin {
+    const micros = mintedMicros(tier, levels);
+    const credit = creditMintMicros(micros, this.mintCarry());
+    this.setMeta('mint_carry', String(credit.carry));
+    return this.entities.mintCoin(tier, credit.value, micros, state, droppedTick, at);
+  }
+
+  /**
+   * Re-mints the reserved drop coins at the current levels, crediting each only the raise
+   * through the carry, so the coins already minted are not counted twice.
+   */
+  private repriceBuffer(): void {
+    const reserved = this.entities.coinsIn('buffer').filter((coin) => coin.tier === DROP_TIER);
+    const repriced = repriceReserved(
+      reserved.map((coin) => ({ value: coin.value, micros: storedMicros(coin) })),
+      mintedMicros(DROP_TIER, this.levels()),
+      this.mintCarry(),
+    );
+    reserved.forEach((coin, i) => {
+      const next = repriced.reserved[i];
+      if (next === undefined) throw new Error('repriceReserved returned fewer coins than it got.');
+      this.entities.repriceBuffered(coin.id, next.value, next.micros);
+    });
+    this.setMeta('mint_carry', String(repriced.carry));
+  }
+
+  private mintCarry(): number {
+    return Number(this.requireMeta('mint_carry'));
   }
 
   private prepay(id: CoinId, cost: number, context: CommitContext): void {
@@ -654,11 +686,11 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   private seedOpeningHeap(now: EpochMs): void {
     if (this.meta('heap_seeded') === '1') return;
     if (this.entities.countCoinsIn('table') > 0) return;
-    const value = mintedValue(openingHeap.tier, this.levels());
+    const levels = this.levels();
     const tx = new LedgerTx('grant.heap');
     for (let i = 0; i < openingHeap.coins; i++) {
-      const coin = this.entities.mintCoin(openingHeap.tier, value, 'table', 0, now);
-      tx.move('house', 'table', 'coins', value, coin.id);
+      const coin = this.mintFromCarry(openingHeap.tier, levels, 'table', 0, now);
+      tx.move('house', 'table', 'coins', coin.value, coin.id);
     }
     commit(this.sql, tx, { at: now, idempotencyKey: null });
     this.setMeta('heap_seeded', '1');

@@ -29,8 +29,15 @@ export function upgradeStatAt(
   return value;
 }
 
-/** What a coin of `tier` is worth when minted now: face value × venue × coinValue lines. */
-export function mintedCoinValue(
+/**
+ * Minted values are carried in millionths of a coin. Flooring each coin on its own would pay a
+ * copper nothing extra until coinValue reaches ×2, so the fraction is carried from one mint to
+ * the next instead and a run of coins pays exactly the multiplier.
+ */
+export const MINT_MICROS_PER_COIN = 1_000_000;
+
+/** A coin of `tier` minted now, in millionths: face value × venue × coinValue lines. */
+export function mintedCoinMicros(
   tier: CoinTierDef,
   venue: VenueDef,
   levels: UpgradeLevelMap,
@@ -39,7 +46,72 @@ export function mintedCoinValue(
     venue.coinValueMultiplier *
     upgradeStatAt(levels, 'coinValue') *
     upgradeStatAt(levels, 'globalCoinValue');
-  return Math.floor(coinValue(tier, multiplier) + FLOAT_SLACK);
+  return Math.round(coinValue(tier, multiplier) * MINT_MICROS_PER_COIN);
+}
+
+/** What one coin of `tier` minted now is worth on its own, before any carried fraction. */
+export function mintedCoinValue(
+  tier: CoinTierDef,
+  venue: VenueDef,
+  levels: UpgradeLevelMap,
+): number {
+  return Math.floor(mintedCoinMicros(tier, venue, levels) / MINT_MICROS_PER_COIN);
+}
+
+export interface MintCredit {
+  /** Whole coins to credit now. */
+  readonly value: number;
+  /** The fraction left over, in millionths, to carry into the player's next mint. */
+  readonly carry: number;
+}
+
+/**
+ * Adds `micros` to the player's carried fraction and splits off the whole coins. Over any run
+ * of mints the coins credited are the floor of everything minted, so nothing is created or lost
+ * beyond less than one coin still in the carry.
+ */
+export function creditMintMicros(micros: number, carry: number): MintCredit {
+  if (!Number.isSafeInteger(micros) || micros < 0) {
+    throw new RangeError(`creditMintMicros: micros must be an integer ≥ 0, got ${micros}`);
+  }
+  if (!Number.isSafeInteger(carry) || carry < 0 || carry >= MINT_MICROS_PER_COIN) {
+    throw new RangeError(
+      `creditMintMicros: carry must be an integer in [0, ${MINT_MICROS_PER_COIN}), got ${carry}`,
+    );
+  }
+  const total = carry + micros;
+  const value = Math.floor(total / MINT_MICROS_PER_COIN);
+  return { value, carry: total - value * MINT_MICROS_PER_COIN };
+}
+
+/** A coin reserved before it is played: what it was credited and the millionths it was minted at. */
+export interface ReservedMint {
+  readonly value: number;
+  readonly micros: number;
+}
+
+/**
+ * Re-mints reserved coins, in reservation order, at `micros` each. Each coin is credited only
+ * the difference from what it was minted at, through the carry, so repricing never counts the
+ * part already minted twice. Coin value never goes down while a coin is reserved.
+ */
+export function repriceReserved(
+  reserved: readonly ReservedMint[],
+  micros: number,
+  carry: number,
+): { readonly reserved: ReservedMint[]; readonly carry: number } {
+  let next = carry;
+  const repriced = reserved.map((coin) => {
+    if (micros < coin.micros) {
+      throw new RangeError(
+        `repriceReserved: a reserved coin minted at ${coin.micros} millionths cannot drop to ${micros}`,
+      );
+    }
+    const credit = creditMintMicros(micros - coin.micros, next);
+    next = credit.carry;
+    return { value: coin.value + credit.value, micros };
+  });
+  return { reserved: repriced, carry: next };
 }
 
 /** Drops between Vault Crates: the base spacing shortened by the crateChance lines. */

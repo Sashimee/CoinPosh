@@ -134,7 +134,7 @@ describe('a page reload with coins on the table', () => {
     const before = await vaultCoins(session);
     await runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) => {
       const sql = ctx.storage.sql;
-      const coin = new Entities(sql).mintCoin(COPPER.id, 2, 'table', 0, 0);
+      const coin = new Entities(sql).mintCoin(COPPER.id, 2, null, 'table', 0, 0);
       commit(
         sql,
         new LedgerTx('drop.mint')
