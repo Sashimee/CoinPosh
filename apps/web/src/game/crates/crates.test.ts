@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { crateSpawn, pity as pityConfig } from '@coinposh/economy';
 import {
   RARITIES,
@@ -46,6 +47,12 @@ import {
 } from './hint.ts';
 import { CRATES_STRINGS, cratesKey, registerCratesStrings } from './i18n.ts';
 import { heroOf, pityOutlook, rewardLines } from './loot.ts';
+import {
+  CARD_CHROME_GAP,
+  placeCrateCard,
+  type CrateCardLayout,
+  type CrateCardPlacement,
+} from './revealCard.ts';
 import { CRATE_RIDE_SECONDS, CrateRide } from './ride.ts';
 import { UnboxDirector, type OpenedCrate, type UnboxCard } from './view.ts';
 
@@ -407,6 +414,103 @@ describe('arrival hint placement', () => {
       expect(CRATES_STRINGS[language].arrived.length).toBeLessThanOrEqual(34);
       expect(CRATES_STRINGS[language].title.length).toBeLessThanOrEqual(20);
     }
+  });
+});
+
+describe('crate reward card placement', () => {
+  const rect = (left: number, top: number, right: number, bottom: number): HintRect => ({
+    left,
+    top,
+    right,
+    bottom,
+  });
+  const intersects = (a: HintRect, b: HintRect) =>
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const cardBox = (at: CrateCardPlacement, layout: CrateCardLayout, width: number) =>
+    rect((width - 340) / 2, at.top, (width + 340) / 2, at.top + layout.cardHeight * at.scale);
+  const swollen = (plaque: HintRect) => {
+    const half = ((plaque.bottom - plaque.top) * PLAQUE_SWELL) / 2;
+    const centre = (plaque.top + plaque.bottom) / 2;
+    return rect(plaque.left, centre - half, plaque.right, centre + half);
+  };
+
+  /** Measured in seeded Demo Mode: the Vault plaque, the dock and a four-line card. */
+  const viewports = [
+    {
+      name: '390x844',
+      width: 390,
+      plaque: rect(97, 90.1, 293, 163.6),
+      dock: rect(16, 774, 374, 830),
+      layout: { viewportHeight: 844, base: 774, cardHeight: 338.9 },
+    },
+    {
+      name: '360x640',
+      width: 360,
+      plaque: rect(95, 90.1, 265, 153.6),
+      dock: rect(12, 574, 348, 626),
+      layout: { viewportHeight: 640, base: 574, cardHeight: 338.9 },
+    },
+  ];
+
+  for (const viewport of viewports) {
+    it(`rests the card above the dock and below the Vault at ${viewport.name}`, () => {
+      const layout = { ...viewport.layout, plaque: viewport.plaque };
+      const at = placeCrateCard(layout);
+      const box = cardBox(at, layout, viewport.width);
+      expect(at.scale).toBe(1);
+      expect(intersects(box, viewport.dock)).toBe(false);
+      expect(intersects(box, swollen(viewport.plaque))).toBe(false);
+      expect(viewport.dock.top - box.bottom).toBeGreaterThanOrEqual(CARD_CHROME_GAP);
+      expect(viewport.dock.top - box.bottom).toBeLessThan(CARD_CHROME_GAP + 1);
+    });
+
+    it(`keeps every card size at one spot for the whole reveal at ${viewport.name}`, () => {
+      for (const cardHeight of [180, 266, 338.9]) {
+        const layout = { ...viewport.layout, plaque: viewport.plaque, cardHeight };
+        expect(placeCrateCard(layout)).toEqual(placeCrateCard({ ...layout }));
+        const box = cardBox(placeCrateCard(layout), layout, viewport.width);
+        expect(intersects(box, viewport.dock)).toBe(false);
+      }
+    });
+
+    it(`shrinks a card too tall for the room rather than covering the HUD at ${viewport.name}`, () => {
+      const layout = { ...viewport.layout, plaque: viewport.plaque, cardHeight: 720 };
+      const at = placeCrateCard(layout);
+      expect(at.scale).toBeLessThan(1);
+      expect(at.scale).toBeGreaterThan(0.5);
+      const box = cardBox(at, layout, viewport.width);
+      expect(intersects(box, viewport.dock)).toBe(false);
+      expect(intersects(box, swollen(viewport.plaque))).toBe(false);
+    });
+  }
+
+  it('fits a landscape phone by shrinking between the plaque and the dock', () => {
+    const plaque = rect(325, 12, 519, 86);
+    const layout = { viewportHeight: 390, plaque, base: 322, cardHeight: 338.9 };
+    const at = placeCrateCard(layout);
+    const box = cardBox(at, layout, 844);
+    expect(at.scale).toBeGreaterThan(0.4);
+    expect(box.bottom).toBeLessThanOrEqual(322 - CARD_CHROME_GAP);
+    expect(intersects(box, swollen(plaque))).toBe(false);
+  });
+
+  it('uses the viewport floor when the plaque is missing or the dock is not laid out', () => {
+    expect(
+      placeCrateCard({ viewportHeight: 640, plaque: null, base: 574, cardHeight: 300 }),
+    ).toEqual({ top: 262, scale: 1 });
+    expect(placeCrateCard({ viewportHeight: 640, plaque: null, base: 0, cardHeight: 300 })).toEqual(
+      {
+        top: 328,
+        scale: 1,
+      },
+    );
+  });
+
+  it('keeps the card out of layout until the reveal, so it cannot show early and then jump', () => {
+    const css = readFileSync(new URL('./crates.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/\.cp-crate-card\[hidden\]\s*\{\s*display:\s*none;/);
+    expect(css).not.toMatch(/margin-top:\s*\d+vh/);
+    expect(css).not.toMatch(/\.cp-crate\.is-revealed\s*\{[^}]*place-items/);
   });
 });
 
