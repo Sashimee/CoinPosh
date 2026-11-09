@@ -250,6 +250,13 @@ export interface CratePose {
   `/2` and `3/4`, restore a settled table. Over 120 ticks every asleep coin moves less
   than 1 mm, and nothing falls that was not already falling. This is what makes a
   reload look like nothing happened.
+- **Woken-coin bound (lead decision, 2026-11-09):** a coin the pusher wakes during those
+  120 ticks is compared with the uninterrupted reference table, not with its own rest
+  pose, and may end up to 1.5 mm from it. Poses are stored to 10 µm and velocities are not
+  stored (P-275), so contact amplifies that one-unit difference once the pusher moves the
+  coin; the measured worst case is 1.08 mm at tick 180. 1.5 mm is under 6 % of a copper
+  coin's diameter and is not visible at play distance. Coins that stay asleep keep the
+  1 mm bound, and nothing may fall that was not already falling.
 - **Parity:** the round-trip hash is equal in Node and in the browser (the existing
   parity harness).
 - **Validation:** table-driven tests for every reason in 1.3, including boundary values
