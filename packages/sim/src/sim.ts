@@ -68,6 +68,10 @@ export interface CoinState {
   readonly id: number;
   readonly translation: Readonly<Vector>;
   readonly rotation: Readonly<Rotation>;
+  /**
+   * At rest (TableCoin.sleeping). A sleeping coin on the pusher top still rides the
+   * block, so its translation can change while it sleeps.
+   */
   readonly sleeping: boolean;
   /** Null on a Sim without mechanics. */
   readonly tier: string | null;

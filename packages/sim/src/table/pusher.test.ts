@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { TICK_RATE_HZ } from '../constants.ts';
 import { PUSHER } from './layout.ts';
 import {
   DEFAULT_PUSHER_MOTION,
@@ -9,7 +10,7 @@ import {
   pusherExtension,
   type PusherMotion,
 } from './pusher.ts';
-import { PUSHER_CAM } from './tuning.ts';
+import { COIN_MATERIAL, TABLE_MATERIAL } from './tuning.ts';
 
 function offsets(clock: PusherClock, ticks: number): number[] {
   const out: number[] = [];
@@ -20,11 +21,9 @@ function offsets(clock: PusherClock, ticks: number): number[] {
   return out;
 }
 
-/** The cam's steepest slope over a half-stroke, where its second derivative crosses zero. */
+/** Smoothstep's steepest slope over a half-stroke, at its midpoint. */
 function peakSlope(): number {
-  const { knock } = PUSHER_CAM;
-  const u = Math.min(1, (3 - 2 * knock) / (6 - 6 * knock));
-  return (1 - knock) * 6 * u * (1 - u) + 2 * knock * u;
+  return 1.5;
 }
 
 /** The most a cam half-stroke can move the block in one tick. */
@@ -56,23 +55,35 @@ describe('pusherExtension', () => {
     }
   });
 
-  it('eases out of and back into retraction, and knocks at full reach', () => {
-    const { knock } = PUSHER_CAM;
-    expect(knock).toBeGreaterThan(0);
-    expect(knock).toBeLessThanOrEqual(1);
+  it('comes to rest at both full retraction and full reach', () => {
     const pf = PUSHER.pushFraction;
     const du = 1e-7;
     const slope = (phase: number): number =>
       (pusherExtension(phase + du, pf) - pusherExtension(phase, pf)) / du;
     expect(Math.abs(slope(0))).toBeLessThan(1e-5);
     expect(Math.abs(slope(1 - 2 * du))).toBeLessThan(1e-5);
-    expect(slope(pf - 2 * du)).toBeCloseTo((2 * knock) / pf, 4);
-    expect(slope(pf + du)).toBeCloseTo((-2 * knock) / (1 - pf), 4);
-    expect(slope(pf / 2)).toBeCloseTo((1.5 - 0.5 * knock) / pf, 4);
+    expect(Math.abs(slope(pf - 2 * du))).toBeLessThan(1e-5);
+    expect(Math.abs(slope(pf + du))).toBeLessThan(1e-5);
+    expect(slope(pf / 2)).toBeCloseTo(1.5 / pf, 4);
   });
 
-  it('peaks no steeper than smoothstep, so the knock does not fling coins mid-stroke', () => {
-    expect(peakSlope()).toBeLessThanOrEqual(1.5);
+  it('never accelerates the block hard enough to slide a coin riding its top', () => {
+    const pf = PUSHER.pushFraction;
+    const { stroke, periodTicks } = DEFAULT_PUSHER_MOTION;
+    const seconds = periodTicks / TICK_RATE_HZ;
+    const du = 1e-4;
+    let hardest = 0;
+    for (let i = 1; i < 1000; i++) {
+      const phase = i / 1000;
+      const e = (p: number): number => pusherExtension(p, pf);
+      const curvature = (e(phase + du) - 2 * e(phase) + e(phase - du)) / (du * du);
+      hardest = Math.max(hardest, Math.abs((curvature * stroke) / (seconds * seconds)));
+    }
+    const grip = 0.5 * (TABLE_MATERIAL.pusherFriction + COIN_MATERIAL.friction) * 9.81;
+    expect(hardest).toBeLessThan(grip / 4);
+  });
+
+  it('peaks at smoothstep slope mid-stroke', () => {
     const pf = PUSHER.pushFraction;
     const du = 1e-5;
     let steepest = 0;

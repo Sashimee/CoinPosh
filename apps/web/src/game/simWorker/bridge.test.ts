@@ -1,9 +1,9 @@
 import { COIN_TIERS } from '@coinposh/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PerspectiveCamera } from 'three/webgpu';
 import { CoinField, type CoinTierId } from '../../scene/coins/index.ts';
-import { SIM_COIN_DIMENSIONS, SimBridge, type BridgeEndpoint } from './bridge.ts';
-import { frameByteLength, FrameView, type CoinPose } from './frame.ts';
+import { SIM_COIN_DIMENSIONS, SimBridge } from './bridge.ts';
+import { FakeWorker, table } from './test/fake-worker.ts';
+import { frameByteLength, FrameView } from './frame.ts';
 import type { CoinTransformTarget } from './interpolate.ts';
 import type { MainToWorker, SimEventBatch, TransportKind, WorkerToMain } from './protocol.ts';
 import { MAX_CATCH_UP_TICKS, runSimWorker, TICK_MS } from './runtime.ts';
@@ -548,53 +548,6 @@ describe('SimBridge failures', () => {
   });
 });
 
-/** Stands in for the worker so a test can publish hand-made frames on its own schedule. */
-class FakeWorker implements BridgeEndpoint {
-  readonly sent: { message: MainToWorker; transfer: Transferable[] }[] = [];
-  readonly #listeners = new Map<string, ((event: MessageEvent<WorkerToMain>) => void)[]>();
-
-  postMessage(message: MainToWorker, transfer: Transferable[]): void {
-    this.sent.push({ message, transfer });
-  }
-
-  addEventListener(type: string, listener: (event: MessageEvent<WorkerToMain>) => void): void {
-    this.#listeners.set(type, [...(this.#listeners.get(type) ?? []), listener]);
-  }
-
-  emit(type: string, data?: WorkerToMain): void {
-    for (const listener of this.#listeners.get(type) ?? []) {
-      listener({ type, data } as MessageEvent<WorkerToMain>);
-    }
-  }
-
-  /** Buffers the bridge handed over in init plus everything it has recycled since. */
-  takeBuffers(): ArrayBuffer[] {
-    const buffers: ArrayBuffer[] = [];
-    for (const { message } of this.sent.splice(0)) {
-      if (message.type === 'init' && message.transport.kind === 'transfer') {
-        buffers.push(...message.transport.buffers);
-      }
-      if (message.type === 'recycle') buffers.push(message.buffer);
-    }
-    return buffers;
-  }
-}
-
-function table(count: number, tick: number): CoinPose[] {
-  return Array.from({ length: count }, (_, i) => {
-    const angle = tick * 0.002 + i;
-    return {
-      id: i,
-      translation: {
-        x: ((i % 25) - 12) * 0.028 + Math.sin(angle) * 0.0005,
-        y: COIN.halfThickness + Math.floor(i / 125) * 2 * COIN.halfThickness,
-        z: Math.floor((i % 125) / 25) * 0.028 + tick * 0.0001,
-      },
-      rotation: { x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) },
-    };
-  });
-}
-
 describe('SimBridge on the render thread', () => {
   it('keeps the transfer ring flowing: every displaced frame goes back to the worker', () => {
     const worker = new FakeWorker();
@@ -729,72 +682,5 @@ describe('SimBridge on the render thread', () => {
   it('exposes the sim coin dimensions for sizing the coin field', () => {
     expect(SIM_COIN_DIMENSIONS).toEqual({ radius: COIN.radius, halfThickness: COIN.halfThickness });
     expect(new SimBridge(new FakeWorker(), { seed: 1 }).coin).toBe(SIM_COIN_DIMENSIONS);
-  });
-
-  it('draws 250 coins at 120 Hz in well under 2 ms of render-thread time per frame', () => {
-    let now = 0;
-    const worker = new FakeWorker();
-    const bridge = new SimBridge(worker, {
-      seed: 1,
-      transport: 'transfer',
-      now: () => now,
-    });
-    const field = new CoinField({
-      capacity: { copper: 256, silver: 128, gold: 64, platinum: 32, diamond: 16, heirloom: 8 },
-      radius: SIM_COIN_DIMENSIONS.radius,
-    });
-    const camera = new PerspectiveCamera(40, 9 / 16, 0.05, 50);
-    camera.position.set(0, 0.45, 0.55);
-    camera.lookAt(0, 0, 0.05);
-    camera.updateProjectionMatrix();
-    const tiers: CoinTierId[] = [
-      'copper',
-      'copper',
-      'copper',
-      'copper',
-      'copper',
-      'silver',
-      'gold',
-      'platinum',
-    ];
-    for (let id = 0; id < 250; id += 1) bridge.setTier(id, tiers[id % tiers.length] ?? 'copper');
-
-    const pool = worker.takeBuffers();
-    let tick = 0;
-    const publish = (): void => {
-      pool.push(...worker.takeBuffers());
-      const buffer = pool.pop();
-      if (!buffer) throw new Error('ring ran dry');
-      new FrameView(buffer, 0, bridge.capacity).write(tick, 0, table(250, tick));
-      worker.emit('message', { type: 'frame', buffer });
-      tick += 1;
-    };
-
-    const costs: number[] = [];
-    const frameMs = 1000 / 120;
-    try {
-      for (let frame = 0; frame < 1200; frame += 1) {
-        now = frame * frameMs;
-        while (tick * TICK_MS + 3 <= now) publish();
-        const start = performance.now();
-        bridge.sync(field);
-        field.update(camera, 1280);
-        costs.push(performance.now() - start);
-      }
-    } finally {
-      field.dispose();
-    }
-    expect(bridge.stats.coins).toBe(250);
-    expect(
-      (['copper', 'silver', 'gold', 'platinum'] as const).map((tier) => field.count(tier)),
-    ).toEqual([157, 31, 31, 31]);
-    const steady = costs.slice(240).sort((a, b) => a - b);
-    const median = steady[Math.floor(steady.length / 2)] ?? Infinity;
-    const p95 = steady[Math.floor(steady.length * 0.95)] ?? Infinity;
-    console.info(
-      `[simWorker] 250 coins, render thread per 120 Hz frame: median ${median.toFixed(3)} ms, p95 ${p95.toFixed(3)} ms`,
-    );
-    expect(median).toBeLessThan(1);
-    expect(p95).toBeLessThan(2);
   });
 });

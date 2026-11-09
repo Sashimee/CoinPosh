@@ -6,20 +6,27 @@ import { PusherTable } from './table.ts';
 import { configureTableWorld } from './tuning.ts';
 
 /**
- * Budget: one tick with 250 coins on the table must stay under 4 ms on desktop. Run
- * with `pnpm --filter @coinposh/sim exec vitest bench --run`.
+ * Budget: one tick with 250 coins on the table must stay under 4 ms at the 99th
+ * percentile on desktop. Run with `pnpm --filter @coinposh/sim exec vitest bench --run`.
  *
- * The table is filled by playing, not by placing coins, so the bench measures the
- * real steady state: a full upper tier riding the pusher, a packed lower tier being
- * shoved over the edge, and a fresh drop every tick that the table is short of 250,
- * which holds it at 240 to 250 coins (a sweep over the edge can take a dozen at
- * once), at most one of them asleep (see TABLE_SOLVER). Measured with the impact
- * brake (COIN_MATERIAL.impactSpeed), the separation pass and the solver settings in
- * TABLE_SOLVER, over three runs: 3.01 to 3.06 ms mean, 3.15 to 3.21 ms at the 75th
- * percentile and 3.72 to 3.83 ms at the 99th, so even the slowest percent of ticks
- * holds the budget with 4% to 7% to spare. The coin and sleeping counts over the
- * measured ticks are printed after the run, so the result always says what it
- * measured.
+ * The table is filled by playing, not by placing coins: a full upper tier riding the
+ * pusher, a packed lower tier being shoved over the edge, and a fresh drop every tick
+ * that the table is short of 250, which holds it at 238 to 250 coins, up to 144 of them
+ * frozen at rest (COIN_REST).
+ *
+ * Only the tick is timed. The sleeping count runs once a second in a microtask, after
+ * tinybench has stopped the clock, so it is not in the figures; timing it inside moved
+ * the 99th by under 0.05 ms. Compare only runs taken back to back on one machine.
+ *
+ * On 2026-11-09, two rounds back to back on one loaded host (load 4 to 6): 3.06 to
+ * 3.10 ms mean and 4.39 to 4.54 ms at the 99th, against 3.55 ms and 4.98 to 5.02 ms for
+ * the table before coins could rest (feat/build-loop). The 99th is over budget. The tail
+ * is late-return ticks, where the backboard holds some 180 to 230 upper-tier coins awake
+ * as the block slides under them (the world step alone 3.1 to 3.5 ms), and separation
+ * ticks of 17 to 47 passes (1.2 to 2.8 ms). Waking only the riders within a coin of the
+ * board, or not cascading the board's push, cut the separation passes but let the pour
+ * spill 12 to 13 coins over the front lip instead of 5. The coin and
+ * sleeping counts are printed after the run.
  */
 const TARGET_COINS = 250;
 const WARMUP_TICKS = 45 * TICK_RATE_HZ;
@@ -50,9 +57,15 @@ function measuredStep(): void {
   measured.ticks += 1;
   measured.minCoins = Math.min(measured.minCoins, table.coinCount);
   if (measured.ticks % TICK_RATE_HZ === 0) {
-    const sleeping = table.coins().filter((c) => c.sleeping).length;
-    measured.maxSleeping = Math.max(measured.maxSleeping, sleeping);
+    // tinybench stops the clock when this synchronous call returns, so the count
+    // runs untimed in a microtask before the next sample starts.
+    queueMicrotask(countSleeping);
   }
+}
+
+function countSleeping(): void {
+  const sleeping = table.coins().filter((c) => c.sleeping).length;
+  measured.maxSleeping = Math.max(measured.maxSleeping, sleeping);
 }
 
 afterAll(() => {

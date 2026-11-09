@@ -14,7 +14,13 @@ import {
   type TableCoin,
   type TableOptions,
 } from './table.ts';
-import { COIN_MATERIAL, CONTACT_EVENTS, configureTableWorld, TABLE_SOLVER } from './tuning.ts';
+import {
+  COIN_MATERIAL,
+  COIN_REST,
+  CONTACT_EVENTS,
+  configureTableWorld,
+  TABLE_SOLVER,
+} from './tuning.ts';
 
 const FLAT = { x: 0, y: 0, z: 0, w: 1 } as const;
 const SEED = 0x7ab1e001;
@@ -154,17 +160,26 @@ describe('PusherTable layout', () => {
     expect(coin.sleeping).toBe(true);
   });
 
-  it('keeps a coin on the upper tier awake and lets the backboard hold it while the block slides under', async () => {
+  it('freezes a coin on the upper tier to ride the block, and lets the backboard hold it while the block slides under', async () => {
     const rig = await createRig();
     rig.table.dropCoin(0, rig.rng);
     const zs: number[] = [];
+    const ridden: number[] = [];
     for (let i = 0; i < 4 * PUSHER.periodTicks; i++) {
+      const before = rig.table.pusher.frontZ;
+      const was = onlyCoin(rig.table);
       rig.step();
-      zs.push(onlyCoin(rig.table).translation.z);
+      const coin = onlyCoin(rig.table);
+      zs.push(coin.translation.z);
+      if (was.sleeping && coin.sleeping) {
+        ridden.push(coin.translation.z - was.translation.z - (rig.table.pusher.frontZ - before));
+      }
     }
-    const coin = onlyCoin(rig.table);
-    expect(coin.sleeping).toBe(false);
-    expect(coin.translation.y).toBeGreaterThan(PUSHER.height);
+    expect(ridden.length).toBeGreaterThan(PUSHER.periodTicks);
+    for (const slip of ridden) {
+      expect(Math.abs(slip)).toBeLessThan(1e-6);
+    }
+    expect(onlyCoin(rig.table).translation.y).toBeGreaterThan(PUSHER.height);
     expect(Math.min(...zs)).toBeGreaterThan(BACKBOARD.frontZ + COIN.radius - 0.002);
   });
 });
@@ -761,7 +776,7 @@ describe('determinism', () => {
     const { hashes } = await referenceTo(SESSION_TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"ee25f4b04dd687a6"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"8934f7ea73a155b0"`);
   });
 
   it('stays identical when two tables are stepped interleaved in the same WASM instance', async () => {
@@ -908,14 +923,20 @@ interface Collision {
 
 /**
  * Lays two coins flat on the lower tier 10 cm apart, settles them, launches them
- * sideways at `leftSpeed` and `rightSpeed` m/s and follows them for a second.
+ * sideways at `leftSpeed` and `rightSpeed` m/s and follows them for a second. A right
+ * coin left at rest lies there long enough to freeze first; a launched coin is
+ * launched before it can, since only the table wakes a frozen coin.
  */
 async function collideFlat(leftSpeed: number, rightSpeed: number): Promise<Collision> {
   const rig = await createRig();
   const z = PLAYFIELD.fieldFrontZ - 0.04;
-  const left = rig.table.addCoin({ x: -0.05, y: COIN.halfThickness, z }, FLAT);
   const right = rig.table.addCoin({ x: 0.05, y: COIN.halfThickness, z }, FLAT);
-  runTicks(rig, TICK_RATE_HZ / 2);
+  if (rightSpeed === 0) {
+    runTicks(rig, 2 * COIN_REST.ticks);
+    expect(coinOf(rig, right).sleeping).toBe(true);
+  }
+  const left = rig.table.addCoin({ x: -0.05, y: COIN.halfThickness, z }, FLAT);
+  runTicks(rig, COIN_REST.ticks / 2);
   launch(rig, left, leftSpeed);
   launch(rig, right, rightSpeed);
   let deepest = 0;
@@ -923,20 +944,28 @@ async function collideFlat(leftSpeed: number, rightSpeed: number): Promise<Colli
   for (let i = 0; i < TICK_RATE_HZ; i++) {
     speeds.push([speedX(rig, left), speedX(rig, right)]);
     rig.step();
-    const [a, b] = rig.table.coins();
-    if (!a || !b) {
-      throw new Error(`expected two coins on the table, found ${rig.table.coinCount}`);
-    }
+    const a = coinOf(rig, left);
+    const b = coinOf(rig, right);
     expect(a.translation.x).toBeLessThan(b.translation.x);
     for (const { depth } of touchingPairs([a, b])) {
       deepest = Math.max(deepest, depth);
     }
   }
-  const [a, b] = rig.table.coins();
-  if (!a || !b) {
-    throw new Error(`expected two coins on the table, found ${rig.table.coinCount}`);
+  return {
+    deepest,
+    hash: tableHash(rig),
+    speeds,
+    left: coinOf(rig, left),
+    right: coinOf(rig, right),
+  };
+}
+
+function coinOf(rig: Rig, id: number): TableCoin {
+  const coin = rig.table.coins().find((c) => c.id === id);
+  if (!coin) {
+    throw new Error(`coin ${id} is not on the table`);
   }
-  return { deepest, hash: tableHash(rig), speeds, left: a, right: b };
+  return coin;
 }
 
 function speedsBefore(run: Collision, tick: number): readonly [number, number] {
