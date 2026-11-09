@@ -97,6 +97,25 @@ function norm(...components: number[]): number {
   return Math.sqrt(components.reduce((sum, c) => sum + c * c, 0));
 }
 
+type Point = Readonly<{ x: number; y: number; z: number }>;
+
+function distance(a: Point, b: Point): number {
+  return norm(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+/** How far a coin at rest may move over a restore's first 2 s (92-table-persistence 1.4). */
+const STILL = 0.001;
+
+/** `snapshot` with every asleep pose one position unit (10 µm) further along +x. */
+function shiftedOneUnit(snapshot: SimTableSnapshot): SimTableSnapshot {
+  return {
+    ...snapshot,
+    coins: snapshot.coins.map((pose) =>
+      pose.rest === 'asleep' ? { ...pose, p: [pose.p[0] + 1, pose.p[1], pose.p[2]] } : pose,
+    ),
+  };
+}
+
 /** Steps `ticks` ticks of `inputsAt` and returns the hash every `every` ticks. */
 function play(
   sim: Sim,
@@ -201,57 +220,92 @@ describe('Sim.create({ restore })', () => {
   });
 
   /**
-   * The design's restore stability property (92-table-persistence 1.4): every coin that
-   * restores asleep moves less than 1 mm in 120 ticks, measured from its restored pose in
-   * the frame of what it lies on, so a coin on the pusher top is measured against the
-   * block it rides. A working table never lies wholly still: the block wakes riders as it
-   * nears the backboard and pushes the pile at its face, on the table played on beside
-   * the restored one as much as on it. So the 1 mm is on top of what the table played on
-   * moved that same coin in the same 120 ticks, which is nothing for a coin it left
-   * asleep.
+   * The design's restore stability property (92-table-persistence 1.4), at the pusher's
+   * four quarter phases. A table played on to that phase is snapshotted and restored, and
+   * both tables then run 120 ticks side by side, with nothing falling from either that was
+   * not already falling when the snapshot was taken.
+   *
+   * Every coin that restores asleep and that the table played on keeps at rest for all
+   * 120 ticks ends less than 1 mm from where the table played on has it, and less than
+   * 1 mm from where it restored: in the world, or on the block for a coin riding the
+   * pusher top, which carries it the same way on both tables. Woken or not, more than nine
+   * in ten of the coins that restore asleep end that still.
+   *
+   * The rest are coins the pusher wakes (riders scraped off near the backboard, the pile
+   * at its face), and how closely they can follow the table played on is set by the
+   * format, not by restore: positions are stored to 10 µm, and moving every asleep coin
+   * by that one unit moves a woken coin by up to a few millimetres within 120 ticks at
+   * some phases (4.35 mm at tick 180, against 1.08 mm between the restored table and the
+   * table played on). So a woken coin ends within 1 mm of the table played on, or within
+   * that one-unit spread where the table is that sensitive.
    */
-  it.each([0, 60, 120, 180])(
-    'restores a table with the pusher at tick %i of its cycle so that over 2 s nothing falls and asleep coins move less than 1 mm',
+  it.each([0, 1, 2, 3].map((quarter) => (quarter * PUSHER.periodTicks) / 4))(
+    'restores a table with the pusher at tick %i of its cycle so that over 2 s nothing falls and coins at rest stay within 1 mm',
     async (tickInCycle) => {
-      const table = await restore(SETTLED);
-      while (table.snapshot().pusherTickInCycle !== tickInCycle || table.tick === 0) {
-        table.step();
+      const reference = await restore(SETTLED);
+      while (reference.snapshot().pusherTickInCycle !== tickInCycle || reference.tick === 0) {
+        reference.step();
       }
-      const snapshot = kept(table.snapshot());
-      const falling = new Set(validateSnapshot(table.snapshot()).dropped.map(({ id }) => id));
+      const taken = reference.snapshot();
+      const falling = new Set(validateSnapshot(taken).dropped.map(({ id }) => id));
+      const snapshot = kept(taken);
       const sim = await restore(snapshot);
+      const shifted = await restore(shiftedOneUnit(snapshot));
+      const asleep = snapshot.coins.flatMap((pose, i) => (pose.rest === 'asleep' ? [i] : []));
+      const atRest = new Set(asleep.map((i) => snapshot.coins[i]?.id));
+      const start = sim.coins();
       for (let tick = 0; tick < 120; tick++) {
         expect(sim.step().falls, `restored, tick ${sim.tick}`).toEqual([]);
-        const falls = table.step().falls.filter(({ coinId }) => !falling.has(coinId));
-        expect(falls, `played on, tick ${table.tick}`).toEqual([]);
+        shifted.step();
+        const falls = reference.step().falls.filter(({ coinId }) => !falling.has(coinId));
+        expect(falls, `played on, tick ${reference.tick}`).toEqual([]);
+        for (const coin of reference.coins()) {
+          if (!coin.sleeping) {
+            atRest.delete(coin.id);
+          }
+        }
       }
-      const start = pusherBox(tickInCycle);
-      const travel = pusherBox(sim.snapshot().pusherTickInCycle).z - start.z;
-      const shelfFrontZ = start.z + start.hz;
-      const moved = (pose: CoinPose, now: Readonly<{ x: number; y: number; z: number }>) => {
-        const [px = 0, py = 0, pz = 0] = pose.p.map((v) => v * 1e-5);
-        const rides = py > PUSHER.height && pz <= shelfFrontZ;
-        return norm(now.x - px, now.y - py, now.z - (rides ? travel : 0) - pz);
-      };
-      const there = new Map(table.coins().map((coin) => [coin.id, coin.translation]));
+      const startBox = pusherBox(tickInCycle);
+      const travel = pusherBox(sim.snapshot().pusherTickInCycle).z - startBox.z;
+      const shelfFrontZ = startBox.z + startBox.hz;
+      const there = new Map(reference.coins().map((coin) => [coin.id, coin.translation]));
+      const now = sim.coins();
+      const spread = shifted.coins();
       let still = 0;
-      sim.coins().forEach((coin, i) => {
-        const pose = snapshot.coins[i];
-        if (pose?.rest !== 'asleep') {
-          return;
+      let wokenWorst = 0;
+      let sensitivity = 0;
+      for (const i of asleep) {
+        const id = snapshot.coins[i]?.id ?? -1;
+        const from = start[i]?.translation;
+        const to = now[i]?.translation;
+        const played = there.get(id);
+        const off = spread[i]?.translation;
+        if (!from || !to || !played || !off) {
+          throw new Error(`coin ${id} left a table it never fell from`);
         }
-        const t = there.get(pose.id);
-        if (!t) {
-          throw new Error(`coin ${pose.id} left the table played on`);
+        const fromPlayed = distance(to, played);
+        const rides = from.y > PUSHER.height && from.z <= shelfFrontZ;
+        const moved = distance(to, { ...from, z: from.z + (rides ? travel : 0) });
+        still += moved < STILL ? 1 : 0;
+        if (atRest.has(id)) {
+          const where = `coin ${id}${rides ? ' on the pusher top' : ''}`;
+          expect(fromPlayed, `${where}, from the table played on`).toBeLessThan(STILL);
+          expect(moved, `${where}, from where it restored`).toBeLessThan(STILL);
+        } else {
+          wokenWorst = Math.max(wokenWorst, fromPlayed);
+          sensitivity = Math.max(sensitivity, distance(to, off));
         }
-        const pile = moved(pose, t);
-        still += pile < 1e-6 ? 1 : 0;
-        expect(
-          moved(pose, coin.translation),
-          `coin ${i}, moved ${(pile * 1000).toFixed(2)} mm on the table played on`,
-        ).toBeLessThan(0.001 + pile);
-      });
-      expect(still).toBeGreaterThan(0);
+      }
+      expect(atRest.size, 'the table played on kept no coin at rest').toBeGreaterThan(
+        asleep.length / 4,
+      );
+      expect(still, `${still} of ${asleep.length} asleep coins stayed still`).toBeGreaterThan(
+        asleep.length * 0.9,
+      );
+      expect(
+        wokenWorst,
+        `a woken coin ends ${(wokenWorst * 1000).toFixed(2)} mm from the table played on; one unit moves the table ${(sensitivity * 1000).toFixed(2)} mm`,
+      ).toBeLessThan(Math.max(STILL, sensitivity));
     },
   );
 
