@@ -1,6 +1,5 @@
 import { defineConfig, loadEnv } from 'vite';
 
-const PAGES_BASE = '/CoinPosh/';
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function resolveApiUrl(raw: string | undefined): string | undefined {
@@ -13,14 +12,14 @@ function resolveApiUrl(raw: string | undefined): string | undefined {
     url = new URL(value);
   } catch {
     throw new Error(
-      `VITE_API_URL is not a valid absolute URL: "${value}". Set it to the Worker origin (for example https://coinposh-server.<account>.workers.dev) or leave it empty to build Demo Mode.`,
+      `VITE_API_URL is not a valid absolute URL: "${value}". Set it to the API origin (for example https://api.devcoinposh.bas.lu) or leave it empty to build Demo Mode.`,
     );
   }
   const secure = url.protocol === 'https:';
   const loopback = url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname);
   if (!secure && !loopback) {
     throw new Error(
-      `VITE_API_URL must use https:// (http:// is only allowed for localhost): "${value}". The Pages site is served over HTTPS and browsers block mixed-content API calls.`,
+      `VITE_API_URL must use https:// (http:// is only allowed for localhost): "${value}". The site is served over HTTPS and browsers block mixed-content API calls.`,
     );
   }
   return url.href.replace(/\/+$/, '');
@@ -41,7 +40,7 @@ function resolveTurnstileSiteKey(raw: string | undefined): string | undefined {
   return value;
 }
 
-export default defineConfig(({ command, mode }) => {
+export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', 'VITE_');
   const apiUrl = resolveApiUrl(env.VITE_API_URL);
   const turnstileSiteKey = resolveTurnstileSiteKey(env.VITE_TURNSTILE_SITE_KEY);
@@ -52,7 +51,6 @@ export default defineConfig(({ command, mode }) => {
   }
 
   return {
-    base: command === 'build' ? PAGES_BASE : '/',
     define: {
       // An empty VITE_API_URL (an unset repo variable expands to '') must reach the client as undefined, which selects Demo Mode.
       'import.meta.env.VITE_API_URL': apiUrl === undefined ? 'undefined' : JSON.stringify(apiUrl),
