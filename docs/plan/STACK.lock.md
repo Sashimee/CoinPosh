@@ -40,6 +40,27 @@ New third-party versions must be at least two weeks old when they are pinned.
 |---|---|---|
 | @dimforge/rapier3d-deterministic-compat | 0.21.0 | Cross-platform deterministic build of Rapier, WASM inlined (`-compat`) so it loads in browsers and Workers alike |
 
+### `table.bench` p99 budget (P-253)
+
+Decision: the 4 ms p99 budget stays as written in the bench and is not re-baselined. It was set on a host where base `186eede` measured 3.72-3.83 ms. On the current build host the same base measures 4.94-5.14 ms, so this host is about **1.3x slower** (4.94 / 3.83 = 1.29, 5.14 / 3.72 = 1.38).
+
+Same-host figures (current build host):
+
+| Build | p99 |
+|---|---|
+| base `186eede` | 4.94-5.14 ms |
+| prior attempt `8a3b7ae` / `f7d50ee` | 4.17-4.28 ms |
+| P-215 `ad0db6e` | 4.38-4.47 ms |
+
+Rule for comparing bench runs:
+
+1. Never compare figures from different hosts. Run base and candidate back to back on the same host, idle (load average below 2), at least 3 runs each, and report the range.
+2. Host factor = base p99 on this host / 3.8 ms (the base figure on the reference host).
+3. A candidate passes if its p99 is at most 4 ms x host factor **and** not slower than base on the same run.
+4. If P-215's re-run (backboard wake radius, no cascade push for backboard riders, bounded separation passes) passes rule 3, the budget is confirmed and no re-baseline happens. If it fails, the tail work continues; the threshold is still not relaxed.
+
+With the figures above (factor 1.3, limit 5.2 ms) P-215 `ad0db6e` passes: 4.38-4.47 ms is below 5.2 ms and below base.
+
 ## Economy (`packages/economy`)
 
 | Package | Version | Notes |
