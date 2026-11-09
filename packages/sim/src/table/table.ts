@@ -13,6 +13,15 @@ import type { Xoshiro128ss } from '../prng.ts';
 import type { NudgeDirection } from '../inputs.ts';
 import type { Rapier } from '../rapier.ts';
 import {
+  type Box,
+  type Disc,
+  type DiscShape,
+  discAxis,
+  discBoxDepth,
+  discDiscDepth,
+  discReach,
+} from '../snapshot/geometry.ts';
+import {
   BACKBOARD,
   DROP_ZONE,
   GUTTER_START_Z,
@@ -20,12 +29,19 @@ import {
   PUSHER,
   TABLE_INNER_HALF_WIDTH,
 } from './layout.ts';
-import { type HeapGeometry, type HeapLayout, heapCapacity, heapPoses } from './heap.ts';
+import {
+  type HeapGeometry,
+  type HeapLayout,
+  type HeapPose,
+  heapCapacity,
+  heapPoses,
+} from './heap.ts';
 import { DEFAULT_PUSHER_MOTION, PusherClock, type PusherMotion } from './pusher.ts';
 import { CoinSeparator, type Obstacle, type SeparationResult } from './separation.ts';
 import {
   COIN_MATERIAL,
   COIN_REST,
+  COIN_RESTORE,
   CONTACT_EVENTS,
   NUDGE,
   TABLE_MATERIAL,
@@ -110,6 +126,19 @@ const TOUCH_REACH =
 const CASCADE_KEEP_SQ = square(COIN_REST.cascadeKeep);
 const CASCADE_SPEED_SQ = square(COIN_REST.cascadeSpeed * SCALE);
 const CASCADE_CONE_SQ = square(COIN_REST.cascadeConeCos);
+const COIN_DISC: DiscShape = {
+  coreHalfHeight: (COIN.halfThickness - COIN_MATERIAL.rimRadius) * SCALE,
+  coreRadius: (COIN.radius - COIN_MATERIAL.rimRadius) * SCALE,
+  rim: COIN_MATERIAL.rimRadius * SCALE,
+};
+const COIN_REACH = discReach(COIN_DISC);
+const PROBE = COIN_RESTORE.probe * SCALE;
+const PROBE_GRIP = PROBE * COIN_RESTORE.probeGrip;
+const PUSHER_HALF: Readonly<Vector> = {
+  x: (PLAYFIELD.fieldHalfWidth - PUSHER.sideClearance) * SCALE,
+  y: (PUSHER.height / 2) * SCALE,
+  z: (PUSHER.depth / 2) * SCALE,
+};
 
 function cellKey(ix: number, iz: number): number {
   return ix * 65536 + iz;
@@ -208,6 +237,21 @@ export interface PusherState {
 
 export interface TableOptions {
   readonly pusher?: PusherMotion;
+  /** Where the pusher starts in its first cycle; 0, full retraction, when omitted. */
+  readonly pusherTickInCycle?: number;
+}
+
+/** A coin for PusherTable.restore, in metres. */
+export interface RestoreCoin {
+  readonly translation: Readonly<Vector>;
+  readonly rotation: Readonly<Rotation>;
+  /** Restore it at rest, if something below holds it up. */
+  readonly asleep: boolean;
+  /**
+   * A heap slot: raised straight up, COIN_RESTORE.liftStep at a time, until it clears
+   * the coins placed before it and the pusher. It always restores awake.
+   */
+  readonly lift: boolean;
 }
 
 /**
@@ -224,6 +268,7 @@ export class PusherTable {
   readonly #clock: PusherClock;
   readonly #coinShape: Shape;
   readonly #separator: CoinSeparator;
+  readonly #obstacles: readonly Obstacle[];
   readonly #floorCollider: number;
   readonly #pusherCollider: number;
   /** Insertion-ordered by ascending coin id, which fixes the iteration order. */
@@ -264,7 +309,10 @@ export class PusherTable {
   constructor(rapier: Rapier, world: World, options: TableOptions = {}) {
     this.#rapier = rapier;
     this.#world = world;
-    this.#clock = new PusherClock(options.pusher ?? DEFAULT_PUSHER_MOTION);
+    this.#clock = new PusherClock(
+      options.pusher ?? DEFAULT_PUSHER_MOTION,
+      options.pusherTickInCycle ?? 0,
+    );
     this.#coinShape = new rapier.RoundCylinder(
       (COIN.halfThickness - COIN_MATERIAL.rimRadius) * SCALE,
       (COIN.radius - COIN_MATERIAL.rimRadius) * SCALE,
@@ -273,6 +321,7 @@ export class PusherTable {
     const obstacles: Obstacle[] = [];
     this.#floorCollider = this.#buildCabinet(obstacles);
     [this.#pusher, this.#pusherCollider] = this.#buildPusher(obstacles);
+    this.#obstacles = obstacles;
     this.#separator = new CoinSeparator(
       rapier,
       this.#coinShape,
@@ -311,6 +360,11 @@ export class PusherTable {
       frontZ: PUSHER.frontZ + this.#clock.offset,
       motion: this.#clock.motion,
     };
+  }
+
+  /** Whole ticks into the pusher's current cycle. */
+  get pusherTickInCycle(): number {
+    return this.#clock.tickInCycle;
   }
 
   setPusherMotion(motion: PusherMotion): void {
@@ -352,6 +406,90 @@ export class PusherTable {
   placeHeap(count: number, rng: Xoshiro128ss, layout: HeapLayout = {}): number[] {
     const poses = heapPoses(count, heapGeometry(this.#clock, layout), rng);
     return poses.map(({ translation, rotation }) => this.addCoin(translation, rotation));
+  }
+
+  /**
+   * The first `count` poses of the opening heap as placeHeap lays it on a new table with
+   * this table's motion, the pusher fully retracted, wherever this one stands now.
+   */
+  heapSlotPoses(count: number, rng: Xoshiro128ss, layout: HeapLayout = {}): HeapPose[] {
+    return heapPoses(count, heapGeometry(new PusherClock(this.#clock.motion), layout), rng);
+  }
+
+  /**
+   * Lays a saved table on this empty one, ids 0..n − 1 in `coins` order, every coin with
+   * zero velocity relative to what it lies on: a coin awake with its centre over the
+   * pusher top, or past its face by less than a radius, moves with the block, as every
+   * check on the table measures it; left still there, it would slide against the block
+   * and wake the riders around it. Heap slots are lifted clear first (RestoreCoin.lift),
+   * then one separation pass removes what overlap the saved poses kept. A coin that was
+   * asleep restores at rest unless a COIN_RESTORE.probe cast straight down finds nothing
+   * at rest to hold it (#restingIds), or it hangs past the pusher's lip, where no coin
+   * ever comes to rest; then it restores awake and settles. Throws if the table already has coins, or if a heap slot
+   * cannot be lifted clear below the top of the walls.
+   */
+  restore(coins: readonly RestoreCoin[]): number[] {
+    if (this.#nextCoinId !== 0) {
+      throw new Error('PusherTable.restore: the table already has coins; restore onto a new table');
+    }
+    const pusher = this.#pusherBox();
+    const placed: Disc[] = [];
+    const translations = coins.map((coin) => {
+      if (!coin.lift) {
+        placed.push(discAt(coin.translation, coin.rotation));
+      }
+      return coin.translation;
+    });
+    coins.forEach((coin, i) => {
+      if (!coin.lift) {
+        return;
+      }
+      const { x, y, z } = coin.translation;
+      for (let lifts = 0; ; lifts++) {
+        const translation = { x, y: y + lifts * COIN_RESTORE.liftStep, z };
+        if (translation.y > PLAYFIELD.wallHeight) {
+          throw new Error(
+            `PusherTable.restore: heap slot coin ${i} at (${x}, ${y}, ${z}) cannot be lifted clear below the wall top`,
+          );
+        }
+        const disc = discAt(translation, coin.rotation);
+        if (!blocked(disc, placed, pusher)) {
+          placed.push(disc);
+          translations[i] = translation;
+          break;
+        }
+      }
+    });
+    const ids = coins.map((coin, i) =>
+      this.addCoin(translations[i] ?? coin.translation, coin.rotation),
+    );
+    this.#separator.separate(this.#coins.values());
+    const holds = this.#restingIds(ids, coins);
+    const shelfSpeed = this.#lastPusherSpeed();
+    const shelfFrontZ = pusher.z + pusher.hz + COIN.radius * SCALE;
+    ids.forEach((id, i) => {
+      if (holds[i]) {
+        this.#restAsIs(id);
+      }
+      if (!coins[i]?.lift && !this.#isFrozen(id)) {
+        const body = this.#coin(id);
+        const t = body.translation();
+        if (t.y > SHELF_Y && t.z <= shelfFrontZ) {
+          body.setLinvel({ x: 0, y: 0, z: shelfSpeed }, true);
+        }
+      }
+    });
+    return ids;
+  }
+
+  /** The pusher's speed over the tick that brought it to where it stands, in world units. */
+  #lastPusherSpeed(): number {
+    const { motion, tickInCycle, offset } = this.#clock;
+    const before = new PusherClock(
+      motion,
+      (tickInCycle + motion.periodTicks - 1) % motion.periodTicks,
+    );
+    return ((offset - before.offset) * SCALE) / FIXED_DT;
   }
 
   /** How many coins placeHeap can lay with `layout` on a new table driven by `motion`. */
@@ -573,6 +711,101 @@ export class PusherTable {
         : this.#rapier.RigidBodyType.Fixed,
       false,
     );
+  }
+
+  /**
+   * Which restored coins come to rest, by index: the asleep poses a COIN_RESTORE.probe
+   * cast holds up on the cabinet or on another coin that comes to rest. A coin lying on
+   * one that restores awake would start on a support settling from a standstill, without
+   * the contact impulses that held it up, and be shaken loose; it restores awake too.
+   */
+  #restingIds(ids: readonly number[], coins: readonly RestoreCoin[]): boolean[] {
+    const holds = ids.map((_, i) => coins[i]?.asleep === true && !coins[i].lift);
+    const resting = new Set(ids.filter((_, i) => holds[i]));
+    for (let changed = true; changed;) {
+      changed = false;
+      ids.forEach((id, i) => {
+        if (holds[i] && !this.#held(id, resting)) {
+          holds[i] = false;
+          resting.delete(id);
+          changed = true;
+        }
+      });
+    }
+    return holds;
+  }
+
+  /**
+   * Whether a COIN_RESTORE.probe cast straight down drives the coin into the cabinet or
+   * one of the `supports` coins.
+   */
+  #held(id: number, supports: ReadonlySet<number>): boolean {
+    const disc = this.#discOf(this.#coin(id));
+    const down = { ...disc, y: disc.y - PROBE };
+    const grips = (now: number, after: number): boolean => after > 0 && after - now >= PROBE_GRIP;
+    for (const obstacle of this.#obstacles) {
+      const c = obstacle.centre();
+      const box = {
+        x: c.x,
+        y: c.y,
+        z: c.z,
+        hx: obstacle.half.x,
+        hy: obstacle.half.y,
+        hz: obstacle.half.z,
+      };
+      if (grips(discBoxDepth(COIN_DISC, disc, box), discBoxDepth(COIN_DISC, down, box))) {
+        return true;
+      }
+    }
+    const reach = 2 * COIN_REACH + PROBE;
+    for (const [other, body] of this.#coins) {
+      if (other === id || !supports.has(other)) {
+        continue;
+      }
+      const near = this.#discOf(body);
+      const dx = near.x - disc.x;
+      const dy = near.y - disc.y;
+      const dz = near.z - disc.z;
+      if (dx * dx + dy * dy + dz * dz >= reach * reach) {
+        continue;
+      }
+      if (grips(discDiscDepth(COIN_DISC, near, disc), discDiscDepth(COIN_DISC, near, down))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Freezes a restored coin where it lies, its still run anchored there. */
+  #restAsIs(id: number): void {
+    const body = this.#coin(id);
+    const rest = this.#restOf(id);
+    const t = body.translation();
+    const shelf = t.y > SHELF_Y;
+    const z = t.z - (shelf ? this.#clock.offset * SCALE : 0);
+    if (shelf && z > SHELF_EDGE_Z) {
+      return;
+    }
+    const q = body.rotation();
+    const { ax, ay, az } = discAxis(q.x, q.y, q.z, q.w);
+    rest.anchor[0] = t.x;
+    rest.anchor[1] = t.y;
+    rest.anchor[2] = z;
+    rest.anchor[3] = ax;
+    rest.anchor[4] = ay;
+    rest.anchor[5] = az;
+    this.#freeze(id, body);
+  }
+
+  #discOf(body: RigidBody): Disc {
+    const t = body.translation();
+    const q = body.rotation();
+    return { x: t.x, y: t.y, z: t.z, ...discAxis(q.x, q.y, q.z, q.w) };
+  }
+
+  #pusherBox(): Box {
+    const c = this.#pusherCentre(this.#clock.offset);
+    return { x: c.x, y: c.y, z: c.z, hx: PUSHER_HALF.x, hy: PUSHER_HALF.y, hz: PUSHER_HALF.z };
   }
 
   /** Moves every coin frozen on the pusher top `dz` world units along with the block. */
@@ -1244,6 +1477,33 @@ function heapGeometry(clock: PusherClock, layout: HeapLayout): HeapGeometry {
     upperY: PUSHER.height,
     ...layout,
   };
+}
+
+/** A coin at `translation` metres, in world units. */
+function discAt(translation: Readonly<Vector>, rotation: Readonly<Rotation>): Disc {
+  return {
+    x: translation.x * SCALE,
+    y: translation.y * SCALE,
+    z: translation.z * SCALE,
+    ...discAxis(rotation.x, rotation.y, rotation.z, rotation.w),
+  };
+}
+
+/** Whether `disc` touches the pusher or any coin in `placed`. */
+function blocked(disc: Disc, placed: readonly Disc[], pusher: Box): boolean {
+  if (discBoxDepth(COIN_DISC, disc, pusher) > 0) {
+    return true;
+  }
+  const reach = 2 * COIN_REACH;
+  for (const other of placed) {
+    const dx = other.x - disc.x;
+    const dy = other.y - disc.y;
+    const dz = other.z - disc.z;
+    if (dx * dx + dy * dy + dz * dz < reach * reach && discDiscDepth(COIN_DISC, other, disc) > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function toMetres(v: Readonly<Vector>): Vector {
