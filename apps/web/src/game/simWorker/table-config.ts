@@ -1,18 +1,22 @@
+import { economyConfig } from '@coinposh/economy';
 import { COIN_TIERS } from '@coinposh/shared';
 import { Sim, type MechanicsConfig } from '@coinposh/sim';
 
 /**
- * The mechanics the worker's Sim runs with: coins keep the tier they were dropped with, but
- * nothing fuses and there is no Champagne Tower yet (the separator has no tower obstacles).
+ * The mechanics the worker's Sim runs with: Contact Fusion on the economy's rules, and no
+ * Champagne Tower yet (the separator has no tower obstacles).
  *
- * Contact Fusion stays off until it is tuned against the pusher: with the economy's rules
- * (3 coins, 0.4 s) every packed copper pile fuses down faster than drops build it, so the table
- * never fills enough for coins to fall over the lip. Turn it on with
- * `{ inputCount, contactSeconds }` from `economyConfig.fusion` once fusion and the heap agree.
+ * Fusion no longer eats the pile it lands on: the sim gives every new coin a 1 s spawn grace
+ * and keeps the laid opening heap settled until its coins change level (FUSION_TUNING
+ * spawnGraceTicks and settledShift), so drops join the heap before they fuse and the heap's
+ * second layer does not fuse with the coins it rests on.
  */
 export const SIM_MECHANICS: MechanicsConfig<string> = {
   tiers: COIN_TIERS,
-  fusion: null,
+  fusion: {
+    inputCount: economyConfig.fusion.inputCount,
+    contactSeconds: economyConfig.fusion.contactSeconds,
+  },
   tower: null,
 };
 

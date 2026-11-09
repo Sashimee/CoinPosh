@@ -23,12 +23,34 @@ import { DROP_ZONE } from '../table/layout.ts';
  *   the step budget. A contact is seen up to 2 ticks late (33 ms) and a fusion fires up
  *   to 2 ticks after its window, which no player can tell. The grace is stretched by
  *   the period, so a pair found apart on one look, however briefly, is forgiven.
+ *
+ * Which coins may fuse at all (P-222). Without a rule, the opening heap's second layer,
+ * which rests on the coins below it from the first tick, fused away 24 of 100 coins at
+ * 1.4 s, and fresh drops fused where they landed before they could add to the pile.
+ *
+ * - spawnGraceTicks 60 (1 s): a coin that enters the table during play (a drop, a
+ *   fused coin, a coin a topple releases) sits out of fusion for its first second. A
+ *   chute drop lands and settles in about half that, so it joins the heap first and
+ *   then charges up with its neighbours; a fused coin hops, lands and is seen before
+ *   it can chain. The 1 s also covers the server's minFusionMsAfterSpawn (250 ms).
+ * - settledShift 2.6 mm (one coin thickness): a coin laid before the first tick (the
+ *   opening heap, a restored table) is settled and never fuses on age alone, since
+ *   the heap is laid touching and would otherwise all fuse the moment a grace ran out.
+ *   It joins play once its height has changed by more than a coin's thickness from
+ *   where it was laid: it slid off the coins under it (3.2 mm), tumbled off the upper
+ *   tier (35 mm) or was shoved up onto another coin. Sliding across its own floor does
+ *   not count, so the pusher packing the bottom sheet, or the upper tier riding the
+ *   block, does not wake the whole heap. Seeded runs at 1 drop/s onto the 100-coin
+ *   silver heap: no heap coin fuses in the first 8 s, the first fusion (three copper
+ *   drops) comes at 4 to 8 s, and 12 to 18 fusions fire in the first minute.
  */
 export const FUSION_TUNING = {
   touchGap: 0.001,
   graceTicks: 3,
   spawnLift: 0.0015,
   sampleTicks: 3,
+  spawnGraceTicks: 60,
+  settledShift: 2 * COIN.halfThickness,
 } as const;
 
 /** Where the Champagne Tower pedestal stands on the upper tier, in metres. */
