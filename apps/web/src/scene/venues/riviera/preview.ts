@@ -23,7 +23,8 @@ import { rivieraTokens } from './palette.ts';
  * Dev-only look-dev harness for the venue, served by Vite at
  * /src/scene/venues/riviera/preview.html. Query flags: `webgl` forces the WebGL2 backend,
  * `t=<s>` freezes time there, `stroke=<0..1>` sets the pusher, `coins` drops stand-in coins
- * for scale, `probe` adds a chrome sphere to check environment alignment, and
+ * for scale, `probe` adds a chrome sphere to check environment alignment, `probes` a row of
+ * metal spheres from roughness 0 to 1 to check the environment's pre-filtering, and
  * `cam=x,y,z&look=x,y,z&fov=n` overrides the preset camera, and `env=<n>` / `lights=<n>`
  * override the environment intensity and scale the venue lights for look-dev. `quality=low`
  * builds the low tier.
@@ -130,6 +131,19 @@ function standInCoins(): Object3D[] {
   return coins;
 }
 
+function roughnessProbes(): Object3D[] {
+  const geometry = new SphereGeometry(0.035, 48, 32);
+  const count = 5;
+  return Array.from({ length: count }, (_, i) => {
+    const probe = new Mesh(
+      geometry,
+      new MeshPhysicalNodeMaterial({ color: '#ffffff', metalness: 1, roughness: i / (count - 1) }),
+    );
+    probe.position.set((i - (count - 1) / 2) * 0.085, 0.12, 0.1);
+    return probe;
+  });
+}
+
 async function boot(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#preview');
   if (!canvas) throw new Error('Preview canvas #preview is missing');
@@ -167,6 +181,7 @@ async function boot(): Promise<void> {
     probe.position.set(0, 0.2, 0.05);
     scene.add(probe);
   }
+  if (params.has('probes')) scene.add(...roughnessProbes());
   venue.setPusherStroke(Number(params.get('stroke') ?? 0.35));
   const envIntensity = params.get('env');
   if (envIntensity !== null) scene.environmentIntensity = Number(envIntensity);

@@ -3,6 +3,7 @@ import {
   AgXToneMapping,
   BufferGeometry,
   DataTexture,
+  HalfFloatType,
   Material,
   Mesh,
   type MeshPhysicalNodeMaterial,
@@ -15,7 +16,12 @@ import {
   type Object3D,
 } from 'three/webgpu';
 import { texture } from 'three/tsl';
-import type { HdriAsset } from '../../env/environment.ts';
+import {
+  ENVIRONMENT_HANDOFF,
+  type HdriAsset,
+  type PrefilteredEnvironment,
+} from '../../env/environment.ts';
+import { PREFILTERED_ENVIRONMENT } from '../../env/prefilter.ts';
 import type { LookRenderer } from '../../post/look.ts';
 import {
   createRivieraVenue,
@@ -34,28 +40,46 @@ function fakeRenderer(): LookRenderer {
 }
 
 function fakeEnvironment() {
-  const texture = new DataTexture(new Uint8Array(4), 1, 1);
+  const { width, height, levels } = PREFILTERED_ENVIRONMENT;
+  const result: PrefilteredEnvironment = {
+    width,
+    height,
+    levels: Array.from(
+      { length: levels },
+      (_, k) => new Uint16Array((width >> k) * (height >> k) * 4),
+    ),
+  };
   const calls: HdriAsset[] = [];
-  let settle: (loaded: Texture) => void = () => undefined;
+  let settle: (loaded: PrefilteredEnvironment) => void = () => undefined;
   let fail: (error: Error) => void = () => undefined;
   const load = vi.fn((hdri: HdriAsset) => {
     calls.push(hdri);
-    return new Promise<Texture>((resolve, reject) => {
+    return new Promise<PrefilteredEnvironment>((resolve, reject) => {
       settle = resolve;
       fail = reject;
     });
   });
   return {
-    texture,
+    result,
     calls,
     load,
     resolve: () => {
-      settle(texture);
+      settle(result);
     },
     reject: (error: Error) => {
       fail(error);
     },
   };
+}
+
+const uploader = () => ({ initTexture: vi.fn() });
+
+/** Steps the environment past its settle window, which is when it starts loading. */
+function settleEnvironment(venue: RivieraVenue, renderer = uploader()) {
+  for (let i = 0; i < ENVIRONMENT_HANDOFF.settleFrames; i += 1) {
+    venue.environment.advance(ENVIRONMENT_HANDOFF.settleSeconds, renderer);
+  }
+  return renderer;
 }
 
 async function build(options: RivieraVenueOptions = {}, renderer: LookRenderer | null = null) {
@@ -90,11 +114,25 @@ describe('createRivieraVenue', () => {
     const { scene, environment, venue } = await build({ shadows: true });
     expect(venue.look).toEqual({ exposure: 0.85, environmentIntensity: 0.32, shadows: true });
     expect(scene.environmentIntensity).toBe(1);
-    expect(environment.load).toHaveBeenCalledTimes(1);
-    expect(environment.calls[0]?.url).toMatch(/venice_sunset_512\.hdr/);
+    expect(environment.load).not.toHaveBeenCalled();
     expect(scene.environmentNode?.name).toBe('venue-environment');
+    expect(venue.environment.node).toBe(scene.environmentNode);
+    expect(venue.environment.hdri.type).toBe(HalfFloatType);
     expect(scene.children).toContain(venue.root);
     expect(venue.quality).toBe('high');
+    venue.dispose();
+  });
+
+  it('starts loading the bundled HDRI only once play has settled, then hands off to it', async () => {
+    const { environment, venue } = await build();
+    const renderer = settleEnvironment(venue);
+    expect(environment.load).toHaveBeenCalledTimes(1);
+    expect(environment.calls[0]?.url).toMatch(/venice_sunset_512\.hdr/);
+    environment.resolve();
+    await Promise.resolve();
+    for (let i = 0; i < 60; i += 1) venue.environment.advance(1 / 60, renderer);
+    expect(renderer.initTexture).toHaveBeenCalledExactlyOnceWith(venue.environment.hdri);
+    await expect(venue.environmentReady).resolves.toBe('hdri');
     venue.dispose();
   });
 
@@ -111,9 +149,10 @@ describe('createRivieraVenue', () => {
     });
     const venue = await created;
     expect(venueReady).toBe(true);
-    expect(environment.load).toHaveBeenCalledTimes(1);
+    expect(environment.load).not.toHaveBeenCalled();
     expect(scene.children).toContain(venue.root);
     expect(scene.environmentNode?.name).toBe('venue-environment');
+    settleEnvironment(venue);
     let environmentSettled = false;
     void venue.environmentReady.then(() => {
       environmentSettled = true;
@@ -212,6 +251,7 @@ describe('createRivieraVenue', () => {
     const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
     const textureDispose = vi.spyOn(Texture.prototype, 'dispose');
     const { scene, environment, venue } = await build();
+    const renderer = settleEnvironment(venue);
     venue.dispose();
     expect(scene.children).not.toContain(venue.root);
     expect(scene.environmentNode).toBeNull();
@@ -220,10 +260,12 @@ describe('createRivieraVenue', () => {
     expect(
       textureDispose.mock.contexts.some((t) => (t as Texture).name === 'venue-hdri-fallback'),
     ).toBe(true);
+    expect(textureDispose.mock.contexts).toContain(venue.environment.hdri);
     environment.resolve();
     await venue.environmentReady;
     await Promise.resolve();
-    expect(textureDispose.mock.contexts).toContain(environment.texture);
+    venue.environment.advance(1 / 60, renderer);
+    expect(renderer.initTexture).not.toHaveBeenCalled();
     expect(textureDispose.mock.contexts.some((t) => (t as Texture).name === 'baked-noise')).toBe(
       true,
     );
@@ -240,6 +282,7 @@ describe('createRivieraVenue', () => {
   it('keeps playing on the fallback and logs loudly when the HDRI fails to load', async () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const { scene, environment, venue } = await build();
+    settleEnvironment(venue);
     const failure = new Error('HDRI 404');
     environment.reject(failure);
     await expect(venue.environmentReady).resolves.toBe('fallback');

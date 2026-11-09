@@ -27,7 +27,12 @@ export { rivieraTokens, rivieraTones, paletteCssVariables } from './palette.ts';
 export { RIVIERA_TABLE, rivieraCameraPreset, applyCameraPreset } from './layout.ts';
 export type { CameraPreset } from './layout.ts';
 export type { RivieraQuality } from './materials.ts';
-export type { EnvironmentLoader, EnvironmentSource } from '../../env/environment.ts';
+export type {
+  EnvironmentLoader,
+  EnvironmentSource,
+  PrefilteredEnvironment,
+  VenueEnvironment,
+} from '../../env/environment.ts';
 
 const SUN_DIRECTION = RIVIERA_SUN_DIRECTION;
 const REDUCED_MOTION_WAVE_RATE = 0.3;
@@ -61,8 +66,8 @@ export interface RivieraVenueOptions {
   /** Freezes deck sway and slows the sea. Defaults to the OS `prefers-reduced-motion`. */
   readonly reducedMotion?: boolean;
   /**
-   * Loads the HDRI that takes over the image-based lighting a few frames into play. Defaults
-   * to fetching the bundled sunset HDRI; tests inject a stand-in.
+   * Fetches and pre-filters the HDRI that takes over the image-based lighting a few frames
+   * into play. Defaults to a worker on the bundled sunset HDRI; tests inject a stand-in.
    */
   readonly loadEnvironment?: EnvironmentLoader;
 }
@@ -87,6 +92,8 @@ export interface RivieraVenue {
    * failed to load (already logged as an error). Never rejects. Screenshot harnesses await it.
    */
   readonly environmentReady: Promise<EnvironmentSource>;
+  /** The image-based lighting behind `environmentReady`, for harnesses that step its handoff. */
+  readonly environment: VenueEnvironment;
   cameraPreset(aspect: number): CameraPreset;
   /** 0 = pusher retracted, 1 = full stroke. Drive it from the sim's pusher phase. */
   setPusherStroke(stroke01: number): void;
@@ -105,7 +112,7 @@ function prefersReducedMotion(): boolean {
  * rail, the procedural sunset sky and sea, the HDRI environment and the venue's lights.
  * Resolves without waiting on the network or the GPU: the first frame is lit by the inlined
  * fallback environment and the HDRI hands off later (`environmentReady`), so boot never pays
- * for the HDRI fetch or its PMREM pre-filter.
+ * for the HDRI fetch or its pre-filter, which run in a worker a few frames into play.
  *
  * The game passes `null` for `renderer`: its post pipeline owns tonemapping, exposure, the
  * shadow map and the IBL intensity, fed with `venue.look`. A harness that renders without
@@ -211,6 +218,7 @@ function buildRivieraVenue(
       return ocean.time.value;
     },
     environmentReady: environment.ready,
+    environment,
     cameraPreset: rivieraCameraPreset,
     setPusherStroke: (stroke01) => {
       table.setPusherStroke(stroke01);
