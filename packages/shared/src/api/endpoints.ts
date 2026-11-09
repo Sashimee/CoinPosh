@@ -50,6 +50,8 @@ import {
   InputsResponseSchema,
   NudgeRequestSchema,
   NudgeResponseSchema,
+  TableSnapshotRequestSchema,
+  TableSnapshotResponseSchema,
 } from './table.ts';
 
 export type HttpMethod = 'GET' | 'POST';
@@ -142,6 +144,15 @@ export const endpoints = {
   ),
   eventsCurrent: get('/v1/events/current', EventsCurrentResponseSchema),
 } as const satisfies Record<string, Endpoint>;
+
+// TODO(lead-architect): register as `endpoints.tableSnapshot` in the same change that adds its
+// fixture to `test/fixtures.ts` and its mock handler (T-92.05); both are mapped over every
+// EndpointName, so registering it ahead of them breaks their typecheck.
+export const tableSnapshotEndpoint = post(
+  '/v1/table/snapshot',
+  TableSnapshotRequestSchema,
+  TableSnapshotResponseSchema,
+);
 
 export type Endpoints = typeof endpoints;
 export type EndpointName = keyof Endpoints;

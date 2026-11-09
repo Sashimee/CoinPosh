@@ -14,6 +14,7 @@ import {
   SafeIdSchema,
   ScratchCardIdSchema,
   SeasonIdSchema,
+  TableSessionIdSchema,
   UpgradeLineIdSchema,
   VENUE_IDS,
   VenueIdSchema,
@@ -32,6 +33,7 @@ const entitySchemas = {
   quest: QuestIdSchema,
   season: SeasonIdSchema,
   event: EventIdSchema,
+  tableSession: TableSessionIdSchema,
 } as const;
 
 const entityCases = Object.entries(entitySchemas).map(([kind, schema]) => ({
