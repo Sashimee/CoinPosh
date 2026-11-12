@@ -18,5 +18,7 @@ export type {
   UnboxPose,
   UnboxTimeline,
 } from './plan.ts';
+export { pushIn, SHOT_PUSH, unboxShot } from './shot.ts';
+export type { UnboxShot } from './shot.ts';
 export { CRATE_SIZE, UnboxAssets, UnboxStage } from './stage.ts';
 export type { UnboxHero } from './stage.ts';

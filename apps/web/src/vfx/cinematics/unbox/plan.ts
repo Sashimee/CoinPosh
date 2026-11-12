@@ -27,9 +27,10 @@ export interface UnboxTimeline {
 }
 
 /**
- * 03-ART-AUDIO-JUICE.md: the crate lands in the tray, the camera dollies in, the lid shudders
- * three times on a rising rumble, rarity god-rays leak through the seams, then the burst puts
- * the item on a spinning velvet pedestal. About 2.4 s to the reveal, so it stays a treat.
+ * 03-ART-AUDIO-JUICE.md: the crate spins in and lands centre stage in front of the table, the
+ * camera pushes in, the lid shudders three times on a rising rumble, rarity god-rays leak
+ * through the seams, the crate crouches, then the burst blows the lid clear and puts the item
+ * on a spinning velvet pedestal. About 2.4 s to the reveal, so it stays a treat.
  */
 export const FULL_UNBOX: UnboxTimeline = {
   landMs: 360,
@@ -85,9 +86,14 @@ export function unboxBeats(timeline: UnboxTimeline): readonly UnboxBeat[] {
 
 /** Everything the stage needs to draw one frame of the unbox. */
 export interface UnboxPose {
-  /** 0 hanging over the tray, 1 landed. */
+  /** 0 at the top of its hop in, 1 landed. */
   readonly drop: number;
-  /** Vertical scale of the crate; under 1 while it squashes on landing. */
+  /** Yaw in radians on top of the resting corner-on pose, while it spins in. */
+  readonly spin: number;
+  /**
+   * Vertical scale of the crate: under 1 while it squashes on landing and crouches before the
+   * burst, over 1 as it springs up when the lid goes.
+   */
   readonly squash: number;
   readonly lidLift: number;
   /** Lid roll in radians while it shudders. */
@@ -100,6 +106,8 @@ export interface UnboxPose {
   readonly rayReach: number;
   /** 0..1 burst flash envelope. */
   readonly burst: number;
+  /** Size of the burst flare over its rest size; pops past 1 unless motion is reduced. */
+  readonly flareScale: number;
   /** 0 shut, 1 blown clear. */
   readonly lidOpen: number;
   /** 0 hidden in the crate, 1 risen; overshoots on the way. */
@@ -113,6 +121,16 @@ export interface UnboxPose {
 
 const LAND_SQUASH = 0.22;
 const SQUASH_MS = 240;
+/** The spin-in: most of a half turn, settling past the corner-on pose and back. */
+const SPIN_IN_RAD = 2.1;
+const spinSettle = easeOutBack(1.6);
+/** Anticipation: the crate sinks this much in the last moments before the burst. */
+const CROUCH = 0.12;
+const CROUCH_MS = 170;
+/** Then springs up this much as the lid blows, settling over `SPRING_MS`. */
+const SPRING = 0.16;
+const SPRING_MS = 380;
+const flarePop = easeOutBack(2.2);
 const SHUDDER_LIFT = 0.007;
 const SHUDDER_ROLL = 0.09;
 const SHUDDER_WIGGLES = 6;
@@ -136,10 +154,20 @@ export function unboxPose(
   const t = Math.max(0, ms);
   const drop = reducedMotion ? 1 : easeInQuad(progress(t, 0, timeline.landMs));
   const settle = progress(t, timeline.landMs, timeline.landMs + SQUASH_MS);
-  const squash =
-    reducedMotion || settle <= 0 || settle >= 1
-      ? 1
-      : 1 - LAND_SQUASH * Math.sin(Math.PI * settle) * (1 - settle);
+  const landSquash =
+    settle <= 0 || settle >= 1 ? 0 : LAND_SQUASH * Math.sin(Math.PI * settle) * (1 - settle);
+  const crouch = easeInCubic(progress(t, timeline.burstAtMs - CROUCH_MS, timeline.burstAtMs));
+  const sprung = progress(t, timeline.burstAtMs, timeline.burstAtMs + SPRING_MS);
+  const spring =
+    t < timeline.burstAtMs || sprung >= 1 ? 0 : SPRING * Math.sin(Math.PI * sprung) * (1 - sprung);
+  const squash = reducedMotion
+    ? 1
+    : t < timeline.burstAtMs
+      ? 1 - landSquash - CROUCH * crouch
+      : 1 + spring;
+  const spin = reducedMotion
+    ? 0
+    : -SPIN_IN_RAD * (1 - spinSettle(progress(t, 0, timeline.landMs + SQUASH_MS)));
 
   let lidLift = 0;
   let lidShake = 0;
@@ -164,6 +192,11 @@ export function unboxPose(
         ? sinceBurst / BURST_ATTACK_MS
         : 1 - easeOutCubic(progress(sinceBurst, BURST_ATTACK_MS, BURST_ATTACK_MS + BURST_DECAY_MS));
   const afterBurst = sinceBurst < 0 ? 0 : progress(sinceBurst, 0, BURST_DECAY_MS);
+  const flareScale = reducedMotion
+    ? 1
+    : sinceBurst < 0
+      ? 0
+      : 0.35 + 0.65 * flarePop(progress(sinceBurst, 0, BURST_ATTACK_MS * 3)) + 0.25 * afterBurst;
   const rays = sinceBurst < 0 ? leak * 0.8 : 1 - (1 - RAYS_AFTER_BURST) * afterBurst;
   const rayReach = sinceBurst < 0 ? 0.25 + 0.5 * leak : 0.75 + 0.25 * afterBurst;
 
@@ -187,6 +220,7 @@ export function unboxPose(
   const dollyIn = reducedMotion ? 0 : easeInOutCubic(progress(t, 0, timeline.dollyMs));
   return {
     drop,
+    spin,
     squash,
     lidLift,
     lidShake,
@@ -194,6 +228,7 @@ export function unboxPose(
     rays: rays * (1 - fly),
     rayReach,
     burst,
+    flareScale,
     lidOpen,
     pedestal,
     itemSpin,
@@ -268,5 +303,5 @@ export const UNBOX_JUICE: {
     'camera',
   ],
   reduced:
-    'No fall, dolly, lid shake, spin or flight: the shudders stay as rumbles and seam glow, the rays fade up, and the item appears on its pedestal with its rewards.',
+    'No hop, spin, squash, dolly, lid shake or flight: the crate rests centre stage from the first frame, the shudders stay as rumbles and seam glow, the rays fade up, the burst is a flare of light without a pop, and the item appears on its pedestal with its rewards.',
 };
