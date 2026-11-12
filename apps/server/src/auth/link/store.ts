@@ -19,7 +19,7 @@ import { availableProviders } from './providers.ts';
 /** Ledger kinds a save writes before its player has done anything. */
 const UNTOUCHED_SAVE_KINDS = ['grant.starting', 'grant.heap', 'buffer.prepay'] as const;
 
-/** Same single-use rule as the guest and refresh routes: a captured signed request works once. */
+/** Same single-use rule as guest sign-up: a captured signed request works once. */
 export async function burnAuthKey(
   db: D1Database,
   key: IdempotencyKey,

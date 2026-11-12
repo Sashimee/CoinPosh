@@ -21,7 +21,8 @@ const STORE_KEY = 'session';
 /**
  * What survives a reload. `pendingKey` is the Idempotency-Key of a refresh that may have
  * reached the server without us seeing the answer: resending under it replays the server's
- * response instead of rotating the refresh token twice (which would orphan the account).
+ * response instead of rotating the refresh token twice (which would orphan the account). The
+ * server replays only for a bounded window, then refuses the key with `idempotency_key_reused`.
  */
 const PersistedSessionSchema = z.object({
   refreshToken: RefreshRequestSchema.shape.refreshToken.nullable(),
@@ -101,7 +102,16 @@ export class Session {
       try {
         return await this.#refresh(persisted.refreshToken, persisted.pendingKey);
       } catch (error) {
-        if (!(error instanceof ApiRequestError && REVOKED.has(error.code))) throw error;
+        if (!(error instanceof ApiRequestError)) throw error;
+        if (error.code === 'idempotency_key_reused') {
+          this.#deps.onError(
+            new Error(
+              'CoinPosh net: the server no longer replays a refresh whose answer was lost (idempotency_key_reused), signing this device in again as a guest.',
+            ),
+          );
+        } else if (!REVOKED.has(error.code)) {
+          throw error;
+        }
         await this.#save({ refreshToken: null, pendingKey: null });
         return this.#guest();
       }

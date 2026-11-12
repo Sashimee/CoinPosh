@@ -4,6 +4,8 @@ export const MOCK_RULES = {
   /** Pre-minted, pre-paid coins kept ready for instant and offline drops. */
   bufferSize: 12,
   accessTokenTtlMs: 15 * 60_000,
+  /** A resent token refresh gets its first answer back this long; after that the key is refused. */
+  authRefreshReplayWindowMs: 10 * 60_000,
   /** Decorum points one nudge adds, against the `decorumCapacity` upgrade stat. */
   decorumPerNudge: 18,
   decorumDecayPerSecond: 6,
