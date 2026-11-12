@@ -7,7 +7,7 @@ import { h } from '../dom.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
-import { announcementHoldFor, createRankGate } from './announcementHold.ts';
+import { announcementHoldFor, createRankGate, peakReplay } from './announcementHold.ts';
 
 const HOLD_MS = 950;
 const STAMP_FROM = 1.9;
@@ -16,7 +16,8 @@ const LEAVE_MS = 420;
 
 /**
  * The cascade tier name stamps onto the screen with a serif flourish when a tier is reached.
- * While announcements are held it stays down, and only the highest rank reached stamps after.
+ * While announcements are held it stays down; afterwards the highest rank reached stamps only if
+ * the cascade still stands at it, and a stamp leaves early once its cascade ends.
  */
 export function createTierStamp(ctx: UiContext): HTMLElement {
   const name = h('span', { class: 'cp-stamp-name' });
@@ -85,7 +86,12 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
   const hold = announcementHoldFor(ctx.store);
   const gate = createRankGate(
     hold,
-    { rise: stamp, replay: stamp },
+    {
+      rise: stamp,
+      replay: (peak, live) => {
+        if (peakReplay(peak, live) === 'stamp') stamp(peak);
+      },
+    },
     comboView(ctx.store.getState().cascadeCount, cascade).rank,
   );
   ctx.own(
@@ -99,6 +105,7 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
       (s) => comboView(s.cascadeCount, cascade).rank,
       (rank) => {
         gate.update(rank);
+        if (rank === 0) leave();
       },
     ),
   );
