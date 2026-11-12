@@ -361,6 +361,22 @@ describe('UnboxCinematic', () => {
       unbox.dispose();
     });
 
+    it('holds on the burst with reduced motion when frames do not line up with the beats', () => {
+      const { unbox, beats } = cinematic('exquisite', true);
+      const frameS = (REDUCED_UNBOX.burstAtMs + 37) / 1000;
+      unbox.update(frameS);
+      expect(beats.at(-1)?.kind).toBe('burst');
+      expect(unbox.revealed).toBe(false);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.revealed).toBe(false);
+      expect(unbox.elapsed).toBe(burstFrameMs(REDUCED_UNBOX));
+      expect(unbox.pose.lidOpen).toBeGreaterThan(0.6);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.revealed).toBe(true);
+      expect(beats.map((beat) => beat.kind)).toEqual(unboxBeats(REDUCED_UNBOX).map((b) => b.kind));
+      unbox.dispose();
+    });
+
     it('still lets a tap skip straight to the card', () => {
       const { unbox, beats } = cinematic('heirloom', false);
       unbox.skip();
