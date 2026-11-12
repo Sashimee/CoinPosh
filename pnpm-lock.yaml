@@ -199,6 +199,9 @@ importers:
       '@coinposh/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@coinposh/sim':
+        specifier: workspace:*
+        version: link:../../packages/sim
       hono:
         specifier: 4.13.16
         version: 4.13.16
