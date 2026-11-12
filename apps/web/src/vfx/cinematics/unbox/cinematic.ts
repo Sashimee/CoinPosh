@@ -138,8 +138,7 @@ export class UnboxCinematic {
     if (this.disposed) return;
     this.disposed = true;
     const framing = this.framing();
-    this.options.camera.position.copy(framing.position);
-    this.options.camera.lookAt(framing.target);
+    this.writeCamera(framing.position, framing.target, framing.fov);
     this.stage.dispose();
   }
 
@@ -193,15 +192,29 @@ export class UnboxCinematic {
     this.stage.root.position.lerpVectors(shot.base, this.options.at, easeInCubic(pose.fly));
     this.stage.apply(pose, dtSeconds);
     pushIn(framing, shot.center, pose.dolly, this.eye, this.look);
-    this.options.camera.position.copy(this.eye);
-    this.options.camera.lookAt(this.look);
+    this.writeCamera(this.eye, this.look, framing.fov);
+  }
+
+  /**
+   * Writes the whole camera, field of view included: the camera kick rebases on any write, and
+   * a pose-only write would hand it its own FOV punch as the new base, so the punch would never
+   * spring back and would stack burst after burst.
+   */
+  private writeCamera(eye: Vector3, look: Vector3, fov: number): void {
+    const { camera } = this.options;
+    camera.position.copy(eye);
+    camera.lookAt(look);
+    if (camera.fov !== fov) {
+      camera.fov = fov;
+      camera.updateProjectionMatrix();
+    }
   }
 
   private framing(): CameraPreset {
     const aspect = this.options.camera.aspect;
     if (this.framed === null || aspect !== this.framingAspect) {
       this.framed = this.options.framing(aspect);
-      this.shotOf = unboxShot(this.framed, aspect);
+      this.shotOf = unboxShot(this.framed, aspect, this.options.reducedMotion);
       this.framingAspect = aspect;
     }
     return this.framed;

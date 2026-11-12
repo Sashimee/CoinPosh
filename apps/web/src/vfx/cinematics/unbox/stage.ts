@@ -113,16 +113,12 @@ export class UnboxAssets {
   private disposed = false;
 
   constructor(parent: Object3D) {
-    const bodyHeight = CRATE_SIZE - LID_HEIGHT;
-    this.body = new BoxGeometry(CRATE_SIZE, bodyHeight, CRATE_SIZE);
-    this.band = new BoxGeometry(
-      CRATE_SIZE + BAND_INSET,
-      bodyHeight * 0.18,
-      CRATE_SIZE + BAND_INSET,
-    );
-    this.seam = new BoxGeometry(CRATE_SIZE * 1.01, 0.0018, CRATE_SIZE * 1.01);
-    this.lid = new BoxGeometry(CRATE_SIZE * LID_OVERHANG, LID_HEIGHT, CRATE_SIZE * LID_OVERHANG);
-    this.clasp = new BoxGeometry(CRATE_SIZE * 0.3, LID_HEIGHT * 0.5, 0.002);
+    const parts = crateGeometry();
+    this.body = parts.body;
+    this.band = parts.band;
+    this.seam = parts.seam;
+    this.lid = parts.lid;
+    this.clasp = parts.clasp;
     this.column = new CylinderGeometry(PEDESTAL_RADIUS * 0.8, PEDESTAL_RADIUS, PEDESTAL_HEIGHT, 28);
     this.cap = new CylinderGeometry(PEDESTAL_RADIUS * 1.15, PEDESTAL_RADIUS * 1.15, 0.003, 28);
     this.ray = new PlaneGeometry(RAY_WIDTH, RAY_LENGTH);
@@ -272,8 +268,9 @@ export class UnboxStage {
   readonly rarity: Rarity;
   readonly style: RayStyle;
   private readonly assets: UnboxAssets;
-  private readonly crate = new Group();
-  private readonly lid = new Group();
+  private readonly rig: CrateRig;
+  private readonly crate: Group;
+  private readonly lid: Group;
   private readonly seam: Mesh;
   private readonly fan = new Group();
   private readonly rays: RaySlot[] = [];
@@ -297,20 +294,11 @@ export class UnboxStage {
     assets.seamMaterial.color.copy(this.accent);
 
     const bodyHeight = CRATE_SIZE - LID_HEIGHT;
-    const body = new Mesh(assets.body, lacquer);
-    body.name = 'unbox-body';
-    body.position.y = bodyHeight / 2;
-    const band = new Mesh(assets.band, gold);
-    band.position.y = bodyHeight * 0.5;
-    this.seam = new Mesh(assets.seam, assets.seamMaterial);
-    this.seam.position.y = bodyHeight;
-    const lidMesh = new Mesh(assets.lid, lacquer);
-    lidMesh.position.y = LID_HEIGHT / 2;
-    const clasp = new Mesh(assets.clasp, gold);
-    clasp.position.set(0, 0, CRATE_SIZE * 0.52);
-    this.lid.add(lidMesh, clasp);
-    this.lid.position.y = bodyHeight;
-    this.crate.add(body, band, this.seam, this.lid);
+    const rig = buildCrate(assets, { lacquer, gold, seam: assets.seamMaterial });
+    this.rig = rig;
+    this.crate = rig.crate;
+    this.lid = rig.lid;
+    this.seam = rig.seam;
 
     const column = new Mesh(assets.column, velvet);
     column.position.y = PEDESTAL_HEIGHT / 2;
@@ -400,22 +388,8 @@ export class UnboxStage {
     this.root.rotation.y = this.restYaw + pose.spin;
     const shrink = 1 - (1 - FLY_SCALE) * pose.fly;
     this.root.scale.setScalar(shrink);
-    this.crate.position.y = (1 - pose.drop) * DROP_HEIGHT;
-    const widen = 1 + (1 - pose.squash) * 0.6;
-    this.crate.scale.set(widen, pose.squash, widen);
-    this.crate.visible = pose.fly < 1;
-
     const facing = Math.atan2(this.toCamera.x, this.toCamera.z);
-    const view = facing - this.root.rotation.y;
-    awayFromCamera.set(-Math.sin(view), 0, -Math.cos(view));
-    this.lid.position.set(0, bodyHeight + pose.lidLift + pose.lidOpen * LID_RISE, 0);
-    this.lid.position.addScaledVector(awayFromCamera, pose.lidOpen * LID_BACK);
-    this.lid.scale.setScalar(1 - LID_SHRINK * pose.lidOpen);
-    hinge.set(-awayFromCamera.z, 0, awayFromCamera.x);
-    this.lid.quaternion
-      .setFromAxisAngle(hinge, -pose.lidOpen * 1.9)
-      .multiply(shake.setFromAxisAngle(forwardAxis, pose.lidShake));
-    this.lid.visible = pose.lidOpen < 1;
+    poseCrate(this.rig, pose, facing - this.root.rotation.y);
 
     const seamGlow = Math.max(0.22 * pose.drop, pose.rumble * 0.6, pose.rays) * (1 - pose.lidOpen);
     this.assets.seamMaterial.opacity = Math.min(1, seamGlow);
@@ -482,6 +456,79 @@ export class UnboxStage {
     material.roughness = hero === 'pearls' ? 0.15 : 0.25;
     return material;
   }
+}
+
+/** One crate's body, band, seam and lid; the lid group sits in the crate group. */
+export interface CrateRig {
+  readonly crate: Group;
+  readonly lid: Group;
+  readonly seam: Mesh;
+}
+
+export interface CrateGeometry {
+  readonly body: BoxGeometry;
+  readonly band: BoxGeometry;
+  readonly seam: BoxGeometry;
+  readonly lid: BoxGeometry;
+  readonly clasp: BoxGeometry;
+}
+
+export function crateGeometry(): CrateGeometry {
+  const bodyHeight = CRATE_SIZE - LID_HEIGHT;
+  return {
+    body: new BoxGeometry(CRATE_SIZE, bodyHeight, CRATE_SIZE),
+    band: new BoxGeometry(CRATE_SIZE + BAND_INSET, bodyHeight * 0.18, CRATE_SIZE + BAND_INSET),
+    seam: new BoxGeometry(CRATE_SIZE * 1.01, 0.0018, CRATE_SIZE * 1.01),
+    lid: new BoxGeometry(CRATE_SIZE * LID_OVERHANG, LID_HEIGHT, CRATE_SIZE * LID_OVERHANG),
+    clasp: new BoxGeometry(CRATE_SIZE * 0.3, LID_HEIGHT * 0.5, 0.002),
+  };
+}
+
+/** Assembles the crate from `parts`; the shot's fit builds an undrawn one to measure the stage. */
+export function buildCrate(
+  parts: CrateGeometry,
+  materials: { readonly lacquer: Material; readonly gold: Material; readonly seam: Material },
+): CrateRig {
+  const bodyHeight = CRATE_SIZE - LID_HEIGHT;
+  const crate = new Group();
+  const lid = new Group();
+  const body = new Mesh(parts.body, materials.lacquer);
+  body.name = 'unbox-body';
+  body.position.y = bodyHeight / 2;
+  const band = new Mesh(parts.band, materials.gold);
+  band.position.y = bodyHeight * 0.5;
+  const seam = new Mesh(parts.seam, materials.seam);
+  seam.position.y = bodyHeight;
+  const lidMesh = new Mesh(parts.lid, materials.lacquer);
+  lidMesh.position.y = LID_HEIGHT / 2;
+  const clasp = new Mesh(parts.clasp, materials.gold);
+  clasp.position.set(0, 0, CRATE_SIZE * 0.52);
+  lid.add(lidMesh, clasp);
+  lid.position.y = bodyHeight;
+  crate.add(body, band, seam, lid);
+  return { crate, lid, seam };
+}
+
+/**
+ * Hops, squashes and opens the crate for `pose`. `view` is the camera's bearing in the crate's
+ * parent space, less the parent's yaw. The seam's visibility follows its glow in `UnboxStage`.
+ */
+export function poseCrate(rig: CrateRig, pose: UnboxPose, view: number): void {
+  const { crate, lid } = rig;
+  const bodyHeight = CRATE_SIZE - LID_HEIGHT;
+  crate.position.y = (1 - pose.drop) * DROP_HEIGHT;
+  const widen = 1 + (1 - pose.squash) * 0.6;
+  crate.scale.set(widen, pose.squash, widen);
+  crate.visible = pose.fly < 1;
+  awayFromCamera.set(-Math.sin(view), 0, -Math.cos(view));
+  lid.position.set(0, bodyHeight + pose.lidLift + pose.lidOpen * LID_RISE, 0);
+  lid.position.addScaledVector(awayFromCamera, pose.lidOpen * LID_BACK);
+  lid.scale.setScalar(1 - LID_SHRINK * pose.lidOpen);
+  hinge.set(-awayFromCamera.z, 0, awayFromCamera.x);
+  lid.quaternion
+    .setFromAxisAngle(hinge, -pose.lidOpen * 1.9)
+    .multiply(shake.setFromAxisAngle(forwardAxis, pose.lidShake));
+  lid.visible = pose.lidOpen < 1;
 }
 
 /** The lid flips off away from the camera, whatever the crate's spin, so it never leaves frame. */

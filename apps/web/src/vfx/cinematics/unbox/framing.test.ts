@@ -54,6 +54,8 @@ interface Run {
   readonly lidBurstFrames: number;
   readonly sparks: ContactOptions[];
   readonly kicks: number;
+  /** Camera FOV over the venue FOV once the reveal has held for a while. */
+  readonly fovDrift: number;
 }
 
 /** Plays one unbox frame by frame with the real camera kick layered on top, like the game loop. */
@@ -106,8 +108,9 @@ function run(rarity: Rarity, reducedMotion: boolean, viewport: typeof PORTRAIT):
     kick.update(1 / FPS, camera);
     capture();
   }
+  const fovDrift = camera.fov - framing.fov;
   unbox.dispose();
-  return { frames, flareFrames, lidBurstFrames, sparks, kicks };
+  return { frames, flareFrames, lidBurstFrames, sparks, kicks, fovDrift };
 }
 
 function narrowest(frames: readonly Extent[]): number {
@@ -146,17 +149,49 @@ describe('unbox framing at 390x844', () => {
   });
 });
 
+/**
+ * Landscape targets, each the measured maximum less about 0.01. Reduced motion holds the crate
+ * still, so it clears the portrait 30 %. The full cinematic is bound by its tallest frame, the
+ * lid blowing clear on the spring, inside the shot's 90 % frame limit: that caps its narrowest
+ * frame, face on mid spin-in before the push-in, at 17.2 % of the width and the settled reveal
+ * at 23 %, so 30 % on every frame cannot fit at 844x390 without cropping the burst.
+ */
+const LANDSCAPE_TARGET = {
+  full: { narrowest: 0.16, tallest: 0.87, holdWidth: 0.22, holdHeight: 0.5 },
+  reduced: { narrowest: 0.36, tallest: 0.89, holdWidth: 0.36, holdHeight: 0.76 },
+} as const;
+
 describe('unbox framing at 844x390', () => {
   for (const reducedMotion of [false, true]) {
     const variant = reducedMotion ? 'reduced' : 'full';
-    it(`keeps the crate whole on screen and readable every frame (${variant})`, () => {
+    const target = LANDSCAPE_TARGET[variant];
+    it(`keeps the crate whole on screen and as large as the height allows (${variant})`, () => {
       for (const rarity of RARITIES) {
         const { frames } = run(rarity, reducedMotion, LANDSCAPE);
         expect(frames.filter((frame) => !onScreen(frame))).toEqual([]);
-        const tallest = Math.max(...frames.map((frame) => (frame.maxY - frame.minY) / 2));
-        expect(tallest).toBeGreaterThan(0.4);
-        expect(narrowest(frames)).toBeGreaterThan(0.13);
+        const height = (frame: Extent): number => (frame.maxY - frame.minY) / 2;
+        expect(Math.max(...frames.map(height))).toBeGreaterThanOrEqual(target.tallest);
+        expect(narrowest(frames)).toBeGreaterThanOrEqual(target.narrowest);
+        const hold = frames.at(-1);
+        if (!hold) throw new Error('The landscape unbox drew no frames');
+        expect(hold.width).toBeGreaterThanOrEqual(target.holdWidth);
+        expect(height(hold)).toBeGreaterThanOrEqual(target.holdHeight);
       }
     });
   }
+
+  it('springs every burst FOV punch back instead of stacking it into the base', () => {
+    for (const rarity of RARITIES) {
+      const { fovDrift } = run(rarity, false, LANDSCAPE);
+      expect(Math.abs(fovDrift)).toBeLessThan(0.01);
+    }
+  });
+
+  it('spends the height budget: some frame reaches within 6 % of the frame edge', () => {
+    for (const reducedMotion of [false, true]) {
+      const { frames } = run('common', reducedMotion, LANDSCAPE);
+      const reach = Math.max(...frames.map((frame) => Math.max(-frame.minY, frame.maxY)));
+      expect(reach).toBeGreaterThan(0.84);
+    }
+  });
 });
