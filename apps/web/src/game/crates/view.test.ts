@@ -1,10 +1,39 @@
 import { RARITIES, type CrateId, type TableCrate } from '@coinposh/shared';
-import { Group, Mesh, type Material, type Object3D } from 'three/webgpu';
+import {
+  AdditiveBlending,
+  Group,
+  Mesh,
+  MeshBasicNodeMaterial,
+  MeshPhysicalNodeMaterial,
+  type Material,
+  type Node,
+  type Object3D,
+} from 'three/webgpu';
+import {
+  cameraPosition,
+  modelViewMatrix,
+  modelWorldMatrix,
+  normalLocal,
+  normalView,
+  normalWorld,
+  positionLocal,
+  positionView,
+  positionViewDirection,
+  positionWorld,
+} from 'three/tsl';
 import { describe, expect, it } from 'vitest';
 import { UnboxAssets, UnboxStage } from '../../vfx/cinematics/unbox/index.ts';
 import { RARITY_COLORS, VFX_COLORS } from '../../vfx/palette.ts';
 import { CrateRide } from './ride.ts';
-import { crateShine, GLINT_OFF, seamColor, STATIC_GLOW, TableCrateView } from './view.ts';
+import {
+  crateShine,
+  GLINT_OFF,
+  GLINT_REST,
+  GLINT_STILL,
+  seamColor,
+  STATIC_GLOW,
+  TableCrateView,
+} from './view.ts';
 
 const FRAME = 1 / 60;
 
@@ -26,6 +55,27 @@ function meshesUnder(root: Object3D): Mesh[] {
   const found: Mesh[] = [];
   root.traverse((object) => {
     if (object instanceof Mesh) found.push(object as Mesh);
+  });
+  return found;
+}
+
+/** Nodes whose value changes with where the crate sits or where the camera looks from. */
+const VIEW_OR_WORLD: readonly Node[] = [
+  cameraPosition,
+  modelViewMatrix,
+  modelWorldMatrix,
+  normalView,
+  normalWorld,
+  positionView,
+  positionViewDirection,
+  positionWorld,
+];
+
+function reaches(root: Node, targets: readonly Node[]): boolean {
+  const wanted = new Set<unknown>(targets);
+  let found = false;
+  root.traverse((node) => {
+    if (wanted.has(node)) found = true;
   });
   return found;
 }
@@ -60,11 +110,34 @@ describe('crate seam colour', () => {
 });
 
 describe('crate shine', () => {
-  it('holds one glow and parks the glint under reduced motion, riding or teetering', () => {
+  it('holds one glow and a still, softer glint under reduced motion, riding or teetering', () => {
     for (let age = 0; age < 12; age += 0.05) {
       for (const teeter of [false, true]) {
-        expect(crateShine(age, teeter, true)).toEqual({ glow: STATIC_GLOW, sweep: GLINT_OFF });
+        expect(crateShine(age, teeter, true)).toEqual({
+          glow: STATIC_GLOW,
+          sweep: GLINT_REST,
+          glint: GLINT_STILL,
+        });
       }
+    }
+  });
+
+  it('rests the reduced-motion glint on the trim, where the full sweep passes, at under half strength', () => {
+    const swept: number[] = [];
+    for (let age = 0; age < 4; age += FRAME) {
+      const { sweep } = crateShine(age, false, false);
+      if (sweep !== GLINT_OFF) swept.push(sweep);
+    }
+    expect(GLINT_REST).toBeGreaterThan(Math.min(...swept));
+    expect(GLINT_REST).toBeLessThan(Math.max(...swept));
+    expect(GLINT_STILL).toBeGreaterThan(0);
+    expect(GLINT_STILL).toBeLessThan(0.5);
+  });
+
+  it('runs the full-motion glint at full strength whether it is sweeping or parked', () => {
+    for (let age = 0; age < 8; age += 0.05) {
+      expect(crateShine(age, false, false).glint).toBe(1);
+      expect(crateShine(age, true, false).glint).toBe(1);
     }
   });
 
@@ -154,6 +227,32 @@ describe('TableCrateView', () => {
     expect(parent.children).toHaveLength(0);
   });
 
+  it('self-lights the lacquer sheen and the gold trim from the crate alone, never the camera or venue', () => {
+    const parent = new Group();
+    const view = new TableCrateView(parent);
+    view.spawn(crateId(1));
+    const [lacquer, gold, seam] = meshesUnder(parent).map((mesh) => mesh.material);
+    if (!(lacquer instanceof MeshPhysicalNodeMaterial)) throw new Error('lacquer is not physical');
+    if (!(gold instanceof MeshPhysicalNodeMaterial)) throw new Error('gold is not physical');
+    if (!(seam instanceof MeshBasicNodeMaterial)) throw new Error('seam is not a basic material');
+    if (!lacquer.emissiveNode || !gold.emissiveNode || !seam.colorNode) {
+      throw new Error('crate materials lost their self-light');
+    }
+    expect(reaches(normalView.dot(positionViewDirection), VIEW_OR_WORLD)).toBe(true);
+    expect(reaches(positionWorld.y, VIEW_OR_WORLD)).toBe(true);
+    for (const node of [lacquer.emissiveNode, gold.emissiveNode, seam.colorNode]) {
+      expect(reaches(node, VIEW_OR_WORLD)).toBe(false);
+    }
+    expect(reaches(lacquer.emissiveNode, [normalLocal])).toBe(true);
+    expect(reaches(lacquer.emissiveNode, [positionLocal])).toBe(true);
+    expect(lacquer.specularIntensity).toBe(0);
+    expect(lacquer.clearcoat).toBe(0);
+    expect(gold.metalness).toBe(1);
+    expect(seam.blending).toBe(AdditiveBlending);
+    expect(seam.depthWrite).toBe(false);
+    view.dispose();
+  });
+
   it('builds the crate as a bevelled body, a gold trim frame and a glowing seam', () => {
     const parent = new Group();
     const view = new TableCrateView(parent);
@@ -177,14 +276,18 @@ describe('TableCrateView', () => {
     view.dispose();
   });
 
-  it('holds the glow still with no glint sweep under reduced motion', () => {
+  it('holds the glow and the glint still under reduced motion', () => {
     const view = new TableCrateView(new Group());
     const ride = new CrateRide(crate(1), 0);
     view.spawn(crateId(1));
     for (let frame = 0; frame < 600; frame++) {
       ride.update(FRAME, (frame % 120) / 120);
       view.update(FRAME, [ride], true);
-      expect(view.shineOf(crateId(1))).toEqual({ glow: STATIC_GLOW, sweep: GLINT_OFF });
+      expect(view.shineOf(crateId(1))).toEqual({
+        glow: STATIC_GLOW,
+        sweep: GLINT_REST,
+        glint: GLINT_STILL,
+      });
     }
     view.dispose();
   });
@@ -201,6 +304,7 @@ describe('TableCrateView', () => {
       if (!shine) throw new Error('spawned crate has no shine');
       if (shine.sweep !== GLINT_OFF) sweeps.add(shine.sweep);
       glows.add(shine.glow);
+      expect(shine.glint).toBe(1);
     }
     expect(sweeps.size).toBeGreaterThan(10);
     expect(glows.size).toBeGreaterThan(10);
