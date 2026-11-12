@@ -83,6 +83,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-290 | done | task/P-290 (merge fd1c81d) | Crate reward lines name the charm/card and pluralise currencies: loot.ts resolves charm and album-card names with rarity, revealCard shows them with album set progress, EN/FR/DE plural currency lines in crates/i18n.ts (a4f873d); follow-up P-321 (GET /v1/album on the server); pnpm check green after merge |
 | T-92.04 | done | task/T-92.04 (merge 1a41f90) | Server pose storage, POST /v1/table/snapshot and boot placement: apps/server/src/do/snapshot.ts + tests, routes/table.ts (d7444c3); follow-ups P-266 (re-raised), P-322, P-323; pnpm check green after merge (#92) |
 | P-258 | done | task/P-258 (merge 83429ae) | Opening heap rests at the brink with no front falls without input: packages/sim/src/table/brink.test.ts pins the Demo heap at rest with no input (1424d95); pnpm check green after merge |
+| P-317 | done | task/P-317 (merge a1b8e8e) | Tier fusion juice: routine fusion gets a compact white-gold flash and tier-up chime with no camera kick or hit-stop; full set piece only for the first fusion of the session or a gold+ result, camera kicks rate-limited to 1 per 3 s; vfx/fusionJuice.ts + tests, emitters and index updated (dea13f6); pnpm check green after merge |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
