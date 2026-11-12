@@ -500,6 +500,8 @@ export interface OpenedCrate {
 export interface UnboxCard {
   readonly shown: boolean;
   show(): void;
+  /** A sheet opened over the unbox: the card steps out of sight until the director lets go. */
+  hold?(held: boolean): void;
   dispose(): void;
 }
 
@@ -531,12 +533,18 @@ interface Playing {
  * Plays opened crates one at a time: the 3D unbox, its stingers on the bus, then the reward card.
  * A crate that opens while another is playing waits its turn in arrival order. The unbox props
  * and light are built here once and lent to each cinematic.
+ *
+ * While held (a sheet is open) nothing starts and a playing unbox freezes with its card out of
+ * sight, so the cinematic never plays behind a sheet or stacks over one; `crate:waiting` tells
+ * the dock how many crates are ready for when it lets go.
  */
 export class UnboxDirector {
   private readonly options: UnboxDirectorOptions;
   private readonly assets: UnboxAssets;
   private readonly queue: OpenedCrate[] = [];
   private playing: Playing | null = null;
+  private isHeld = false;
+  private announced = 0;
   private disposed = false;
 
   constructor(options: UnboxDirectorOptions) {
@@ -556,19 +564,34 @@ export class UnboxDirector {
     return this.playing?.cinematic ?? null;
   }
 
+  get held(): boolean {
+    return this.isHeld;
+  }
+
   enqueue(opened: OpenedCrate): void {
     if (this.disposed) return;
     this.queue.push(opened);
-    if (this.playing === null) this.startNext();
+    if (this.isHeld) this.announceWaiting();
+    else if (this.playing === null) this.startNext();
+  }
+
+  /** Holds the unbox while a sheet is open; letting go starts the next crate at once. */
+  hold(held: boolean): void {
+    if (this.disposed || held === this.isHeld) return;
+    this.isHeld = held;
+    this.playing?.card.hold?.(held);
+    this.announceWaiting();
+    if (!held && this.playing === null) this.startNext();
   }
 
   skip(): void {
+    if (this.isHeld) return;
     this.playing?.cinematic.skip();
   }
 
   collect(): void {
     const playing = this.playing;
-    if (!playing || playing.collected) return;
+    if (this.isHeld || !playing || playing.collected) return;
     if (!playing.card.shown) {
       playing.cinematic.skip();
       return;
@@ -586,7 +609,7 @@ export class UnboxDirector {
   /** `dt` in effect time, so a hit-stop freezes the burst with the rest of the world. */
   update(dt: number): void {
     const playing = this.playing;
-    if (this.disposed || !playing) return;
+    if (this.disposed || this.isHeld || !playing) return;
     playing.cinematic.update(dt);
     if (playing.cinematic.done) this.finish();
   }
@@ -670,6 +693,13 @@ export class UnboxDirector {
     }
   }
 
+  private announceWaiting(): void {
+    const count = this.isHeld ? this.queue.length + (this.playing ? 1 : 0) : 0;
+    if (count === this.announced) return;
+    this.announced = count;
+    this.options.events.emit('crate:waiting', { count });
+  }
+
   private stinger(cue: CrateStingerCue, rarity: Rarity, step: number, duckSeconds: number): void {
     this.options.events.emit('crate:stinger', { cue, rarity, step, duckSeconds });
   }
@@ -681,6 +711,6 @@ export class UnboxDirector {
       playing.card.dispose();
       playing.cinematic.dispose();
     }
-    if (!this.disposed) this.startNext();
+    if (!this.disposed && !this.isHeld) this.startNext();
   }
 }

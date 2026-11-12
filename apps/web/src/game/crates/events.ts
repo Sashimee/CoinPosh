@@ -42,6 +42,12 @@ export interface CrateEvents {
   'crate:album': { readonly crateId: CrateId; readonly progress: AlbumProgressMap };
   /** The album read failed; the card lines show without set progress. */
   'crate:albumFailed': { readonly crateId: CrateId; readonly error: unknown };
+  /**
+   * Opened crates held back while a sheet is open, counting one whose unbox froze when the sheet
+   * came up; 0 once the sheet closes and they play. The dock shows "Vault Crate ready" while it
+   * is above 0.
+   */
+  'crate:waiting': { readonly count: number };
   /** The cinematic burst: the rarity is now on screen. */
   'crate:revealed': { readonly crateId: CrateId; readonly rarity: Rarity };
   /** The player collected; the HUD shows the wallet from `crate:opened`. */
