@@ -151,7 +151,7 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
         ui.i18n.language,
         line.kind === 'collectible' ? (album?.[line.item] ?? null) : null,
       );
-    const item = rewardLineItem(line, copy, t, ctx, loc);
+    const item = rewardLineItem(line, copy, ctx, loc);
     item.style.setProperty('--cp-crate-stagger', `${index * LINE_STAGGER_MS}ms`);
     list.append(item);
   });
@@ -301,6 +301,8 @@ export interface RewardLineCopy {
   readonly name: string;
   readonly detail: string | null;
   readonly rarity: Rarity | null;
+  /** The rarity chip beside an item's name. */
+  readonly chip: string | null;
   /** The album card just finished its set. */
   readonly completes: boolean;
 }
@@ -324,6 +326,7 @@ export function rewardLineCopy(
         }),
         detail: null,
         rarity: null,
+        chip: null,
         completes: false,
       };
     case 'charm':
@@ -331,6 +334,7 @@ export function rewardLineCopy(
         name: t(`item.${line.item}`),
         detail: line.duplicate ? t('charmLevel', { level: line.level }) : t('charmNew'),
         rarity: line.rarity,
+        chip: t(`chip.${line.rarity}`),
         completes: false,
       };
     case 'collectible': {
@@ -347,12 +351,13 @@ export function rewardLineCopy(
             ? t('collectible')
             : t(completes ? 'albumSetComplete' : 'albumSet', values),
         rarity: line.rarity,
+        chip: t(`chip.${line.rarity}`),
         completes,
       };
     }
     case 'safe':
     case 'scratchCard':
-      return { name: t(line.kind), detail: null, rarity: null, completes: false };
+      return { name: t(line.kind), detail: null, rarity: null, chip: null, completes: false };
   }
 }
 
@@ -377,7 +382,6 @@ function lineIcon(kind: keyof typeof LINE_ICON_BODY): HTMLElement {
 function rewardLineItem(
   line: RewardLine,
   copy: () => RewardLineCopy,
-  t: CratesT,
   ctx: UiContext,
   loc: Localizer,
 ): HTMLElement {
@@ -402,7 +406,7 @@ function rewardLineItem(
     detail,
   );
   item.append(lineIcon(line.kind), text);
-  ctx.own(loc.text(chip, () => t(`rarity.${line.rarity}`)));
+  ctx.own(loc.text(chip, () => copy().chip ?? ''));
   ctx.own(
     loc.bind(() => {
       const next = copy();

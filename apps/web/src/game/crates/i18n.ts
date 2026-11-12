@@ -27,6 +27,8 @@ type GainKey = `${Currency}_${'one' | 'other' | 'many'}`;
 
 interface CratesStrings extends CratesFlatStrings, ResourceTree {
   rarity: Record<Rarity, string>;
+  /** The rarity on an item's line, standing alone: FR `rarity.*` agrees with « Caisse ». */
+  chip: Record<Rarity, string>;
   gain: Record<GainKey, string>;
   item: Record<AlbumItemId, string>;
   set: Record<AlbumSetKey, string>;
@@ -70,6 +72,14 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     albumSet: '{{set}} · {{owned}} / {{total}}',
     albumSetComplete: '{{set}} complete · {{owned}} / {{total}}',
     rarity: {
+      common: 'Common',
+      fine: 'Fine',
+      rare: 'Rare',
+      exquisite: 'Exquisite',
+      legendary: 'Legendary',
+      heirloom: 'Heirloom',
+    },
+    chip: {
       common: 'Common',
       fine: 'Fine',
       rare: 'Rare',
@@ -138,6 +148,14 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
       legendary: 'Légendaire',
       heirloom: 'Héritage',
     },
+    chip: {
+      common: 'Ordinaire',
+      fine: 'De choix',
+      rare: 'Rare',
+      exquisite: 'Sublime',
+      legendary: 'Légendaire',
+      heirloom: 'Héritage',
+    },
     gain: gains({
       coins: ['Pièce', 'Pièces'],
       bullion: ['Lingot', 'Lingots'],
@@ -199,6 +217,14 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
       legendary: 'Legendär',
       heirloom: 'Erbstück',
     },
+    chip: {
+      common: 'Gewöhnlich',
+      fine: 'Fein',
+      rare: 'Selten',
+      exquisite: 'Exquisit',
+      legendary: 'Legendär',
+      heirloom: 'Erbstück',
+    },
     gain: gains({
       coins: ['Münze', 'Münzen'],
       bullion: ['Barren', 'Barren'],
@@ -243,6 +269,7 @@ export function cratesKey(
   key:
     | FlatKey
     | `rarity.${Rarity}`
+    | `chip.${Rarity}`
     | `gain.${Currency}`
     | `item.${AlbumItemId}`
     | `set.${AlbumSetKey}`,

@@ -34,6 +34,7 @@ export class CrateController {
   private readonly rides = new Map<CrateId, CrateRide>();
   private readonly awaitingClaim = new Set<CrateId>();
   private readonly opening = new Map<CrateId, Promise<void>>();
+  private queue: Promise<void> = Promise.resolve();
   private readonly unsubscribe: () => void;
   private latestPity: PityCounters | null = null;
   private disposed = false;
@@ -152,10 +153,17 @@ export class CrateController {
     this.options.table.claimCrate(crateId, tick, 'front');
   }
 
+  /**
+   * Opens run one at a time, each with its album read, so a crate's set progress is the album
+   * right after its own grant: overlapping opens would let a later crate's card land first.
+   */
   private open(crateId: CrateId): void {
     if (this.opening.has(crateId)) return;
-    const request = this.request(crateId).finally(() => this.opening.delete(crateId));
+    const run = () => this.request(crateId);
+    // A failed open still surfaces through `settled()`; it must not stall the crates behind it.
+    const request = this.queue.then(run, run).finally(() => this.opening.delete(crateId));
     this.opening.set(crateId, request);
+    this.queue = request;
   }
 
   /** Only the server call can fail the open; once it answers, the wallet is already credited. */

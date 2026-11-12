@@ -23,7 +23,7 @@ import type { Connectivity, Scheduler } from '../../net/connectivity.ts';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
 import type { MockServer } from '../../net/mock/server.ts';
 import { Outbox } from '../../net/outbox.ts';
-import { TableSync } from '../../net/tableSync.ts';
+import { TableSync, type TableEvent } from '../../net/tableSync.ts';
 import {
   FakeTime,
   connectPlayer,
@@ -393,6 +393,7 @@ describe('reward line copy', () => {
       name: 'Captain’s Bell',
       detail: 'New Charm',
       rarity: 'fine',
+      chip: 'Fine',
       completes: false,
     });
     expect(copyIn('fr', charm(false, 1)).name).toBe('Cloche du capitaine');
@@ -405,11 +406,28 @@ describe('reward line copy', () => {
 
   const albumCard: RewardLine = { kind: 'collectible', ...albumPlace('teakDeckCoin') };
 
+  it('gives the French item chip a rarity that does not agree with « Caisse »', () => {
+    const bucket: RewardLine = {
+      kind: 'charm',
+      level: 1,
+      duplicate: false,
+      ...albumPlace('champagneBucketCharm'),
+    };
+    const copy = copyIn('fr', bucket);
+    expect(copy).toMatchObject({ name: 'Seau à champagne', rarity: 'fine', chip: 'De choix' });
+    expect(copy.chip).not.toBe('Raffinée');
+    expect(copyIn('fr', albumCard).chip).toBe('Ordinaire');
+    for (const rarity of RARITIES) {
+      expect(CRATES_STRINGS.fr.chip[rarity]).not.toMatch(/ée$|une$|ise$/);
+    }
+  });
+
   it('names an album card and shows its set progress once the album answers', () => {
     expect(copyIn('en', albumCard)).toEqual({
       name: 'Teak Deck Coin',
       detail: 'Album Card',
       rarity: 'common',
+      chip: 'Common',
       completes: false,
     });
     expect(copyIn('en', albumCard, { owned: 3, total: 8 }).detail).toBe('Deck Essentials · 3 / 8');
@@ -435,6 +453,7 @@ describe('reward line copy', () => {
       name: 'Key-locked Safe',
       detail: null,
       rarity: null,
+      chip: null,
       completes: false,
     });
     expect(copyIn('fr', { kind: 'scratchCard' }).name).toBe('Carte à gratter');
@@ -1134,5 +1153,109 @@ describe('crates against the Demo Mode server', () => {
     for (let i = 0; i < crateSpawn.ftueScriptedDrop; i++) await game.drop();
     expect(game.log).toEqual([]);
     expect(game.controller.riding).toHaveLength(0);
+  });
+});
+
+describe('overlapping crate opens', () => {
+  const deck = album.find((set) => set.id === 'deckEssentials');
+  if (!deck) throw new Error('Expected the deckEssentials album set');
+  const albumWith = (owned: number): AlbumResponse => ({
+    sets: album.map((set) => ({
+      id: set.id as never,
+      entries: set.items.map((item, index) => ({
+        id: item.id as never,
+        kind: 'coinSkin' as const,
+        owned: set.id === deck.id && index < owned,
+        count: set.id === deck.id && index < owned ? 1 : 0,
+      })),
+      completed: false,
+    })),
+  });
+  const openedWithCard = () => ({
+    roll: RollSchema.parse({
+      rarity: 'fine',
+      rewards: [{ kind: 'collectible', collectibleId: 'teakDeckCoin' }],
+      proof: { serverSeedHash: 'a'.repeat(64), clientSeed: 'velvet', nonce: 1 },
+      pity: { rare: 0, exquisite: 0, legendary: 0 },
+    }),
+    wallet: WalletSchema.parse({
+      coins: 0,
+      bullion: 0,
+      goldBars: 0,
+      pearls: 0,
+      keys: 0,
+      tickets: 0,
+      stars: 0,
+    }),
+  });
+
+  interface Pending {
+    readonly endpoint: string;
+    readonly crateId: CrateId | undefined;
+    readonly resolve: (value: unknown) => void;
+  }
+
+  it('reads each crate’s album right after its own grant, in open order', async () => {
+    const pending: Pending[] = [];
+    const client: Pick<ApiClient, 'call'> = {
+      call: ((endpoint: string, options?: { body?: { crateId?: CrateId } }) =>
+        new Promise((resolve) => {
+          pending.push({ endpoint, crateId: options?.body?.crateId, resolve });
+        })) as unknown as ApiClient['call'],
+    };
+    const listeners: ((event: TableEvent) => void)[] = [];
+    const table = {
+      subscribe: (listener: (event: TableEvent) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      claimCrate: () => undefined,
+    };
+    const events = createBus<CrateEvents>();
+    const albums: { crateId: CrateId; owned: number | undefined }[] = [];
+    events.on('crate:album', ({ crateId, progress }) =>
+      albums.push({ crateId, owned: progress.teakDeckCoin?.owned }),
+    );
+    const controller = new CrateController({
+      table,
+      client,
+      sim: { stats: { tick: 0, pusherStroke: 0 } },
+      events,
+    });
+    const a = 'crate_AAAAAAAAAAAAAAAA' as CrateId;
+    const b = 'crate_BBBBBBBBBBBBBBBB' as CrateId;
+    controller.adopt([crate(a), crate(b)]);
+    for (let t = 0; t < CRATE_RIDE_SECONDS.max + 1; t += 1 / 30) controller.update(1 / 30);
+    expect(controller.riding).toHaveLength(0);
+    for (const crateId of [a, b]) {
+      const settled = {
+        type: 'claimSettled',
+        claim: { kind: 'crate', crateId, tick: 0, edge: 'front' },
+        result: { status: 'accepted' },
+      } as TableEvent;
+      for (const listener of listeners) listener(settled);
+    }
+    const flush = async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    };
+    const answer = async (endpoint: string, value: unknown) => {
+      await flush();
+      const next = pending.shift();
+      expect(next?.endpoint).toBe(endpoint);
+      next?.resolve(value);
+      await flush();
+      return next;
+    };
+
+    expect((await answer('cratesOpen', openedWithCard()))?.crateId).toBe(a);
+    expect(pending.map((call) => call.endpoint)).toEqual(['album']);
+    await answer('album', albumWith(3));
+    expect((await answer('cratesOpen', openedWithCard()))?.crateId).toBe(b);
+    await answer('album', albumWith(4));
+    await controller.settled();
+    expect(albums).toEqual([
+      { crateId: a, owned: 3 },
+      { crateId: b, owned: 4 },
+    ]);
   });
 });
