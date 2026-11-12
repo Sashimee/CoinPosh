@@ -18,12 +18,14 @@ import {
   SpriteNodeMaterial,
   Vector3,
   type BufferGeometry,
+  type Camera,
   type Material,
   type Object3D,
 } from 'three/webgpu';
 import { rivieraTokens } from '../../../scene/venues/riviera/palette.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../palette.ts';
 import { rayStyle, type RayStyle, type UnboxPose } from './plan.ts';
+import { warmUnboxShots } from './shot.ts';
 
 /** What sits on the pedestal: the headline reward of the roll. */
 export type UnboxHero = 'coins' | 'pearls' | 'keys' | 'tickets' | 'charm' | 'safe' | 'card';
@@ -63,6 +65,11 @@ const FLARE_SIZE = CRATE_SIZE * 1.6;
 const FLARE_PEAK = 2.6;
 /** Where the crate shrinks to as it sinks back into the tray after Collect. */
 const FLY_SCALE = 0.55;
+/**
+ * The primer draws each unbox material this far below the table, where every triangle is
+ * clipped: the GPU builds the pipelines while nothing can be seen.
+ */
+const PRIMER_DEPTH = 1_000;
 
 interface RaySlot {
   readonly mesh: Mesh;
@@ -110,6 +117,8 @@ export class UnboxAssets {
   private readonly flareStrength = uniform(0);
   private readonly heroes = new Map<UnboxHero, BufferGeometry>();
   private readonly rays = new Map<Object3D, RaySlot>();
+  private readonly primer = new Group();
+  private primerSlot: RaySlot | null = null;
   private disposed = false;
 
   constructor(parent: Object3D) {
@@ -161,6 +170,28 @@ export class UnboxAssets {
     this.light = new PointLight(0xffffff, 0, LIGHT_RANGE, 2);
     this.light.name = 'unbox-light';
     parent.add(this.light);
+    this.mountPrimer();
+    scheduleIdle(warmUnboxShots);
+  }
+
+  /** True while the primer still waits for its first draw of every unbox material. */
+  get priming(): boolean {
+    return this.primer.parent !== null;
+  }
+
+  /**
+   * Compiles every unbox pipeline ahead of the first crate, against `scene`'s lights, for hosts
+   * that can await it. Without it the primer still compiles them on the table's next frame.
+   */
+  async warm(
+    renderer: {
+      compileAsync(object: Object3D, camera: Camera, targetScene?: Object3D | null): Promise<void>;
+    },
+    camera: Camera,
+    scene: Object3D,
+  ): Promise<void> {
+    if (this.disposed || !this.priming) return;
+    await renderer.compileAsync(this.primer, camera, scene);
   }
 
   hero(hero: UnboxHero): BufferGeometry {
@@ -189,6 +220,7 @@ export class UnboxAssets {
     this.disposed = true;
     this.light.removeFromParent();
     this.light.dispose();
+    this.unmountPrimer();
     const geometries = new Set<BufferGeometry>([
       this.body,
       this.band,
@@ -213,6 +245,53 @@ export class UnboxAssets {
     this.flare.removeFromParent();
     for (const material of materials) material.dispose();
     this.rays.clear();
+  }
+
+  /**
+   * A three/webgpu material compiles on its first draw, which stalled the first unbox frames
+   * behind a blank screen. The primer draws every unbox material once from mount on, out of
+   * sight, with the light set the stage will have, then leaves the scene. It hangs under the
+   * light, the one object the assets keep in the scene, so mounting adds nothing else there.
+   */
+  private mountPrimer(): void {
+    this.primer.name = 'unbox-primer';
+    this.primer.position.y = -PRIMER_DEPTH;
+    const ray = new Mesh(this.ray, this.rayMaterial);
+    const slot: RaySlot = { mesh: ray, tint: new Color(), strength: 0, angle: 0 };
+    this.primerSlot = slot;
+    this.bindRay(slot);
+    const parts: Object3D[] = [
+      new Mesh(this.body, this.lacquer),
+      new Mesh(this.band, this.gold),
+      new Mesh(this.column, this.velvet),
+      new Mesh(this.seam, this.seamMaterial),
+      new Mesh(this.cap, this.heroMaterial),
+      ray,
+      new Sprite(this.flareMaterial),
+    ];
+    const waiting = new Set(parts);
+    for (const part of parts) {
+      part.frustumCulled = false;
+      part.onAfterRender = () => {
+        waiting.delete(part);
+        // Leaves after the draw call returns, so the render list being walked stays intact.
+        if (waiting.size === 0) {
+          queueMicrotask(() => {
+            this.unmountPrimer();
+          });
+        }
+      };
+    }
+    this.primer.add(...parts);
+    this.light.add(this.primer);
+  }
+
+  private unmountPrimer(): void {
+    if (!this.priming) return;
+    this.primer.removeFromParent();
+    this.primer.clear();
+    if (this.primerSlot) this.unbindRay(this.primerSlot.mesh);
+    this.primerSlot = null;
   }
 
   private createRayMaterial(): MeshBasicNodeMaterial {
@@ -536,6 +615,12 @@ const awayFromCamera = new Vector3();
 const hinge = new Vector3();
 const forwardAxis = new Vector3(0, 0, 1);
 const shake = new Quaternion();
+
+/** Runs `task` when the main thread is idle where the host can say so, otherwise now. */
+function scheduleIdle(task: () => void): void {
+  if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(task);
+  else task();
+}
 
 /** Heroes drawn with the same shape share one geometry. */
 function twinOf(hero: UnboxHero): UnboxHero {
