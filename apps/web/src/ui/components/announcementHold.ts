@@ -111,30 +111,34 @@ export interface HeldTierVoice extends TierVoice {
 
 /**
  * Keeps a tier voice to `hold`: a rise under the hold stays silent, and the highest tier it
- * reached chimes once when the hold ends, in step with the HUD's rank stamp. The voice is then
- * set back to the live tier, so the cascade's ladder notes keep their voicing.
+ * reached chimes once when the hold ends, in step with the HUD's rank stamp. A drop below the
+ * voiced tier still reaches the voice under the hold, since drops never chime, so the ladder
+ * notes keep the right voicing and the replayed peak is always a rise that chimes.
  */
 export function holdTierVoice(
   voice: () => TierVoice | null,
   hold: AnnouncementHold,
 ): HeldTierVoice {
+  let voiced = 0;
+  const send = (tier: number): void => {
+    const target = voice();
+    if (!target) return;
+    voiced = tier;
+    target.setComboTier(tier);
+  };
   const gate = createRankGate(hold, {
-    rise(tier) {
-      voice()?.setComboTier(tier);
-    },
+    rise: send,
     replay(peak, live) {
-      const target = voice();
-      if (!target) return;
-      target.setComboTier(peak);
-      if (live < peak) target.setComboTier(live);
+      send(peak);
+      if (live < peak) send(live);
     },
   });
   return {
     setComboTier(tier) {
       const rising = tier > gate.live;
       gate.update(tier);
-      // Under a hold the voice may sit below this tier, and setting it would chime the rise.
-      if (!rising && (!hold.held || tier === 0)) voice()?.setComboTier(tier);
+      if (rising) return;
+      if (!hold.held || tier < voiced) send(tier);
     },
     dispose() {
       gate.dispose();

@@ -1725,9 +1725,6 @@
 .cp-stamp.is-reduced .cp-stamp-card {
   scale: 1 !important;
   rotate: 0deg !important;
-}
-
-.cp-stamp.is-reduced .cp-stamp-card {
   transition: opacity 260ms ease;
 }
 

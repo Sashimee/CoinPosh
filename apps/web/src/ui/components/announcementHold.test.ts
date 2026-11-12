@@ -244,6 +244,22 @@ describe('holdTierVoice', () => {
     expect(voice.tier).toBe(2);
   });
 
+  it('chimes the replayed peak when the hold began at that same tier', () => {
+    const voice = new FakeVoice();
+    const hold = createAnnouncementHold();
+    const held = holdTierVoice(() => voice, hold);
+    for (const tier of [1, 2, 3]) held.setComboTier(tier);
+    expect(voice.chimes).toEqual([1, 2, 3]);
+    const release = hold.hold();
+    held.setComboTier(2);
+    expect(voice.tier).toBe(2);
+    held.setComboTier(3);
+    expect(voice.tier).toBe(2);
+    release();
+    expect(voice.chimes).toEqual([1, 2, 3, 3]);
+    expect(voice.tier).toBe(3);
+  });
+
   it('skips the replay without a voice, and chimes again from the next rise', () => {
     let voice: FakeVoice | null = null;
     const hold = createAnnouncementHold();
