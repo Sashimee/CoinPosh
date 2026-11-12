@@ -31,6 +31,12 @@ import { rivieraTokens } from './scene/venues/riviera/palette.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
 import type { RivieraVenue } from './scene/venues/riviera/index.ts';
 import type { Stage } from './stage.ts';
+import {
+  announcementHoldFor,
+  holdTierVoice,
+  type AnnouncementHold,
+} from './ui/components/announcementHold.ts';
+import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
@@ -806,10 +812,12 @@ function startPlay(
   teardown.push(() => {
     systems.dispose();
   });
+  const comboAudio = holdComboFlourish(() => audio, announcementHoldFor(ui.store));
+  teardown.push(comboAudio.dispose);
   teardown.push(
     systemsModule.wireFeedback(systems.events, {
       vfx: () => start.vfx,
-      audio: () => audio,
+      audio: comboAudio.port,
       vault,
     }),
   );
@@ -840,6 +848,68 @@ function startPlay(
     for (const off of offs) off();
   });
   return systems;
+}
+
+/**
+ * The audio the gameplay feedback plays through, with the cascade's tier flourish kept to the
+ * HUD's announcement hold.
+ */
+function holdComboFlourish(
+  audio: () => AudioEngine | null,
+  hold: AnnouncementHold,
+): { port: () => SystemsModule.FeedbackAudio | null; dispose: () => void } {
+  const tiers = holdTierVoice(audio, hold);
+  const port: SystemsModule.FeedbackAudio = {
+    playImpact(event) {
+      audio()?.playImpact(event);
+    },
+    comboStep(step) {
+      audio()?.comboStep(step);
+    },
+    setComboTier(tier) {
+      tiers.setComboTier(tier);
+    },
+    duckMusic(options) {
+      audio()?.duckMusic(options);
+    },
+  };
+  return {
+    port: () => (audio() ? port : null),
+    dispose: () => {
+      tiers.dispose();
+    },
+  };
+}
+
+const CRATE_REVEAL = '[data-testid="crate-reveal"]';
+/** The reveal leaves on the effect clock, which a hit-stop or a starved frame rate stretches. */
+const CRATE_REVEAL_EXIT_CAP_MS = 4000;
+
+/** Calls `done` once the crate reveal has left `host`, at once when none is up; returns a cancel. */
+function afterCrateRevealExit(host: HTMLElement, done: () => void): () => void {
+  const reveal = host.querySelector(CRATE_REVEAL);
+  if (!reveal) {
+    done();
+    return () => undefined;
+  }
+  const stop = (): void => {
+    observer.disconnect();
+    clearTimeout(cap);
+  };
+  const observer = new MutationObserver(() => {
+    if (reveal.isConnected) return;
+    stop();
+    done();
+  });
+  observer.observe(host, { childList: true });
+  const cap = setTimeout(() => {
+    console.warn(
+      `CoinPosh crates: the reveal stayed up ${CRATE_REVEAL_EXIT_CAP_MS} ms after collect; HUD announcements resume over it.`,
+    );
+    stop();
+    done();
+  }, CRATE_REVEAL_EXIT_CAP_MS);
+  return stop;
 }
 
 interface CrateWiring {
@@ -888,6 +958,13 @@ function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring): voi
   }
   const { counts } = probe;
   const offs = [
+    holdForCrateCinematics({
+      events: crates.events,
+      hold: announcementHoldFor(ui.store),
+      director: crates.director,
+      onFrame: (check) => stage.onFrame(check),
+      afterRevealExit: (done) => afterCrateRevealExit(uiRoot, done),
+    }),
     ui.onSettingsChange((settings) => {
       haptics.enabled = settings.haptics;
     }),
