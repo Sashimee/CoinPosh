@@ -369,17 +369,19 @@ describe('UnboxCinematic', () => {
       unbox.dispose();
     });
 
-    it('never holds at 60 fps or 10 fps, so the normal pacing is untouched', () => {
-      for (const fps of [60, 10]) {
-        const { unbox } = cinematic('exquisite', false);
-        let clock = 0;
-        for (let frame = 0; frame < fps * 3; frame++) {
-          unbox.update(1 / fps);
-          clock += 1000 / fps;
-          expect(unbox.elapsed).toBeCloseTo(clock, 6);
+    it('never holds at 60 fps or 10 fps, with or without reduced motion', () => {
+      for (const reducedMotion of [false, true]) {
+        for (const fps of [60, 10]) {
+          const { unbox } = cinematic('exquisite', reducedMotion);
+          let clock = 0;
+          for (let frame = 0; frame < fps * 3; frame++) {
+            unbox.update(1 / fps);
+            clock += 1000 / fps;
+            expect(unbox.elapsed).toBeCloseTo(clock, 6);
+          }
+          expect(unbox.revealed).toBe(true);
+          unbox.dispose();
         }
-        expect(unbox.revealed).toBe(true);
-        unbox.dispose();
       }
     });
 
