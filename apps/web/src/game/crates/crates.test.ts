@@ -1,5 +1,15 @@
 import { readFileSync } from 'node:fs';
-import { album, crateSpawn, pity as pityConfig } from '@coinposh/economy';
+import {
+  album,
+  crateSpawn,
+  createRng,
+  initialPityState,
+  pity as pityConfig,
+  rarityRank,
+  rollDrop,
+  type DropTableDef,
+  type PityState,
+} from '@coinposh/economy';
 import {
   CURRENCIES,
   RARITIES,
@@ -8,7 +18,9 @@ import {
   type AlbumResponse,
   type CoinId,
   type CrateId,
+  type PityCounters,
   type PlayerId,
+  type Rarity,
   type Reward,
   type Roll,
 } from '@coinposh/shared';
@@ -56,12 +68,14 @@ import {
   pityOutlook,
   rewardLines,
   rollHasAlbumCard,
+  type PityOutlook,
   type RewardLine,
 } from './loot.ts';
 import {
   CARD_CHROME_GAP,
   CARD_FLY_SCALE,
   crateFlyOffset,
+  pityLineCopy,
   placeCrateCard,
   rewardLineCopy,
   type CratesT,
@@ -184,6 +198,103 @@ describe('pityOutlook', () => {
       /past its/,
     );
   });
+
+  /** Fine-heavy odds, so every natural open misses Rare and pity alone lifts the floor. */
+  const stingy: DropTableDef = {
+    source: 'vaultCrate',
+    pity: true,
+    odds: { common: 4_998, fine: 4_998, rare: 1, exquisite: 1, legendary: 1, heirloom: 1 },
+  };
+  const counters = (state: PityState): PityCounters => ({
+    rare: state.rare ?? 0,
+    exquisite: state.exquisite ?? 0,
+    legendary: state.legendary ?? 0,
+  });
+
+  it.each([0, 1, 9])(
+    'after %i non-Rare opens counts down to the open the server forces',
+    (misses) => {
+      expect(rare.within).toBe(10);
+      const rng = createRng(337);
+      let state = initialPityState(pityConfig);
+      let last: Rarity = 'fine';
+      for (let open = 0; open < misses; open++) {
+        const roll = rollDrop(stingy, pityConfig, state, rng);
+        expect(rarityRank(roll.rarity)).toBeLessThan(rarityRank('rare'));
+        state = roll.state;
+        last = roll.rarity;
+      }
+      const outlook = pityOutlook(counters(state), misses === 0 ? null : last);
+      expect(outlook).toEqual({ rarity: 'rare', within: rare.within - misses });
+      if (outlook === null) throw new Error('Expected a pending Rare guarantee');
+      for (let open = 1; open <= outlook.within; open++) {
+        const roll = rollDrop(stingy, pityConfig, state, rng);
+        const forced = open === outlook.within;
+        expect(roll.pityFloor).toBe(forced ? 'rare' : null);
+        if (forced) expect(rarityRank(roll.rarity)).toBeGreaterThanOrEqual(rarityRank('rare'));
+        else expect(rarityRank(roll.rarity)).toBeLessThan(rarityRank('rare'));
+        state = roll.state;
+      }
+    },
+  );
+
+  it('leaves out the floors the opened crate met, and hides once it met them all', () => {
+    const fresh = { rare: 0, exquisite: 6, legendary: 6 };
+    expect(pityOutlook(fresh, 'fine')).toEqual({ rarity: 'rare', within: rare.within });
+    expect(pityOutlook(fresh, 'rare')).toEqual({
+      rarity: 'exquisite',
+      within: exquisite.within - 6,
+    });
+    expect(pityOutlook({ rare: 0, exquisite: 0, legendary: 6 }, 'exquisite')).toEqual({
+      rarity: 'legendary',
+      within: (pityConfig.rules.at(-1)?.within ?? 0) - 6,
+    });
+    expect(pityOutlook({ rare: 0, exquisite: 0, legendary: 0 }, 'legendary')).toBeNull();
+    expect(pityOutlook({ rare: 0, exquisite: 0, legendary: 0 }, 'heirloom')).toBeNull();
+  });
+});
+
+describe('pity line', () => {
+  const i18n = createI18n({ language: 'en', resources: { en: {}, fr: {}, de: {} } });
+  registerCratesStrings(i18n);
+  const t: CratesT = (key, values) => i18n.t(cratesKey(key), values);
+  const lineIn = (language: (typeof LANGUAGES)[number], outlook: PityOutlook) => {
+    i18n.changeLanguage(language);
+    return pityLineCopy(outlook, t);
+  };
+
+  it('promises a crate, not an item, so a Fine crate with a Rare charm still reads true', () => {
+    const outlook = pityOutlook({ rare: 1, exquisite: 1, legendary: 1 }, 'fine');
+    if (outlook === null) throw new Error('Expected a pending Rare guarantee');
+    expect(lineIn('en', outlook)).toBe('A Rare crate or better within 9 opens');
+    expect(lineIn('fr', outlook)).toBe('Une caisse Rare ou mieux garantie d’ici 9 ouvertures');
+    expect(lineIn('de', outlook)).toBe(
+      'Eine seltene Kiste oder besser garantiert in höchstens 9 Öffnungen',
+    );
+  });
+
+  it('agrees the article and adjective with each guaranteed rarity', () => {
+    expect(lineIn('en', { rarity: 'exquisite', within: 34 })).toBe(
+      'An Exquisite crate or better within 34 opens',
+    );
+    expect(lineIn('fr', { rarity: 'legendary', within: 80 })).toBe(
+      'Une caisse Légendaire ou mieux garantie d’ici 80 ouvertures',
+    );
+    expect(lineIn('de', { rarity: 'exquisite', within: 34 })).toBe(
+      'Eine exquisite Kiste oder besser garantiert in höchstens 34 Öffnungen',
+    );
+  });
+
+  it('says next open when the guarantee is one open away', () => {
+    const next = { rarity: 'rare', within: 1 } as const;
+    expect(lineIn('en', next)).toBe('A Rare crate or better on your next open');
+    expect(lineIn('fr', next)).toBe(
+      'Une caisse Rare ou mieux garantie à votre prochaine ouverture',
+    );
+    expect(lineIn('de', next)).toBe(
+      'Eine seltene Kiste oder besser garantiert bei Ihrer nächsten Öffnung',
+    );
+  });
 });
 
 describe('reward lines', () => {
@@ -253,8 +364,8 @@ describe('crate strings', () => {
   it('resolve through i18next with interpolation', () => {
     const i18n = createI18n({ language: 'fr', resources: { en: {}, fr: {}, de: {} } });
     registerCratesStrings(i18n);
-    expect(i18n.t(cratesKey('pity'), { rarity: 'Rare', count: 4 })).toBe(
-      'Rare ou mieux garanti d’ici 4 caisses',
+    expect(i18n.t(cratesKey('pity'), { crate: 'Une caisse Rare', count: 4 })).toBe(
+      'Une caisse Rare ou mieux garantie d’ici 4 ouvertures',
     );
     i18n.changeLanguage('de');
     expect(i18n.t(cratesKey('rarity.legendary'))).toBe('Legendär');
@@ -1132,7 +1243,7 @@ describe('crates against the Demo Mode server', () => {
     const rank = RARITIES.indexOf(forced.rarity);
     expect(forced.pity.exquisite).toBe(rank >= RARITIES.indexOf('exquisite') ? 0 : 4);
     expect(forced.pity.legendary).toBe(rank >= RARITIES.indexOf('legendary') ? 0 : 8);
-    expect(pityOutlook(forced.pity).within).toBeGreaterThan(0);
+    expect(pityOutlook(forced.pity)?.within).toBeGreaterThan(0);
 
     const next = await openNext();
     const nextRank = RARITIES.indexOf(next.rarity);

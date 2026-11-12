@@ -1,6 +1,8 @@
-import type { Currency, Rarity } from '@coinposh/shared';
+import type { Currency, PityCounters, Rarity } from '@coinposh/shared';
 import { LANGUAGES, type I18n, type Language, type ResourceTree } from '../../i18n/index.ts';
 import type { AlbumItemId, AlbumSetKey } from './loot.ts';
+
+type PityRarity = keyof PityCounters;
 
 export const CRATES_NAMESPACE = 'gameCrates';
 
@@ -32,6 +34,8 @@ interface CratesStrings extends CratesFlatStrings, ResourceTree {
   gain: Record<GainKey, string>;
   item: Record<AlbumItemId, string>;
   set: Record<AlbumSetKey, string>;
+  /** The guaranteed crate as the pity line's subject, article and adjective agreement included. */
+  pityCrate: Record<PityRarity, string>;
 }
 
 /**
@@ -62,8 +66,8 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     skip: 'Tap to skip',
     fair: 'Certified Fair',
     contents: 'Crate contents',
-    pity: '{{rarity}} or better guaranteed within {{count}} crates',
-    pityNext: '{{rarity}} or better guaranteed on your next crate',
+    pity: '{{crate}} or better within {{count}} opens',
+    pityNext: '{{crate}} or better on your next open',
     charmNew: 'New Charm',
     charmLevel: 'Charm upgraded to level {{level}}',
     safe: 'Key-locked Safe',
@@ -122,6 +126,11 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
       captainsTable: 'Captain’s Table',
       sunsetGala: 'Sunset Gala',
     },
+    pityCrate: {
+      rare: 'A Rare crate',
+      exquisite: 'An Exquisite crate',
+      legendary: 'A Legendary crate',
+    },
   },
   fr: {
     title: 'Caisse du Coffre',
@@ -131,8 +140,8 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     skip: 'Touchez pour passer',
     fair: 'Équité certifiée',
     contents: 'Contenu de la caisse',
-    pity: '{{rarity}} ou mieux garanti d’ici {{count}} caisses',
-    pityNext: '{{rarity}} ou mieux garanti dans votre prochaine caisse',
+    pity: '{{crate}} ou mieux garantie d’ici {{count}} ouvertures',
+    pityNext: '{{crate}} ou mieux garantie à votre prochaine ouverture',
     charmNew: 'Nouveau Charme',
     charmLevel: 'Charme amélioré au niveau {{level}}',
     safe: 'Coffre-fort à clé',
@@ -191,6 +200,11 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
       captainsTable: 'La table du capitaine',
       sunsetGala: 'Gala au couchant',
     },
+    pityCrate: {
+      rare: 'Une caisse Rare',
+      exquisite: 'Une caisse Exquise',
+      legendary: 'Une caisse Légendaire',
+    },
   },
   de: {
     title: 'Tresorkiste',
@@ -200,8 +214,8 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     skip: 'Tippen zum Überspringen',
     fair: 'Zertifiziert fair',
     contents: 'Inhalt der Kiste',
-    pity: '{{rarity}} oder besser garantiert in höchstens {{count}} Kisten',
-    pityNext: '{{rarity}} oder besser garantiert in Ihrer nächsten Kiste',
+    pity: '{{crate}} oder besser garantiert in höchstens {{count}} Öffnungen',
+    pityNext: '{{crate}} oder besser garantiert bei Ihrer nächsten Öffnung',
     charmNew: 'Neuer Glücksbringer',
     charmLevel: 'Glücksbringer auf Stufe {{level}} verbessert',
     safe: 'Schlüsseltresor',
@@ -260,6 +274,11 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
       captainsTable: 'Kapitänstafel',
       sunsetGala: 'Gala im Abendrot',
     },
+    pityCrate: {
+      rare: 'Eine seltene Kiste',
+      exquisite: 'Eine exquisite Kiste',
+      legendary: 'Eine legendäre Kiste',
+    },
   },
 };
 
@@ -272,7 +291,8 @@ export function cratesKey(
     | `chip.${Rarity}`
     | `gain.${Currency}`
     | `item.${AlbumItemId}`
-    | `set.${AlbumSetKey}`,
+    | `set.${AlbumSetKey}`
+    | `pityCrate.${PityRarity}`,
 ): string {
   return `${CRATES_NAMESPACE}:${key}`;
 }
