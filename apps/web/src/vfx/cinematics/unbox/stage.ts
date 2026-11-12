@@ -16,15 +16,21 @@ import {
   Sprite,
   SpriteNodeMaterial,
   Vector3,
+  WebGPURenderer,
   type BufferGeometry,
   type Camera,
   type Material,
   type Object3D,
 } from 'three/webgpu';
+import { bakeCoinEmboss, type CoinEmbossBake } from '../../../scene/coins/emboss.ts';
+import { flatEmbossTexture } from '../../../scene/coins/materials.ts';
+import { COIN_LOOKS, type CoinTierId } from '../../../scene/coins/tiers.ts';
 import { rivieraTokens } from '../../../scene/venues/riviera/palette.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../palette.ts';
 import {
   createHeroMaterial,
+  HERO_FACE_RESOLUTION,
+  HERO_FACE_TIERS,
   heroGeometry,
   heroYaw,
   ITEM_SIZE,
@@ -123,6 +129,9 @@ export class UnboxAssets {
   private readonly flareTint = uniform(new Color());
   private readonly flareStrength = uniform(0);
   private readonly heroes = new Map<UnboxHero, BufferGeometry>();
+  private readonly faces = new Map<CoinTierId, CoinEmbossBake>();
+  private faceTier: CoinTierId = HERO_FACE_TIERS.common;
+  private facesQueued = false;
   private readonly rays = new Map<Object3D, RaySlot>();
   private readonly primer = new Group();
   private primerSlot: RaySlot | null = null;
@@ -206,9 +215,19 @@ export class UnboxAssets {
     return geometry;
   }
 
-  /** Tints every hero prop's enamel, gem and rim in `accent`, the rolled rarity's colour. */
-  tintHero(accent: Color): void {
+  /**
+   * Tints every hero prop's enamel, gem and rim in `accent`, the rolled rarity's colour, and
+   * strikes its coins with that rarity's face once the primer has baked it.
+   */
+  tintHero(accent: Color, rarity: Rarity): void {
     this.heroLook.tint(accent);
+    this.faceTier = HERO_FACE_TIERS[rarity];
+    this.heroLook.setFace(this.faces.get(this.faceTier)?.texture ?? flatEmbossTexture());
+  }
+
+  /** The coin tier whose face the hero's coins wear now. */
+  get heroFace(): CoinTierId {
+    return this.faceTier;
   }
 
   /** The rarity colour the hero props are tinted in now. */
@@ -249,6 +268,8 @@ export class UnboxAssets {
       ...this.heroes.values(),
     ]);
     for (const geometry of geometries) geometry.dispose();
+    for (const face of this.faces.values()) face.dispose();
+    this.faces.clear();
     const materials: Material[] = [
       this.lacquer,
       this.gold,
@@ -276,12 +297,18 @@ export class UnboxAssets {
     const slot: RaySlot = { mesh: ray, tint: new Color(), strength: 0, angle: 0 };
     this.primerSlot = slot;
     this.bindRay(slot);
+    const hero = new Mesh(this.hero('card'), this.heroMaterial);
+    hero.onBeforeRender = (renderer) => {
+      if (!(renderer instanceof WebGPURenderer))
+        throw new Error('The unbox primer was drawn by a renderer that cannot bake coin faces');
+      this.queueFaceBakes(renderer);
+    };
     const parts: Object3D[] = [
       new Mesh(this.body, this.lacquer),
       new Mesh(this.band, this.gold),
       new Mesh(this.column, this.velvet),
       new Mesh(this.seam, this.seamMaterial),
-      new Mesh(this.hero('card'), this.heroMaterial),
+      hero,
       ray,
       new Sprite(this.flareMaterial),
     ];
@@ -300,6 +327,27 @@ export class UnboxAssets {
     }
     this.primer.add(...parts);
     this.light.add(this.primer);
+  }
+
+  /**
+   * Bakes each rarity's coin face once, the one tinted now first, one per idle slot after the
+   * frame that drew the primer: the hero then reads its relief from a texture, as the table
+   * coins do, instead of evaluating the face's SDF in every fragment of every prop.
+   */
+  private queueFaceBakes(renderer: WebGPURenderer): void {
+    if (this.facesQueued) return;
+    this.facesQueued = true;
+    const tiers = new Set<CoinTierId>([this.faceTier, ...Object.values(HERO_FACE_TIERS)]);
+    const pending = [...tiers];
+    const next = (): void => {
+      const tier = pending.shift();
+      if (tier === undefined || this.disposed) return;
+      const face = bakeCoinEmboss(renderer, COIN_LOOKS[tier].face, HERO_FACE_RESOLUTION);
+      this.faces.set(tier, face);
+      if (tier === this.faceTier) this.heroLook.setFace(face.texture);
+      afterFrame(next);
+    };
+    afterFrame(next);
   }
 
   private unmountPrimer(): void {
@@ -399,7 +447,7 @@ export class UnboxStage {
     column.position.y = PEDESTAL_HEIGHT / 2;
     const cap = new Mesh(assets.cap, gold);
     cap.position.y = PEDESTAL_HEIGHT;
-    assets.tintHero(this.accent);
+    assets.tintHero(this.accent, rarity);
     this.item = new Mesh(assets.hero(hero), assets.heroMaterial);
     this.item.name = `unbox-hero-${hero}`;
     this.item.rotation.order = 'YXZ';
@@ -633,6 +681,15 @@ const awayFromCamera = new Vector3();
 const hinge = new Vector3();
 const forwardAxis = new Vector3(0, 0, 1);
 const shake = new Quaternion();
+
+/**
+ * Runs `task` once the frame being drawn has finished, when the main thread is idle where the
+ * host can say so: never inside a render, where a bake would swap the render target.
+ */
+function afterFrame(task: () => void): void {
+  if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(task);
+  else setTimeout(task, 0);
+}
 
 /** Runs `task` when the main thread is idle where the host can say so, otherwise now. */
 function scheduleIdle(task: () => void): void {

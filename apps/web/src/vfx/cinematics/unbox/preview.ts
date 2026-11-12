@@ -10,7 +10,11 @@ import {
 } from 'three/webgpu';
 import { detectBackend } from '../../../backend.ts';
 import { createPostPipeline } from '../../../scene/post/postPipeline.ts';
-import { QUALITY_PROFILES } from '../../../scene/quality/tiers.ts';
+import {
+  pixelRatioFor,
+  QUALITY_PROFILES,
+  qualityOverrideFrom,
+} from '../../../scene/quality/tiers.ts';
 import { applyCameraPreset, createRivieraVenue } from '../../../scene/venues/riviera/index.ts';
 import { createVfx } from '../../index.ts';
 import { UnboxCinematic } from './cinematic.ts';
@@ -23,8 +27,10 @@ import { UnboxAssets } from './stage.ts';
  * way the table does, builds the unbox assets at boot like the director, then steps the
  * cinematic frame by frame on `window.__unbox.step(dt)` so a capture script can screenshot and
  * measure each frame. Flags: `webgl`, `reduced`, `rarity=<rarity>`, `overlay` (draws the
- * measured crate box), `hero=<hero>` (the prop on the pedestal, charm by default), and `cold` (builds the assets on the first unbox frame instead, as
- * before the primer, to show the stall it removes).
+ * measured crate box), `hero=<hero>` (the prop on the pedestal, charm by default),
+ * `quality=<tier>` (the quality profile and its pixel-ratio cap, high by default) and `cold`
+ * (builds the assets on the first unbox frame instead, as before the primer, to show the stall
+ * it removes).
  */
 interface FrameRecord {
   readonly index: number;
@@ -71,6 +77,7 @@ const reduced = params.has('reduced');
 const rarity: Rarity = RARITIES.find((r) => r === params.get('rarity')) ?? 'legendary';
 const cold = params.has('cold');
 const hero = UNBOX_HEROES.find((h) => h === params.get('hero')) ?? 'charm';
+const quality = QUALITY_PROFILES[qualityOverrideFrom(location.search) ?? 'high'];
 document.body.toggleAttribute('data-overlay', params.has('overlay'));
 
 const vertex = new Vector3();
@@ -114,14 +121,15 @@ async function boot(bench: UnboxBench): Promise<void> {
   const camera = new PerspectiveCamera(42, 1, 0.05, 120);
   const venue = await createRivieraVenue(scene, renderer, {
     reducedMotion: reduced,
-    quality: 'high',
+    quality: quality.venueDetail,
   });
   venue.setPusherStroke(0.35);
-  const post = createPostPipeline(renderer, scene, camera, QUALITY_PROFILES.high, {
+  const post = createPostPipeline(renderer, scene, camera, quality, {
     reducedMotion: reduced,
   });
   const width = Math.max(canvas.clientWidth, 1);
   const height = Math.max(canvas.clientHeight, 1);
+  renderer.setPixelRatio(pixelRatioFor(quality, devicePixelRatio));
   renderer.setSize(width, height, false);
   camera.aspect = width / height;
   applyCameraPreset(camera, venue.cameraPreset(camera.aspect));
@@ -132,7 +140,7 @@ async function boot(bench: UnboxBench): Promise<void> {
     renderer,
     backend,
     i18n: i18next,
-    quality: 'high',
+    quality: quality.tier,
     reducedMotion: reduced,
     post,
     seed: 42,

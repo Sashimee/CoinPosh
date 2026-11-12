@@ -1,3 +1,4 @@
+import type { Rarity } from '@coinposh/shared';
 import {
   abs,
   atan,
@@ -20,6 +21,8 @@ import {
   select,
   sign,
   smoothstep,
+  sqrt,
+  texture,
   uniform,
   uv,
   vec2,
@@ -34,6 +37,7 @@ import {
   ExtrudeGeometry,
   LatheGeometry,
   Matrix4,
+  Path,
   MeshPhysicalNodeMaterial,
   Quaternion,
   Shape,
@@ -43,15 +47,18 @@ import {
   Vector3,
   type BufferGeometry,
   type Node,
+  type Texture,
 } from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { coinFaceHeight, EMBOSS_RELIEF_DEPTH } from '../../../scene/coins/emboss.ts';
+import { EMBOSS_RELIEF_DEPTH } from '../../../scene/coins/emboss.ts';
 import { createCoinGeometry, type CoinGeometryOptions } from '../../../scene/coins/geometry.ts';
-import { COIN_LOOKS } from '../../../scene/coins/tiers.ts';
+import { flatEmbossTexture } from '../../../scene/coins/materials.ts';
+import type { CoinTierId } from '../../../scene/coins/tiers.ts';
 import { rivieraTokens } from '../../../scene/venues/riviera/palette.ts';
 import { easeOutBack } from '../../easing.ts';
 
 type F = Node<'float'>;
+type V2 = Node<'vec2'>;
 type V3 = Node<'vec3'>;
 
 /** What sits on the pedestal: the headline reward of the roll. */
@@ -89,7 +96,7 @@ export type HeroPartId = (typeof HeroPart)[keyof typeof HeroPart];
 /** What each hero is built as, for the stage and its tests. */
 export interface HeroProp {
   readonly prop:
-    | 'collection-coin'
+    | 'collector-card'
     | 'coin-stack'
     | 'pearl-trio'
     | 'key'
@@ -101,7 +108,7 @@ export interface HeroProp {
 }
 
 export const HERO_PROPS: Readonly<Record<UnboxHero, HeroProp>> = {
-  card: { prop: 'collection-coin', rests: false },
+  card: { prop: 'collector-card', rests: false },
   coins: { prop: 'coin-stack', rests: true },
   pearls: { prop: 'pearl-trio', rests: true },
   keys: { prop: 'key', rests: false },
@@ -130,8 +137,21 @@ export function heroYaw(itemSpin: number): number {
   return turn + SWAY * Math.min(1, sway / SWAY_RAMP) * Math.sin(sway * SWAY_RATE);
 }
 
-/** The collection coins wear the gold tier's face: laurel, berries, beads, stars, monogram. */
-const FACE_DESIGN = COIN_LOOKS.gold.face;
+/**
+ * The table coin tier whose struck face a hero's coins wear for each rolled rarity, so a common
+ * shows a six-leaf laurel and a lone star while an heirloom shows the guilloche and the gem.
+ */
+export const HERO_FACE_TIERS: Readonly<Record<Rarity, CoinTierId>> = {
+  common: 'copper',
+  fine: 'silver',
+  rare: 'gold',
+  exquisite: 'platinum',
+  legendary: 'diamond',
+  heirloom: 'heirloom',
+};
+
+/** Texel size of a hero's baked coin face: the inset coin is under 200 device px across. */
+export const HERO_FACE_RESOLUTION = 256;
 
 /** Lighter than the table's near coin: a hero is a few hundred pixels across at most. */
 const HERO_COIN: CoinGeometryOptions = {
@@ -191,7 +211,7 @@ export function heroGeometry(hero: UnboxHero): BufferGeometry {
 function buildParts(hero: UnboxHero, s: number): BufferGeometry[] {
   switch (hero) {
     case 'card':
-      return collectionCoin(s);
+      return collectorCard(s);
     case 'coins':
       return coinStack(s);
     case 'pearls':
@@ -265,10 +285,58 @@ function coin(options: CoinGeometryOptions, edge: HeroPartId): BufferGeometry {
   return geometry;
 }
 
-/** One album coin standing on its edge, struck face to the camera. */
-function collectionCoin(s: number): BufferGeometry[] {
+/** A rounded rectangle centred on the origin, as a path for a shape or a hole. */
+function roundedRect<T extends Shape | Path>(path: T, w: number, h: number, corner: number): T {
+  path.moveTo(-w / 2 + corner, -h / 2);
+  path.lineTo(w / 2 - corner, -h / 2);
+  path.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + corner);
+  path.lineTo(w / 2, h / 2 - corner);
+  path.quadraticCurveTo(w / 2, h / 2, w / 2 - corner, h / 2);
+  path.lineTo(-w / 2 + corner, h / 2);
+  path.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - corner);
+  path.lineTo(-w / 2, -h / 2 + corner);
+  path.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + corner, -h / 2);
+  return path;
+}
+
+/**
+ * A collector card standing upright: an enamel card in the rarity colour with a gold border, the
+ * struck coin inset proud of it and a gold nameplate under the coin. It reads as a card for a
+ * scratch card and as an album piece for a collectible, the two rewards the card hero shows.
+ */
+function collectorCard(s: number): BufferGeometry[] {
+  const w = s * 1.5;
+  const h = s * 2.1;
+  const depth = s * 0.08;
+  const front = depth / 2;
+  const slab = new ExtrudeGeometry(roundedRect(new Shape(), w, h, s * 0.14), {
+    depth,
+    bevelEnabled: false,
+    curveSegments: 6,
+  });
+  slab.translate(0, 0, -front);
+  const border = roundedRect(new Shape(), w - s * 0.1, h - s * 0.1, s * 0.1);
+  border.holes.push(roundedRect(new Path(), w - s * 0.26, h - s * 0.26, s * 0.05));
+  const frame = new ExtrudeGeometry(border, {
+    depth: s * 0.025,
+    bevelEnabled: false,
+    curveSegments: 6,
+  });
   return [
-    piece(coin(HERO_COIN, HeroPart.gold), HeroPart.coinFace, [0, 0, 0], [Math.PI / 2, 0, 0], s),
+    piece(slab, HeroPart.enamel),
+    piece(frame, HeroPart.gold, [0, 0, front]),
+    piece(
+      coin(HERO_COIN, HeroPart.gold),
+      HeroPart.coinFace,
+      [0, s * 0.22, front],
+      [Math.PI / 2, 0, 0],
+      s * 0.56,
+    ),
+    piece(new BoxGeometry(w * 0.52, s * 0.15, s * 0.03), HeroPart.gold, [
+      0,
+      -s * 0.66,
+      front + s * 0.015,
+    ]),
   ];
 }
 
@@ -530,21 +598,26 @@ function safe(s: number): BufferGeometry[] {
 export interface HeroMaterial {
   readonly material: MeshPhysicalNodeMaterial;
   tint(accent: Color): void;
+  /** Strikes every hero coin with `face`, a `bakeCoinEmboss` texture, or the flat placeholder. */
+  setFace(face: Texture): void;
   readonly accent: Color;
 }
 
 /**
  * The hero's shading, picked per vertex by `heroPart`: brushed gold, a clearcoated enamel in a
- * deepened rarity colour, a struck coin face (the table coins' procedural relief, its field
- * enamelled in the rarity colour under a guilloche sunburst), a faceted gem, a nacre pearl, a
- * printed ticket with gold foil, and navy lacquer. A rarity-coloured Fresnel rim edges every
- * prop, so even a common's ivory reads against the light shaft. Albedos stay low: the stage's
- * key reaches 5 to 16 irradiance through the reveal, and a pale dielectric under it blew out to
- * the flat white slab this replaced.
+ * deepened rarity colour, a struck coin face (the table coins' relief, read from a face baked
+ * once with `bakeCoinEmboss`, its field enamelled in the rarity colour under a guilloche
+ * sunburst), a faceted gem, a nacre pearl, a printed ticket with gold foil, and navy lacquer.
+ * A rarity-coloured Fresnel rim edges every prop, so even a common's ivory reads against the
+ * light shaft. Albedos stay low: the stage's key reaches 5 to 16 irradiance through the reveal,
+ * and a pale dielectric under it blew out to the flat white slab this replaced. The relief costs
+ * one texture fetch: no live face SDF and no thin-film iridescence, which every prop would pay
+ * for in one shared material.
  */
 export function createHeroMaterial(): HeroMaterial {
   const accent = uniform(new Color());
   const enamel = uniform(new Color());
+  const struckFace = texture(flatEmbossTexture(), uv());
   const part = attribute('heroPart', 'float');
   const is = (id: HeroPartId): F => float(1).sub(clamp(abs(part.sub(id)).mul(2), 0, 1));
   const gold = is(HeroPart.gold);
@@ -557,13 +630,13 @@ export function createHeroMaterial(): HeroMaterial {
 
   const goldColor = linear(rivieraTokens['gold-brushed']);
   const navy = linear(rivieraTokens['navy-lacquer']);
-  const nacre = linear(rivieraTokens.champagne).mul(0.62);
-  const paper = linear(rivieraTokens.ivory).mul(0.5);
+  const nacre = linear(rivieraTokens.champagne).mul(NACRE_ALBEDO);
+  const paper = linear(rivieraTokens.ivory).mul(PAPER_ALBEDO);
 
   const st = uv();
   const p = st.mul(2).sub(1);
   const r = length(p);
-  const height = coinFaceHeight(p, FACE_DESIGN).mul(face);
+  const height = struckFace.z.mul(face);
   const relief = smoothstep(0.06, 0.26, height);
   const lip = smoothstep(0.835, 0.865, r);
   const struck = max(relief, lip);
@@ -587,10 +660,14 @@ export function createHeroMaterial(): HeroMaterial {
   const seal = smoothstep(0.24, 0.225, emblem).mul(smoothstep(0.17, 0.185, emblem));
   const star = smoothstep(0.1, 0.085, emblem);
   const foil = max(max(border, seal), star);
-  const ticketBase = mix(enamel.mul(0.85), paper, stub.mul(0.8)).mul(
+  const ticketBase = mix(enamel.mul(TICKET_INK), paper, stub.mul(0.8)).mul(
     float(1).sub(perforation.mul(0.7)),
   );
   const ticketColor = mix(ticketBase, goldColor, foil);
+
+  const facing = clamp(dot(normalViewGeometry, positionViewDirection), 0, 1);
+  const rim = pow(float(1).sub(facing), 3);
+  const lustre = mix(nacre, accent.mul(0.5), float(0.12).add(rim.mul(0.3)));
 
   const fire = pow(abs(dot(normalViewGeometry, normalize(vec3(0.35, 0.8, 0.45)))), 6);
   const gemColor = enamel.mul(float(0.3).add(fire.mul(1.4)));
@@ -600,7 +677,7 @@ export function createHeroMaterial(): HeroMaterial {
     .add(enamel.mul(enamelled))
     .add(faceColor.mul(face))
     .add(gemColor.mul(gem))
-    .add(mix(nacre, accent.mul(0.5), 0.12).mul(pearl))
+    .add(lustre.mul(pearl))
     .add(ticketColor.mul(ticket))
     .add(navy.mul(lacquer));
 
@@ -619,8 +696,6 @@ export function createHeroMaterial(): HeroMaterial {
     .add(lacquer)
     .add(ticket.mul(0.4));
 
-  const facing = clamp(dot(normalViewGeometry, positionViewDirection), 0, 1);
-  const rim = pow(float(1).sub(facing), 3);
   const glow = enamelled
     .mul(0.1)
     .add(face.mul(float(1).sub(struck)).mul(0.08))
@@ -635,37 +710,55 @@ export function createHeroMaterial(): HeroMaterial {
   material.roughnessNode = clamp(roughness, 0.04, 1);
   material.clearcoatNode = clamp(coat, 0, 1);
   material.clearcoatRoughnessNode = float(0.06);
-  material.iridescenceNode = pearl.mul(0.85);
-  material.iridescenceIORNode = float(1.45);
-  material.iridescenceThicknessNode = float(420);
   material.emissiveNode = emissive;
-  material.normalNode = faceNormal(height, face);
+  material.normalNode = faceNormal(struckFace.xy, st, face);
 
-  const tint = (color: Color): void => {
-    accent.value.copy(color);
-    enamel.value.copy(color).multiplyScalar(ENAMEL_DEPTH);
+  return {
+    material,
+    tint(color) {
+      accent.value.copy(color);
+      enamel.value.copy(color).multiplyScalar(ENAMEL_DEPTH);
+    },
+    setFace(next) {
+      struckFace.value = next;
+    },
+    accent: accent.value,
   };
-  return { material, tint, accent: accent.value };
 }
 
 /** The coin field sits deeper still, so the gold relief reads against it under the rays. */
 const FIELD_DEPTH = 0.5;
 
 /** Enamel is the rarity colour deepened, so a pale common still has a body under the key. */
-const ENAMEL_DEPTH = 0.42;
+export const ENAMEL_DEPTH = 0.42;
 
 /**
- * Bumps the shading normal by the struck face's height, with Mikkelsen's screen-space surface
- * gradient: the relief is evaluated live, so no bake needs a renderer before the first crate.
+ * The pale props' albedo, as a share of champagne and ivory: low enough that a common pearl or
+ * ticket held in the reveal's key keeps a tenth of headroom under the 0.85 highlight knee.
  */
-function faceNormal(height: F, face: F): V3 {
+const NACRE_ALBEDO = 0.34;
+const PAPER_ALBEDO = 0.3;
+/** A ticket's printed body is its enamel darkened again: it faces the key flat on. */
+const TICKET_INK = 0.6;
+
+/**
+ * Bumps the shading normal by the struck face's slope, with Mikkelsen's screen-space surface
+ * gradient. `packed` is the bake's tangent-space normal; it is turned back into the height's
+ * slope over the face's UVs and carried to screen space by the UV derivatives, so the 8-bit
+ * height channel is never differentiated and the relief does not terrace.
+ */
+function faceNormal(packed: V2, st: V2, face: F): V3 {
+  const tangent = packed.mul(2).sub(1);
+  const up = sqrt(max(float(1).sub(dot(tangent, tangent)), 0.02));
+  // The bake's slope is over the -1..1 face, twice the span of its 0..1 UVs.
+  const slope = tangent.div(up.mul(-EMBOSS_RELIEF_DEPTH / 2));
   const dx = positionView.dFdx();
   const dy = positionView.dFdy();
   const n = normalView;
   const r1 = dy.cross(n);
   const r2 = n.cross(dx);
   const det = dot(dx, r1);
-  const dh = vec2(height.dFdx(), height.dFdy()).mul(FACE_BUMP);
+  const dh = vec2(dot(slope, st.dFdx()), dot(slope, st.dFdy())).mul(face).mul(FACE_BUMP);
   const gradient = sign(det).mul(r1.mul(dh.x).add(r2.mul(dh.y)));
   const bumped = normalize(abs(det).mul(n).sub(gradient));
   return select(face.greaterThan(0.5).and(abs(det).greaterThan(1e-14)), bumped, n);
