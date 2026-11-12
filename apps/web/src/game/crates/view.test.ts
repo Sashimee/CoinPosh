@@ -6,8 +6,21 @@ import {
   MeshBasicNodeMaterial,
   MeshPhysicalNodeMaterial,
   type Material,
+  type Node,
   type Object3D,
 } from 'three/webgpu';
+import {
+  cameraPosition,
+  modelViewMatrix,
+  modelWorldMatrix,
+  normalLocal,
+  normalView,
+  normalWorld,
+  positionLocal,
+  positionView,
+  positionViewDirection,
+  positionWorld,
+} from 'three/tsl';
 import { describe, expect, it } from 'vitest';
 import { UnboxAssets, UnboxStage } from '../../vfx/cinematics/unbox/index.ts';
 import { RARITY_COLORS, VFX_COLORS } from '../../vfx/palette.ts';
@@ -42,6 +55,27 @@ function meshesUnder(root: Object3D): Mesh[] {
   const found: Mesh[] = [];
   root.traverse((object) => {
     if (object instanceof Mesh) found.push(object as Mesh);
+  });
+  return found;
+}
+
+/** Nodes whose value changes with where the crate sits or where the camera looks from. */
+const VIEW_OR_WORLD: readonly Node[] = [
+  cameraPosition,
+  modelViewMatrix,
+  modelWorldMatrix,
+  normalView,
+  normalWorld,
+  positionView,
+  positionViewDirection,
+  positionWorld,
+];
+
+function reaches(root: Node, targets: readonly Node[]): boolean {
+  const wanted = new Set<unknown>(targets);
+  let found = false;
+  root.traverse((node) => {
+    if (wanted.has(node)) found = true;
   });
   return found;
 }
@@ -193,7 +227,7 @@ describe('TableCrateView', () => {
     expect(parent.children).toHaveLength(0);
   });
 
-  it('self-lights a matte lacquer and the gold trim so the crate reads the same anywhere on the table', () => {
+  it('self-lights the lacquer sheen and the gold trim from the crate alone, never the camera or venue', () => {
     const parent = new Group();
     const view = new TableCrateView(parent);
     view.spawn(crateId(1));
@@ -201,15 +235,21 @@ describe('TableCrateView', () => {
     if (!(lacquer instanceof MeshPhysicalNodeMaterial)) throw new Error('lacquer is not physical');
     if (!(gold instanceof MeshPhysicalNodeMaterial)) throw new Error('gold is not physical');
     if (!(seam instanceof MeshBasicNodeMaterial)) throw new Error('seam is not a basic material');
-    expect(lacquer.roughness).toBe(1);
+    if (!lacquer.emissiveNode || !gold.emissiveNode || !seam.colorNode) {
+      throw new Error('crate materials lost their self-light');
+    }
+    expect(reaches(normalView.dot(positionViewDirection), VIEW_OR_WORLD)).toBe(true);
+    expect(reaches(positionWorld.y, VIEW_OR_WORLD)).toBe(true);
+    for (const node of [lacquer.emissiveNode, gold.emissiveNode, seam.colorNode]) {
+      expect(reaches(node, VIEW_OR_WORLD)).toBe(false);
+    }
+    expect(reaches(lacquer.emissiveNode, [normalLocal])).toBe(true);
+    expect(reaches(lacquer.emissiveNode, [positionLocal])).toBe(true);
     expect(lacquer.specularIntensity).toBe(0);
     expect(lacquer.clearcoat).toBe(0);
-    expect(lacquer.emissiveNode).not.toBeNull();
     expect(gold.metalness).toBe(1);
-    expect(gold.emissiveNode).not.toBeNull();
     expect(seam.blending).toBe(AdditiveBlending);
     expect(seam.depthWrite).toBe(false);
-    expect(seam.colorNode).not.toBeNull();
     view.dispose();
   });
 

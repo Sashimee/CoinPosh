@@ -1,5 +1,5 @@
 import type { CrateId, Rarity, Roll, Wallet } from '@coinposh/shared';
-import { abs, dot, exp, float, normalLocal, positionLocal, uniform, vec3, vec4 } from 'three/tsl';
+import { abs, dot, exp, mix, normalLocal, positionLocal, uniform, vec3, vec4 } from 'three/tsl';
 import {
   AdditiveBlending,
   Color,
@@ -51,7 +51,7 @@ const EDGE = S * 0.055;
 const BAND_HEIGHT = S * 0.22;
 const BAND_Y = S * 0.4;
 const LID_INSET = S * 0.2;
-const LID_LINE = S * 0.065;
+const LID_LINE = S * 0.05;
 /** The gold boss in the middle of the lid, inside the glowing ring. */
 const MEDALLION = S * 0.17;
 
@@ -63,23 +63,40 @@ const TEETER_PULSE_S = 0.42;
 /** Reduced motion holds the seam lit at one level: no breath, no pulse, no sweep. */
 export const STATIC_GLOW = 1;
 /**
- * Peak of the seam line. Kept under the bloom threshold: at 45 px a bloomed seam washes the whole
- * crate grey, and the halo spreads further on the smaller back-shelf crate than on the front floor.
+ * Peak of the seam line: just over the bloom threshold (0.92 to 0.95) even at the bottom of the
+ * breath, so the sealed seam keeps a halo from across the table. The seam lines are thin so the
+ * halo stays a line instead of washing the crate grey.
  */
-const SEAM_PEAK = 0.75;
-/** The lacquer's side faces pick up the seam colour so the box itself reads lit, not a dark hole. */
-const RIM_GLOW = 0.25;
+const SEAM_PEAK = 1.35;
+/**
+ * Only the crate's left and right faces pick up a hint of the seam colour, mixed into the navy
+ * lift: the face the player looks at stays navy lacquer, wherever the crate sits or tilts. The
+ * teeter pulse stays in the seam, so the box does not flare brighter at the lip than on the shelf.
+ */
+const RIM_GLOW = 0.5;
+const RIM_TINT = 0.3;
 /** Brushed gold never drops below this self-light, so the trim reads even off the key light. */
 const TRIM_FLOOR = 1;
 /**
- * The lacquer is matte and self-lit along its own normals rather than by the venue: its sheen
- * caught the warm rim light on the back shelf but not on the dim front floor, so the same crate
- * read lighter at the back than where the player pushes it over.
+ * The lacquer is self-lit along its own normals rather than by the venue: its venue sheen caught
+ * the warm rim light on the back shelf but not on the dim front floor, so the same crate read
+ * lighter at the back than where the player pushes it over.
  */
 const LACQUER_LIFT = '#1E3A6E';
-const LIFT_FLOOR = 0.28;
-const LACQUER_ALBEDO = 0.5;
-const LIFT_KEY = 0.22;
+const LIFT_FLOOR = 0.62;
+const LIFT_KEY = 0.38;
+const LACQUER_ALBEDO = 0.6;
+/**
+ * The clearcoat sheen, lit from a key fixed to the crate instead of the venue's lights: a hot
+ * line along the lid's front edge and a soft reflected streak across the lid, the same on the
+ * back shelf as at the lip, and the same lacquer read the unbox crate has.
+ */
+const SHEEN_KEY = new Vector3(-0.2, 1, 0.8).normalize();
+const SHEEN_POWER = 28;
+const SHEEN_PEAK = 0.7;
+const STREAK_PEAK = 0.16;
+const STREAK_AT = 0.12;
+const STREAK_SHARPNESS = 30;
 const GLINT_PEAK = 3.2;
 /** A glint runs corner to corner right after the crate lands, then again every few seconds. */
 const GLINT_DELAY_S = ARRIVE_S;
@@ -219,7 +236,7 @@ function seamGeometry(): BufferGeometry {
   const y = S + LID_LINE / 4;
   const pieces = [
     roundedBox(
-      new Vector3(S * 1.016, S * 0.075, S * 1.016),
+      new Vector3(S * 1.016, S * 0.045, S * 1.016),
       new Vector3(0, SEAM_Y, 0),
       S * 0.02,
       1,
@@ -279,10 +296,19 @@ export class TableCrateView {
       roughness: 1,
       specularIntensity: 0,
     });
+    const navy = uniform(new Color(LACQUER_LIFT));
     const up = normalLocal.y;
-    const lift = uniform(new Color(LACQUER_LIFT)).mul(up.max(0).mul(LIFT_KEY).add(LIFT_FLOOR));
-    const sides = float(1).sub(abs(up));
-    this.lacquer.emissiveNode = lift.add(tint.mul(sides.mul(glow).mul(RIM_GLOW)));
+    const lift = navy.mul(up.max(0).mul(LIFT_KEY).add(LIFT_FLOOR));
+    const rim = mix(navy, tint, RIM_TINT).mul(
+      abs(normalLocal.x).mul(glow.min(STATIC_GLOW)).mul(RIM_GLOW),
+    );
+    const edge = dot(normalLocal, vec3(SHEEN_KEY.x, SHEEN_KEY.y, SHEEN_KEY.z)).max(0);
+    const diagonal = positionLocal.x.add(positionLocal.z).div(S).sub(STREAK_AT);
+    const streak = exp(diagonal.pow2().mul(-STREAK_SHARPNESS)).mul(up.max(0).pow(8));
+    const sheen = edge.pow(SHEEN_POWER).mul(SHEEN_PEAK).add(streak.mul(STREAK_PEAK));
+    this.lacquer.emissiveNode = lift
+      .add(rim)
+      .add(uniform(new Color(rivieraTokens.champagne)).mul(sheen));
 
     const brushed = new Color(rivieraTokens['gold-brushed']);
     this.gold = new MeshPhysicalNodeMaterial({
@@ -291,7 +317,7 @@ export class TableCrateView {
       roughness: 0.55,
     });
     const along = dot(positionLocal, vec3(1, 1, 1).normalize()).div(S);
-    const glint = exp(along.sub(sweep).pow(2).mul(-GLINT_SHARPNESS));
+    const glint = exp(along.sub(sweep).pow2().mul(-GLINT_SHARPNESS));
     this.gold.emissiveNode = uniform(brushed).mul(
       glint.mul(strength).mul(GLINT_PEAK).add(TRIM_FLOOR),
     );
