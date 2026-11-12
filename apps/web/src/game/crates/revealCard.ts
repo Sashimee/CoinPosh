@@ -9,8 +9,9 @@ import { Localizer } from '../../ui/localize.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../vfx/palette.ts';
 import { PLAQUE_SWELL } from './hint.ts';
 import { cratesKey, registerCratesStrings } from './i18n.ts';
+import { cardPityOutlook, nonceLabel, type FairSources } from './odds.ts';
+import { createOddsSheet, sealIcon, type OddsSheet } from './oddsSheet.ts';
 import {
-  pityOutlook,
   rewardLines,
   type AlbumProgress,
   type AlbumProgressMap,
@@ -119,7 +120,11 @@ export function crateFlyOffset(
 const DOCK = '[data-testid="hud-dock"]';
 const BALANCE = '[data-testid="hud-balance"]';
 
-export interface CrateRevealOptions {
+/**
+ * `revealedSeeds` and `rotateSeed` let the fairness sheet find, or reveal, this roll's server
+ * seed; without them it offers only the paste check.
+ */
+export interface CrateRevealOptions extends FairSources {
   readonly ui: Pick<UiApp, 'store' | 'bus' | 'i18n'>;
   readonly host: HTMLElement;
   readonly rarity: Rarity;
@@ -146,12 +151,13 @@ export interface CrateReveal {
 
 /**
  * The DOM half of an unbox: a skip veil while the 3D cinematic plays, then the reward card
- * with the server's roll, the pity outlook and the fairness badge. Everything shown here is
- * what the server returned; nothing is computed from local state.
+ * with the server's roll, the pity outlook and the Certified Fair chip that opens the odds and
+ * proof sheet. Everything shown here is what the server returned or the economy table it rolls
+ * against; nothing is computed from local state.
  */
 export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   const { ui, roll, rarity, reducedMotion } = options;
-  const outlook = pityOutlook(roll.pity, roll.rarity);
+  const outlook = cardPityOutlook(roll.pity, roll.rarity);
   registerCratesStrings(ui.i18n);
   const disposers: (() => void)[] = [];
   const loc = new Localizer(ui.i18n);
@@ -184,14 +190,49 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   const pity = h('p', { class: 'cp-crate-pity' });
   pity.hidden = outlook === null;
   if (outlook !== null) ctx.own(loc.text(pity, () => pityLineCopy(outlook, t)));
-  const fair = h('p', {
-    class: 'cp-crate-fair',
-    attrs: { title: `${roll.proof.serverSeedHash} · ${roll.proof.nonce}` },
-  });
-  const fairLabel = h('span');
-  const fairHash = h('code', { text: roll.proof.serverSeedHash.slice(0, 10) });
-  fair.append(fairLabel, fairHash);
+  const nonce = () => nonceLabel(roll.proof, ui.i18n.language);
+  const fairLabel = h('span', { class: 'cp-crate-fair-label' });
+  const fairNonce = h('code', { class: 'cp-crate-fair-nonce' });
+  const fair = h(
+    'button',
+    {
+      class: 'cp-crate-fair',
+      attrs: {
+        type: 'button',
+        title: roll.proof.serverSeedHash,
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        'data-testid': 'crate-fair',
+      },
+    },
+    h('span', { class: 'cp-crate-fair-seal', attrs: { 'aria-hidden': 'true' } }, sealIcon()),
+    fairLabel,
+    fairNonce,
+  );
   ctx.own(loc.text(fairLabel, () => t('fair')));
+  ctx.own(loc.text(fairNonce, () => t('fairNonce', { nonce: nonce() })));
+  ctx.own(loc.attr(fair, 'aria-label', () => t('fairOpen', { nonce: nonce() })));
+  let odds: OddsSheet | null = null;
+  const oddsSheet = (): OddsSheet => {
+    if (odds !== null) return odds;
+    const sheet = createOddsSheet({
+      ctx,
+      t,
+      language: () => ui.i18n.language,
+      rarity,
+      proof: roll.proof,
+      pity: roll.pity,
+      reducedMotion,
+      revealedSeeds: options.revealedSeeds,
+      rotateSeed: options.rotateSeed,
+    });
+    status.before(sheet.el);
+    ctx.own(() => {
+      sheet.dispose();
+    });
+    odds = sheet;
+    return sheet;
+  };
   const collectLabel = h('span');
   const collect = h(
     'button',
@@ -274,9 +315,16 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     collect.focus({ preventScroll: true });
   };
 
+  makePressable(fair, ctx, {
+    feedback: 'open',
+    enabled: () => shown && !collecting,
+    onPress: () => {
+      oddsSheet().open(fair);
+    },
+  });
   makePressable(collect, ctx, {
     feedback: 'confirm',
-    enabled: () => shown && !collecting,
+    enabled: () => shown && !collecting && !(odds?.isOpen ?? false),
     onPress: () => {
       if (collecting) return;
       collecting = true;
