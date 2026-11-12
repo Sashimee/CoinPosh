@@ -6,6 +6,7 @@ import { tr, type UiContext } from '../context.ts';
 import { fromMarkup, h } from '../dom.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
+import { announcementHoldFor, createRankGate } from './announcementHold.ts';
 import { createMeterRail, type MeterRail } from './meterRail.ts';
 import { fitCaption, swellOverhang } from './railLayout.ts';
 
@@ -180,6 +181,30 @@ export function createComboLadder(ctx: UiContext): MeterRail {
     root.setAttribute('aria-label', view.tier ? spoken.textContent : tr(ctx, 'combo.ariaIdle'));
   };
 
+  // Under a hold the flute keeps filling but the card stays folded; once free it opens again
+  // with one swell for the highest rank the hold kept quiet.
+  const hold = announcementHoldFor(ctx.store);
+  const openFor = (rank: number): void => {
+    rail.setOpen(rank > 0 && !hold.held, RANK_LINGER_MS);
+  };
+  ctx.own(
+    hold.onChange((held) => {
+      if (held) rail.setOpen(false);
+      else openFor(comboView(ctx.store.getState().cascadeCount, cascade).rank);
+    }),
+  );
+  const gate = createRankGate(
+    hold,
+    {
+      rise: () => {
+        swell.kick(6);
+      },
+      replay: (_peak, live) => {
+        if (live > 0) swell.kick(6);
+      },
+    },
+    comboView(ctx.store.getState().cascadeCount, cascade).rank,
+  );
   ctx.own(
     watch(
       ctx.store,
@@ -190,13 +215,16 @@ export function createComboLadder(ctx: UiContext): MeterRail {
         rungs.forEach((rung, i) => rung.classList.toggle('is-lit', i < view.rank));
         const draining = previous !== undefined && view.count < previous.count;
         void fill.to(view.fill, draining ? SPRINGS.gentle : SPRINGS.bouncy);
-        if (previous && view.rank > previous.rank) swell.kick(6);
-        rail.setOpen(view.rank > 0, RANK_LINGER_MS);
+        openFor(view.rank);
+        gate.update(view.rank);
         describe(view);
       },
       (a, b) => a.count === b.count,
     ),
   );
+  ctx.own(() => {
+    gate.dispose();
+  });
   ctx.own(
     ctx.loc.bind(() => {
       describe(comboView(ctx.store.getState().cascadeCount, cascade));

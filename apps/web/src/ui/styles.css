@@ -1727,6 +1727,14 @@
   rotate: 0deg !important;
 }
 
+.cp-stamp.is-reduced .cp-stamp-card {
+  transition: opacity 260ms ease;
+}
+
+.cp-stamp.is-reduced.is-leaving .cp-stamp-card {
+  translate: none;
+}
+
 @media (max-width: 374px), (max-height: 680px) {
   .cp-ui-host {
     --cp-gutter: 12px;

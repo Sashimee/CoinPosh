@@ -31,6 +31,11 @@ import { rivieraTokens } from './scene/venues/riviera/palette.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
 import type { RivieraVenue } from './scene/venues/riviera/index.ts';
 import type { Stage } from './stage.ts';
+import {
+  announcementHoldFor,
+  holdTierVoice,
+  type AnnouncementHold,
+} from './ui/components/announcementHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
@@ -806,10 +811,12 @@ function startPlay(
   teardown.push(() => {
     systems.dispose();
   });
+  const comboAudio = holdComboFlourish(() => audio, announcementHoldFor(ui.store));
+  teardown.push(comboAudio.dispose);
   teardown.push(
     systemsModule.wireFeedback(systems.events, {
       vfx: () => start.vfx,
-      audio: () => audio,
+      audio: comboAudio.port,
       vault,
     }),
   );
@@ -840,6 +847,104 @@ function startPlay(
     for (const off of offs) off();
   });
   return systems;
+}
+
+/**
+ * The audio the gameplay feedback plays through, with the cascade's tier flourish kept to the
+ * HUD's announcement hold.
+ */
+function holdComboFlourish(
+  audio: () => AudioEngine | null,
+  hold: AnnouncementHold,
+): { port: () => SystemsModule.FeedbackAudio | null; dispose: () => void } {
+  const tiers = holdTierVoice(audio, hold);
+  const port: SystemsModule.FeedbackAudio = {
+    playImpact(event) {
+      audio()?.playImpact(event);
+    },
+    comboStep(step) {
+      audio()?.comboStep(step);
+    },
+    setComboTier(tier) {
+      tiers.setComboTier(tier);
+    },
+    duckMusic(options) {
+      audio()?.duckMusic(options);
+    },
+  };
+  return {
+    port: () => (audio() ? port : null),
+    dispose: () => {
+      tiers.dispose();
+    },
+  };
+}
+
+const CRATE_REVEAL = '[data-testid="crate-reveal"]';
+/** The reveal leaves on the effect clock, which a hit-stop or a starved frame rate stretches. */
+const CRATE_REVEAL_EXIT_CAP_MS = 4000;
+
+/**
+ * Holds the HUD's announcements from a crate's fall until its reward card has flown into the
+ * Vault and the reveal has left `host`, so the unbox owns the screen. A claim that fails or is
+ * refused lets go at once.
+ */
+function holdAnnouncementsForCrates(
+  events: CratesApi.CratesModule['events'],
+  hold: AnnouncementHold,
+  host: HTMLElement,
+): () => void {
+  const releases = new Map<string, () => void>();
+  const exits = new Set<() => void>();
+  const release = (crateId: string): void => {
+    releases.get(crateId)?.();
+    releases.delete(crateId);
+  };
+  const afterExit = (reveal: Element, done: () => void): void => {
+    const finish = (): void => {
+      observer.disconnect();
+      clearTimeout(cap);
+      exits.delete(finish);
+      done();
+    };
+    const observer = new MutationObserver(() => {
+      if (!reveal.isConnected) finish();
+    });
+    observer.observe(host, { childList: true });
+    const cap = setTimeout(() => {
+      console.warn(
+        `CoinPosh crates: the reveal stayed up ${CRATE_REVEAL_EXIT_CAP_MS} ms after collect; HUD announcements resume over it.`,
+      );
+      finish();
+    }, CRATE_REVEAL_EXIT_CAP_MS);
+    exits.add(finish);
+  };
+  const offs = [
+    events.on('crate:fell', ({ crateId }) => {
+      if (!releases.has(crateId)) releases.set(crateId, hold.hold());
+    }),
+    events.on('crate:collected', ({ crateId }) => {
+      const reveal = host.querySelector(CRATE_REVEAL);
+      if (reveal) {
+        afterExit(reveal, () => {
+          release(crateId);
+        });
+      } else {
+        release(crateId);
+      }
+    }),
+    events.on('crate:rejected', ({ crateId }) => {
+      release(crateId);
+    }),
+    events.on('crate:failed', ({ crateId }) => {
+      release(crateId);
+    }),
+  ];
+  return () => {
+    for (const off of offs) off();
+    for (const finish of [...exits]) finish();
+    for (const crateId of [...releases.keys()]) release(crateId);
+  };
 }
 
 interface CrateWiring {
@@ -888,6 +993,7 @@ function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring): voi
   }
   const { counts } = probe;
   const offs = [
+    holdAnnouncementsForCrates(crates.events, announcementHoldFor(ui.store), uiRoot),
     ui.onSettingsChange((settings) => {
       haptics.enabled = settings.haptics;
     }),
