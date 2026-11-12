@@ -1,4 +1,5 @@
 import { upgradeLines, type UpgradeLineDef } from '@coinposh/economy';
+import { browserVibrate, type HapticPattern } from '../../app/feedback.ts';
 import { upgradeRow, type StatFormat, type UpgradeRow } from '../../app/model.ts';
 import { watch } from '../../app/store.ts';
 import { formatDecimal, formatInteger, formatPrice, type Language } from '../../i18n/index.ts';
@@ -6,10 +7,39 @@ import { tr, type UiContext } from '../context.ts';
 import { h, listen, restartAnimation } from '../dom.ts';
 import { icon } from '../icons.ts';
 import { makePressable } from '../components/pressable.ts';
+import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 
 const LEVEL_UP_GLOW = 1.2;
+/** The medallion is squashed to this and released on the pop spring, which overshoots to ~1.3. */
+const MEDAL_SQUASH = 0.62;
+const MEDAL_TILT_DEG = 36;
+
+type Celebration = (haptic: HapticPattern) => void;
+const celebrations = new Map<string, Set<Celebration>>();
+
+/**
+ * Celebrates a server-confirmed level on every mounted row of `lineId`: medallion spring,
+ * gold glint, a pop of the new effect and a haptic. A UI with no upgrades panel has nothing
+ * to light, so it stays silent.
+ */
+export function celebrateUpgradeLine(lineId: string, haptic: HapticPattern): void {
+  for (const celebrate of celebrations.get(lineId) ?? []) celebrate(haptic);
+}
+
+function register(lineId: string, celebrate: Celebration): () => void {
+  let rows = celebrations.get(lineId);
+  if (!rows) {
+    rows = new Set();
+    celebrations.set(lineId, rows);
+  }
+  rows.add(celebrate);
+  return () => {
+    rows.delete(celebrate);
+    if (rows.size === 0) celebrations.delete(lineId);
+  };
+}
 
 function formatStat(ctx: UiContext, format: StatFormat, value: number, language: Language): string {
   if (format === 'multiplier') {
@@ -49,6 +79,12 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
     h('span', { class: 'cp-buy-cost' }, currencyIcon, price),
   );
   const medallion = h('span', { class: 'cp-medallion', attrs: { 'aria-hidden': 'true' } });
+  const effectPop = h('span', { class: 'cp-upgrade-pop', attrs: { 'aria-hidden': 'true' } });
+  const sheen = h(
+    'span',
+    { class: 'cp-upgrade-sheen', attrs: { 'aria-hidden': 'true' } },
+    h('span', { class: 'cp-glint cp-upgrade-glint' }),
+  );
   const row = h(
     'li',
     {
@@ -64,11 +100,18 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
       h('span', { class: 'cp-upgrade-meta' }, effect, pipBar),
     ),
     buy,
+    sheen,
+    effectPop,
   );
 
   const glow = new SpringValue(0, SPRINGS.gentle, (value) => {
     row.style.setProperty('--cp-glow', String(Math.max(0, value)));
   });
+  const medal = new SpringValue(1, SPRINGS.pop, (value) => {
+    medallion.style.scale = value === 1 ? '' : String(value);
+    medallion.style.rotate = value === 1 ? '' : `${(value - 1) * MEDAL_TILT_DEG}deg`;
+  });
+  const vibrate = browserVibrate();
 
   const current = (): UpgradeRow => {
     const state = ctx.store.getState();
@@ -148,15 +191,25 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
   });
 
   ctx.own(
+    register(line.id, (haptic) => {
+      const view = current();
+      effectPop.textContent = formatStat(ctx, view.format, view.current, ctx.i18n.language);
+      if (ctx.store.getState().settings.haptics) vibrate?.(haptic);
+      const calm = isReducedMotion();
+      row.classList.toggle('is-calm', calm);
+      restartAnimation(row, 'is-celebrating');
+      if (calm) return;
+      glow.jump(LEVEL_UP_GLOW);
+      void glow.to(0);
+      medal.jump(MEDAL_SQUASH);
+      void medal.to(1);
+    }),
+  );
+  ctx.own(
     watch(
       ctx.store,
       () => current(),
-      (view, previous) => {
-        if (previous && view.level > previous.level) {
-          glow.jump(LEVEL_UP_GLOW);
-          void glow.to(0);
-          restartAnimation(row, 'is-levelled');
-        }
+      (view) => {
         paint(view);
       },
       sameRow,

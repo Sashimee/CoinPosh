@@ -1,6 +1,8 @@
 import type { ImpactEvent } from '../../audio/index.ts';
 import type { UiAudio } from '../../app/index.ts';
 import type { Bus } from '../../app/bus.ts';
+import type { HapticPattern } from '../../app/feedback.ts';
+import { celebrateUpgradeLine } from '../../ui/panels/upgradesPanel.ts';
 import type { I18n } from '../../i18n/index.ts';
 import type { UpgradeEvents } from './events.ts';
 import { rejectionKey } from './i18n.ts';
@@ -20,12 +22,17 @@ export const PURCHASE_CHIME: readonly ChimeNote[] = [
   { delayMs: 150, sound: { material: 'metal', velocity: 0.85, pan: 0.25 } },
 ];
 
+/** One buzz under each chime note (on, off, on, …), the last and longest on the brass. */
+export const PURCHASE_HAPTIC: HapticPattern = [12, 58, 14, 66, 30];
+
 export interface UpgradeFeedbackTargets {
   readonly events: Bus<UpgradeEvents>;
   readonly i18n: I18n;
   /** Read on every event, so audio attached after the first gesture is picked up. */
   readonly audio: () => Pick<UiAudio, 'playImpact'> | null;
   readonly notify: (message: string) => void;
+  /** Plays the row's medallion, glint, effect pop and haptic; defaults to the upgrades panel. */
+  readonly celebrate?: (lineId: string, haptic: HapticPattern) => void;
   /** Schedules `run` after `ms` and returns a function that cancels it if it has not run yet. */
   readonly delay?: (run: () => void, ms: number) => () => void;
 }
@@ -42,7 +49,9 @@ export function bindUpgradeFeedback(targets: UpgradeFeedbackTargets): () => void
   /** Notes not yet played; the cancel is null only while `delay` is scheduling it. */
   const pending = new Map<number, (() => void) | null>();
   let nextNote = 0;
-  const offPurchased = targets.events.on('upgrade:purchased', () => {
+  const celebrate = targets.celebrate ?? celebrateUpgradeLine;
+  const offPurchased = targets.events.on('upgrade:purchased', ({ lineId }) => {
+    celebrate(lineId, PURCHASE_HAPTIC);
     for (const note of PURCHASE_CHIME) {
       const id = nextNote++;
       pending.set(id, null);
