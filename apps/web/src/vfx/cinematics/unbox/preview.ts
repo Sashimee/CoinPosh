@@ -14,6 +14,7 @@ import { QUALITY_PROFILES } from '../../../scene/quality/tiers.ts';
 import { applyCameraPreset, createRivieraVenue } from '../../../scene/venues/riviera/index.ts';
 import { createVfx } from '../../index.ts';
 import { UnboxCinematic } from './cinematic.ts';
+import { UNBOX_HEROES } from './hero.ts';
 import { UnboxAssets } from './stage.ts';
 
 /**
@@ -22,7 +23,7 @@ import { UnboxAssets } from './stage.ts';
  * way the table does, builds the unbox assets at boot like the director, then steps the
  * cinematic frame by frame on `window.__unbox.step(dt)` so a capture script can screenshot and
  * measure each frame. Flags: `webgl`, `reduced`, `rarity=<rarity>`, `overlay` (draws the
- * measured crate box), and `cold` (builds the assets on the first unbox frame instead, as
+ * measured crate box), `hero=<hero>` (the prop on the pedestal, charm by default), and `cold` (builds the assets on the first unbox frame instead, as
  * before the primer, to show the stall it removes).
  */
 interface FrameRecord {
@@ -44,6 +45,8 @@ interface FrameRecord {
   /** Main-thread time spent building the cinematic, on the mount frame only. */
   readonly mountMs: number;
   readonly cardShown: boolean;
+  /** The hero prop's extent in NDC, for luminance probes of the reveal. */
+  readonly hero: { minX: number; maxX: number; minY: number; maxY: number };
 }
 
 interface UnboxBench {
@@ -67,6 +70,7 @@ const params = new URLSearchParams(location.search);
 const reduced = params.has('reduced');
 const rarity: Rarity = RARITIES.find((r) => r === params.get('rarity')) ?? 'legendary';
 const cold = params.has('cold');
+const hero = UNBOX_HEROES.find((h) => h === params.get('hero')) ?? 'charm';
 document.body.toggleAttribute('data-overlay', params.has('overlay'));
 
 const vertex = new Vector3();
@@ -160,6 +164,9 @@ async function boot(bench: UnboxBench): Promise<void> {
       renderMs,
       mountMs,
       cardShown,
+      hero: unbox.stage.heroObject.visible
+        ? extent(unbox.stage.heroObject, camera)
+        : { minX: 0, maxX: 0, minY: 0, maxY: 0 },
     };
     box.style.left = `${((e.minX + 1) / 2) * width}px`;
     box.style.width = `${((e.maxX - e.minX) / 2) * width}px`;
@@ -183,7 +190,7 @@ async function boot(bench: UnboxBench): Promise<void> {
       framing: (aspect) => venue.cameraPreset(aspect),
       at: new Vector3(0.01, -0.075, 0.4),
       rarity,
-      hero: 'charm',
+      hero,
       reducedMotion: reduced,
       vfx,
       onBeat: (beat) => {

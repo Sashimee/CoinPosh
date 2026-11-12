@@ -10,7 +10,6 @@ import {
   Mesh,
   MeshBasicNodeMaterial,
   MeshPhysicalNodeMaterial,
-  OctahedronGeometry,
   PlaneGeometry,
   PointLight,
   Quaternion,
@@ -24,11 +23,19 @@ import {
 } from 'three/webgpu';
 import { rivieraTokens } from '../../../scene/venues/riviera/palette.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../palette.ts';
+import {
+  createHeroMaterial,
+  heroGeometry,
+  heroYaw,
+  ITEM_SIZE,
+  UNBOX_HEROES,
+  type HeroMaterial,
+  type UnboxHero,
+} from './hero.ts';
 import { rayStyle, type RayStyle, type UnboxPose } from './plan.ts';
 import { warmUnboxShots } from './shot.ts';
 
-/** What sits on the pedestal: the headline reward of the roll. */
-export type UnboxHero = 'coins' | 'pearls' | 'keys' | 'tickets' | 'charm' | 'safe' | 'card';
+export type { UnboxHero } from './hero.ts';
 
 /** Crate edge in metres: a chunky lacquer box a little wider than two coins. */
 export const CRATE_SIZE = 0.042;
@@ -53,7 +60,6 @@ const RAY_LENGTH = CRATE_SIZE * 2.6;
 const RAY_WIDTH = CRATE_SIZE * 0.3;
 const PEDESTAL_RADIUS = 0.016;
 const PEDESTAL_HEIGHT = 0.03;
-const ITEM_SIZE = 0.016;
 /** Light levels as irradiance on the crate faces; the venue key alone gives about 3. */
 const LIGHT = { rest: 2.2, rumble: 3, rays: 7, burst: 16 } as const;
 const LIGHT_RANGE = CRATE_SIZE * 12;
@@ -63,6 +69,16 @@ const LIGHT_LIFT = CRATE_SIZE * 1.1;
 /** A round bloom-hot flare over the lid at the burst, a crate and a half across at its peak. */
 const FLARE_SIZE = CRATE_SIZE * 1.6;
 const FLARE_PEAK = 2.6;
+/**
+ * How far the god-rays slide back from the camera as the pedestal rises, so the hero stands in
+ * front of the shaft instead of inside its haze.
+ */
+const RAY_PARTING = ITEM_SIZE * 1.6;
+/**
+ * Share of the camera's elevation the hero tips back by, so a coin face or a ticket meets the
+ * eye instead of showing its top edge to a camera looking down on the stage.
+ */
+const HERO_TILT = 0.7;
 /** Where the crate shrinks to as it sinks back into the tray after Collect. */
 const FLY_SCALE = 0.55;
 /**
@@ -77,16 +93,6 @@ interface RaySlot {
   strength: number;
   readonly angle: number;
 }
-
-const HEROES: readonly UnboxHero[] = [
-  'coins',
-  'pearls',
-  'keys',
-  'tickets',
-  'charm',
-  'safe',
-  'card',
-];
 
 /**
  * Everything an unbox draws with, built once per table and borrowed by each `UnboxStage`, so no
@@ -113,6 +119,7 @@ export class UnboxAssets {
   /** One flare, lent to whichever stage is playing. */
   readonly flare: Sprite;
   readonly light: PointLight;
+  private readonly heroLook: HeroMaterial;
   private readonly flareTint = uniform(new Color());
   private readonly flareStrength = uniform(0);
   private readonly heroes = new Map<UnboxHero, BufferGeometry>();
@@ -132,9 +139,7 @@ export class UnboxAssets {
     this.cap = new CylinderGeometry(PEDESTAL_RADIUS * 1.15, PEDESTAL_RADIUS * 1.15, 0.003, 28);
     this.ray = new PlaneGeometry(RAY_WIDTH, RAY_LENGTH);
     this.ray.translate(0, RAY_LENGTH / 2, 0);
-    for (const hero of HEROES) {
-      this.heroes.set(hero, this.heroes.get(twinOf(hero)) ?? heroGeometry(hero));
-    }
+    for (const hero of UNBOX_HEROES) this.heroes.set(hero, heroGeometry(hero));
 
     this.lacquer = new MeshPhysicalNodeMaterial({
       color: rivieraTokens['navy-lacquer'],
@@ -159,7 +164,8 @@ export class UnboxAssets {
       blending: AdditiveBlending,
       depthWrite: false,
     });
-    this.heroMaterial = new MeshPhysicalNodeMaterial({ emissiveIntensity: 0.35, clearcoat: 1 });
+    this.heroLook = createHeroMaterial();
+    this.heroMaterial = this.heroLook.material;
     this.rayMaterial = this.createRayMaterial();
     this.flareMaterial = this.createFlareMaterial();
     this.flare = new Sprite(this.flareMaterial);
@@ -198,6 +204,16 @@ export class UnboxAssets {
     const geometry = this.heroes.get(hero);
     if (!geometry) throw new Error(`Unbox assets have no geometry for the ${hero} hero`);
     return geometry;
+  }
+
+  /** Tints every hero prop's enamel, gem and rim in `accent`, the rolled rarity's colour. */
+  tintHero(accent: Color): void {
+    this.heroLook.tint(accent);
+  }
+
+  /** The rarity colour the hero props are tinted in now. */
+  get heroAccent(): Color {
+    return this.heroLook.accent;
   }
 
   /** Tints and lights the burst flare; strength 0 draws nothing. */
@@ -265,7 +281,7 @@ export class UnboxAssets {
       new Mesh(this.band, this.gold),
       new Mesh(this.column, this.velvet),
       new Mesh(this.seam, this.seamMaterial),
-      new Mesh(this.cap, this.heroMaterial),
+      new Mesh(this.hero('card'), this.heroMaterial),
       ray,
       new Sprite(this.flareMaterial),
     ];
@@ -383,10 +399,10 @@ export class UnboxStage {
     column.position.y = PEDESTAL_HEIGHT / 2;
     const cap = new Mesh(assets.cap, gold);
     cap.position.y = PEDESTAL_HEIGHT;
-    this.item = new Mesh(
-      assets.hero(hero),
-      hero === 'coins' || hero === 'keys' ? gold : this.tintHero(hero, this.accent),
-    );
+    assets.tintHero(this.accent);
+    this.item = new Mesh(assets.hero(hero), assets.heroMaterial);
+    this.item.name = `unbox-hero-${hero}`;
+    this.item.rotation.order = 'YXZ';
     this.item.position.y = PEDESTAL_HEIGHT + ITEM_SIZE;
     this.pedestal.add(column, cap, this.item);
 
@@ -449,6 +465,11 @@ export class UnboxStage {
     return this.crate;
   }
 
+  /** The prop on the pedestal, for framing and luminance checks. */
+  get heroObject(): Object3D {
+    return this.item;
+  }
+
   /** Scale over the flare's rest size times its strength: 0 while no burst is on screen. */
   get flareLevel(): number {
     return this.disposed ? 0 : this.flareStrength;
@@ -476,7 +497,9 @@ export class UnboxStage {
 
     const top = this.crate.position.y + bodyHeight * pose.squash;
     this.swirl += Math.max(0, dt) * this.style.swirl;
-    this.fan.position.y = top;
+    const view = facing - this.root.rotation.y;
+    const parting = RAY_PARTING * Math.min(1, Math.max(0, pose.pedestal));
+    this.fan.position.set(-Math.sin(view) * parting, top, -Math.cos(view) * parting);
     this.fan.rotation.set(0, facing - this.root.rotation.y, Math.sin(this.swirl * 2.4) * 0.18);
     const reach = Math.max(0.05, pose.rayReach);
     for (const ray of this.rays) {
@@ -496,7 +519,11 @@ export class UnboxStage {
     this.pedestal.visible = rise > 0.001 && pose.fly < 1;
     this.pedestal.scale.setScalar(Math.max(0.001, rise));
     this.pedestal.position.y = this.crate.position.y + bodyHeight * (1 - Math.min(1, rise)) * 0.5;
-    this.item.rotation.y = pose.itemSpin;
+    this.item.rotation.set(
+      -HERO_TILT * Math.asin(Math.max(-1, Math.min(1, this.toCamera.y))),
+      view + heroYaw(pose.itemSpin),
+      0,
+    );
     this.item.scale.setScalar(1 - pose.fly);
 
     const glow = Math.max(pose.burst, pose.rays, pose.rumble * 0.5);
@@ -525,15 +552,6 @@ export class UnboxStage {
     this.assets.setFlare(this.accent, 0);
     for (const ray of this.rays) this.assets.unbindRay(ray.mesh);
     this.assets.light.intensity = 0;
-  }
-
-  private tintHero(hero: UnboxHero, accent: Color): Material {
-    const material = this.assets.heroMaterial;
-    const color = hero === 'pearls' ? new Color(rivieraTokens.ivory) : accent;
-    material.color.copy(color);
-    material.emissive.copy(color);
-    material.roughness = hero === 'pearls' ? 0.15 : 0.25;
-    return material;
   }
 }
 
@@ -620,28 +638,4 @@ const shake = new Quaternion();
 function scheduleIdle(task: () => void): void {
   if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(task);
   else task();
-}
-
-/** Heroes drawn with the same shape share one geometry. */
-function twinOf(hero: UnboxHero): UnboxHero {
-  if (hero === 'tickets') return 'coins';
-  if (hero === 'safe') return 'keys';
-  return hero;
-}
-
-function heroGeometry(hero: UnboxHero): BufferGeometry {
-  switch (hero) {
-    case 'coins':
-    case 'tickets':
-      return new CylinderGeometry(ITEM_SIZE, ITEM_SIZE, ITEM_SIZE * 0.2, 32).rotateX(Math.PI / 2);
-    case 'pearls':
-      return new OctahedronGeometry(ITEM_SIZE * 0.8, 3);
-    case 'keys':
-    case 'safe':
-      return new BoxGeometry(ITEM_SIZE * 1.4, ITEM_SIZE * 1.4, ITEM_SIZE * 1.4);
-    case 'card':
-      return new BoxGeometry(ITEM_SIZE * 1.3, ITEM_SIZE * 1.8, ITEM_SIZE * 0.08);
-    case 'charm':
-      return new OctahedronGeometry(ITEM_SIZE, 0);
-  }
 }
