@@ -13,7 +13,7 @@
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 110
+          "max": 115
         },
         "falls": {
           "windowMs": 30000,
@@ -21,7 +21,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 477
+          "max": 1252
         },
         "fusions": {
           "windowMs": 60000,
@@ -29,14 +29,14 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 24
+          "max": 28
         }
       },
       "mean": {
         "drops": 8,
-        "falls": 28.88,
-        "fallValue": 36.12,
-        "fusions": 1.12,
+        "falls": 14.54,
+        "fallValue": 42.51,
+        "fusions": 15.46,
         "crates": 6
       }
     },
@@ -45,9 +45,9 @@
       "activeSeconds": 120,
       "table": {
         "levels": {
-          "pusherSpeed": 6,
-          "dropRate": 5,
-          "coinValue": 4,
+          "pusherSpeed": 7,
+          "dropRate": 6,
+          "coinValue": 5,
           "decorumCapacity": 1
         },
         "venue": "rivieraYacht",
@@ -57,31 +57,31 @@
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 127
+          "max": 136
         },
         "falls": {
           "windowMs": 30000,
-          "max": 470
+          "max": 503
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 1504
+          "max": 4700
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 147
+          "max": 150
         },
         "crates": {
           "windowMs": 300000,
-          "max": 28
+          "max": 34
         }
       },
       "mean": {
-        "drops": 9.2,
-        "falls": 45.17,
-        "fallValue": 113.9,
-        "fusions": 1.75,
-        "crates": 6.9
+        "drops": 9.44,
+        "falls": 24.36,
+        "fallValue": 159.55,
+        "fusions": 25.9,
+        "crates": 7.08
       }
     },
     {
@@ -89,13 +89,13 @@
       "activeSeconds": 600,
       "table": {
         "levels": {
-          "pusherSpeed": 13,
-          "dropRate": 10,
-          "coinValue": 11,
-          "crateChance": 5,
-          "vaultCapacity": 1,
-          "fusionWindow": 3,
-          "decorumCapacity": 7
+          "pusherSpeed": 14,
+          "dropRate": 12,
+          "coinValue": 12,
+          "crateChance": 6,
+          "vaultCapacity": 2,
+          "fusionWindow": 5,
+          "decorumCapacity": 9
         },
         "venue": "rivieraYacht",
         "charms": 2,
@@ -104,31 +104,31 @@
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 143
+          "max": 157
         },
         "falls": {
           "windowMs": 30000,
-          "max": 695
+          "max": 751
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 3965
+          "max": 12414
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 190
+          "max": 216
         },
         "crates": {
           "windowMs": 300000,
-          "max": 36
+          "max": 45
         }
       },
       "mean": {
-        "drops": 10.4,
-        "falls": 66.44,
-        "fallValue": 300.21,
-        "fusions": 2.98,
-        "crates": 8.97
+        "drops": 10.88,
+        "falls": 26.71,
+        "fallValue": 421.48,
+        "fusions": 48.36,
+        "crates": 9.63
       }
     },
     {
@@ -136,9 +136,9 @@
       "activeSeconds": 1800,
       "table": {
         "levels": {
-          "pusherSpeed": 31,
+          "pusherSpeed": 40,
           "dropRate": 25,
-          "coinValue": 31,
+          "coinValue": 41,
           "crateChance": 20,
           "vaultCapacity": 4,
           "fusionWindow": 20,
@@ -151,15 +151,15 @@
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
-          "max": 1502
+          "max": 1785
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 23241
+          "max": 106189
         },
         "fusions": {
           "windowMs": 60000,
@@ -167,14 +167,14 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 138.94,
-        "fallValue": 1759.73,
-        "fusions": 11.21,
+        "falls": 59.5,
+        "fallValue": 3605.29,
+        "fusions": 119,
         "crates": 16.8
       }
     },
@@ -183,30 +183,31 @@
       "activeSeconds": 3600,
       "table": {
         "levels": {
-          "pusherSpeed": 47,
+          "pusherSpeed": 50,
           "dropRate": 25,
-          "coinValue": 50,
+          "coinValue": 52,
           "crateChance": 20,
           "vaultCapacity": 4,
+          "offlineHours": 3,
           "fusionWindow": 20,
           "decorumCapacity": 10
         },
         "venue": "rivieraYacht",
-        "charms": 21,
+        "charms": 20,
         "albumBonus": 0.13
       },
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2006
+          "max": 2100
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 47426
+          "max": 154802
         },
         "fusions": {
           "windowMs": 60000,
@@ -214,14 +215,14 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 185.58,
-        "fallValue": 3590.89,
-        "fusions": 14.97,
+        "falls": 70,
+        "fallValue": 5255.79,
+        "fusions": 140,
         "crates": 16.8
       }
     },
@@ -232,21 +233,21 @@
         "levels": {
           "pusherSpeed": 50,
           "dropRate": 25,
-          "coinValue": 59,
+          "coinValue": 63,
           "crateChance": 20,
           "vaultCapacity": 4,
-          "offlineHours": 8,
+          "offlineHours": 10,
           "fusionWindow": 20,
           "decorumCapacity": 10
         },
         "venue": "rivieraYacht",
-        "charms": 41,
+        "charms": 40,
         "albumBonus": 0.13
       },
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
@@ -254,7 +255,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 57787
+          "max": 184675
         },
         "fusions": {
           "windowMs": 60000,
@@ -262,14 +263,14 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 194.32,
-        "fallValue": 4375.39,
-        "fusions": 15.68,
+        "falls": 70,
+        "fallValue": 6270.07,
+        "fusions": 140,
         "crates": 16.8
       }
     },
@@ -280,7 +281,7 @@
         "levels": {
           "pusherSpeed": 50,
           "dropRate": 25,
-          "coinValue": 66,
+          "coinValue": 70,
           "crateChance": 20,
           "vaultCapacity": 4,
           "offlineHours": 10,
@@ -288,13 +289,13 @@
           "decorumCapacity": 10
         },
         "venue": "rivieraYacht",
-        "charms": 63,
+        "charms": 62,
         "albumBonus": 0.13
       },
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
@@ -302,7 +303,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 64107
+          "max": 203686
         },
         "fusions": {
           "windowMs": 60000,
@@ -310,25 +311,25 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 194.32,
-        "fallValue": 4853.94,
-        "fusions": 15.68,
+        "falls": 70,
+        "fallValue": 6915.51,
+        "fusions": 140,
         "crates": 16.8
       }
     },
     {
       "label": "rivieraYacht before Ascension",
-      "activeSeconds": 11335,
+      "activeSeconds": 11817,
       "table": {
         "levels": {
           "pusherSpeed": 50,
           "dropRate": 25,
-          "coinValue": 67,
+          "coinValue": 71,
           "crateChance": 20,
           "vaultCapacity": 4,
           "offlineHours": 10,
@@ -336,13 +337,13 @@
           "decorumCapacity": 10
         },
         "venue": "rivieraYacht",
-        "charms": 68,
+        "charms": 71,
         "albumBonus": 0.13
       },
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
@@ -350,7 +351,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 65010
+          "max": 206402
         },
         "fusions": {
           "windowMs": 60000,
@@ -358,14 +359,14 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 194.32,
-        "fallValue": 4922.31,
-        "fusions": 15.68,
+        "falls": 70,
+        "fallValue": 7007.72,
+        "fusions": 140,
         "crates": 16.8
       }
     },
@@ -390,7 +391,7 @@
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
@@ -398,7 +399,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 94806
+          "max": 285160
         },
         "fusions": {
           "windowMs": 60000,
@@ -406,33 +407,33 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 194.32,
-        "fallValue": 7178.37,
-        "fusions": 15.68,
+        "falls": 70,
+        "fallValue": 9681.72,
+        "fusions": 140,
         "crates": 16.8
       }
     },
     {
       "label": "salonDeParis entry",
-      "activeSeconds": 11336,
+      "activeSeconds": 11818,
       "table": {
         "levels": {
           "oldMoney": 3,
           "trustFund": 1
         },
         "venue": "salonDeParis",
-        "charms": 68,
+        "charms": 72,
         "albumBonus": 0.13
       },
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 110
+          "max": 115
         },
         "falls": {
           "windowMs": 30000,
@@ -440,7 +441,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 1738
+          "max": 4562
         },
         "fusions": {
           "windowMs": 60000,
@@ -448,25 +449,25 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 24
+          "max": 28
         }
       },
       "mean": {
         "drops": 8,
-        "falls": 28.88,
-        "fallValue": 131.6,
-        "fusions": 1.12,
+        "falls": 14.54,
+        "fallValue": 154.87,
+        "fusions": 15.46,
         "crates": 6
       }
     },
     {
       "label": "salonDeParis before Ascension",
-      "activeSeconds": 30962,
+      "activeSeconds": 31366,
       "table": {
         "levels": {
           "pusherSpeed": 50,
           "dropRate": 25,
-          "coinValue": 84,
+          "coinValue": 87,
           "crateChance": 20,
           "vaultCapacity": 4,
           "offlineHours": 10,
@@ -476,13 +477,13 @@
           "trustFund": 1
         },
         "venue": "salonDeParis",
-        "charms": 179,
+        "charms": 184,
         "albumBonus": 0.13
       },
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
@@ -490,7 +491,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 219558
+          "max": 682653
         },
         "fusions": {
           "windowMs": 60000,
@@ -498,14 +499,14 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 194.32,
-        "fallValue": 16624.15,
-        "fusions": 15.68,
+        "falls": 70,
+        "fallValue": 23177.37,
+        "fusions": 140,
         "crates": 16.8
       }
     },
@@ -532,7 +533,7 @@
       "limits": {
         "drops": {
           "windowMs": 10000,
-          "max": 193
+          "max": 202
         },
         "falls": {
           "windowMs": 30000,
@@ -540,7 +541,7 @@
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 259029
+          "max": 779115
         },
         "fusions": {
           "windowMs": 60000,
@@ -548,14 +549,14 @@
         },
         "crates": {
           "windowMs": 300000,
-          "max": 68
+          "max": 79
         }
       },
       "mean": {
         "drops": 14,
-        "falls": 194.32,
-        "fallValue": 19612.76,
-        "fusions": 15.68,
+        "falls": 70,
+        "fallValue": 26452.43,
+        "fusions": 140,
         "crates": 16.8
       }
     }

@@ -1,4 +1,4 @@
-import type { CascadeTierId } from '../src/types.ts';
+import type { CascadeTierId, PlayStyleId } from '../src/types.ts';
 
 /**
  * Behavioural and physics-proxy assumptions the balancing sim needs but that are not
@@ -14,12 +14,17 @@ export interface SimModel {
   /** Share of pushed-off coins landing in each cascade tier (the rest earn no combo). */
   readonly cascadeShare: Readonly<Record<CascadeTierId, number>>;
   /**
-   * Share of returned value that passed through one Contact Fusion at fusionWindow 1.
-   * Calibrated on the physics ladder (sim/ladder.ts) style that taps at
-   * `baseDropsPerSecond` across the whole chute: fusion bonus per drop =
-   * baseReturnRatio × fusionShare × (bonusMultiplier − 1).
+   * Share of returned value that passed through one Contact Fusion at fusionWindow 1,
+   * calibrated on the physics ladder (sim/ladder.ts) style `fusionCalibrationStyle`:
+   * fusion bonus per drop = baseReturnRatio × fusionShare × (bonusMultiplier − 1).
    */
   readonly fusionShare: number;
+  /**
+   * The ladder style fusionShare is measured on. Aimed play, the most-fusing style at the
+   * model's cadence: the reticle teaches aiming, so the shipped pacing is the fast honest
+   * end, and ladder.ts `pacingAcrossStyles` keeps the whole-chute styles in band too.
+   */
+  readonly fusionCalibrationStyle: PlayStyleId;
   /** Income bonus per slotted Charm (proxy for pegs, ropes, magnets...). */
   readonly charmIncomeBonus: number;
   /** Coins a player keeps in hand for dropping instead of spending on upgrades. */
@@ -89,7 +94,8 @@ export const simModel = {
   baseDropsPerSecond: 0.8,
   baseReturnRatio: 1.25,
   cascadeShare: { chic: 0.3, lavish: 0.15, opulent: 0.09, decadent: 0.045, obscene: 0.015 },
-  fusionShare: 0.056,
+  fusionShare: 0.773,
+  fusionCalibrationStyle: 'aimed',
   charmIncomeBonus: 0.06,
   dropReserve: 10,
   activeCapHours: 60,

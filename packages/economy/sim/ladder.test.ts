@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { economyConfig, ladderTargets } from '../src/config/index.ts';
@@ -5,17 +6,22 @@ import { PLAY_STYLE_IDS, type LadderTargetDef, type PlayStyleId } from '../src/t
 import {
   CALIBRATION_TOLERANCE,
   FUSED_TIERS,
+  cadenceStyles,
   calibrationStyle,
   evaluateLadder,
   evaluateLadderTarget,
-  honestFusionPeak,
+  fusionShareFor,
+  honestPeak,
   ladderMeasurement,
+  pacingAcrossStyles,
   playStyles,
   type FusedTier,
   type LadderRun,
+  type PeakField,
 } from './ladder.ts';
 import { ladderRuns } from './ladderRuns.ts';
 import { simModel } from './model.ts';
+import { runSimulation } from './simulate.ts';
 
 const RUNS = { numRuns: 200 };
 const { inputCount, bonusMultiplier } = economyConfig.fusion;
@@ -69,7 +75,47 @@ const targetArb: fc.Arbitrary<LadderTargetDef> = fc.record({
   max: fc.integer({ min: 1, max: ladderMeasurement.seconds }),
 });
 
+function simSource(path: string): string {
+  return readFileSync(new URL(`../../sim/src/${path}`, import.meta.url), 'utf8');
+}
+
+function constObject(source: string, name: string): Record<string, number> {
+  const body = new RegExp(`export const ${name} = \\{([^}]*)\\}`).exec(source)?.[1];
+  if (body === undefined) throw new Error(`No ${name} object literal in the packages/sim source`);
+  const entries: [string, number][] = [...body.matchAll(/(\w+):\s*(-?[\d.]+)/g)].map(
+    ([, key = '', value = '']) => [key, Number(value)],
+  );
+  return Object.fromEntries(entries);
+}
+
 describe('physics ladder fixture', () => {
+  it('was measured on the packages/sim version and fusion tuning that ship', () => {
+    const version = /export const SIM_VERSION = (\d+);/.exec(simSource('constants.ts'))?.[1];
+    const rerun =
+      'packages/sim changed under the ladder: rerun ladderRuns and update ladderMeasurement';
+    expect(Number(version), rerun).toBe(ladderMeasurement.simVersion);
+    expect(constObject(simSource('mechanics/tuning.ts'), 'FUSION_TUNING'), rerun).toEqual(
+      ladderMeasurement.fusionTuning,
+    );
+  });
+
+  it('was measured with the economy inputs the table ships', () => {
+    const rerun = 'economy fusion rule or opening heap changed: rerun ladderRuns';
+    expect(economyConfig.openingHeap, rerun).toEqual(ladderMeasurement.openingHeap);
+    expect(
+      {
+        inputCount: economyConfig.fusion.inputCount,
+        contactSeconds: economyConfig.fusion.contactSeconds,
+      },
+      rerun,
+    ).toEqual({
+      inputCount: ladderMeasurement.fusion.inputCount,
+      contactSeconds: ladderMeasurement.fusion.contactSeconds,
+    });
+    const fusionWindow = economyConfig.upgradeLines.find((l) => l.effect.stat === 'fusionWindow');
+    expect(fusionWindow?.effect.base).toBe(ladderMeasurement.fusion.fusionWindow);
+  });
+
   it('measures every play style on the same seeds', () => {
     for (const style of PLAY_STYLE_IDS) {
       expect(ladderRuns[style].map((run) => run.seed)).toEqual(ladderMeasurement.seeds);
@@ -196,7 +242,7 @@ describe('ladder targets', () => {
 describe('economy model calibration', () => {
   it('keeps the model’s fusion bonus per drop within tolerance of the style it plays like', () => {
     const result = evaluateLadder(simModel, bonusMultiplier);
-    expect(result.calibration.style).toBe('casual');
+    expect(result.calibration.style).toBe('aimed');
     const measured = result.calibration.fusionBonusPerDrop;
     expect(measured).toBeGreaterThan(0);
     expect(Math.abs(result.modelFusionBonusPerDrop / measured - 1)).toBeLessThanOrEqual(
@@ -214,35 +260,99 @@ describe('economy model calibration', () => {
     }
   });
 
-  it('refuses a model cadence no ladder style measured', () => {
-    expect(() => calibrationStyle({ ...simModel, baseDropsPerSecond: 1.7 })).toThrow(
-      /No ladder style taps 1.7\/s/,
+  it('calibrates on the most-fusing style at the model’s cadence', () => {
+    const cadence = cadenceStyles(simModel);
+    expect(cadence).toEqual(['casual', 'steady', 'aimed', 'aimedPinpoint']);
+    const shares = cadence.map((style) => fusionShareFor(style, simModel, bonusMultiplier));
+    expect(fusionShareFor(calibrationStyle(simModel), simModel, bonusMultiplier)).toBe(
+      Math.max(...shares),
     );
+  });
+
+  it('refuses a model cadence no ladder style measured', () => {
+    expect(() => calibrationStyle({ ...simModel, baseDropsPerSecond: 5 })).toThrow(
+      /No ladder style taps between 5\/s and 8.75\/s/,
+    );
+  });
+
+  it('refuses a calibration style that taps off the model’s cadence', () => {
+    expect(() =>
+      calibrationStyle({ ...simModel, fusionCalibrationStyle: 'franticPinpoint' }),
+    ).toThrow(/"franticPinpoint" does not tap at the model's cadence/);
   });
 });
 
-describe('honest fusion peak', () => {
-  it('is monotonic in the tap ceiling and covers each style it admits', () => {
+describe('pacing across play styles', () => {
+  const options = { days: 7, players: 100, seed: 1 };
+
+  it('lands every 02-ECONOMY target for every style at the model’s cadence, whole chute to aimed', () => {
+    const pacing = pacingAcrossStyles(economyConfig, simModel, options);
+    expect(pacing.map((p) => p.style)).toEqual(cadenceStyles(simModel));
+    for (const { style, fusionShare, targets } of pacing) {
+      expect(fusionShare).toBeGreaterThan(0);
+      for (const t of targets) {
+        expect(
+          t.pass,
+          `${style} (fusionShare ${fusionShare.toFixed(3)}): ${t.target.id} = ${t.value}`,
+        ).toBe(true);
+      }
+    }
+  }, 60_000);
+
+  it('holds for any fusionShare between the least- and most-fusing cadence styles', () => {
+    const shares = cadenceStyles(simModel).map((style) =>
+      fusionShareFor(style, simModel, bonusMultiplier),
+    );
     fc.assert(
       fc.property(
-        fc.double({ min: 0, max: 5, noNaN: true }),
-        fc.double({ min: 0, max: 5, noNaN: true }),
-        (a, b) => {
-          const [lo, hi] = a <= b ? [a, b] : [b, a];
-          expect(honestFusionPeak(lo)).toBeLessThanOrEqual(honestFusionPeak(hi));
-          for (const style of PLAY_STYLE_IDS) {
-            if (playStyles[style].tapsPerSecond > hi) continue;
-            for (const run of ladderRuns[style]) {
-              expect(run.busiestFusions).toBeLessThanOrEqual(honestFusionPeak(hi));
-            }
+        fc.double({ min: Math.min(...shares), max: Math.max(...shares), noNaN: true }),
+        fc.integer({ min: 2, max: 1_000 }),
+        (fusionShare, seed) => {
+          const { targets } = runSimulation(
+            economyConfig,
+            { ...simModel, fusionShare },
+            { days: 7, players: 60, seed },
+          );
+          for (const t of targets) {
+            expect(
+              t.pass,
+              `fusionShare ${fusionShare.toFixed(3)} seed ${seed}: ${t.target.id}`,
+            ).toBe(true);
           }
         },
       ),
-      RUNS,
+      { numRuns: 6, seed: 0x333 },
     );
-  });
+  }, 60_000);
+});
 
-  it('is 0 below the slowest measured style', () => {
-    expect(honestFusionPeak(0.5)).toBe(0);
+describe('honest peak', () => {
+  const fields: readonly PeakField[] = ['busiestFusions', 'busiestFallValue'];
+
+  it.each(fields)(
+    'of %s is monotonic in the tap ceiling and covers each style it admits',
+    (field) => {
+      fc.assert(
+        fc.property(
+          fc.double({ min: 0, max: 5, noNaN: true }),
+          fc.double({ min: 0, max: 5, noNaN: true }),
+          (a, b) => {
+            const [lo, hi] = a <= b ? [a, b] : [b, a];
+            expect(honestPeak(field, lo)).toBeLessThanOrEqual(honestPeak(field, hi));
+            for (const style of PLAY_STYLE_IDS) {
+              if (playStyles[style].tapsPerSecond > hi) continue;
+              for (const run of ladderRuns[style]) {
+                expect(run[field]).toBeLessThanOrEqual(honestPeak(field, hi));
+              }
+            }
+          },
+        ),
+        RUNS,
+      );
+    },
+  );
+
+  it.each(fields)('of %s is 0 below the slowest measured style', (field) => {
+    expect(honestPeak(field, 0.5)).toBe(0);
   });
 });

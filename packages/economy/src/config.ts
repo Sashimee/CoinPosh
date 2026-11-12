@@ -20,9 +20,11 @@ import {
  * Inputs to `rateEnvelope.test.ts`, which replays `sessions` honest sessions through the
  * economy sim's rates and this burst model, takes the 99.9th percentile of each session's
  * busiest window and multiplies it by `headroom`. The `max` values below are its output.
- * `fusions` also takes the busiest 60 s of the physics-measured ladder (sim/ladder.ts) for
- * every style up to `honestTapsPerSecond`, because the burst model only sees fused coins
- * that fall, not the merges that stay on the table.
+ * It runs once per measured style at the model's cadence (whole chute to aimed, each with
+ * its own fusionShare) and keeps the highest. `fusions` and `fallValue` also take the
+ * busiest window of the physics-measured ladder (sim/ladder.ts) for every style up to
+ * `honestTapsPerSecond`, because the burst model only sees fused coins that fall and
+ * spreads value evenly, where aimed play piles high-tier coins up and sheds them in a lump.
  */
 export const rateEnvelopeDerivation = {
   percentile: 99.9,
@@ -47,7 +49,7 @@ export const rateEnvelopeDerivation = {
 export const rateEnvelope = {
   drops: {
     windowMs: 10_000,
-    max: 110,
+    max: 115,
     scaleBy: { dropRate: 1 },
     value: null,
   },
@@ -59,9 +61,9 @@ export const rateEnvelope = {
   },
   fallValue: {
     windowMs: 30_000,
-    max: 477,
-    // fusionWindow only lifts the fused share of value: 0.056 × 0.25 / (1 + 0.056 × 0.25).
-    scaleBy: { dropRate: 1, pusherSpeed: 1, coinValue: 1, globalCoinValue: 1, fusionWindow: 0.014 },
+    max: 1_252,
+    // fusionWindow only lifts the fused share of value: 0.773 × 0.25 / (1 + 0.773 × 0.25).
+    scaleBy: { dropRate: 1, pusherSpeed: 1, coinValue: 1, globalCoinValue: 1, fusionWindow: 0.162 },
     value: { perCharm: 0.06 },
   },
   fusions: {
@@ -75,7 +77,7 @@ export const rateEnvelope = {
   },
   crates: {
     windowMs: 300_000,
-    max: 24,
+    max: 28,
     scaleBy: { dropRate: 1, crateChance: 1, globalCrateChance: 1 },
     value: null,
   },

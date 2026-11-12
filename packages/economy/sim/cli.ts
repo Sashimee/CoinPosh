@@ -4,8 +4,8 @@ import type { CoinTierId, EconomyConfig } from '../src/types.ts';
 import { assertValidEconomyConfig } from '../src/validate.ts';
 import { buildEnvelopeTable } from './envelopeTable.ts';
 import { simModel, type SimModel } from './model.ts';
-import { evaluateLadder } from './ladder.ts';
-import { formatLadder, formatSummary } from './report.ts';
+import { evaluateLadder, pacingAcrossStyles } from './ladder.ts';
+import { formatLadder, formatStylePacing, formatSummary } from './report.ts';
 import { runSimulation } from './simulate.ts';
 
 export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] [--seed N] [--json] [--strict]
@@ -24,7 +24,8 @@ export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] 
   --heap-tier     what-if: opening-heap coin tier instead of the shipped ${economyConfig.openingHeap.tier}
   --return-ratio  what-if: front-edge value per coin dropped (shipped model: ${simModel.baseReturnRatio})
   --fusion-share  what-if: share of returned value fused at fusionWindow 1 (shipped model: ${simModel.fusionShare})
-  --ladder        print fusion tier-creation times per play style (physics-measured) against the ladder targets`;
+  --ladder        print fusion tier-creation times per play style (physics-measured) against the ladder targets,
+                  and the pacing targets rerun with each cadence style's measured fusionShare`;
 
 export interface CliIo {
   readonly out: (text: string) => void;
@@ -137,20 +138,29 @@ function run(argv: readonly string[], io: CliIo): number {
     return 0;
   }
 
-  const result = runSimulation(config, model, {
+  const options = {
     days: parseInteger('days', values.days),
     players: parseInteger('players', values.players),
     seed,
-  });
+  };
+  const result = runSimulation(config, model, options);
   const ladder = values.ladder ? evaluateLadder(model, config.fusion.bonusMultiplier) : null;
+  const pacing = values.ladder ? pacingAcrossStyles(config, model, options) : null;
   io.out(
     values.json
-      ? finiteJson(ladder === null ? result : { ...result, ladder })
-      : [formatSummary(result), ...(ladder === null ? [] : ['', formatLadder(ladder)])].join('\n'),
+      ? finiteJson(ladder === null ? result : { ...result, ladder, pacing })
+      : [
+          formatSummary(result),
+          ...(ladder === null ? [] : ['', formatLadder(ladder)]),
+          ...(pacing === null ? [] : ['', formatStylePacing(pacing)]),
+        ].join('\n'),
   );
-  const missed = [...result.targets, ...result.ftue, ...(ladder?.targets ?? [])].some(
-    (t) => !t.pass,
-  );
+  const missed = [
+    ...result.targets,
+    ...result.ftue,
+    ...(ladder?.targets ?? []),
+    ...(pacing ?? []).flatMap((p) => p.targets),
+  ].some((t) => !t.pass);
   return values.strict && missed ? 1 : 0;
 }
 

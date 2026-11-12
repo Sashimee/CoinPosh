@@ -1,5 +1,11 @@
 import type { PacingMetric } from '../src/types.ts';
-import { FUSED_TIERS, ladderMeasurement, playStyles, type LadderResult } from './ladder.ts';
+import {
+  FUSED_TIERS,
+  ladderMeasurement,
+  playStyles,
+  type LadderResult,
+  type StylePacing,
+} from './ladder.ts';
 import type { MilestoneId } from './player.ts';
 import type { Distribution, SimResult, TargetResult } from './simulate.ts';
 
@@ -181,6 +187,23 @@ export function formatLadder(result: LadderResult): string {
         String(s.busiestFusions),
         String(s.busiestFallValue),
         s.fusionBonusPerDrop.toFixed(3),
+      ]),
+    ),
+  ].join('\n');
+}
+
+export function formatStylePacing(pacing: readonly StylePacing[]): string {
+  const targets = pacing[0]?.targets ?? [];
+  return [
+    `Pacing per play style at the model's cadence (fusionShare from each style's ladder runs): ${onTarget(pacing.flatMap((p) => p.targets))}`,
+    table(
+      ['Style', 'fusionShare', ...targets.map((t) => t.target.label)],
+      pacing.map((p) => [
+        playStyles[p.style].label,
+        p.fusionShare.toFixed(3),
+        ...p.targets.map(
+          (t) => `${formatMetric(t.target.metric, t.value)}${t.pass ? '' : ' MISS'}`,
+        ),
       ]),
     ),
   ].join('\n');

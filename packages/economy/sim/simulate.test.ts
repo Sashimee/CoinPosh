@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { economyConfig, ladderTargets } from '../src/config/index.ts';
 import { runCli } from './cli.ts';
-import { evaluateLadder } from './ladder.ts';
+import { evaluateLadder, fusionShareFor } from './ladder.ts';
 import { dropsBeforeFirstFall, simModel, type TablePile } from './model.ts';
 import { formatMetric, formatSummary } from './report.ts';
 import { percentile, runSimulation } from './simulate.ts';
@@ -98,16 +98,22 @@ describe('runSimulation', () => {
 
   it('needs a silver heap to make the first upgrade at the measured return', () => {
     // A copper heap pays no more than the pile it stands in for: at 0.9 coins per drop the
-    // trust fund barely grows (balance evidence for P-193).
+    // trust fund barely grows (balance evidence for P-193). Aimed fusion bonus can carry a
+    // copper start, so the heap is judged for the player who fuses least (whole chute).
     const firstUpgrade = (run: ReturnType<typeof runSimulation>) =>
       run.targets.find((t) => t.target.id === 'firstUpgrade');
+    const wholeChute = {
+      ...measured,
+      fusionShare: fusionShareFor('casual', measured, economyConfig.fusion.bonusMultiplier),
+    };
     const copper = runSimulation(
       { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, tier: 'copper' } },
-      measured,
+      wholeChute,
       options,
     );
     expect(firstUpgrade(copper)?.pass).toBe(false);
     expect(economyConfig.openingHeap.tier).toBe('silver');
+    expect(firstUpgrade(runSimulation(economyConfig, wholeChute, options))?.pass).toBe(true);
     expect(firstUpgrade(measuredResult)?.pass).toBe(true);
   });
 
@@ -255,12 +261,17 @@ describe('sim CLI', () => {
     expect(run.code).toBe(0);
     expect(run.out).toContain('Fusion ladder (packages/sim');
     expect(run.out).toContain('First Diamond, 2 pinpoint taps/s');
+    expect(run.out).toContain("Pacing per play style at the model's cadence");
     const json = JSON.parse(cli('--days', '1', '--players', '1', '--ladder', '--json').out) as {
       ladder: { targets: unknown[]; styles: unknown[] };
+      pacing: { style: string; targets: unknown[] }[];
     };
     expect(json.ladder.targets).toHaveLength(ladderTargets.length);
     expect(json.ladder.styles).toHaveLength(12);
-    expect(cli('--days', '1', '--players', '1').out).not.toContain('Fusion ladder');
+    expect(json.pacing.map((p) => p.style)).toEqual(['casual', 'steady', 'aimed', 'aimedPinpoint']);
+    const plain = cli('--days', '1', '--players', '1').out;
+    expect(plain).not.toContain('Fusion ladder');
+    expect(plain).not.toContain('Pacing per play style');
   });
 
   it('counts ladder misses under --strict only with --ladder', () => {

@@ -1,13 +1,22 @@
-import { ladderTargets } from '../src/config/index.ts';
+import { economyConfig, ladderTargets } from '../src/config/index.ts';
+import { upgradeStat } from '../src/formulas.ts';
 import {
   PLAY_STYLE_IDS,
   type CoinTierId,
+  type EconomyConfig,
   type LadderTargetDef,
   type PlayStyleId,
 } from '../src/types.ts';
 import { ladderRuns } from './ladderRuns.ts';
 import type { SimModel } from './model.ts';
-import { distribution, percentile, type Distribution, type TargetResult } from './simulate.ts';
+import {
+  distribution,
+  percentile,
+  runSimulation,
+  type Distribution,
+  type SimOptions,
+  type TargetResult,
+} from './simulate.ts';
 
 /** Tiers a Contact Fusion can create, lowest first. */
 export const FUSED_TIERS = ['silver', 'gold', 'platinum', 'diamond', 'heirloom'] as const;
@@ -66,13 +75,28 @@ export const playStyles: Readonly<Record<PlayStyleId, PlayStyle>> = {
  * aim RNG fusionRate.test.ts uses; a one-spot style (spread 0) drops at `xMm = 0` and draws
  * no RNG, since nextRange needs max > min. A Pour adds a drop every 8 ticks for 2 s every
  * 20 s. `first` times are the fusion event's tick / 60, rounded to 0.1 s; an independent
- * rebuild matched within one 0.1 s step. The generator is not committed yet (economy cannot
- * import @coinposh/sim, which depends on economy): it belongs in packages/sim, pinned to
- * `simVersion`. Rerun it whenever FUSION_TUNING or SIM_VERSION changes.
+ * rebuild matched within one 0.1 s step (P-333 rework: aimed seed 1 and the other spot
+ * checks in balance-reports/P-333-tuning-evidence.txt, on SIM_VERSION 8 after P-332).
+ *
+ * The generator is not committed yet (economy cannot import @coinposh/sim, which depends
+ * on economy): it belongs in packages/sim. Until it is, ladder.test.ts reads the
+ * packages/sim sources and fails as soon as `simVersion`, `fusionTuning` or the economy
+ * table inputs here stop matching them, which is when the fixture must be rerun.
  */
 export const ladderMeasurement = {
   simCommit: 'e3eb761',
   simVersion: 8,
+  fusionTuning: {
+    touchGap: 0.001,
+    graceTicks: 3,
+    spawnLift: 0.0015,
+    sampleTicks: 3,
+    spawnGraceTicks: 60,
+    freshTicks: 315,
+    wakeFromTier: 1,
+  },
+  fusion: { inputCount: 3, contactSeconds: 0.4, fusionWindow: 1 },
+  openingHeap: { coins: 100, tier: 'silver' },
   seconds: 300,
   seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
 } as const;
@@ -104,17 +128,40 @@ export interface LadderResult {
 /** How far the model's fusion bonus per drop may sit from its calibration style. */
 export const CALIBRATION_TOLERANCE = 0.1;
 
-/** The style that plays like the economy model: its base cadence across the whole chute. */
-export function calibrationStyle(model: SimModel): PlayStyleId {
-  const style = PLAY_STYLE_IDS.find(
-    (id) =>
-      playStyles[id].tapsPerSecond === model.baseDropsPerSecond &&
-      playStyles[id].aimSpreadMm === 150 &&
-      !playStyles[id].pour,
-  );
-  if (style === undefined) {
+type Runs = Readonly<Record<PlayStyleId, readonly LadderRun[]>>;
+
+/**
+ * The measured styles that tap at the economy model's cadence: from `baseDropsPerSecond`
+ * up to the fully upgraded dropRate, without Pours. These are the players the pacing
+ * targets describe; faster tapping reaches every milestone sooner on drops alone.
+ */
+export function cadenceStyles(
+  model: SimModel,
+  config: Pick<EconomyConfig, 'upgradeLines'> = economyConfig,
+): PlayStyleId[] {
+  const line = config.upgradeLines.find((l) => l.effect.stat === 'dropRate');
+  const top = line === undefined ? 1 : upgradeStat(line, line.maxLevel) / line.effect.base;
+  const lo = model.baseDropsPerSecond;
+  const hi = model.baseDropsPerSecond * top;
+  const styles = PLAY_STYLE_IDS.filter((id) => {
+    const { tapsPerSecond, pour } = playStyles[id];
+    return !pour && tapsPerSecond >= lo && tapsPerSecond <= hi + 1e-9;
+  });
+  if (styles.length === 0) {
     throw new RangeError(
-      `No ladder style taps ${model.baseDropsPerSecond}/s across the whole chute; measure one before changing baseDropsPerSecond.`,
+      `No ladder style taps between ${lo}/s and ${hi.toFixed(2)}/s; measure one before changing baseDropsPerSecond or dropRate.`,
+    );
+  }
+  return styles;
+}
+
+/** The style the model's fusionShare is calibrated on; it must tap at the model's cadence. */
+export function calibrationStyle(model: SimModel): PlayStyleId {
+  const style = model.fusionCalibrationStyle;
+  const cadence = cadenceStyles(model);
+  if (!cadence.includes(style)) {
+    throw new RangeError(
+      `fusionCalibrationStyle "${style}" does not tap at the model's cadence (${cadence.join(', ')}).`,
     );
   }
   return style;
@@ -123,6 +170,16 @@ export function calibrationStyle(model: SimModel): PlayStyleId {
 function fusionBonusPerDrop(runs: readonly LadderRun[]): number {
   const sum = (f: (run: LadderRun) => number): number => runs.reduce((a, run) => a + f(run), 0);
   return sum((run) => run.fusionBonusOut) / sum((run) => run.drops);
+}
+
+/** The fusionShare that makes the model's fusion bonus per drop equal a measured style's. */
+export function fusionShareFor(
+  style: PlayStyleId,
+  model: SimModel,
+  bonusMultiplier: number,
+  runs: Runs = ladderRuns,
+): number {
+  return fusionBonusPerDrop(runs[style]) / (model.baseReturnRatio * (bonusMultiplier - 1));
 }
 
 function firstTimes(runs: readonly LadderRun[], tier: FusedTier): (number | undefined)[] {
@@ -136,7 +193,7 @@ function isFusedTier(tier: CoinTierId): tier is FusedTier {
 /** Unreached runs count as later than the fixture's last second, so a `min` still holds. */
 export function evaluateLadderTarget(
   target: LadderTargetDef,
-  runs: Readonly<Record<PlayStyleId, readonly LadderRun[]>> = ladderRuns,
+  runs: Runs = ladderRuns,
 ): TargetResult {
   if (!isFusedTier(target.tier)) {
     throw new RangeError(`ladder target ${target.id}: no fusion creates ${target.tier}`);
@@ -178,7 +235,7 @@ export function evaluateLadder(
   model: SimModel,
   bonusMultiplier: number,
   targets: readonly LadderTargetDef[] = ladderTargets,
-  runs: Readonly<Record<PlayStyleId, readonly LadderRun[]>> = ladderRuns,
+  runs: Runs = ladderRuns,
 ): LadderResult {
   const style = calibrationStyle(model);
   return {
@@ -189,15 +246,47 @@ export function evaluateLadder(
   };
 }
 
-/** The busiest 60 s of fusions any honest style tapping at most `tapsPerSecond` reached. */
-export function honestFusionPeak(
+/** A per-run busiest window the server's envelope has to let through. */
+export type PeakField = 'busiestFusions' | 'busiestFallValue';
+
+/** The busiest window of `field` any honest style tapping at most `tapsPerSecond` reached. */
+export function honestPeak(
+  field: PeakField,
   tapsPerSecond: number,
-  runs: Readonly<Record<PlayStyleId, readonly LadderRun[]>> = ladderRuns,
+  runs: Runs = ladderRuns,
 ): number {
   return Math.max(
     0,
     ...PLAY_STYLE_IDS.filter((style) => playStyles[style].tapsPerSecond <= tapsPerSecond).flatMap(
-      (style) => runs[style].map((run) => run.busiestFusions),
+      (style) => runs[style].map((run) => run[field]),
     ),
   );
+}
+
+export interface StylePacing {
+  readonly style: PlayStyleId;
+  readonly fusionShare: number;
+  readonly targets: readonly TargetResult[];
+}
+
+/**
+ * The 02-ECONOMY pacing targets with the model's fusionShare set from each style at the
+ * model's cadence in turn, least-fusing (whole chute) to most (aimed): every honest way to
+ * play at that cadence has to land inside the bands, not just the calibration style.
+ */
+export function pacingAcrossStyles(
+  config: EconomyConfig,
+  model: SimModel,
+  options: SimOptions,
+  runs: Runs = ladderRuns,
+): StylePacing[] {
+  const bonusMultiplier = config.fusion.bonusMultiplier;
+  return cadenceStyles(model, config).map((style) => {
+    const fusionShare = fusionShareFor(style, model, bonusMultiplier, runs);
+    return {
+      style,
+      fusionShare,
+      targets: runSimulation(config, { ...model, fusionShare }, options).targets,
+    };
+  });
 }
