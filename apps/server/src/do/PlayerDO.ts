@@ -115,6 +115,12 @@ export const FLUSH_INTERVAL_MS = 30_000;
 export const IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
 const FLUSH_BATCH_ROWS = 100;
 
+/** The coins fused into the coin bound to `?`: what a boot's refund walks, once per tree node. */
+export const FUSION_INPUTS_SQL = `SELECT input.ref AS ref FROM ledger AS output
+  JOIN ledger AS input ON input.tx_id = output.tx_id
+  WHERE output.kind = 'claim.fusion' AND output.ref = ? AND output.account = 'table'
+    AND output.delta > 0 AND input.account = 'table' AND input.delta < 0`;
+
 const DROP_TIER = coinTiers[0].id;
 
 export interface PlayerInit {
@@ -784,15 +790,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
         id,
       )
       .one();
-    const inputs = this.sql
-      .exec<{ ref: string }>(
-        `SELECT input.ref AS ref FROM ledger AS output
-         JOIN ledger AS input ON input.tx_id = output.tx_id
-         WHERE output.kind = 'claim.fusion' AND output.ref = ? AND output.account = 'table'
-           AND output.delta > 0 AND input.account = 'table' AND input.delta < 0`,
-        id,
-      )
-      .toArray();
+    const inputs = this.sql.exec<{ ref: string }>(FUSION_INPUTS_SQL, id).toArray();
     return inputs.reduce(
       (total, input) => {
         const behind = this.dropsBehind(input.ref);

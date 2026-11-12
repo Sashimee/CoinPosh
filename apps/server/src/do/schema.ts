@@ -157,6 +157,11 @@ export const MIGRATIONS: readonly string[] = [
   )
   WHERE id IN (SELECT id FROM heap_grant);
   `,
+  // A boot walks each stranded coin's fusion tree by tx_id; without this every step scans the
+  // whole ledger, which never shrinks.
+  `
+  CREATE INDEX IF NOT EXISTS ledger_tx_id ON ledger (tx_id);
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {
