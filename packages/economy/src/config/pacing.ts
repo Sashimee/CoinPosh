@@ -1,4 +1,4 @@
-import type { PacingTargetDef } from '../types.ts';
+import type { LadderTargetDef, PacingTargetDef } from '../types.ts';
 
 const MINUTE = 60;
 const HOUR = 3_600;
@@ -73,3 +73,94 @@ export const ftueTargets = [
     max: 45,
   },
 ] as const satisfies readonly (Omit<PacingTargetDef, 'id'> & { readonly id: string })[];
+
+/**
+ * The fusion ladder, per play style (sim/ladder.ts). 00-VISION asks for a first Fusion
+ * inside 60 s; above that, a Diamond (625) is about 24 min of base net income, so it is a
+ * session goal that even 2–3 aimed taps a second should not reach inside the first minute,
+ * and an Heirloom stays out of a five-minute session altogether. The physics fixture runs
+ * 300 s, so no `max` may exceed 5 min.
+ */
+export const ladderTargets = [
+  {
+    id: 'firstFusionCasual',
+    label: 'First Fusion, casual taps',
+    style: 'casual',
+    tier: 'silver',
+    metric: 'activeSeconds',
+    percentile: 90,
+    max: MINUTE,
+  },
+  {
+    id: 'firstFusionAimed',
+    label: 'First Fusion, aimed taps',
+    style: 'aimed',
+    tier: 'silver',
+    metric: 'activeSeconds',
+    percentile: 90,
+    max: 10,
+  },
+  {
+    id: 'firstGoldAimed',
+    label: 'First Gold, aimed taps',
+    style: 'aimed',
+    tier: 'gold',
+    metric: 'activeSeconds',
+    percentile: 90,
+    max: 30,
+  },
+  {
+    id: 'firstPlatinumAimed',
+    label: 'First Platinum, aimed taps',
+    style: 'aimed',
+    tier: 'platinum',
+    metric: 'activeSeconds',
+    percentile: 50,
+    max: 5 * MINUTE,
+  },
+  {
+    id: 'firstPlatinumRapid',
+    label: 'First Platinum, 2 aimed taps/s',
+    style: 'rapid',
+    tier: 'platinum',
+    metric: 'activeSeconds',
+    percentile: 90,
+    max: MINUTE,
+  },
+  {
+    id: 'firstDiamondRapidSoonest',
+    label: 'First Diamond, 2 pinpoint taps/s',
+    style: 'rapidPinpoint',
+    tier: 'diamond',
+    metric: 'activeSeconds',
+    percentile: 10,
+    min: MINUTE,
+  },
+  {
+    id: 'firstDiamondRapid',
+    label: 'First Diamond, 2 pinpoint taps/s',
+    style: 'rapidPinpoint',
+    tier: 'diamond',
+    metric: 'activeSeconds',
+    percentile: 50,
+    max: 5 * MINUTE,
+  },
+  {
+    id: 'firstDiamondFranticSoonest',
+    label: 'First Diamond, 3 pinpoint taps/s',
+    style: 'franticPinpoint',
+    tier: 'diamond',
+    metric: 'activeSeconds',
+    percentile: 10,
+    min: MINUTE,
+  },
+  {
+    id: 'firstHeirloomFrantic',
+    label: 'First Heirloom, 3 pinpoint taps/s',
+    style: 'franticPinpoint',
+    tier: 'heirloom',
+    metric: 'activeSeconds',
+    percentile: 10,
+    min: 5 * MINUTE,
+  },
+] as const satisfies readonly LadderTargetDef[];
