@@ -34,14 +34,27 @@ import {
   type ErrorCode,
   type Locale,
   type PlayerId,
+  TableSessionIdSchema,
   type StateQuery,
   type StateResponse,
+  type CratePoseTuple,
+  type PoseTuple,
   type TableCrate,
+  type TableLayout,
+  type TableSessionId,
   type TableSnapshot,
+  type TableSnapshotRequest,
+  type TableSnapshotResponse,
   type Tick,
   type UpgradeBuyRequest,
   type UpgradeBuyResponse,
 } from '@coinposh/shared';
+import {
+  checkCratePose,
+  DEFAULT_PUSHER_MOTION,
+  SIM_SNAPSHOT_VERSION,
+  validateSnapshot,
+} from '@coinposh/sim/snapshot';
 import { DurableObject } from 'cloudflare:workers';
 import { randomBase62, randomBytes, sha256Hex } from '../crypto.ts';
 import type { Env } from '../env.ts';
@@ -50,6 +63,7 @@ import {
   Entities,
   HOME_VENUE,
   mintedMicros,
+  newTableSessionId,
   publicCoin,
   publicCrate,
   storedMicros,
@@ -73,6 +87,22 @@ import {
   type UpgradeHost,
 } from '../routes/upgrades.ts';
 import { migrate } from './schema.ts';
+import {
+  CHUTE_POSE,
+  countSnapshotFlag,
+  CRATE_MAX_RIDE_SECONDS,
+  elapsedSeconds,
+  readTableSnapshot,
+  SIM_TICKS_PER_SECOND,
+  takeSnapshotToken,
+  toCoinPose,
+  toCratePose,
+  withinCoinTravel,
+  withinCrateRide,
+  writeTableSnapshot,
+  type StoredTableSnapshot,
+  type TokenBucket,
+} from './snapshot.ts';
 
 /**
  * Coin IDs reserved ahead so play survives short network drops, at dropRate level 0 (the
@@ -132,11 +162,19 @@ type MetaKey =
   | 'mint_carry'
   | 'cascade_last_tick'
   | 'cascade_count'
-  | 'cascade_carry';
+  | 'cascade_carry'
+  | 'table_session'
+  | 'table_session_started_at'
+  | 'table_session_max_tick'
+  | 'table_session_origin'
+  | 'snapshot_tokens'
+  | 'snapshot_tokens_at';
 
-/** The client sim's fixed step (packages/sim TICK_RATE_HZ, the 60 Hz of the shared `Tick`). */
-const SIM_TICKS_PER_SECOND = 60;
 const CASCADE_WINDOW_TICKS = cascadeWindowTicks(SIM_TICKS_PER_SECOND);
+
+function present<T>(items: readonly (T | undefined)[]): T[] {
+  return items.filter((item): item is T => item !== undefined);
+}
 
 function startingCoins(): number {
   const line = upgradeLines.find((candidate) => candidate.effect.stat === 'startingCoins');
@@ -189,9 +227,9 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   }
 
   /**
-   * The player's snapshot. A boot one (`hydrate=boot`) is what a freshly loaded client lays its table from,
-   * so it first refunds the coins that client cannot lay again (see refundStranded) and ends the
-   * cascade chain, since that client's ticks start over. Every
+   * The player's snapshot. A boot one (`hydrate=boot`) is what a freshly loaded client lays its
+   * table from, so it starts a new table session and places every table coin and crate from the
+   * stored poses (see bootTable), refunding only the coins that client cannot lay again. Every
    * one lays the opening heap for a player who never had one and settles the buffer against
    * the wallet.
    */
@@ -199,15 +237,17 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const playerId = this.meta('player_id');
     if (playerId === null) return this.uninitialized();
     const now = Date.now();
-    const committed = this.ctx.storage.transactionSync(() => {
+    const { committed, layout } = this.ctx.storage.transactionSync(() => {
       const before = this.latestSeq();
+      let layout: TableLayout | null = null;
       if (query.hydrate === 'boot') {
-        this.refundStranded(now);
-        this.clearCascadeChain();
+        layout = this.bootTable(now);
+      } else {
+        if (this.meta('table_session') === null) this.startTableSession(now);
+        this.seedOpeningHeap(now);
+        this.reserveBuffer({ at: now, idempotencyKey: null });
       }
-      this.seedOpeningHeap(now);
-      this.reserveBuffer({ at: now, idempotencyKey: null });
-      return this.latestSeq() !== before;
+      return { committed: this.latestSeq() !== before, layout };
     });
     if (committed) await this.scheduleFlush(now);
     const loadout = Array.from({ length: HOME_VENUE.charmSockets }, (_, socket) => ({
@@ -231,7 +271,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       wallet: readWallet(this.sql),
       flags: DEFAULT_FEATURE_FLAGS,
       venue: { id: HOME_VENUE.id, unlocked: [HOME_VENUE.id], upgrades, loadout },
-      table: this.snapshot(),
+      table: { ...this.snapshot(), session: this.tableSession(), layout },
       inventory: { charms: [], safes: [], scratchCards: [] },
       offline: null,
       fair: {
@@ -249,11 +289,20 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
 
   async claims(command: Command<ClaimsRequest>): Promise<DoResult<ClaimsResponse>> {
     return this.mutate(command, (now) => {
-      const results = command.body.claims.map((claim) =>
-        this.applyClaim(claim, command.idempotencyKey, now),
-      );
+      const results = command.body.claims.map((claim) => {
+        const result = this.applyClaim(claim, command.idempotencyKey, now);
+        if (result.status === 'accepted') this.raiseSessionTick(command.body.session, claim.tick);
+        return result;
+      });
       return { results, wallet: readWallet(this.sql) };
     });
+  }
+
+  /** Stores where the client's sim says the table's coins and crates rest; never moves value. */
+  async tableSnapshot(
+    command: Command<TableSnapshotRequest>,
+  ): Promise<DoResult<TableSnapshotResponse>> {
+    return this.mutate(command, (now) => this.applySnapshot(command.body, now));
   }
 
   /**
@@ -447,6 +496,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const context = { at: now, idempotencyKey };
     const levels = this.levels();
     const cost = tierDef(DROP_TIER).value;
+    this.raiseSessionTick(body.session, body.tick);
     const reserved = body.coinId === undefined ? null : this.bufferedCoin(body.coinId);
     const prepaid = reserved?.paid ?? 0;
     const due = Math.max(0, cost - prepaid);
@@ -691,24 +741,15 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   }
 
   /**
-   * The client's sim can only lay the opening heap when it boots, so after a reload every
-   * other coin on the table would sit there unclaimable. Mid-session snapshots (a resync or
-   * a tab coming back) must not do this, or coins still in play would stop paying while
-   * their refund buys new drops. Each one goes back: the wallet gets what it paid for the
-   * coin, or for the drops fused into it, but never more than the coin is worth, and the
-   * house takes the rest of its value. The coin leaves the table for good, so a second boot
-   * finds nothing to refund and a late claim of it is refused as already claimed.
+   * A booting client lays a coin only from its stored pose or its heap slot, so a coin with
+   * neither would sit on its table unclaimable. Mid-session snapshots (a resync or a tab
+   * coming back) must not do this, or coins still in play would stop paying while their
+   * refund buys new drops. Each one goes back: the wallet gets what it paid for the coin, or
+   * for the drops fused into it, but never more than the coin is worth, and the house takes
+   * the rest of its value. The coin leaves the table for good, so a second boot finds nothing
+   * to refund and a late claim of it is refused as already claimed.
    */
-  private refundStranded(now: EpochMs): void {
-    const heap = new Set(
-      this.sql
-        .exec<{ ref: string }>(
-          "SELECT ref FROM ledger WHERE kind = 'grant.heap' AND account = 'table'",
-        )
-        .toArray()
-        .map((row) => row.ref),
-    );
-    const stranded = this.entities.coinsIn('table').filter((coin) => !heap.has(coin.id));
+  private refundStranded(stranded: readonly StoredCoin[], now: EpochMs): void {
     if (stranded.length === 0) return;
     const tx = new LedgerTx('refund.table');
     let refundedDrops = 0;
@@ -764,9 +805,9 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   /**
    * Lays the opening heap once per player, staked by the house rather than the wallet. It
    * rests at the front lip, so its coins may fall from tick 0; the client's sim lays them
-   * first, in this order, so they hold sim ids 0..n-1. Hydration refunds every other table
-   * coin first, so a player who signed up before the heap existed gets theirs on the boot
-   * after this deploy.
+   * first, in this order, so they hold sim ids 0..n-1, and each keeps its slot for life. A
+   * boot refunds every other unposed table coin first, so a player who signed up before the
+   * heap existed gets theirs on the boot after this deploy.
    */
   private seedOpeningHeap(now: EpochMs): void {
     if (this.meta('heap_seeded') === '1') return;
@@ -775,10 +816,271 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const tx = new LedgerTx('grant.heap');
     for (let i = 0; i < openingHeap.coins; i++) {
       const coin = this.mintFromCarry(openingHeap.tier, levels, 'table', 0, now);
+      this.entities.setHeapSlot(coin.id, i);
       tx.move('house', 'table', 'coins', coin.value, coin.id);
     }
     commit(this.sql, tx, { at: now, idempotencyKey: null });
     this.setMeta('heap_seeded', '1');
+  }
+
+  /**
+   * Starts a new table session and places every table coin and crate (92-table-persistence
+   * 4.1): a coin from its stored pose when that still passes the sim's checks, a heap coin
+   * without one at its heap slot, and any other coin refunded; a crate from its stored pose or
+   * back at the chute. What was restored becomes the session's first snapshot and its audit
+   * start state.
+   */
+  private bootTable(now: EpochMs): TableLayout {
+    const stored = readTableSnapshot(this.sql);
+    const usable =
+      stored !== null && stored.pusherTick < DEFAULT_PUSHER_MOTION.periodTicks ? stored : null;
+    const pusherTick = usable?.pusherTick ?? 0;
+    const session = this.startTableSession(now);
+    const before = this.entities.coinsIn('table');
+    const poses = this.judgePoses(before, usable?.poses ?? [], pusherTick).ok;
+    this.refundStranded(
+      before.filter((coin) => coin.heapSlot === null && !poses.has(coin.id)),
+      now,
+    );
+    this.clearCascadeChain();
+    this.entities.rebaseTableTicks();
+    this.seedOpeningHeap(now);
+    this.reserveBuffer({ at: now, idempotencyKey: null });
+
+    const coins = this.entities.coinsIn('table');
+    const crates = this.entities.cratesOnTable();
+    const cratePoses = new Map(
+      (usable?.cratePoses ?? [])
+        .filter((tuple) => checkCratePose(toCratePose(tuple), CRATE_MAX_RIDE_SECONDS).ok)
+        .map((tuple) => [tuple[0], tuple]),
+    );
+    const layout: TableLayout = {
+      pusher: { tickInCycle: pusherTick },
+      coins: coins.map((coin) => {
+        const pose = poses.get(coin.id);
+        if (pose !== undefined) return { kind: 'pose', pose };
+        if (coin.heapSlot !== null) return { kind: 'heapSlot', slot: coin.heapSlot };
+        throw new Error(
+          `Table coin ${coin.id} has neither a pose nor a heap slot after the refund.`,
+        );
+      }),
+      crates: crates.map((crate) => {
+        const pose = cratePoses.get(crate.id);
+        return pose === undefined ? { kind: 'chute' } : { kind: 'pose', pose };
+      }),
+    };
+    const restored: StoredTableSnapshot = {
+      session,
+      seq: 0,
+      tick: 0,
+      pusherTick,
+      poses: present(coins.map((coin) => poses.get(coin.id))),
+      cratePoses: present(crates.map((crate) => cratePoses.get(crate.id))),
+      receivedAt: now,
+    };
+    writeTableSnapshot(this.sql, restored);
+    this.setMeta('table_session_origin', JSON.stringify(restored));
+    return layout;
+  }
+
+  /**
+   * The table coins' poses a restore can take, run through the sim's own checks: each coin
+   * goes by its rowid rank, the sim id a client laying `table.coins` in order gives it.
+   */
+  private judgePoses(
+    tableCoins: readonly StoredCoin[],
+    tuples: readonly PoseTuple[],
+    pusherTick: number,
+  ): { ok: Map<CoinId, PoseTuple>; dropped: number } {
+    const simIds = new Map(tableCoins.map((coin, simId) => [coin.id, simId]));
+    const posed = tuples.flatMap((pose) => {
+      const simId = simIds.get(pose[0]);
+      return simId === undefined ? [] : [{ simId, pose }];
+    });
+    const verdict = validateSnapshot({
+      version: SIM_SNAPSHOT_VERSION,
+      pusherTickInCycle: pusherTick,
+      coins: posed.map(({ simId, pose }) => toCoinPose(pose, simId)),
+    });
+    const kept = new Set(verdict.ok.map((pose) => pose.id));
+    return {
+      ok: new Map(posed.filter(({ simId }) => kept.has(simId)).map(({ pose }) => [pose[0], pose])),
+      dropped: verdict.dropped.length,
+    };
+  }
+
+  /**
+   * Stores the client's poses after the pipeline of 92-table-persistence 3.2. A pose that is
+   * not this table's, not plausible, or moved further than the table can move it is dropped,
+   * and what is on the table but not in this snapshot keeps its stored pose. It writes the
+   * snapshot row and the anomaly counters only: never the wallet, ledger, coins or crates.
+   */
+  private applySnapshot(body: TableSnapshotRequest, now: EpochMs): TableSnapshotResponse {
+    if (this.meta('table_session') !== body.session) {
+      throw new ApiFailure(
+        'session_superseded',
+        'Another tab or device has booted this table since. Reload to play here.',
+      );
+    }
+    const stored = readTableSnapshot(this.sql);
+    const previous = stored?.session === body.session ? stored : null;
+    const floorTick = Math.max(
+      previous?.tick ?? 0,
+      Number(this.meta('table_session_max_tick') ?? 0),
+    );
+    if (previous !== null && body.seq <= previous.seq) {
+      throw new ApiFailure(
+        'stale_snapshot',
+        `Snapshot seq ${body.seq} is not after the stored ${previous.seq}. Send the next seq.`,
+      );
+    }
+    if (body.tick < floorTick) {
+      throw new ApiFailure(
+        'stale_snapshot',
+        `Snapshot tick ${body.tick} is before tick ${floorTick} the table already reached.`,
+      );
+    }
+    const take = takeSnapshotToken(this.snapshotBucket(), now);
+    if (!take.ok) {
+      throw new ApiFailure('rate_limited', 'Table snapshots are sent too often. Retry later.', {
+        retryAfterMs: take.retryAfterMs,
+      });
+    }
+    if (body.pusher.tickInCycle >= DEFAULT_PUSHER_MOTION.periodTicks) {
+      throw new ApiFailure(
+        'bad_request',
+        `pusher.tickInCycle must be below ${DEFAULT_PUSHER_MOTION.periodTicks}.`,
+      );
+    }
+    if (
+      new Set(body.coins.map(([id]) => id)).size !== body.coins.length ||
+      new Set(body.crates.map(([id]) => id)).size !== body.crates.length
+    ) {
+      throw new ApiFailure('bad_request', 'Each coin and crate may be posed once per snapshot.');
+    }
+    this.setMeta('snapshot_tokens', String(take.bucket.tokens));
+    this.setMeta('snapshot_tokens_at', String(take.bucket.at));
+
+    let ignored = 0;
+    let foreign = 0;
+    let teleport = 0;
+    const tableCoins = this.entities.coinsIn('table');
+    const onTable = new Set(tableCoins.map((coin) => coin.id));
+    const owned: PoseTuple[] = [];
+    for (const pose of body.coins) {
+      if (onTable.has(pose[0])) {
+        owned.push(pose);
+        continue;
+      }
+      ignored++;
+      const coin = this.entities.coin(pose[0]);
+      if (coin === null || coin.state === 'buffer') foreign++;
+    }
+    const judged = this.judgePoses(tableCoins, owned, body.pusher.tickInCycle);
+    ignored += judged.dropped;
+    const seconds =
+      previous === null ? 0 : elapsedSeconds(body.tick - previous.tick, previous.receivedAt, now);
+    const coinsBefore = new Map((previous?.poses ?? []).map((pose) => [pose[0], pose]));
+    const accepted = new Map<CoinId, PoseTuple>();
+    for (const [id, pose] of judged.ok) {
+      const from = coinsBefore.get(id);
+      if (from !== undefined && !withinCoinTravel(from, pose, seconds)) {
+        teleport++;
+        ignored++;
+        continue;
+      }
+      accepted.set(id, pose);
+    }
+
+    let implausibleCrates = 0;
+    const tableCrates = this.entities.cratesOnTable();
+    const cratesOnTable = new Map(tableCrates.map((crate) => [crate.id, crate]));
+    const cratesBefore = new Map((previous?.cratePoses ?? []).map((pose) => [pose[0], pose]));
+    const startedAt = Number(this.requireMeta('table_session_started_at'));
+    const acceptedCrates = new Map<string, CratePoseTuple>();
+    for (const tuple of body.crates) {
+      const crate = cratesOnTable.get(tuple[0]);
+      if (crate === undefined) {
+        ignored++;
+        if (this.entities.crate(tuple[0]) === null) foreign++;
+        continue;
+      }
+      const pose = toCratePose(tuple);
+      if (!checkCratePose(pose, CRATE_MAX_RIDE_SECONDS).ok) {
+        ignored++;
+        implausibleCrates++;
+        continue;
+      }
+      const from = cratesBefore.get(crate.id);
+      const rides =
+        from === undefined
+          ? withinCrateRide(
+              CHUTE_POSE,
+              pose,
+              elapsedSeconds(
+                body.tick - crate.spawnedTick,
+                Math.max(crate.spawnedAt, startedAt),
+                now,
+              ),
+            )
+          : withinCrateRide(toCratePose(from), pose, seconds);
+      if (!rides) {
+        ignored++;
+        teleport++;
+        continue;
+      }
+      acceptedCrates.set(crate.id, tuple);
+    }
+
+    writeTableSnapshot(this.sql, {
+      session: body.session,
+      seq: body.seq,
+      tick: body.tick,
+      pusherTick: body.pusher.tickInCycle,
+      poses: present(tableCoins.map((coin) => accepted.get(coin.id) ?? coinsBefore.get(coin.id))),
+      cratePoses: present(
+        tableCrates.map((crate) => acceptedCrates.get(crate.id) ?? cratesBefore.get(crate.id)),
+      ),
+      receivedAt: now,
+    });
+    countSnapshotFlag(this.sql, 'snapshot.foreign', foreign, now);
+    countSnapshotFlag(this.sql, 'snapshot.teleport', teleport, now);
+    countSnapshotFlag(this.sql, 'snapshot.implausible', judged.dropped + implausibleCrates, now);
+    return { seq: body.seq, stored: accepted.size + acceptedCrates.size, ignored };
+  }
+
+  private snapshotBucket(): TokenBucket | null {
+    const tokens = this.meta('snapshot_tokens');
+    const at = this.meta('snapshot_tokens_at');
+    return tokens === null || at === null ? null : { tokens: Number(tokens), at: Number(at) };
+  }
+
+  /**
+   * The latest boot owns the table. The snapshot rate bucket is the player's, not the
+   * session's, so booting again never buys more snapshots.
+   */
+  private startTableSession(now: EpochMs): TableSessionId {
+    const session = newTableSessionId();
+    this.setMeta('table_session', session);
+    this.setMeta('table_session_started_at', String(now));
+    this.setMeta('table_session_max_tick', '0');
+    return session;
+  }
+
+  private tableSession(): TableSessionId {
+    return TableSessionIdSchema.parse(this.requireMeta('table_session'));
+  }
+
+  /**
+   * A snapshot may never be older than a drop or claim the server already settled in this
+   * session. A table op that names another session leaves the mark alone.
+   */
+  private raiseSessionTick(session: TableSessionId | undefined, tick: Tick): void {
+    const current = this.meta('table_session');
+    if (current === null || (session !== undefined && session !== current)) return;
+    if (tick > Number(this.meta('table_session_max_tick') ?? 0)) {
+      this.setMeta('table_session_max_tick', String(tick));
+    }
   }
 
   private levels(): UpgradeLevelMap {

@@ -299,3 +299,66 @@ describe('opening heap for players who signed up before it was seeded', () => {
     ).toBe(1);
   });
 });
+
+describe('opening heap slots', () => {
+  function heapSlots(stub: DurableObjectStub<PlayerDO>) {
+    return runInDurableObject(stub, (_instance: PlayerDO, ctx) =>
+      ctx.storage.sql
+        .exec<{ id: string; heap_slot: number | null }>(
+          'SELECT id, heap_slot FROM coins ORDER BY rowid',
+        )
+        .toArray(),
+    );
+  }
+
+  it('gives each heap coin its slot in the order the client lays it, and no other coin one', async () => {
+    const session = await newSession();
+    const heap = await heapOf(session);
+    const [dropped] = await dropAsClient(session, 1);
+    if (dropped === undefined) throw new Error('The drop failed.');
+    const slots = new Map(
+      (await heapSlots(playerStub(session.tokens.playerId))).map((row) => [row.id, row.heap_slot]),
+    );
+    expect(heap.map((coin) => slots.get(coin.id))).toEqual(heap.map((_coin, i) => i));
+    expect(slots.get(dropped.coin.id)).toBeNull();
+    for (const coin of (await state(session)).table.buffer) expect(slots.get(coin.id)).toBeNull();
+  });
+
+  it('lays a never-posed heap at its slots on boot, like placeHeap did', async () => {
+    const session = await newSession();
+    const heap = await heapOf(session);
+    const { table } = await reload(session);
+    expect(table.coins).toEqual(heap);
+    expect(table.layout).toEqual({
+      pusher: { tickInCycle: 0 },
+      coins: heap.map((_coin, slot) => ({ kind: 'heapSlot', slot })),
+      crates: [],
+    });
+  });
+
+  it('keeps every remaining coin on its own slot after others of the heap fell', async () => {
+    const session = await newSession();
+    const heap = await heapOf(session);
+    const fell = [heap[0], heap[3]].filter((coin) => coin !== undefined);
+    await claims(
+      session,
+      fell.map((coin) => fall(coin)),
+    );
+    const { table } = await reload(session);
+    const left = heap.flatMap((coin, slot) => (fell.includes(coin) ? [] : [{ coin, slot }]));
+    expect(table.coins).toEqual(left.map(({ coin }) => coin));
+    expect(table.layout?.coins).toEqual(left.map(({ slot }) => ({ kind: 'heapSlot', slot })));
+  });
+
+  it('slots the heap a legacy player gets on boot and refunds only their stranded drops', async () => {
+    const stub = await legacyPlayer({ unpaidBuffer: 0, walletCoins: 4, drops: 4, stranded: 4 });
+    const booted = await stub.state({ hydrate: 'boot' });
+    if (!booted.ok) throw new Error(booted.error.message);
+    expect(booted.body.table.layout?.coins).toEqual(
+      booted.body.table.coins.map((_coin, slot) => ({ kind: 'heapSlot', slot })),
+    );
+    const rows = await heapSlots(stub);
+    expect(rows.filter((row) => row.heap_slot !== null)).toHaveLength(openingHeap.coins);
+    expect(await stub.conservation()).toMatchObject({ conserved: true });
+  });
+});
