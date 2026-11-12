@@ -110,11 +110,112 @@
   animation-delay: calc(240ms + var(--cp-crate-stagger, 0ms));
 }
 
-.cp-crate-line--charm,
 .cp-crate-line--safe,
-.cp-crate-line--collectible,
 .cp-crate-line--scratchCard {
   color: var(--cp-gold-brushed);
+}
+
+.cp-crate-line--item {
+  --cp-crate-line-accent: var(--cp-gold-brushed);
+  position: relative;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  overflow: hidden;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--cp-crate-line-accent) 55%, transparent);
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--cp-crate-line-accent) 22%, transparent),
+    rgb(var(--cp-ivory-rgb) / 0.04) 70%
+  );
+  text-align: left;
+}
+
+.cp-crate-line--item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in srgb, var(--cp-crate-line-accent) 45%, transparent) 50%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+  animation: cp-crate-sheen 900ms ease-out both;
+  animation-delay: calc(520ms + var(--cp-crate-stagger, 0ms));
+  pointer-events: none;
+}
+
+.cp-crate-line-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--cp-crate-line-accent);
+  background: radial-gradient(
+    circle at 35% 30%,
+    color-mix(in srgb, var(--cp-crate-line-accent) 40%, transparent),
+    rgb(var(--cp-navy-lacquer-rgb) / 0.6)
+  );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--cp-crate-line-accent) 70%, transparent),
+    0 0 14px color-mix(in srgb, var(--cp-crate-line-accent) 50%, transparent);
+}
+
+.cp-crate-line-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cp-crate-line-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+}
+
+.cp-crate-line-name {
+  color: var(--cp-ivory);
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.cp-crate-line-rarity {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--cp-crate-line-accent) 70%, transparent);
+  color: var(--cp-crate-line-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.cp-crate-line-detail {
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.82;
+}
+
+.cp-crate-line--item.is-complete .cp-crate-line-detail {
+  color: var(--cp-gold-brushed);
+  font-weight: 700;
+  opacity: 1;
+}
+
+.cp-crate-line--item[data-rarity='heirloom'] .cp-crate-line-name {
+  background: linear-gradient(90deg, var(--cp-crate-prism));
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: cp-crate-prism 3s linear infinite;
 }
 
 .cp-crate-pity,
@@ -189,6 +290,12 @@
   }
 }
 
+@keyframes cp-crate-sheen {
+  to {
+    transform: translateX(120%);
+  }
+}
+
 @keyframes cp-crate-fly {
   to {
     transform: translate(var(--cp-crate-fly-x, 0), var(--cp-crate-fly-y, -40vh)) scale(0.15);
@@ -226,6 +333,7 @@
 .cp-crate[data-motion='reduced'] .cp-crate-skip,
 .cp-crate[data-motion='reduced'] .cp-crate-card.is-entering,
 .cp-crate[data-motion='reduced'] .cp-crate-line,
+.cp-crate[data-motion='reduced'] .cp-crate-line--item[data-rarity='heirloom'] .cp-crate-line-name,
 .cp-crate[data-motion='reduced'] .cp-crate-collect,
 .cp-crate[data-motion='reduced'][data-rarity='heirloom'] .cp-crate-title,
 .cp-crate[data-motion='reduced'].is-collecting .cp-crate-card {
@@ -367,4 +475,8 @@
   50% {
     border-color: var(--cp-gold-brushed);
   }
+}
+
+.cp-crate[data-motion='reduced'] .cp-crate-line--item::after {
+  display: none;
 }

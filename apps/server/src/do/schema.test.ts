@@ -3,6 +3,8 @@ import { CURRENCIES, ENTITY_ID_PREFIXES, PlayerIdSchema } from '@coinposh/shared
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
+import { newSession } from '../test/client.ts';
+import { claims, dropAsClient, expectConserved, playerStub, reload, state } from '../test/game.ts';
 import { mintedValue } from './entities.ts';
 import { PlayerDO, PREMINT_BUFFER_TARGET } from './PlayerDO.ts';
 import { MIGRATIONS } from './schema.ts';
@@ -100,6 +102,52 @@ function storeV1Player(sql: SqlStorage, playerId: string): void {
     }
   }
 }
+
+describe('a player stored before table persistence', () => {
+  it('migrates to the snapshot table and backfills heap slots in mint order', async () => {
+    const session = await newSession();
+    const heap = (await state(session)).table.coins;
+    const [dropped] = await dropAsClient(session, 1, () => 5);
+    const [first] = heap;
+    if (dropped === undefined || first === undefined) throw new Error('No heap or drop.');
+    await claims(session, [{ kind: 'fall', coinId: first.id, tick: 5, edge: 'front' }]);
+
+    await runInDurableObject(playerStub(session.tokens.playerId), (_live: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      const slots = () =>
+        sql
+          .exec<{ id: string; heap_slot: number | null }>(
+            'SELECT id, heap_slot FROM coins ORDER BY rowid',
+          )
+          .toArray();
+      const seeded = slots();
+      sql.exec('DROP TABLE table_snapshot');
+      sql.exec('DROP TABLE snapshot_flags');
+      sql.exec('ALTER TABLE coins DROP COLUMN heap_slot');
+      sql.exec(
+        "DELETE FROM meta WHERE key LIKE 'table\\_session%' ESCAPE '\\' OR key LIKE 'snapshot\\_%' ESCAPE '\\'",
+      );
+      sql.exec('UPDATE schema_version SET version = ?', MIGRATIONS.length - 1);
+
+      const player = new PlayerDO(ctx, env);
+      expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
+        version: MIGRATIONS.length,
+      });
+      expect(slots()).toEqual(seeded);
+      expect(slots().filter((row) => row.heap_slot !== null)).toHaveLength(openingHeap.coins);
+      expect(seeded.find((row) => row.id === dropped.coin.id)?.heap_slot).toBeNull();
+      expect(sql.exec('SELECT * FROM table_snapshot').toArray()).toEqual([]);
+      return player;
+    });
+
+    const { table } = await reload(session);
+    expect(table.coins).toEqual(heap.slice(1));
+    expect(table.layout?.coins).toEqual(
+      heap.slice(1).map((_coin, i) => ({ kind: 'heapSlot', slot: i + 1 })),
+    );
+    await expectConserved(session);
+  });
+});
 
 describe('a player stored by the v1 schema', () => {
   it('migrates on construction and boots into a refunded table, the heap and a prepaid buffer', async () => {
