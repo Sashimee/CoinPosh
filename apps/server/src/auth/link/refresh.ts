@@ -15,7 +15,7 @@ import {
   REFRESH_TOKEN_TTL_MS,
   tokenBundle,
 } from '../tokens.ts';
-import { burnAuthKey } from './store.ts';
+import { refreshOnce } from '../refreshReplay.ts';
 
 interface LinkedTokenRow {
   token_hash: string;
@@ -81,52 +81,49 @@ export const linkedDeviceRefresh: MiddlewareHandler<AppEnv> = async (c, next) =>
   const deviceKey = DevicePublicKeySchema.parse(JSON.parse(row.device_jwk));
   await verifySigned(c, request, deviceKey);
   const now = Date.now();
-  await burnAuthKey(c.env.DB, idempotencyKey, endpoints.authRefresh.path, now);
 
-  if (row.device_revoked_at !== null) {
-    throw new ApiFailure(
-      'unauthorized',
-      'This device was signed out when its sign-in was unlinked. Sign in again.',
-    );
-  }
-  if (row.revoked_at !== null || row.expires_at <= now) {
-    throw new ApiFailure('unauthorized', 'This refresh token is no longer valid. Sign in again.');
-  }
-  const rotated = await c.env.DB.prepare(
-    'UPDATE refresh_tokens SET rotated_at = ? WHERE token_hash = ? AND rotated_at IS NULL AND revoked_at IS NULL',
-  )
-    .bind(now, row.token_hash)
-    .run();
-  if (row.rotated_at !== null || rotated.meta.changes !== 1) {
-    await c.env.DB.prepare(
-      'UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL',
+  return refreshOnce(c, request, idempotencyKey, now, async () => {
+    if (row.device_revoked_at !== null) {
+      throw new ApiFailure(
+        'unauthorized',
+        'This device was signed out when its sign-in was unlinked. Sign in again.',
+      );
+    }
+    if (row.revoked_at !== null || row.expires_at <= now) {
+      throw new ApiFailure('unauthorized', 'This refresh token is no longer valid. Sign in again.');
+    }
+    const rotated = await c.env.DB.prepare(
+      'UPDATE refresh_tokens SET rotated_at = ? WHERE token_hash = ? AND rotated_at IS NULL AND revoked_at IS NULL',
     )
-      .bind(now, row.family_id)
+      .bind(now, row.token_hash)
       .run();
-    throw new ApiFailure(
-      'unauthorized',
-      'This refresh token was already used, so its session was revoked. Sign in again.',
-    );
-  }
+    if (row.rotated_at !== null || rotated.meta.changes !== 1) {
+      await c.env.DB.prepare(
+        'UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL',
+      )
+        .bind(now, row.family_id)
+        .run();
+      throw new ApiFailure(
+        'unauthorized',
+        'This refresh token was already used, so its session was revoked. Sign in again.',
+      );
+    }
 
-  const playerId = PlayerIdSchema.parse(row.player_id);
-  const refreshToken = newRefreshToken();
-  await c.env.DB.prepare(
-    `INSERT INTO refresh_tokens (token_hash, player_id, family_id, issued_at, expires_at, device_jkt)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      await hashRefreshToken(refreshToken),
-      playerId,
-      row.family_id,
-      now,
-      now + REFRESH_TOKEN_TTL_MS,
-      row.device_jkt,
+    const playerId = PlayerIdSchema.parse(row.player_id);
+    const refreshToken = newRefreshToken();
+    await c.env.DB.prepare(
+      `INSERT INTO refresh_tokens (token_hash, player_id, family_id, issued_at, expires_at, device_jkt)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run();
-  return c.json(
-    endpoints.authRefresh.response.parse(
-      await tokenBundle(secret, { playerId, deviceKey }, refreshToken, now),
-    ),
-  );
+      .bind(
+        await hashRefreshToken(refreshToken),
+        playerId,
+        row.family_id,
+        now,
+        now + REFRESH_TOKEN_TTL_MS,
+        row.device_jkt,
+      )
+      .run();
+    return tokenBundle(secret, { playerId, deviceKey }, refreshToken, now);
+  });
 };

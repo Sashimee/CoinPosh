@@ -1,10 +1,13 @@
 import { coinTiers, openingHeap, upgradeLines, upgradeStat } from '@coinposh/economy';
-import { endpoints, HEADERS, PlayerIdSchema } from '@coinposh/shared';
+import { endpoints, HEADERS, PlayerIdSchema, type AuthTokens } from '@coinposh/shared';
 import { env, exports } from 'cloudflare:workers';
 import { sign } from 'hono/jwt';
 import { describe, expect, it } from 'vitest';
 import { ACCESS_TOKEN_TTL_MS, authSecret, issueAccessToken } from '../auth/tokens.ts';
+import { REFRESH_REPLAY_WINDOW_MS } from '../auth/refreshReplay.ts';
 import { verifyTurnstile } from '../auth/turnstile.ts';
+import { sha256Hex } from '../crypto.ts';
+import { IDEMPOTENT_REPLAYED_HEADER } from '../http/cors.ts';
 import { PREMINT_BUFFER_TARGET } from '../do/PlayerDO.ts';
 import {
   API_ORIGIN,
@@ -273,17 +276,157 @@ describe('POST /v1/auth/refresh', () => {
     expect((await refresh(session, session.tokens.refreshToken)).status).toBe(200);
   });
 
-  it('refuses unknown refresh tokens and replayed refresh requests', async () => {
+  it('refuses unknown refresh tokens', async () => {
     const session = await newSession();
     await expectError(await refresh(session, `rt_${'A'.repeat(43)}`), 401, 'unauthorized');
+  });
+});
 
+describe('POST /v1/auth/refresh resent under the same Idempotency-Key', () => {
+  async function refreshed(response: Response): Promise<AuthTokens> {
+    expect(response.status, await response.clone().text()).toBe(200);
+    return endpoints.authRefresh.response.parse(await response.json());
+  }
+
+  it('replays the first answer instead of rotating again, and the family stays live', async () => {
+    const session = await newSession();
     const idempotencyKey = newIdempotencyKey();
-    const fresh = await newSession();
-    expect((await refresh(fresh, fresh.tokens.refreshToken, { idempotencyKey })).status).toBe(200);
+    const first = await refreshed(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+    );
+
+    const resent = await refresh(session, session.tokens.refreshToken, { idempotencyKey });
+    expect(resent.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+    const replayed = await refreshed(resent);
+    expect(replayed).toMatchObject({
+      playerId: first.playerId,
+      accessToken: first.accessToken,
+      refreshToken: first.refreshToken,
+    });
+    expect(replayed.accessTokenTtlMs).toBeGreaterThan(0);
+    expect(replayed.accessTokenTtlMs).toBeLessThanOrEqual(first.accessTokenTtlMs);
+
+    await expect(state({ ...session, tokens: replayed })).resolves.toMatchObject({
+      player: { id: session.tokens.playerId },
+    });
+    const next = await refreshed(await refresh(session, replayed.refreshToken));
+    expect(next.playerId).toBe(session.tokens.playerId);
+  });
+
+  it('never stores the issued tokens in plaintext', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    const issued = await refreshed(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+    );
+    const row = await env.DB.prepare('SELECT * FROM auth_requests WHERE idempotency_key = ?')
+      .bind(idempotencyKey)
+      .first();
+    const stored = JSON.stringify(row);
+    expect(stored).not.toContain(issued.refreshToken);
+    expect(stored).not.toContain(issued.accessToken);
+    expect(stored).not.toContain(session.tokens.refreshToken);
+  });
+
+  it('refuses the same key with a different body, and leaves the family alone', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    const first = await refreshed(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+    );
+    const reworded = await send(session.device, endpoints.authRefresh.path, {
+      body: JSON.stringify({ refreshToken: session.tokens.refreshToken }, null, 1),
+      idempotencyKey,
+    });
+    await expectError(reworded, 422, 'idempotency_key_reused');
+    await refreshed(await refresh(session, first.refreshToken));
+  });
+
+  it('refuses a key first spent on a guest sign-in', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    expect((await guestSignIn(session.device, { idempotencyKey })).status).toBe(200);
     await expectError(
-      await refresh(fresh, fresh.tokens.refreshToken, { idempotencyKey }),
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
       422,
       'idempotency_key_reused',
+    );
+  });
+
+  it('refuses a resend once the replay window has passed', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    const first = await refreshed(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+    );
+    await env.DB.prepare('UPDATE auth_requests SET at = at - ? WHERE idempotency_key = ?')
+      .bind(REFRESH_REPLAY_WINDOW_MS + 1, idempotencyKey)
+      .run();
+    await expectError(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+      422,
+      'idempotency_key_reused',
+    );
+    await refreshed(await refresh(session, first.refreshToken));
+  });
+
+  it('asks the client to retry while the first call is still running, without rotating', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    const rawBody = JSON.stringify({ refreshToken: session.tokens.refreshToken });
+    await env.DB.prepare(
+      'INSERT INTO auth_requests (idempotency_key, route, at, fingerprint) VALUES (?, ?, ?, ?)',
+    )
+      .bind(idempotencyKey, endpoints.authRefresh.path, Date.now(), await sha256Hex(rawBody))
+      .run();
+    await expectError(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+      409,
+      'idempotency_in_progress',
+    );
+    await refreshed(await refresh(session, session.tokens.refreshToken));
+  });
+
+  it('repeats the first refusal rather than running the refresh again', async () => {
+    const session = await newSession();
+    await refreshed(await refresh(session, session.tokens.refreshToken));
+    const idempotencyKey = newIdempotencyKey();
+    await expectError(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+      401,
+      'unauthorized',
+    );
+    await expectError(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+      401,
+      'unauthorized',
+    );
+  });
+
+  it('stops replaying once the family it issued into was revoked', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    await refreshed(await refresh(session, session.tokens.refreshToken, { idempotencyKey }));
+    await expectError(await refresh(session, session.tokens.refreshToken), 401, 'unauthorized');
+    await expectError(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+      401,
+      'unauthorized',
+    );
+  });
+
+  it('does not replay to a different device holding a copy of the request', async () => {
+    const session = await newSession();
+    const thief = await newDevice();
+    const idempotencyKey = newIdempotencyKey();
+    await refreshed(await refresh(session, session.tokens.refreshToken, { idempotencyKey }));
+    await expectError(
+      await send(thief, endpoints.authRefresh.path, {
+        body: { refreshToken: session.tokens.refreshToken },
+        idempotencyKey,
+      }),
+      401,
+      'invalid_signature',
     );
   });
 });
