@@ -4,23 +4,25 @@ import type { CoinTierId, EconomyConfig } from '../src/types.ts';
 import { assertValidEconomyConfig } from '../src/validate.ts';
 import { buildEnvelopeTable } from './envelopeTable.ts';
 import { simModel, type SimModel } from './model.ts';
-import { formatSummary } from './report.ts';
+import { evaluateLadder } from './ladder.ts';
+import { formatLadder, formatSummary } from './report.ts';
 import { runSimulation } from './simulate.ts';
 
 export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] [--seed N] [--json] [--strict]
                                 [--envelope] [--empty-table] [--heap-coins N]
-                                [--heap-tier T] [--return-ratio X]
+                                [--heap-tier T] [--return-ratio X] [--ladder]
 
   --days          casual calendar days to simulate (default 7)
   --players       simulated players per cohort (default 100)
   --seed          PRNG seed; the same seed always gives the same report (default 1)
   --json          print the raw result as JSON instead of the summary
-  --strict        exit with code 1 when any pacing or FTUE target misses
+  --strict        exit with code 1 when any pacing or FTUE target misses (ladder too with --ladder)
   --envelope      print the server rate-envelope table (JSON) the sim's tables need
   --empty-table   what-if: the table starts with no coins on it (same as --heap-coins 0)
   --heap-coins    what-if: opening-heap coins instead of the shipped ${economyConfig.openingHeap.coins}
   --heap-tier     what-if: opening-heap coin tier instead of the shipped ${economyConfig.openingHeap.tier}
-  --return-ratio  what-if: front-edge value per coin dropped (shipped model: ${simModel.baseReturnRatio})`;
+  --return-ratio  what-if: front-edge value per coin dropped (shipped model: ${simModel.baseReturnRatio})
+  --ladder        print fusion tier-creation times per play style (physics-measured) against the ladder targets`;
 
 export interface CliIo {
   readonly out: (text: string) => void;
@@ -80,6 +82,7 @@ function run(argv: readonly string[], io: CliIo): number {
       'heap-coins': { type: 'string' },
       'heap-tier': { type: 'string' },
       'return-ratio': { type: 'string' },
+      ladder: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     strict: true,
@@ -124,8 +127,15 @@ function run(argv: readonly string[], io: CliIo): number {
     players: parseInteger('players', values.players),
     seed,
   });
-  io.out(values.json ? finiteJson(result) : formatSummary(result));
-  const missed = [...result.targets, ...result.ftue].some((t) => !t.pass);
+  const ladder = values.ladder ? evaluateLadder(model, config.fusion.bonusMultiplier) : null;
+  io.out(
+    values.json
+      ? finiteJson(ladder === null ? result : { ...result, ladder })
+      : [formatSummary(result), ...(ladder === null ? [] : ['', formatLadder(ladder)])].join('\n'),
+  );
+  const missed = [...result.targets, ...result.ftue, ...(ladder?.targets ?? [])].some(
+    (t) => !t.pass,
+  );
   return values.strict && missed ? 1 : 0;
 }
 

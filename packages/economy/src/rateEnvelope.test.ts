@@ -1,5 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { honestFusionPeak, ladderMeasurement, playStyles } from '../sim/ladder.ts';
+import { ladderRuns } from '../sim/ladderRuns.ts';
 import { simModel, type SimModel } from '../sim/model.ts';
 import { createContext, createPlayer, rates } from '../sim/player.ts';
 import { percentile } from '../sim/simulate.ts';
@@ -16,6 +18,7 @@ import * as economy from './index.ts';
 import { createRng, type Rng } from './rng.ts';
 import {
   CASCADE_TIER_IDS,
+  PLAY_STYLE_IDS,
   RATE_ENVELOPE_METRIC_IDS,
   VENUE_IDS,
   type RateEnvelopeConfig,
@@ -235,10 +238,16 @@ function deriveBaseMax(peaks: readonly Peaks[]): Peaks {
     drops: at('drops'),
     falls: at('falls'),
     fallValue: at('fallValue'),
-    fusions: at('fusions'),
+    fusions: Math.max(
+      at('fusions'),
+      Math.ceil(honestFusionPeak(rateEnvelopeDerivation.honestTapsPerSecond) * headroom),
+    ),
     crates: at('crates'),
   };
 }
+
+/** Physics-measured metrics, bounded by what the table can physically do instead. */
+const PHYSICS_METRICS: readonly RateEnvelopeMetricId[] = ['fusions'];
 
 const upgradeLevels = fc.record(
   Object.fromEntries(
@@ -274,6 +283,18 @@ describe('rate envelope base limits', () => {
     expect(shipped).toEqual(deriveBaseMax(peaks));
   });
 
+  it('let every physics-measured honest style up to the tap ceiling fuse untouched', () => {
+    const honest = PLAY_STYLE_IDS.filter(
+      (style) => playStyles[style].tapsPerSecond <= rateEnvelopeDerivation.honestTapsPerSecond,
+    );
+    expect(honest).toContain('franticPour');
+    for (const style of honest) {
+      for (const run of ladderRuns[style]) {
+        expect(run.busiestFusions).toBeLessThanOrEqual(rateEnvelope.fusions.max);
+      }
+    }
+  });
+
   it('let at least 99.9 % of honest sessions through every window untouched', () => {
     for (const metric of RATE_ENVELOPE_METRIC_IDS) {
       const over = peaks.filter((peak) => peak[metric] > rateEnvelope[metric].max).length;
@@ -282,13 +303,33 @@ describe('rate envelope base limits', () => {
   });
 
   it('stay tight enough to bound a bot: within 4× the median busiest window', () => {
-    for (const metric of RATE_ENVELOPE_METRIC_IDS) {
+    for (const metric of RATE_ENVELOPE_METRIC_IDS.filter((m) => !PHYSICS_METRICS.includes(m))) {
       const median = percentile(
         peaks.map((peak) => peak[metric]),
         50,
       );
       expect(rateEnvelope[metric].max).toBeLessThanOrEqual(Math.max(4 * median, 4));
     }
+  });
+
+  it('bound fusions below what the drop cap could feed: each merge removes inputCount − 1 coins', () => {
+    const { inputCount } = economyConfig.fusion;
+    const dropsPerWindow =
+      (rateEnvelope.drops.max * rateEnvelope.fusions.windowMs) / rateEnvelope.drops.windowMs;
+    expect(rateEnvelope.fusions.max).toBeLessThanOrEqual(
+      (dropsPerWindow + economyConfig.openingHeap.coins) / (inputCount - 1),
+    );
+  });
+
+  it('stay within 4× the busiest fusion minute of the fastest measured honest style', () => {
+    const ceiling = rateEnvelopeDerivation.honestTapsPerSecond;
+    const fastest = PLAY_STYLE_IDS.filter((style) => playStyles[style].tapsPerSecond === ceiling);
+    const median = percentile(
+      fastest.flatMap((style) => ladderRuns[style].map((run) => run.busiestFusions)),
+      50,
+    );
+    expect(rateEnvelope.fusions.max).toBeLessThanOrEqual(4 * median);
+    expect(ladderMeasurement.seconds * 1_000).toBeGreaterThanOrEqual(rateEnvelope.fusions.windowMs);
   });
 
   it('reproduce the sim’s mean coin rate, so the burst model only adds variance', () => {

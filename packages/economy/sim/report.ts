@@ -1,4 +1,5 @@
 import type { PacingMetric } from '../src/types.ts';
+import { FUSED_TIERS, ladderMeasurement, playStyles, type LadderResult } from './ladder.ts';
 import type { MilestoneId } from './player.ts';
 import type { Distribution, SimResult, TargetResult } from './simulate.ts';
 
@@ -151,4 +152,36 @@ export function formatSummary(result: SimResult): string {
     ),
   );
   return out.join('\n');
+}
+
+export function formatLadder(result: LadderResult): string {
+  const { simCommit, simVersion, seconds, seeds } = ladderMeasurement;
+  const firsts = (d: { p10: number; p50: number; p90: number }): string =>
+    [d.p10, d.p50, d.p90].map(formatDuration).join(' / ');
+  return [
+    `Fusion ladder (packages/sim ${simCommit}, SIM_VERSION ${simVersion}, ${seeds.length} seeds × ${seconds} s): ${onTarget(result.targets)}`,
+    targetTable(result.targets),
+    '',
+    'First fusion into each tier, p10 / p50 / p90 (— = not inside the run), and seeds inside 60 s',
+    table(
+      ['Style', ...FUSED_TIERS, '≤ 60 s (S/G/P/D/H)'],
+      result.styles.map((s) => [
+        playStyles[s.style].label,
+        ...FUSED_TIERS.map((tier) => firsts(s.firsts[tier])),
+        FUSED_TIERS.map((tier) => String(s.withinMinute[tier])).join('/'),
+      ]),
+    ),
+    '',
+    `Rates per style (envelope windows: fusions 60 s, fallValue 30 s); model fusion bonus per drop ${result.modelFusionBonusPerDrop.toFixed(3)}`,
+    table(
+      ['Style', 'Fusions/min', 'Busiest 60 s', 'Busiest fallValue 30 s', 'Fusion bonus/drop'],
+      result.styles.map((s) => [
+        playStyles[s.style].label,
+        s.fusionsPerMinute.toFixed(1),
+        String(s.busiestFusions),
+        String(s.busiestFallValue),
+        s.fusionBonusPerDrop.toFixed(3),
+      ]),
+    ),
+  ].join('\n');
 }

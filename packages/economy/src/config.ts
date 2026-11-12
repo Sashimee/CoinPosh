@@ -20,6 +20,9 @@ import {
  * Inputs to `rateEnvelope.test.ts`, which replays `sessions` honest sessions through the
  * economy sim's rates and this burst model, takes the 99.9th percentile of each session's
  * busiest window and multiplies it by `headroom`. The `max` values below are its output.
+ * `fusions` also takes the busiest 60 s of the physics-measured ladder (sim/ladder.ts) for
+ * every style up to `honestTapsPerSecond`, because the burst model only sees fused coins
+ * that fall, not the merges that stay on the table.
  */
 export const rateEnvelopeDerivation = {
   percentile: 99.9,
@@ -34,6 +37,7 @@ export const rateEnvelopeDerivation = {
   obsceneMaxCoins: 40,
   looseMaxCoins: 2,
   crateFallSeconds: { min: 2, max: 90 },
+  honestTapsPerSecond: 3,
 } as const satisfies RateEnvelopeDerivation;
 
 /**
@@ -62,7 +66,7 @@ export const rateEnvelope = {
   },
   fusions: {
     windowMs: 60_000,
-    max: 32,
+    max: 127,
     scaleBy: { dropRate: 1, pusherSpeed: 1, fusionWindow: 1 },
     value: null,
   },

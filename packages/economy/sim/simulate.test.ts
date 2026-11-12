@@ -1,7 +1,8 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { economyConfig } from '../src/config/index.ts';
+import { economyConfig, ladderTargets } from '../src/config/index.ts';
 import { runCli } from './cli.ts';
+import { evaluateLadder } from './ladder.ts';
 import { dropsBeforeFirstFall, simModel, type TablePile } from './model.ts';
 import { formatMetric, formatSummary } from './report.ts';
 import { percentile, runSimulation } from './simulate.ts';
@@ -238,6 +239,28 @@ describe('sim CLI', () => {
     const run = cli('--days', '1', '--players', '1', '--return-ratio', '0.9', '--json');
     const shipped = cli('--days', '1', '--players', '1', '--json');
     expect(run.out).not.toEqual(shipped.out);
+  });
+
+  it('adds the fusion ladder under --ladder, in text and JSON', () => {
+    const run = cli('--days', '1', '--players', '1', '--ladder');
+    expect(run.code).toBe(0);
+    expect(run.out).toContain('Fusion ladder (packages/sim');
+    expect(run.out).toContain('First Diamond, 2 pinpoint taps/s');
+    const json = JSON.parse(cli('--days', '1', '--players', '1', '--ladder', '--json').out) as {
+      ladder: { targets: unknown[]; styles: unknown[] };
+    };
+    expect(json.ladder.targets).toHaveLength(ladderTargets.length);
+    expect(json.ladder.styles).toHaveLength(12);
+    expect(cli('--days', '1', '--players', '1').out).not.toContain('Fusion ladder');
+  });
+
+  it('counts ladder misses under --strict only with --ladder', () => {
+    const ladderMissed = evaluateLadder(
+      simModel,
+      economyConfig.fusion.bonusMultiplier,
+    ).targets.some((t) => !t.pass);
+    expect(ladderMissed).toBe(true);
+    expect(cli('--days', '1', '--players', '1', '--ladder', '--strict').code).toBe(1);
   });
 
   it('prints the rate-envelope table', () => {

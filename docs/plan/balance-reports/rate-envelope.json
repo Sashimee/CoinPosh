@@ -25,7 +25,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 32
+          "max": 127
         },
         "crates": {
           "windowMs": 300000,
@@ -69,7 +69,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 53
+          "max": 208
         },
         "crates": {
           "windowMs": 300000,
@@ -116,7 +116,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 86
+          "max": 338
         },
         "crates": {
           "windowMs": 300000,
@@ -163,7 +163,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 328
+          "max": 1298
         },
         "crates": {
           "windowMs": 300000,
@@ -211,7 +211,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 428
+          "max": 1698
         },
         "crates": {
           "windowMs": 300000,
@@ -259,7 +259,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 448
+          "max": 1778
         },
         "crates": {
           "windowMs": 300000,
@@ -307,7 +307,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 448
+          "max": 1778
         },
         "crates": {
           "windowMs": 300000,
@@ -355,7 +355,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 448
+          "max": 1778
         },
         "crates": {
           "windowMs": 300000,
@@ -403,7 +403,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 448
+          "max": 1778
         },
         "crates": {
           "windowMs": 300000,
@@ -445,7 +445,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 32
+          "max": 127
         },
         "crates": {
           "windowMs": 300000,
@@ -495,7 +495,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 448
+          "max": 1778
         },
         "crates": {
           "windowMs": 300000,
@@ -545,7 +545,7 @@
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 448
+          "max": 1778
         },
         "crates": {
           "windowMs": 300000,
