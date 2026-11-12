@@ -44,6 +44,17 @@ import { DROP_ZONE } from '../table/layout.ts';
  *   aim. Before the window: 28 to 30 a minute, one drop in 2, the first at 4.5 to 8 s.
  *   The rate climbs steeply with the window because the pusher packs the strip every 4 s
  *   (240 ticks): 300 gives 3.1 a minute, 330 gives 5.3, 480 gives 7.1, 600 gives 10.8.
+ * - The fusionWindow upgrade (FusionRules.fusionWindow, the economy's stat, × 1.05 a level
+ *   up to × 2) stretches this window, not the contact time (freshTicks in fusion.ts, P-332):
+ *   331 ticks at level 1, 630 at level 20. On the fusionRate.test.ts runs (a copper a
+ *   second at a uniform aim, 8 seeds of 3 min) × 1 gives 3.8 fusions a minute, × 1.25 7.3,
+ *   × 1.5 8.3 and × 2 13.9, so every level is felt; two taps a second at the middle stay at
+ *   54 to 57 whatever the window, since that strip is always fresh.
+ * - Three taps a second apart at one aim do not fuse, and that stays (P-332): the strip
+ *   rides the pusher, which carries a landed coin about two widths (57 mm) a second, so the
+ *   taps land in a line along the stroke and the backboard folds them into a pair and a
+ *   straggler 45 mm off. A fourth or fifth tap, or a pour, fuses; fusing three would take a
+ *   contact gap the player can see, against touchGap.
  * - wakeFromTier 1 (silver): an idle coin of this ladder tier or above becomes fresh
  *   again, for a window of its own, when a fresh coin of its tier that entered play (a
  *   drop, a fused coin, a released one) touches it; a coin woken so wakes no others. So
@@ -56,7 +67,9 @@ import { DROP_ZONE } from '../table/layout.ts';
  *   one drop in 15 fused, the first fusion at 4 to 46 s (median 11 s), and a heap coin
  *   fuses only once a silver made in play has touched it. Aimed at the middle, a copper a
  *   second gives 15 to 17 copper, 1.3 to 3.3 silver and up to 0.3 gold fusions a minute;
- *   two a second climb to platinum within the minute.
+ *   two a second climb to platinum within the minute. An idle coin below this tier can
+ *   neither fuse nor be woken, so it is left out of the contact search (P-332): the paved
+ *   strip costs nothing, and the fusions are the same to the bit.
  */
 export const FUSION_TUNING = {
   touchGap: 0.001,
