@@ -70,6 +70,8 @@ export const SOLVER = {
  *   #132), and an idle silver or above is woken by a fresh coin of its tier that entered
  *   play (wakeFromTier). Fused heap 78a2e6ac17f29895 (was 982470c1506c0983), Demo table
  *   with fusion b38156d0f90afa3c (was 8d8b89f4c3c645a5), mechanics digest
- *   ea9d594fbf71f999 (was 5507fe238035656a). Tables without mechanics hash as before.
+ *   ea9d594fbf71f999 (was 5507fe238035656a), brink heap idle 072b5a62115e9410 (was
+ *   fdccb1a574c9357a) and after a drop 6175e869dcccfcba (was 819ef376edaf2fbe). Tables
+ *   without mechanics hash as before.
  */
 export const SIM_VERSION = 8;
