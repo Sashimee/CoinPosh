@@ -1725,6 +1725,11 @@
 .cp-stamp.is-reduced .cp-stamp-card {
   scale: 1 !important;
   rotate: 0deg !important;
+  transition: opacity 260ms ease;
+}
+
+.cp-stamp.is-reduced.is-leaving .cp-stamp-card {
+  translate: none;
 }
 
 @media (max-width: 374px), (max-height: 680px) {
