@@ -7,9 +7,10 @@ import { Sim, type MechanicsConfig } from '@coinposh/sim';
  * Champagne Tower yet (the separator has no tower obstacles).
  *
  * Fusion no longer eats the pile it lands on: the sim gives every new coin a 1 s spawn grace
- * and then a short window in which it may fuse with other fresh coins, and never fuses the
- * laid opening heap (FUSION_TUNING spawnGraceTicks and freshTicks), so drops join the heap
- * before they fuse and only coins dropped close together in time and place merge.
+ * and then a short window in which it may fuse with other fresh coins; the laid opening
+ * heap is idle until a fresh silver wakes the coins it touches (FUSION_TUNING
+ * spawnGraceTicks, freshTicks and wakeFromTier), so drops join the heap before they fuse
+ * and only coppers dropped close together in time and place merge.
  */
 export const SIM_MECHANICS: MechanicsConfig<string> = {
   tiers: COIN_TIERS,

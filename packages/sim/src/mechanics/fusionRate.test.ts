@@ -6,6 +6,7 @@ import { MAX_DROP_OFFSET_MM, type SimInput } from '../inputs.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { Sim } from '../sim.ts';
 import type { FusionEvent, MechanicsConfig } from './mechanics.ts';
+import { FUSION_TUNING } from './tuning.ts';
 
 /** The Demo table as apps/web's sim worker runs it (SIM_MECHANICS in table-config.ts). */
 const DEMO_MECHANICS: MechanicsConfig<string> = {
@@ -84,18 +85,23 @@ function firstFusionSeconds({ fusions }: Played): number {
  * first fusion comes within the FTUE's 60 s (00-VISION) and after that about one drop in
  * 12 to 20 is fused, 3 to 5 fusions a minute. Before the fresh window (FUSION_TUNING.
  * freshTicks) these seeds fused 28 to 30 times a minute, one fusion every 2 drops; with it
- * they fuse 3.5 times a minute, one drop in 17, the first fusion landing 8 to 46 s in.
- * One test per seed keeps each inside the CI timeout; the band is checked over all of them.
+ * they fuse 3.8 times a minute, one drop in 16, the first fusion landing 8 to 46 s in.
+ * The silver heap never fuses on its own: a heap coin fuses only once a silver made in
+ * play has touched it. One test per seed keeps each inside the CI timeout; the band is
+ * checked over all of them.
  */
 describe('fusion rate at a drop a second on the Demo table', () => {
   it.each(SEEDS)('fuses for the first time within 60 s on seed %i', async (seed) => {
     const played = await session(seed);
     expect(firstFusionSeconds(played)).toBeLessThanOrEqual(60);
-    for (const fusion of played.fusions) {
-      expect(
-        fusion.ids.every((id) => id >= openingHeap.coins),
-        `fusion at ${fusion.tick}`,
-      ).toBe(true);
+    const firstSilver = played.fusions.find((fusion) => fusion.into === 'silver')?.tick ?? 0;
+    for (const fusion of played.fusions.filter(({ ids }) =>
+      ids.some((id) => id < openingHeap.coins),
+    )) {
+      expect(fusion.tier, `fusion at ${fusion.tick}`).toBe(openingHeap.tier);
+      expect(fusion.tick, `fusion at ${fusion.tick}`).toBeGreaterThanOrEqual(
+        firstSilver + FUSION_TUNING.spawnGraceTicks,
+      );
     }
   });
 
@@ -122,12 +128,19 @@ describe('aimed drops on the Demo table', () => {
     Array.from({ length: count }, (_, index) => openingHeap.coins + index);
 
   it.each([-120, -60, 0, 60, 120])(
-    'fuses a three-copper pour at %i mm into a silver within 2 s',
+    'fuses a three-copper pour at %i mm into a silver within 2 s, which wakes two heap silvers into a gold',
     async (xMm) => {
       const { fusions } = await play(0xa1d, aimed(xMm, 3, 6), 8);
-      expect(fusions).toHaveLength(1);
-      expect(fusions[0]).toMatchObject({ ids: dropped(3), tier: 'copper', into: 'silver' });
-      expect(fusions[0]?.tick).toBeLessThanOrEqual(2 * TICK_RATE_HZ);
+      expect(fusions).toHaveLength(2);
+      const [silver, gold] = fusions;
+      expect(silver).toMatchObject({ ids: dropped(3), tier: 'copper', into: 'silver' });
+      expect(silver?.tick).toBeLessThanOrEqual(2 * TICK_RATE_HZ);
+      expect(gold).toMatchObject({ tier: 'silver', into: 'gold' });
+      expect(gold?.ids.filter((id) => id < openingHeap.coins)).toHaveLength(2);
+      expect(gold?.ids).toContain(silver?.fusedId);
+      expect(gold?.tick).toBeGreaterThanOrEqual(
+        (silver?.tick ?? 0) + FUSION_TUNING.spawnGraceTicks,
+      );
     },
   );
 
@@ -139,6 +152,21 @@ describe('aimed drops on the Demo table', () => {
       expect(fusions[0]).toMatchObject({ tier: 'copper', into: 'silver' });
       expect(fusions[0]?.ids.every((id) => dropped(5).includes(id))).toBe(true);
       expect(fusions[0]?.tick).toBeLessThanOrEqual(5 * TICK_RATE_HZ);
+    },
+  );
+
+  /**
+   * The ladder climbs under aimed play (00-VISION §1): two coppers a second at the middle
+   * of the chute make silvers on the strip, and each new silver wakes the silvers it lands
+   * on, older ones and the heap's alike, so silvers fuse into gold, and golds into platinum, within the minute.
+   */
+  it.each([0xa1d, 1, 2])(
+    'fuses silver into gold and gold into platinum within 60 s of two taps a second at the middle on seed %i',
+    async (seed) => {
+      const { fusions } = await play(seed, aimed(0, 120, TICK_RATE_HZ / 2), 60);
+      const into = (tier: string) => fusions.filter((fusion) => fusion.into === tier).length;
+      expect(into('gold')).toBeGreaterThanOrEqual(6);
+      expect(into('platinum')).toBeGreaterThanOrEqual(1);
     },
   );
 
