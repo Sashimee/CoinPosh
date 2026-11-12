@@ -194,6 +194,9 @@ const EFFECTS: Readonly<Record<VfxEffect, (vfx: Vfx) => void>> = {
   fusion: (vfx) => {
     vfx.fusion({ sources, center: at, tier: 'silver' });
   },
+  fusionCompact: (vfx) => {
+    vfx.fusion({ sources, center: at, tier: 'silver' });
+  },
   cascade: (vfx) => {
     vfx.cascade('opulent');
   },
@@ -205,11 +208,24 @@ const EFFECTS: Readonly<Record<VfxEffect, (vfx: Vfx) => void>> = {
   },
 };
 
+/** Shows the session's first fusion and lets it settle, so the next one is routine. */
+function pastFirstFusion(r: Rig): Rig {
+  r.vfx.fusion({ sources, center: at, tier: 'silver' });
+  run(r, 2);
+  r.vfx.clear();
+  run(r, 0.1);
+  return r;
+}
+
+/** Effects whose variant only shows once something else has happened this session. */
+const PRIME: Partial<Record<VfxEffect, (r: Rig) => Rig>> = { fusionCompact: pastFirstFusion };
+
 describe('juice checklist, measured on the facade', () => {
   it.each(Object.keys(EFFECTS) as VfxEffect[])(
     '%s delivers every item it claims, and at least 4 without sound',
     (effect) => {
-      const { items } = observe(rig(), EFFECTS[effect]);
+      const fresh = rig();
+      const { items } = observe(PRIME[effect]?.(fresh) ?? fresh, EFFECTS[effect]);
       const claimed = EFFECT_JUICE[effect].items;
       expect([...items].sort()).toEqual(expect.arrayContaining([...claimed].sort()));
       expect(items.has('sound')).toBe(false);
@@ -280,6 +296,120 @@ describe('fusion choreography', () => {
     expect(() => {
       rig().vfx.fusion({ sources: [], center: at, tier: 'copper' });
     }).toThrow(RangeError);
+  });
+});
+
+describe('fusion tiers on the facade', () => {
+  const routine = (vfx: Vfx): void => {
+    vfx.fusion({ sources, center: at, tier: 'silver' });
+  };
+  const peakFlashes = (r: Rig, seconds = 1): { flashes: number; rings: number } => {
+    let flashes = 0;
+    let rings = 0;
+    for (let t = 0; t < seconds; t += FRAME) {
+      frame(r);
+      flashes = Math.max(flashes, r.vfx.stats.flashes);
+      rings = Math.max(rings, r.vfx.stats.shockwaves);
+    }
+    return { flashes, rings };
+  };
+
+  it('plays the first fusion of the session in full: hit-stop, camera and the double ring', () => {
+    const r = rig();
+    const trace = observe(r, routine);
+    expect(trace.items.has('timeManipulation')).toBe(true);
+    expect(trace.cameraMoved).toBe(true);
+    const again = rig();
+    routine(again.vfx);
+    expect(peakFlashes(again).rings).toBe(2);
+  });
+
+  it('keeps a routine fusion compact: no hit-stop, no camera, one small ring', () => {
+    const r = pastFirstFusion(rig());
+    const onImpact = vi.fn();
+    const trace = observe(r, (vfx) => {
+      vfx.fusion({ sources, center: at, tier: 'silver', onImpact });
+    });
+    expect(onImpact).toHaveBeenCalledTimes(1);
+    expect(trace.cameraMoved).toBe(false);
+    expect(trace.items.has('timeManipulation')).toBe(false);
+    expect(trace.items.size).toBeGreaterThanOrEqual(4);
+    const next = pastFirstFusion(rig());
+    routine(next.vfx);
+    expect(peakFlashes(next).rings).toBe(1);
+  });
+
+  it('lands a routine fusion on the same beat, without freezing the world', () => {
+    const r = pastFirstFusion(rig());
+    const onImpact = vi.fn();
+    r.vfx.fusion({ sources, center: at, tier: 'silver', onImpact });
+    const impactFrame = Math.ceil(FUSION_TIMING.implode / FRAME - 1e-9);
+    for (let i = 0; i < impactFrame; i++) frame(r);
+    expect(onImpact).toHaveBeenCalledTimes(1);
+    expect(frame(r)).toBeCloseTo(FRAME, 9);
+    expect(r.vfx.timeScale).toBe(1);
+  });
+
+  it('blooms far less for a routine fusion than for the first', () => {
+    const peakGlow = (r: Rig): number => {
+      let glow = 0;
+      for (let t = 0; t < 1; t += FRAME) {
+        frame(r);
+        glow = Math.max(glow, r.vfx.glow);
+      }
+      return glow;
+    };
+    const first = rig();
+    routine(first.vfx);
+    const later = pastFirstFusion(rig());
+    routine(later.vfx);
+    expect(peakGlow(later)).toBeLessThan(peakGlow(first) * 0.3);
+  });
+
+  it('plays gold and up in full after the first', () => {
+    for (const tier of ['gold', 'platinum', 'diamond', 'heirloom'] as const) {
+      const r = pastFirstFusion(rig());
+      run(r, 3);
+      const trace = observe(r, (vfx) => {
+        vfx.fusion({ sources, center: at, tier });
+      });
+      expect(trace.items.has('timeManipulation')).toBe(true);
+      expect(trace.cameraMoved).toBe(true);
+    }
+  });
+
+  it('kicks the camera for one fusion per 3 s; the others keep their hit-stop', () => {
+    const r = rig();
+    const rest = r.camera.fov;
+    const gold = (seconds: number): { swing: number; froze: boolean } => {
+      r.vfx.fusion({ sources, center: at, tier: 'gold' });
+      let swing = 0;
+      let froze = false;
+      for (let t = 0; t < seconds; t += FRAME) {
+        frame(r);
+        swing = Math.max(swing, Math.abs(r.camera.fov - rest));
+        froze ||= r.vfx.timeScale === 0;
+      }
+      return { swing, froze };
+    };
+    const kicked = gold(1.5);
+    expect(kicked.swing).toBeGreaterThan(1);
+    expect(kicked.froze).toBe(true);
+    const muted = gold(1.6);
+    expect(muted.swing).toBeLessThan(0.01);
+    expect(muted.froze).toBe(true);
+    expect(gold(1).swing).toBeGreaterThan(1);
+  });
+
+  it('keeps reduced motion in spirit: bloom in place, no shake, no hit-stop on routine ones', () => {
+    const r = pastFirstFusion(rig({ reducedMotion: true }));
+    const trace = observe(r, routine);
+    expect(trace.cameraMoved).toBe(false);
+    expect(trace.items.has('timeManipulation')).toBe(false);
+    expect(trace.items.has('squashOvershoot')).toBe(false);
+    expect([...trace.items]).toEqual(
+      expect.arrayContaining(['particles', 'lightResponse', 'hapticOrShake']),
+    );
   });
 });
 
