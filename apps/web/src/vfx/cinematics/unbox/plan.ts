@@ -64,6 +64,21 @@ export function unboxTimeline(reducedMotion: boolean): UnboxTimeline {
   return reducedMotion ? REDUCED_UNBOX : FULL_UNBOX;
 }
 
+/** The burst's money frame: the lid most of the way clear while the flash is still hot. */
+const BURST_FRAME_MS = 140;
+
+/**
+ * When a frame of the burst has to be on screen before the reward card may come up. On a slow
+ * device one frame can span the whole cinematic; the timeline then stops here for a frame, so
+ * the lid is always seen blowing open.
+ */
+export function burstFrameMs(timeline: UnboxTimeline): number {
+  return Math.min(
+    timeline.burstAtMs + BURST_FRAME_MS,
+    (timeline.burstAtMs + timeline.revealAtMs) / 2,
+  );
+}
+
 export type UnboxBeatKind = 'land' | 'shudder' | 'rays' | 'burst' | 'reveal';
 
 export interface UnboxBeat {

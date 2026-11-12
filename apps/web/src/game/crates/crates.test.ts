@@ -1066,6 +1066,7 @@ describe('UnboxDirector', () => {
     unbox.enqueue(opened('crate_AAAAAAAAAAAAAAAA'));
     expect(parent.children).toHaveLength(2);
     unbox.update(1.2);
+    unbox.update(0.1);
     unbox.collect();
     unbox.update(1);
     expect(unbox.active).toBeNull();
@@ -1086,6 +1087,7 @@ describe('UnboxDirector', () => {
     unbox.enqueue(opened(BAD));
     unbox.enqueue(opened('crate_CCCCCCCCCCCCCCCC'));
     unbox.update(1.2);
+    unbox.update(0.1);
     unbox.collect();
     expect(() => {
       unbox.update(1);

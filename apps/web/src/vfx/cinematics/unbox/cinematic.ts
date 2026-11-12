@@ -5,6 +5,7 @@ import type { CameraKickOptions } from '../../camera/cameraKick.ts';
 import type { ContactOptions } from '../../index.ts';
 import type { HapticPattern } from '../../haptics.ts';
 import {
+  burstFrameMs,
   burstStyle,
   unboxBeats,
   unboxPose,
@@ -65,6 +66,8 @@ export class UnboxCinematic {
   readonly timeline: UnboxTimeline;
   private readonly options: UnboxCinematicOptions;
   private readonly beats: readonly UnboxBeat[];
+  private readonly burstFrameAt: number;
+  private burstPresented = false;
   private next = 0;
   private elapsedMs = 0;
   private flyMs: number | null = null;
@@ -80,6 +83,7 @@ export class UnboxCinematic {
     this.options = options;
     this.timeline = unboxTimeline(options.reducedMotion);
     this.beats = unboxBeats(this.timeline);
+    this.burstFrameAt = burstFrameMs(this.timeline);
     this.stage = new UnboxStage(options.rarity, options.hero, options.assets);
     options.parent.add(this.stage.root);
     this.lastPose = unboxPose(0, this.timeline, options.reducedMotion);
@@ -112,7 +116,7 @@ export class UnboxCinematic {
   update(dt: number): void {
     if (this.disposed) return;
     const step = Number.isFinite(dt) ? Math.max(0, dt) * 1000 : 0;
-    this.elapsedMs += step;
+    this.elapsedMs = this.heldForBurst(this.elapsedMs + step);
     if (this.flyMs !== null) this.flyMs += step;
     this.fireBeats(false);
     this.render(step / 1000);
@@ -140,6 +144,16 @@ export class UnboxCinematic {
     const framing = this.framing();
     this.writeCamera(framing.position, framing.target, framing.fov);
     this.stage.dispose();
+  }
+
+  /**
+   * Time only, never a frame count, drives the beats, so a slow frame could carry the timeline
+   * from before the burst straight past the reveal and the card would cover a lid that was
+   * never seen opening. Until a burst frame has been drawn, the timeline stops on it instead.
+   */
+  private heldForBurst(target: number): number {
+    if (this.burstPresented || target < this.timeline.revealAtMs) return target;
+    return this.burstFrameAt;
   }
 
   private fireBeats(skipped: boolean): void {
@@ -186,6 +200,7 @@ export class UnboxCinematic {
   private render(dtSeconds: number): void {
     const pose = unboxPose(this.elapsedMs, this.timeline, this.options.reducedMotion, this.flyMs);
     this.lastPose = pose;
+    if (this.elapsedMs >= this.burstFrameAt) this.burstPresented = true;
     const framing = this.framing();
     const shot = this.shot;
     this.stage.face(shot.yaw, shot.toCamera);
