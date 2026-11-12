@@ -36,6 +36,7 @@ import {
   holdTierVoice,
   type AnnouncementHold,
 } from './ui/components/announcementHold.ts';
+import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
@@ -884,67 +885,31 @@ const CRATE_REVEAL = '[data-testid="crate-reveal"]';
 /** The reveal leaves on the effect clock, which a hit-stop or a starved frame rate stretches. */
 const CRATE_REVEAL_EXIT_CAP_MS = 4000;
 
-/**
- * Holds the HUD's announcements from a crate's fall until its reward card has flown into the
- * Vault and the reveal has left `host`, so the unbox owns the screen. A claim that fails or is
- * refused lets go at once.
- */
-function holdAnnouncementsForCrates(
-  events: CratesApi.CratesModule['events'],
-  hold: AnnouncementHold,
-  host: HTMLElement,
-): () => void {
-  const releases = new Map<string, () => void>();
-  const exits = new Set<() => void>();
-  const release = (crateId: string): void => {
-    releases.get(crateId)?.();
-    releases.delete(crateId);
+/** Calls `done` once the crate reveal has left `host`, at once when none is up; returns a cancel. */
+function afterCrateRevealExit(host: HTMLElement, done: () => void): () => void {
+  const reveal = host.querySelector(CRATE_REVEAL);
+  if (!reveal) {
+    done();
+    return () => undefined;
+  }
+  const stop = (): void => {
+    observer.disconnect();
+    clearTimeout(cap);
   };
-  const afterExit = (reveal: Element, done: () => void): void => {
-    const finish = (): void => {
-      observer.disconnect();
-      clearTimeout(cap);
-      exits.delete(finish);
-      done();
-    };
-    const observer = new MutationObserver(() => {
-      if (!reveal.isConnected) finish();
-    });
-    observer.observe(host, { childList: true });
-    const cap = setTimeout(() => {
-      console.warn(
-        `CoinPosh crates: the reveal stayed up ${CRATE_REVEAL_EXIT_CAP_MS} ms after collect; HUD announcements resume over it.`,
-      );
-      finish();
-    }, CRATE_REVEAL_EXIT_CAP_MS);
-    exits.add(finish);
-  };
-  const offs = [
-    events.on('crate:fell', ({ crateId }) => {
-      if (!releases.has(crateId)) releases.set(crateId, hold.hold());
-    }),
-    events.on('crate:collected', ({ crateId }) => {
-      const reveal = host.querySelector(CRATE_REVEAL);
-      if (reveal) {
-        afterExit(reveal, () => {
-          release(crateId);
-        });
-      } else {
-        release(crateId);
-      }
-    }),
-    events.on('crate:rejected', ({ crateId }) => {
-      release(crateId);
-    }),
-    events.on('crate:failed', ({ crateId }) => {
-      release(crateId);
-    }),
-  ];
-  return () => {
-    for (const off of offs) off();
-    for (const finish of [...exits]) finish();
-    for (const crateId of [...releases.keys()]) release(crateId);
-  };
+  const observer = new MutationObserver(() => {
+    if (reveal.isConnected) return;
+    stop();
+    done();
+  });
+  observer.observe(host, { childList: true });
+  const cap = setTimeout(() => {
+    console.warn(
+      `CoinPosh crates: the reveal stayed up ${CRATE_REVEAL_EXIT_CAP_MS} ms after collect; HUD announcements resume over it.`,
+    );
+    stop();
+    done();
+  }, CRATE_REVEAL_EXIT_CAP_MS);
+  return stop;
 }
 
 interface CrateWiring {
@@ -993,7 +958,13 @@ function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring): voi
   }
   const { counts } = probe;
   const offs = [
-    holdAnnouncementsForCrates(crates.events, announcementHoldFor(ui.store), uiRoot),
+    holdForCrateCinematics({
+      events: crates.events,
+      hold: announcementHoldFor(ui.store),
+      director: crates.director,
+      onFrame: (check) => stage.onFrame(check),
+      afterRevealExit: (done) => afterCrateRevealExit(uiRoot, done),
+    }),
     ui.onSettingsChange((settings) => {
       haptics.enabled = settings.haptics;
     }),

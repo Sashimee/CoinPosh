@@ -53,6 +53,15 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
     }, LEAVE_MS);
   };
 
+  // A hold means a cinematic is taking the screen this frame, so even the reduced-motion fade
+  // would show the card over it: the stamp cuts away instead.
+  const dismiss = (): void => {
+    if (hideTimer !== null) clearTimeout(hideTimer);
+    hideTimer = null;
+    impact.jump(0);
+    layer.classList.remove('is-visible', 'is-leaving');
+  };
+
   const stamp = (rank: number): void => {
     const tier = cascade.tiers[rank - 1];
     if (!tier) return;
@@ -81,7 +90,7 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
   );
   ctx.own(
     hold.onChange((held) => {
-      if (held) leave();
+      if (held) dismiss();
     }),
   );
   ctx.own(
