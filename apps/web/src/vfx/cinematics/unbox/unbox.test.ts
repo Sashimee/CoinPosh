@@ -221,7 +221,9 @@ describe('UnboxCinematic', () => {
       expect(parent.children.filter((child) => child === assets.light)).toHaveLength(1);
       play(unbox, 2);
       expect(assets.light.intensity).toBeGreaterThan(0);
-      expect(assets.light.position.x).toBeCloseTo(0.02);
+      const toLight = assets.light.position.clone().sub(unbox.stage.root.position);
+      expect(toLight.dot(unbox.shot.toCamera)).toBeGreaterThan(0);
+      expect(toLight.y).toBeGreaterThan(0);
       unbox.stage.root.traverse((object) => {
         if (!('material' in object) || !('geometry' in object)) return;
         materials.add(object.material);
@@ -240,17 +242,20 @@ describe('UnboxCinematic', () => {
       assets.seamMaterial,
       assets.heroMaterial,
       assets.rayMaterial,
+      assets.flareMaterial,
     ];
     expect([...materials].every((material) => shared.includes(material as never))).toBe(true);
-    expect(geometries.size).toBeLessThanOrEqual(10);
+    expect(geometries.size).toBeLessThanOrEqual(11);
     assets.dispose();
     expect(parent.children).toHaveLength(0);
   });
 
-  it('dollies toward the crate and gives the venue framing back on dispose', () => {
+  it('pushes in toward the staged crate and gives the venue framing back on dispose', () => {
     const { unbox, camera } = cinematic('rare', false);
+    const reach = unbox.shot.center.distanceTo(FRAMING.position);
     play(unbox, 1.5);
-    expect(camera.position.distanceTo(FRAMING.position)).toBeGreaterThan(0.05);
+    expect(unbox.pose.dolly).toBeGreaterThan(0.5);
+    expect(unbox.shot.center.distanceTo(camera.position)).toBeLessThan(reach * 0.95);
     unbox.dispose();
     expect(camera.position.distanceTo(FRAMING.position)).toBeLessThan(1e-9);
   });
