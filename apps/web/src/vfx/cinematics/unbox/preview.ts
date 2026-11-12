@@ -53,6 +53,8 @@ interface FrameRecord {
   readonly cardShown: boolean;
   /** The hero prop's extent in NDC, for luminance probes of the reveal. */
   readonly hero: { minX: number; maxX: number; minY: number; maxY: number };
+  /** The pedestal's gold cap in NDC, for the burst's blow-out probe. */
+  readonly cap: { minX: number; maxX: number; minY: number; maxY: number };
 }
 
 interface UnboxBench {
@@ -175,6 +177,10 @@ async function boot(bench: UnboxBench): Promise<void> {
       hero: unbox.stage.heroObject.visible
         ? extent(unbox.stage.heroObject, camera)
         : { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+      cap:
+        unbox.pose.pedestal > 0.001
+          ? extent(unbox.stage.capObject, camera)
+          : { minX: 0, maxX: 0, minY: 0, maxY: 0 },
     };
     box.style.left = `${((e.minX + 1) / 2) * width}px`;
     box.style.width = `${((e.maxX - e.minX) / 2) * width}px`;

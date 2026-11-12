@@ -32,8 +32,10 @@ import {
   HERO_FACE_RESOLUTION,
   HERO_FACE_TIERS,
   heroGeometry,
+  heroPitch,
   heroYaw,
   ITEM_SIZE,
+  pedestalCapGeometry,
   UNBOX_HEROES,
   type HeroMaterial,
   type UnboxHero,
@@ -81,10 +83,12 @@ const FLARE_PEAK = 2.6;
  */
 const RAY_PARTING = ITEM_SIZE * 1.6;
 /**
- * Share of the camera's elevation the hero tips back by, so a coin face or a ticket meets the
- * eye instead of showing its top edge to a camera looking down on the stage.
+ * Share of the burst's key and flare that still reaches the hero once it stands on its risen
+ * pedestal. The full cinematic raises the pedestal as the burst decays, so this only bites when
+ * motion is reduced and the hero is on the cap from the burst frame: at full strength the flare
+ * and a 16-irradiance key washed the reveal frame out to a flat pale haze.
  */
-const HERO_TILT = 0.7;
+const BURST_ON_HERO = 0.45;
 /** Where the crate shrinks to as it sinks back into the tray after Collect. */
 const FLY_SCALE = 0.55;
 /**
@@ -113,7 +117,7 @@ export class UnboxAssets {
   readonly lid: BoxGeometry;
   readonly clasp: BoxGeometry;
   readonly column: CylinderGeometry;
-  readonly cap: CylinderGeometry;
+  readonly cap: BufferGeometry;
   readonly ray: PlaneGeometry;
   readonly lacquer: MeshPhysicalNodeMaterial;
   readonly gold: MeshPhysicalNodeMaterial;
@@ -145,7 +149,7 @@ export class UnboxAssets {
     this.lid = parts.lid;
     this.clasp = parts.clasp;
     this.column = new CylinderGeometry(PEDESTAL_RADIUS * 0.8, PEDESTAL_RADIUS, PEDESTAL_HEIGHT, 28);
-    this.cap = new CylinderGeometry(PEDESTAL_RADIUS * 1.15, PEDESTAL_RADIUS * 1.15, 0.003, 28);
+    this.cap = pedestalCapGeometry();
     this.ray = new PlaneGeometry(RAY_WIDTH, RAY_LENGTH);
     this.ray.translate(0, RAY_LENGTH / 2, 0);
     for (const hero of UNBOX_HEROES) this.heroes.set(hero, heroGeometry(hero));
@@ -419,9 +423,11 @@ export class UnboxStage {
   private readonly rays: RaySlot[] = [];
   private readonly pedestal = new Group();
   private readonly item: Mesh;
+  private readonly cap: Mesh;
   private readonly accent: Color;
   private readonly warm = new Color(rivieraTokens.champagne);
   private readonly toCamera = new Vector3(0, 0, 1);
+  private readonly hero: UnboxHero;
   private restYaw = 0;
   private flareStrength = 0;
   private swirl = 0;
@@ -430,6 +436,7 @@ export class UnboxStage {
   constructor(rarity: Rarity, hero: UnboxHero, assets: UnboxAssets) {
     this.rarity = rarity;
     this.style = rayStyle(rarity);
+    this.hero = hero;
     this.assets = assets;
     this.root.name = 'unbox';
     this.accent = new Color(rarity === 'heirloom' ? HEIRLOOM_PRISM[0] : RARITY_COLORS[rarity]);
@@ -445,8 +452,10 @@ export class UnboxStage {
 
     const column = new Mesh(assets.column, velvet);
     column.position.y = PEDESTAL_HEIGHT / 2;
-    const cap = new Mesh(assets.cap, gold);
+    const cap = new Mesh(assets.cap, assets.heroMaterial);
+    cap.name = 'unbox-pedestal-cap';
     cap.position.y = PEDESTAL_HEIGHT;
+    this.cap = cap;
     assets.tintHero(this.accent, rarity);
     this.item = new Mesh(assets.hero(hero), assets.heroMaterial);
     this.item.name = `unbox-hero-${hero}`;
@@ -518,6 +527,11 @@ export class UnboxStage {
     return this.item;
   }
 
+  /** The pedestal's gold cap the hero stands on, for clearance and blow-out checks. */
+  get capObject(): Object3D {
+    return this.cap;
+  }
+
   /** Scale over the flare's rest size times its strength: 0 while no burst is on screen. */
   get flareLevel(): number {
     return this.disposed ? 0 : this.flareStrength;
@@ -546,8 +560,11 @@ export class UnboxStage {
     const top = this.crate.position.y + bodyHeight * pose.squash;
     this.swirl += Math.max(0, dt) * this.style.swirl;
     const view = facing - this.root.rotation.y;
-    const parting = RAY_PARTING * Math.min(1, Math.max(0, pose.pedestal));
-    this.fan.position.set(-Math.sin(view) * parting, top, -Math.cos(view) * parting);
+    const risen = Math.min(1, Math.max(0, pose.pedestal));
+    const parting = RAY_PARTING * risen;
+    const awayX = -Math.sin(view) * parting;
+    const awayZ = -Math.cos(view) * parting;
+    this.fan.position.set(awayX, top, awayZ);
     this.fan.rotation.set(0, facing - this.root.rotation.y, Math.sin(this.swirl * 2.4) * 0.18);
     const reach = Math.max(0.05, pose.rayReach);
     for (const ray of this.rays) {
@@ -558,20 +575,17 @@ export class UnboxStage {
     }
 
     const flare = this.assets.flare;
-    flare.position.set(0, top + LID_HEIGHT, 0);
+    const shielded = 1 - (1 - BURST_ON_HERO) * risen;
+    flare.position.set(awayX, top + LID_HEIGHT, awayZ);
     flare.scale.setScalar(FLARE_SIZE * Math.max(0.001, pose.flareScale));
-    this.flareStrength = FLARE_PEAK * pose.burst;
+    this.flareStrength = FLARE_PEAK * pose.burst * shielded;
     this.assets.setFlare(this.accent, this.flareStrength);
 
     const rise = Math.max(0, pose.pedestal);
     this.pedestal.visible = rise > 0.001 && pose.fly < 1;
     this.pedestal.scale.setScalar(Math.max(0.001, rise));
     this.pedestal.position.y = this.crate.position.y + bodyHeight * (1 - Math.min(1, rise)) * 0.5;
-    this.item.rotation.set(
-      -HERO_TILT * Math.asin(Math.max(-1, Math.min(1, this.toCamera.y))),
-      view + heroYaw(pose.itemSpin),
-      0,
-    );
+    this.item.rotation.set(heroPitch(this.hero, this.toCamera.y), view + heroYaw(pose.itemSpin), 0);
     this.item.scale.setScalar(1 - pose.fly);
 
     const glow = Math.max(pose.burst, pose.rays, pose.rumble * 0.5);
@@ -580,7 +594,7 @@ export class UnboxStage {
         LIGHT.rest,
         LIGHT.rumble * pose.rumble,
         LIGHT.rays * pose.rays,
-        LIGHT.burst * pose.burst,
+        LIGHT.burst * pose.burst * shielded,
       ) *
       (1 - pose.fly);
     const light = this.assets.light;

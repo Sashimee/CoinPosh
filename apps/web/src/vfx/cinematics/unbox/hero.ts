@@ -29,6 +29,7 @@ import {
   vec3,
 } from 'three/tsl';
 import {
+  Box3,
   BoxGeometry,
   BufferAttribute,
   Color,
@@ -78,6 +79,57 @@ export const UNBOX_HEROES: readonly UnboxHero[] = [
 export const ITEM_SIZE = 0.016;
 
 /**
+ * Half the thickness of the gold cap the hero stands on. The stage puts the hero's origin
+ * ITEM_SIZE over the cap's centre, so the cap's top is at `-ITEM_SIZE + PEDESTAL_CAP_HALF` in
+ * the hero's own space.
+ */
+export const PEDESTAL_CAP_HALF = 0.0015;
+export const PEDESTAL_CAP_RADIUS = 0.0184;
+
+/** The cap's top in the hero's own space: nothing of a hero may dip under it. */
+export const CAP_TOP = -ITEM_SIZE + PEDESTAL_CAP_HALF;
+
+/** A floating prop hovers this far over the cap at its lowest tilt, so it reads as held aloft. */
+const HOVER = ITEM_SIZE * 0.08;
+
+/**
+ * Share of the camera's elevation a floating hero tips back by, so a coin face or a ticket
+ * meets the eye instead of showing its top edge to a camera looking down on the stage.
+ */
+export const HERO_TILT = 0.7;
+
+/** The steepest tip back any camera above the stage asks of a floating hero. */
+export const HERO_MAX_PITCH = HERO_TILT * (Math.PI / 2);
+
+/**
+ * The hero's tip about its own X axis for a camera whose direction from the stage climbs at
+ * `toCameraY` (the sine of its elevation). A resting prop stands level on the cap: tipping it
+ * would sink its back edge into the gold.
+ */
+export function heroPitch(hero: UnboxHero, toCameraY: number): number {
+  if (HERO_PROPS[hero].rests) return 0;
+  return -HERO_TILT * Math.asin(Math.max(0, Math.min(1, toCameraY)));
+}
+
+const TILT_SAMPLES = 12;
+const tipped = new Vector3();
+const tipAxis = new Vector3(1, 0, 0);
+
+/** The lowest point of `geometry` once tipped back by any pitch a camera above can ask for. */
+export function lowestUnderTilt(geometry: BufferGeometry): number {
+  const position = geometry.getAttribute('position');
+  let lowest = Infinity;
+  for (let step = 0; step <= TILT_SAMPLES; step++) {
+    const pitch = (-HERO_MAX_PITCH * step) / TILT_SAMPLES;
+    for (let i = 0; i < position.count; i++) {
+      tipped.fromBufferAttribute(position, i).applyAxisAngle(tipAxis, pitch);
+      lowest = Math.min(lowest, tipped.y);
+    }
+  }
+  return lowest;
+}
+
+/**
  * The surface each vertex of a hero prop is shaded as, carried in the `heroPart` attribute so
  * every prop draws with one material and one pipeline.
  */
@@ -89,6 +141,7 @@ export const HeroPart = {
   pearl: 4,
   ticket: 5,
   lacquer: 6,
+  plinth: 7,
 } as const;
 
 export type HeroPartId = (typeof HeroPart)[keyof typeof HeroPart];
@@ -103,7 +156,7 @@ export interface HeroProp {
     | 'ticket-pair'
     | 'charm-pendant'
     | 'safe';
-  /** True when it stands on the pedestal cap; false when it floats over it. */
+  /** True when it stands level on the pedestal cap; false when it hovers, tipped, over it. */
   readonly rests: boolean;
 }
 
@@ -200,8 +253,13 @@ export function heroGeometry(hero: UnboxHero): BufferGeometry {
   const box = merged.boundingBox;
   if (!box) throw new Error(`Unbox hero ${hero} has no bounds`);
   const centre = box.getCenter(new Vector3());
-  const lift = HERO_PROPS[hero].rests ? -s - box.min.y : -centre.y;
-  merged.translate(-centre.x, lift, -centre.z);
+  if (HERO_PROPS[hero].rests) {
+    merged.translate(-centre.x, CAP_TOP - box.min.y, -centre.z);
+  } else {
+    merged.translate(-centre.x, -centre.y, -centre.z);
+    const clearance = lowestUnderTilt(merged) - (CAP_TOP + HOVER);
+    if (clearance < 0) merged.translate(0, -clearance, 0);
+  }
   merged.computeBoundingBox();
   merged.computeBoundingSphere();
   merged.name = `unbox-hero-${hero}`;
@@ -405,43 +463,87 @@ function pearlTrio(s: number): BufferGeometry[] {
   ];
 }
 
-/** A gold skeleton key with an enamel inlay in its bow, held on a diagonal. */
+/**
+ * A gold skeleton key on a diagonal: a three-lobed bow round a rarity-enamelled jewel, a collar,
+ * a slim shaft and a stepped bit with two wards. The bow is open, so it never reads as a lens on
+ * a handle. Fitted inside +-0.9 ITEM_SIZE so it hovers over the cap at every tilt.
+ */
 function key(s: number): BufferGeometry[] {
-  const shaftTop = s * 0.2;
-  const shaftBottom = -s * 1.35;
+  const bow = s * 0.62;
+  const lobe = s * 0.21;
+  const lobeTube = s * 0.065;
+  const reach = s * 0.23;
+  const shaftTop = bow - reach * 0.5;
+  const shaftBottom = -s * 1.3;
   const shaftLength = shaftTop - shaftBottom;
   const upright: [number, number, number] = [Math.PI / 2, 0, 0];
-  const parts = [
-    piece(new TorusGeometry(s * 0.46, s * 0.13, 14, 40), HeroPart.gold, [0, s * 0.62, 0]),
-    piece(
-      new CylinderGeometry(s * 0.34, s * 0.34, s * 0.09, 32),
-      HeroPart.enamel,
-      [0, s * 0.62, 0],
-      upright,
-    ),
-    piece(new TorusGeometry(s * 0.13, s * 0.06, 8, 20), HeroPart.gold, [0, s * 0.1, 0], upright),
-    piece(new CylinderGeometry(s * 0.085, s * 0.085, shaftLength, 16), HeroPart.gold, [
+  const parts = [0, 1, 2].map((i) => {
+    const a = Math.PI / 2 + (i * Math.PI * 2) / 3;
+    return piece(new TorusGeometry(lobe, lobeTube, 12, 32), HeroPart.gold, [
+      Math.cos(a) * reach,
+      bow + Math.sin(a) * reach,
+      0,
+    ]);
+  });
+  parts.push(
+    piece(new SphereGeometry(s * 0.13, 16, 10), HeroPart.enamel, [0, bow, 0]),
+    piece(new TorusGeometry(s * 0.14, s * 0.035, 8, 24), HeroPart.gold, [0, bow, s * 0.02]),
+    piece(new CylinderGeometry(s * 0.075, s * 0.075, shaftLength, 16), HeroPart.gold, [
       0,
       (shaftTop + shaftBottom) / 2,
       0,
     ]),
-    piece(new BoxGeometry(s * 0.36, s * 0.13, s * 0.12), HeroPart.gold, [
-      s * 0.2,
-      shaftBottom + s * 0.1,
+    piece(
+      new TorusGeometry(s * 0.11, s * 0.045, 8, 20),
+      HeroPart.gold,
+      [0, shaftTop - s * 0.12, 0],
+      upright,
+    ),
+    piece(
+      new TorusGeometry(s * 0.11, s * 0.045, 8, 20),
+      HeroPart.gold,
+      [0, shaftTop - s * 0.24, 0],
+      upright,
+    ),
+    piece(new CylinderGeometry(s * 0.1, s * 0.075, s * 0.08, 16), HeroPart.gold, [
+      0,
+      shaftBottom - s * 0.02,
       0,
     ]),
-    piece(new BoxGeometry(s * 0.26, s * 0.12, s * 0.12), HeroPart.gold, [
-      s * 0.15,
-      shaftBottom + s * 0.36,
+    piece(new BoxGeometry(s * 0.3, s * 0.36, s * 0.1), HeroPart.gold, [
+      s * 0.19,
+      shaftBottom + s * 0.2,
       0,
     ]),
-    piece(new BoxGeometry(s * 0.1, s * 0.12, s * 0.12), HeroPart.gold, [
-      s * 0.3,
-      shaftBottom + s * 0.23,
+    piece(new BoxGeometry(s * 0.1, s * 0.1, s * 0.1), HeroPart.gold, [
+      s * 0.39,
+      shaftBottom + s * 0.08,
       0,
     ]),
-  ];
+    piece(new BoxGeometry(s * 0.1, s * 0.1, s * 0.1), HeroPart.gold, [
+      s * 0.39,
+      shaftBottom + s * 0.32,
+      0,
+    ]),
+  );
   for (const part of parts) part.rotateZ(-0.62);
+  return fitWithin(parts, s * 0.9);
+}
+
+/** Scales `parts` about their joint centre so they fit a box `half` wide either side of it. */
+function fitWithin(parts: BufferGeometry[], half: number): BufferGeometry[] {
+  const bounds = new Box3();
+  for (const part of parts) {
+    part.computeBoundingBox();
+    if (part.boundingBox) bounds.union(part.boundingBox);
+  }
+  const centre = bounds.getCenter(new Vector3());
+  const extent = bounds.getSize(new Vector3()).multiplyScalar(0.5);
+  const fit = Math.min(1, half / Math.max(extent.x, extent.y, extent.z));
+  for (const part of parts) {
+    part.translate(-centre.x, -centre.y, -centre.z);
+    part.scale(fit, fit, fit);
+  }
   return parts;
 }
 
@@ -594,6 +696,19 @@ function safe(s: number): BufferGeometry[] {
   return parts;
 }
 
+/**
+ * The pedestal's cap as a hero part, so it draws in the hero's pipeline: a deep, satin gold with
+ * engine-turned rings on its top, edged in the rarity colour by the hero rim.
+ */
+export function pedestalCapGeometry(): BufferGeometry {
+  const cap = piece(
+    new CylinderGeometry(PEDESTAL_CAP_RADIUS, PEDESTAL_CAP_RADIUS, PEDESTAL_CAP_HALF * 2, 40),
+    HeroPart.plinth,
+  );
+  cap.name = 'unbox-pedestal-cap';
+  return cap;
+}
+
 /** The one material every hero prop draws with; `tint` sets the rolled rarity. */
 export interface HeroMaterial {
   readonly material: MeshPhysicalNodeMaterial;
@@ -627,6 +742,7 @@ export function createHeroMaterial(): HeroMaterial {
   const pearl = is(HeroPart.pearl);
   const ticket = is(HeroPart.ticket);
   const lacquer = is(HeroPart.lacquer);
+  const plinth = is(HeroPart.plinth);
 
   const goldColor = linear(rivieraTokens['gold-brushed']);
   const navy = linear(rivieraTokens['navy-lacquer']);
@@ -672,8 +788,19 @@ export function createHeroMaterial(): HeroMaterial {
   const fire = pow(abs(dot(normalViewGeometry, normalize(vec3(0.35, 0.8, 0.45)))), 6);
   const gemColor = enamel.mul(float(0.3).add(fire.mul(1.4)));
 
+  const turned = cos(r.mul(46))
+    .mul(0.5)
+    .add(0.5)
+    .mul(smoothstep(0.2, 0.3, r));
+  const bezel = smoothstep(0.86, 0.9, r);
+  const plinthColor = goldColor
+    .mul(PLINTH_ALBEDO)
+    .mul(float(0.78).add(turned.mul(0.22)))
+    .mul(mix(float(1), float(1.35), bezel));
+
   const color = goldColor
     .mul(gold)
+    .add(plinthColor.mul(plinth))
     .add(enamel.mul(enamelled))
     .add(faceColor.mul(face))
     .add(gemColor.mul(gem))
@@ -681,7 +808,7 @@ export function createHeroMaterial(): HeroMaterial {
     .add(ticketColor.mul(ticket))
     .add(navy.mul(lacquer));
 
-  const metal = gold.add(face.mul(struck)).add(ticket.mul(foil));
+  const metal = gold.add(plinth).add(face.mul(struck)).add(ticket.mul(foil));
   const roughness = gold
     .mul(0.3)
     .add(enamelled.mul(0.18))
@@ -689,7 +816,8 @@ export function createHeroMaterial(): HeroMaterial {
     .add(gem.mul(0.05))
     .add(pearl.mul(0.16))
     .add(ticket.mul(mix(float(0.6), float(0.3), foil)))
-    .add(lacquer.mul(0.26));
+    .add(lacquer.mul(0.26))
+    .add(plinth.mul(mix(float(0.5), float(0.34), bezel)));
   const coat = enamelled
     .add(face.mul(float(1).sub(struck)))
     .add(gem)
@@ -701,7 +829,7 @@ export function createHeroMaterial(): HeroMaterial {
     .add(face.mul(float(1).sub(struck)).mul(0.08))
     .add(gem.mul(float(0.18).add(fire.mul(0.5))))
     .add(ticket.mul(float(1).sub(stub)).mul(0.06));
-  const emissive = accent.mul(rim.mul(0.55).add(glow));
+  const emissive = accent.mul(rim.mul(float(0.55).sub(plinth.mul(0.25))).add(glow));
 
   const material = new MeshPhysicalNodeMaterial();
   material.name = 'unbox-hero';
@@ -717,7 +845,7 @@ export function createHeroMaterial(): HeroMaterial {
     material,
     tint(color) {
       accent.value.copy(color);
-      enamel.value.copy(color).multiplyScalar(ENAMEL_DEPTH);
+      heroEnamel(color, enamel.value);
     },
     setFace(next) {
       struckFace.value = next;
@@ -726,11 +854,32 @@ export function createHeroMaterial(): HeroMaterial {
   };
 }
 
+/**
+ * The cap's gold as a share of the props': it sits square under the burst's key and the rays,
+ * and at full brushed-gold albedo its top blew out to near white.
+ */
+const PLINTH_ALBEDO = 0.5;
+
 /** The coin field sits deeper still, so the gold relief reads against it under the rays. */
 const FIELD_DEPTH = 0.5;
 
 /** Enamel is the rarity colour deepened, so a pale common still has a body under the key. */
 export const ENAMEL_DEPTH = 0.42;
+
+/**
+ * The brightest linear luminance an enamel may have: a rare blue deepened sits well under it,
+ * while an ivory common or a legendary gold deepened by ENAMEL_DEPTH alone still read as a pale
+ * slab under the reduced-motion burst, so those keep their hue and drop to this.
+ */
+export const ENAMEL_MAX_LUMA = 0.14;
+
+/** Writes the enamel `accent` deepens to into `out`, and returns `out`. */
+export function heroEnamel(accent: Color, out: Color): Color {
+  out.copy(accent).multiplyScalar(ENAMEL_DEPTH);
+  const luma = 0.2126 * out.r + 0.7152 * out.g + 0.0722 * out.b;
+  if (luma > ENAMEL_MAX_LUMA) out.multiplyScalar(ENAMEL_MAX_LUMA / luma);
+  return out;
+}
 
 /**
  * The pale props' albedo, as a share of champagne and ivory: low enough that a common pearl or

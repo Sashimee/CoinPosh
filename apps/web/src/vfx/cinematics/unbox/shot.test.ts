@@ -6,22 +6,29 @@ import { flatEmbossTexture } from '../../../scene/coins/materials.ts';
 import { rivieraCameraPreset } from '../../../scene/venues/riviera/layout.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../palette.ts';
 import {
+  CAP_TOP,
   ENAMEL_DEPTH,
+  ENAMEL_MAX_LUMA,
+  heroEnamel,
   HERO_FACE_TIERS,
+  HERO_MAX_PITCH,
   HERO_PROPS,
   heroGeometry,
   HeroPart,
+  heroPitch,
   heroYaw,
   ITEM_SIZE,
+  PEDESTAL_CAP_HALF,
   UNBOX_HEROES,
   type HeroPartId,
   type UnboxHero,
 } from './hero.ts';
-import { REDUCED_UNBOX, unboxPose } from './plan.ts';
+import { FULL_UNBOX, REDUCED_UNBOX, unboxPose, type UnboxPose } from './plan.ts';
 import { unboxShot } from './shot.ts';
 import { UnboxAssets, UnboxStage } from './stage.ts';
 
 const PORTRAIT = 390 / 844;
+const vertex = new Vector3();
 const LANDSCAPE = 844 / 390;
 
 describe('unboxShot memo', () => {
@@ -159,17 +166,156 @@ describe('unbox hero props', () => {
     expect(Math.max(size.x, size.y)).toBeGreaterThan(ITEM_SIZE * 1.2);
   });
 
-  it('stands resting props on the cap and centres floating ones', () => {
+  it('puts the cap top a cap half thickness over the hero origin less ITEM_SIZE', () => {
+    expect(CAP_TOP).toBeCloseTo(-ITEM_SIZE + PEDESTAL_CAP_HALF, 12);
+    const stage = new UnboxStage('common', 'safe', new UnboxAssets(new Group()));
+    const cap = stage.capObject as Mesh;
+    cap.geometry.computeBoundingBox();
+    const top = cap.position.y + (cap.geometry.boundingBox?.max.y ?? NaN);
+    expect(top - stage.heroObject.position.y).toBeCloseTo(CAP_TOP, 9);
+  });
+
+  it.each(UNBOX_HEROES)('keeps %s clear of the cap at every tilt a camera above asks', (hero) => {
+    for (let step = 0; step <= 20; step++) {
+      const pitch = HERO_PROPS[hero].rests ? 0 : (-HERO_MAX_PITCH * step) / 20;
+      const geometry = heroGeometry(hero);
+      geometry.rotateX(pitch);
+      geometry.computeBoundingBox();
+      const box = geometry.boundingBox;
+      if (!box) throw new Error(`hero ${hero} built no bounding box`);
+      expect(box.min.y).toBeGreaterThanOrEqual(-ITEM_SIZE + PEDESTAL_CAP_HALF - 1e-9);
+      expect(box.max.y).toBeLessThanOrEqual(ITEM_SIZE * 2.2);
+    }
+  });
+
+  it('stands resting props level on the cap top and hovers floating ones just over it', () => {
     for (const hero of UNBOX_HEROES) {
       const box = boundsOf(hero);
-      if (HERO_PROPS[hero].rests) expect(box.min.y).toBeCloseTo(-ITEM_SIZE, 6);
-      else expect(box.min.y + box.max.y).toBeCloseTo(0, 6);
+      if (HERO_PROPS[hero].rests) {
+        expect(box.min.y).toBeCloseTo(CAP_TOP, 9);
+        expect(heroPitch(hero, 0.8)).toBe(0);
+      } else {
+        expect(box.min.y).toBeGreaterThan(CAP_TOP);
+        expect(heroPitch(hero, 0.8)).toBeLessThan(-0.3);
+        const lowest = Math.min(
+          ...Array.from({ length: 11 }, (_, i) => {
+            const geometry = heroGeometry(hero);
+            geometry.rotateX((-HERO_MAX_PITCH * i) / 10);
+            geometry.computeBoundingBox();
+            return geometry.boundingBox?.min.y ?? NaN;
+          }),
+        );
+        expect(lowest - CAP_TOP).toBeLessThan(ITEM_SIZE * 0.25);
+      }
     }
+  });
+
+  it('fits the key inside 0.9 ITEM_SIZE either side, so it never sinks into the cap', () => {
+    const size = boundsOf('keys').getSize(new Vector3());
+    for (const extent of [size.x, size.y, size.z])
+      expect(extent).toBeLessThanOrEqual(ITEM_SIZE * 1.8 * (1 + 1e-6));
+  });
+
+  it('opens the key bow instead of filling it with an enamel lens', () => {
+    const geometry = heroGeometry('keys');
+    const position = geometry.getAttribute('position');
+    const ids = geometry.getAttribute('heroPart');
+    const box = boundsOf('keys');
+    const span = Math.max(box.max.x - box.min.x, box.max.y - box.min.y);
+    const jewel = new Vector3();
+    const low = new Vector3(Infinity, Infinity, Infinity);
+    const high = new Vector3(-Infinity, -Infinity, -Infinity);
+    let count = 0;
+    for (let i = 0; i < ids.count; i++) {
+      if (ids.getX(i) !== HeroPart.enamel) continue;
+      jewel.fromBufferAttribute(position, i);
+      low.min(jewel);
+      high.max(jewel);
+      count++;
+    }
+    expect(count).toBeGreaterThan(0);
+    expect(Math.max(high.x - low.x, high.y - low.y)).toBeLessThan(span * 0.18);
+  });
+
+  it.each([
+    ['portrait', PORTRAIT],
+    ['landscape', LANDSCAPE],
+  ] as const)('stages every hero over the cap through the %s reveal', (_, aspect) => {
+    for (const reduced of [false, true]) {
+      const shot = unboxShot(rivieraCameraPreset(aspect), aspect, reduced);
+      const timeline = reduced ? REDUCED_UNBOX : FULL_UNBOX;
+      for (const hero of UNBOX_HEROES) {
+        const assets = new UnboxAssets(new Group());
+        const stage = new UnboxStage('rare', hero, assets);
+        stage.face(shot.yaw, shot.toCamera);
+        const item = stage.heroObject as Mesh;
+        const cap = stage.capObject as Mesh;
+        cap.geometry.computeBoundingBox();
+        const capTop = cap.position.y + (cap.geometry.boundingBox?.max.y ?? NaN);
+        for (let ms = timeline.revealAtMs; ms < timeline.revealAtMs + 3_000; ms += 250) {
+          stage.apply(unboxPose(ms, timeline, reduced));
+          item.updateMatrix();
+          const position = item.geometry.getAttribute('position');
+          let lowest = Infinity;
+          for (let i = 0; i < position.count; i++)
+            lowest = Math.min(
+              lowest,
+              vertex.fromBufferAttribute(position, i).applyMatrix4(item.matrix).y,
+            );
+          expect(lowest).toBeGreaterThanOrEqual(capTop - 1e-9);
+          if (HERO_PROPS[hero].rests) expect(lowest).toBeCloseTo(capTop, 9);
+        }
+        assets.dispose();
+      }
+    }
+  });
+
+  it('draws the pedestal cap in the hero pipeline as its own deep gold part', () => {
+    const assets = new UnboxAssets(new Group());
+    const stage = new UnboxStage('common', 'coins', assets);
+    const cap = stage.capObject as Mesh;
+    expect(cap.material).toBe(assets.heroMaterial);
+    const ids = cap.geometry.getAttribute('heroPart');
+    for (let i = 0; i < ids.count; i++) expect(ids.getX(i)).toBe(HeroPart.plinth);
+    for (const hero of UNBOX_HEROES) expect(partsOf(hero)).not.toContain(HeroPart.plinth);
+    assets.dispose();
+  });
+
+  it('shields the risen hero from the burst flare and key, as reduced motion reveals it', () => {
+    const rest = unboxPose(REDUCED_UNBOX.revealAtMs, REDUCED_UNBOX, true);
+    expect(rest.pedestal).toBe(1);
+    expect(rest.burst).toBeGreaterThan(0.5);
+    const sunk: UnboxPose = { ...rest, pedestal: 0 };
+    const lit = (pose: UnboxPose) => {
+      const assets = new UnboxAssets(new Group());
+      const stage = new UnboxStage('common', 'card', assets);
+      stage.apply(pose);
+      const levels = { flare: stage.flareLevel, light: stage.lightIntensity };
+      assets.dispose();
+      return levels;
+    };
+    const shielded = lit(rest);
+    const open = lit(sunk);
+    expect(shielded.flare).toBeLessThan(open.flare * 0.6);
+    expect(shielded.light).toBeLessThan(open.light * 0.6);
+    expect(shielded.flare).toBeGreaterThan(0);
+  });
+
+  it.each(RARITIES)('deepens the %s enamel and keeps its hue under the luma cap', (rarity) => {
+    const accent = new Color(rarity === 'heirloom' ? HEIRLOOM_PRISM[0] : RARITY_COLORS[rarity]);
+    const enamel = heroEnamel(accent, new Color());
+    const luma = 0.2126 * enamel.r + 0.7152 * enamel.g + 0.0722 * enamel.b;
+    expect(luma).toBeLessThanOrEqual(ENAMEL_MAX_LUMA + 1e-9);
+    expect(enamel.r).toBeLessThanOrEqual(accent.r * ENAMEL_DEPTH + 1e-9);
+    const ratio = enamel.g / accent.g;
+    expect(enamel.r / accent.r).toBeCloseTo(ratio, 6);
+    expect(enamel.b / accent.b).toBeCloseTo(ratio, 6);
+    if (rarity === 'rare') expect(ratio).toBeCloseTo(ENAMEL_DEPTH, 6);
   });
 
   it.each(RARITIES)('shades the hero material in the %s palette colour', (rarity) => {
     const expected = new Color(rarity === 'heirloom' ? HEIRLOOM_PRISM[0] : RARITY_COLORS[rarity]);
-    const enamel = expected.clone().multiplyScalar(ENAMEL_DEPTH);
+    const enamel = heroEnamel(expected, new Color());
     for (const hero of ['charm', 'card', 'coins'] as const) {
       const assets = new UnboxAssets(new Group());
       const stage = new UnboxStage(rarity, hero, assets);
