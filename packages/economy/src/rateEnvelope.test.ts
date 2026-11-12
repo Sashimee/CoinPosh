@@ -1,5 +1,14 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import {
+  cadenceStyles,
+  fusionShareFor,
+  honestPeak,
+  ladderMeasurement,
+  playStyles,
+  type PeakField,
+} from '../sim/ladder.ts';
+import { ladderRuns } from '../sim/ladderRuns.ts';
 import { simModel, type SimModel } from '../sim/model.ts';
 import { createContext, createPlayer, rates } from '../sim/player.ts';
 import { percentile } from '../sim/simulate.ts';
@@ -16,10 +25,12 @@ import * as economy from './index.ts';
 import { createRng, type Rng } from './rng.ts';
 import {
   CASCADE_TIER_IDS,
+  PLAY_STYLE_IDS,
   RATE_ENVELOPE_METRIC_IDS,
   VENUE_IDS,
   type RateEnvelopeConfig,
   type RateEnvelopeDerivation,
+  type RateEnvelopeLimits,
   type RateEnvelopeMetricId,
   type RateEnvelopeTable,
 } from './types.ts';
@@ -193,9 +204,9 @@ function honestSession(
     }
   }
 
-  const peak = (metric: RateEnvelopeMetricId): number => {
+  const peak = (metric: RateEnvelopeMetricId, windowMs = config[metric].windowMs): number => {
     const values = series[metric];
-    const width = Math.round(config[metric].windowMs / derivation.slotMs);
+    const width = Math.round(windowMs / derivation.slotMs);
     let sum = 0;
     let best = 0;
     for (let s = 0; s < values.length; s++) {
@@ -205,40 +216,90 @@ function honestSession(
     }
     return best;
   };
+  // The burst model returns value per drop, not coins, so a faster pusher grows its fused
+  // falls without bound. Real merges are capped by the coins fed into the window.
+  const feed =
+    (peak('drops', config.fusions.windowMs) + economyConfig.openingHeap.coins) / (inputCount - 1);
   return {
     drops: peak('drops'),
     falls: peak('falls'),
     fallValue: peak('fallValue'),
-    fusions: peak('fusions'),
+    fusions: Math.min(peak('fusions'), feed),
     crates: peak('crates'),
   };
 }
 
-function sessionPeaks(table: RateEnvelopeTable, sessions: number, seed: number): Peaks[] {
+/**
+ * The model once per measured style at the model's cadence, each with the fusionShare that
+ * style measured. Whole-chute play fuses least, so more separate coins fall; aimed play
+ * fuses most. The envelope has to let every one of them through, not just the calibration.
+ */
+const honestModels: readonly SimModel[] = cadenceStyles(simModel).map((style) => ({
+  ...simModel,
+  fusionShare: fusionShareFor(style, simModel, economyConfig.fusion.bonusMultiplier),
+}));
+
+function sessionPeaks(
+  table: RateEnvelopeTable,
+  sessions: number,
+  seed: number,
+  model: SimModel,
+): Peaks[] {
   const rng = createRng(seed);
   return Array.from({ length: sessions }, () =>
-    honestSession(rng, table, rateEnvelope, rateEnvelopeDerivation),
+    honestSession(rng, table, rateEnvelope, rateEnvelopeDerivation, model),
   );
 }
 
-/** What the shipped base `max` must be: the derivation's percentile of busiest windows, with headroom. */
-function deriveBaseMax(peaks: readonly Peaks[]): Peaks {
+/**
+ * What the shipped base `max` must be: the derivation's percentile of busiest windows, with
+ * headroom, for whichever cadence style reaches it.
+ */
+function deriveBaseMax(peaksByStyle: readonly (readonly Peaks[])[]): Peaks {
   const { percentile: p, headroom } = rateEnvelopeDerivation;
   const at = (metric: RateEnvelopeMetricId) =>
-    Math.ceil(
-      percentile(
-        peaks.map((peak) => peak[metric]),
-        p,
-      ) * headroom,
+    Math.max(
+      ...peaksByStyle.map((peaks) =>
+        Math.ceil(
+          percentile(
+            peaks.map((peak) => peak[metric]),
+            p,
+          ) * headroom,
+        ),
+      ),
     );
   return {
     drops: at('drops'),
     falls: at('falls'),
-    fallValue: at('fallValue'),
-    fusions: at('fusions'),
+    fallValue: Math.max(at('fallValue'), physicsMax('fallValue')),
+    fusions: Math.max(at('fusions'), physicsMax('fusions')),
     crates: at('crates'),
   };
 }
+
+/**
+ * Metrics the physics ladder measures per run, and the run field that holds each one's
+ * busiest window. The burst model under-reads both under aimed play: it only sees fused
+ * coins that fall, and spreads value evenly, where aimed play piles high-tier coins up and
+ * sheds them in a lump.
+ */
+const PHYSICS_METRICS = {
+  fallValue: 'busiestFallValue',
+  fusions: 'busiestFusions',
+} as const satisfies Partial<Record<RateEnvelopeMetricId, PeakField>>;
+type PhysicsMetric = keyof typeof PHYSICS_METRICS;
+const isPhysicsMetric = (metric: RateEnvelopeMetricId): metric is PhysicsMetric =>
+  metric in PHYSICS_METRICS;
+
+/** The busiest measured window of every honest style up to the tap ceiling, with headroom. */
+function physicsMax(metric: PhysicsMetric): number {
+  const { honestTapsPerSecond, headroom } = rateEnvelopeDerivation;
+  return Math.ceil(honestPeak(PHYSICS_METRICS[metric], honestTapsPerSecond) * headroom);
+}
+
+const honestStyles = PLAY_STYLE_IDS.filter(
+  (style) => playStyles[style].tapsPerSecond <= rateEnvelopeDerivation.honestTapsPerSecond,
+);
 
 const upgradeLevels = fc.record(
   Object.fromEntries(
@@ -253,6 +314,16 @@ const tables: fc.Arbitrary<RateEnvelopeTable> = fc.record({
   albumBonus: fc.double({ min: 0, max: 2, noNaN: true }),
 });
 
+/**
+ * The most merges one fusions window can hold on this table: every coin the drop cap lets
+ * in plus the opening heap, and each merge removes inputCount − 1 of them.
+ */
+function fusionFeedBound(limits: RateEnvelopeLimits): number {
+  const { inputCount } = economyConfig.fusion;
+  const dropsPerWindow = (limits.drops.max * limits.fusions.windowMs) / limits.drops.windowMs;
+  return (dropsPerWindow + economyConfig.openingHeap.coins) / (inputCount - 1);
+}
+
 const maxTable: RateEnvelopeTable = {
   levels: Object.fromEntries(economyConfig.upgradeLines.map((line) => [line.id, line.maxLevel])),
   venue: 'orbitalCasino',
@@ -261,35 +332,79 @@ const maxTable: RateEnvelopeTable = {
 };
 
 describe('rate envelope base limits', () => {
-  const peaks = sessionPeaks(
-    BASE_TABLE,
-    rateEnvelopeDerivation.sessions,
-    rateEnvelopeDerivation.seed,
+  const peaksByStyle = honestModels.map((model) =>
+    sessionPeaks(BASE_TABLE, rateEnvelopeDerivation.sessions, rateEnvelopeDerivation.seed, model),
   );
+
+  it('derive from every cadence style, whole chute to aimed', () => {
+    expect(cadenceStyles(simModel)).toEqual(['casual', 'steady', 'aimed', 'aimedPinpoint']);
+    const shares = honestModels.map((model) => model.fusionShare);
+    expect(Math.min(...shares)).toBeLessThan(0.1);
+    expect(Math.max(...shares)).toBeCloseTo(simModel.fusionShare, 3);
+  });
 
   it('are exactly the derived 99.9th percentile with headroom, not hand-picked', () => {
     const shipped = Object.fromEntries(
       RATE_ENVELOPE_METRIC_IDS.map((m) => [m, rateEnvelope[m].max]),
     );
-    expect(shipped).toEqual(deriveBaseMax(peaks));
+    expect(shipped).toEqual(deriveBaseMax(peaksByStyle));
   });
 
-  it('let at least 99.9 % of honest sessions through every window untouched', () => {
-    for (const metric of RATE_ENVELOPE_METRIC_IDS) {
-      const over = peaks.filter((peak) => peak[metric] > rateEnvelope[metric].max).length;
-      expect(over / peaks.length).toBeLessThanOrEqual(1 - rateEnvelopeDerivation.percentile / 100);
+  it.each(Object.keys(PHYSICS_METRICS) as PhysicsMetric[])(
+    'let every physics-measured run at 3 taps/s or less through %s untouched',
+    (metric) => {
+      expect(rateEnvelopeDerivation.honestTapsPerSecond).toBeLessThanOrEqual(3);
+      expect(honestStyles).toEqual(expect.arrayContaining(['franticPinpoint', 'franticPour']));
+      for (const style of honestStyles) {
+        for (const run of ladderRuns[style]) {
+          expect(run[PHYSICS_METRICS[metric]], `${style} seed ${run.seed}`).toBeLessThanOrEqual(
+            rateEnvelope[metric].max,
+          );
+        }
+      }
+    },
+  );
+
+  it('let at least 99.9 % of every cadence style’s honest sessions through every window untouched', () => {
+    for (const peaks of peaksByStyle) {
+      for (const metric of RATE_ENVELOPE_METRIC_IDS) {
+        const over = peaks.filter((peak) => peak[metric] > rateEnvelope[metric].max).length;
+        expect(over / peaks.length).toBeLessThanOrEqual(
+          1 - rateEnvelopeDerivation.percentile / 100,
+        );
+      }
     }
   });
 
-  it('stay tight enough to bound a bot: within 4× the median busiest window', () => {
-    for (const metric of RATE_ENVELOPE_METRIC_IDS) {
-      const median = percentile(
-        peaks.map((peak) => peak[metric]),
-        50,
+  it('stay tight enough to bound a bot: within 4× the busiest cadence style’s median window', () => {
+    for (const metric of RATE_ENVELOPE_METRIC_IDS.filter((m) => !isPhysicsMetric(m))) {
+      const median = Math.max(
+        ...peaksByStyle.map((peaks) =>
+          percentile(
+            peaks.map((peak) => peak[metric]),
+            50,
+          ),
+        ),
       );
       expect(rateEnvelope[metric].max).toBeLessThanOrEqual(Math.max(4 * median, 4));
     }
   });
+
+  it.each(Object.keys(PHYSICS_METRICS) as PhysicsMetric[])(
+    'stay within 4× the median busiest %s window of the fastest measured honest styles',
+    (metric) => {
+      const ceiling = rateEnvelopeDerivation.honestTapsPerSecond;
+      const fastest = PLAY_STYLE_IDS.filter((style) => playStyles[style].tapsPerSecond === ceiling);
+      const median = percentile(
+        fastest.flatMap((style) => ladderRuns[style].map((run) => run[PHYSICS_METRICS[metric]])),
+        50,
+      );
+      expect(rateEnvelope[metric].max).toBeLessThanOrEqual(4 * median);
+      expect(ladderMeasurement.seconds * 1_000).toBeGreaterThanOrEqual(
+        rateEnvelope[metric].windowMs,
+      );
+    },
+  );
 
   it('reproduce the sim’s mean coin rate, so the burst model only adds variance', () => {
     const sim = simRates(BASE_TABLE);
@@ -329,9 +444,11 @@ describe('rate envelope scaling', () => {
     fc.assert(
       fc.property(tables, fc.nat(), (table, seed) => {
         const limits = rateEnvelopeFor(table);
-        for (const peak of sessionPeaks(table, 25, seed)) {
-          for (const metric of RATE_ENVELOPE_METRIC_IDS) {
-            expect(peak[metric]).toBeLessThanOrEqual(limits[metric].max);
+        for (const model of honestModels) {
+          for (const peak of sessionPeaks(table, 25, seed, model)) {
+            for (const metric of RATE_ENVELOPE_METRIC_IDS) {
+              expect(peak[metric]).toBeLessThanOrEqual(limits[metric].max);
+            }
           }
         }
       }),
@@ -356,16 +473,35 @@ describe('rate envelope scaling', () => {
         expect(
           (sim.dropsPerSecond * sim.grossPerDrop) / (base.dropsPerSecond * base.grossPerDrop),
         ).toBeLessThanOrEqual(grows('fallValue') * slack);
-        expect(
+        // Honest merges grow with the sim's fused-coin rate, but the coins that feed them
+        // (drops plus a fixed heap) never grow faster than the drops.
+        const fusionGrowth = Math.min(
           (sim.dropsPerSecond * sim.inputsPerDrop * sim.fusedShare) /
             (base.dropsPerSecond * base.inputsPerDrop * base.fusedShare),
-        ).toBeLessThanOrEqual(grows('fusions') * slack);
+          grows('drops'),
+        );
+        expect(fusionGrowth).toBeLessThanOrEqual(grows('fusions') * slack);
         expect(
           (sim.dropsPerSecond * sim.crateChancePerDrop) /
             (base.dropsPerSecond * base.crateChancePerDrop),
         ).toBeLessThanOrEqual(grows('crates') * slack);
       }),
       { numRuns: 300, seed: 0x45 },
+    );
+  });
+
+  it('bounds fusions below what the drop cap could feed, on every upgrade level and venue', () => {
+    const check = (table: RateEnvelopeTable): void => {
+      const limits = rateEnvelopeFor(table);
+      expect(limits.fusions.max).toBeLessThanOrEqual(fusionFeedBound(limits));
+    };
+    check(BASE_TABLE);
+    for (const venue of VENUE_IDS) check({ ...maxTable, venue });
+    fc.assert(
+      fc.property(upgradeLevels, fc.constantFrom(...VENUE_IDS), (levels, venue) => {
+        check({ ...BASE_TABLE, levels, venue });
+      }),
+      { numRuns: 500 },
     );
   });
 

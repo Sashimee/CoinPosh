@@ -4,23 +4,28 @@ import type { CoinTierId, EconomyConfig } from '../src/types.ts';
 import { assertValidEconomyConfig } from '../src/validate.ts';
 import { buildEnvelopeTable } from './envelopeTable.ts';
 import { simModel, type SimModel } from './model.ts';
-import { formatSummary } from './report.ts';
+import { evaluateLadder, pacingAcrossStyles } from './ladder.ts';
+import { formatLadder, formatStylePacing, formatSummary } from './report.ts';
 import { runSimulation } from './simulate.ts';
 
 export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] [--seed N] [--json] [--strict]
                                 [--envelope] [--empty-table] [--heap-coins N]
-                                [--heap-tier T] [--return-ratio X]
+                                [--heap-tier T] [--return-ratio X] [--fusion-share X]
+                                [--ladder]
 
   --days          casual calendar days to simulate (default 7)
   --players       simulated players per cohort (default 100)
   --seed          PRNG seed; the same seed always gives the same report (default 1)
   --json          print the raw result as JSON instead of the summary
-  --strict        exit with code 1 when any pacing or FTUE target misses
+  --strict        exit with code 1 when any pacing or FTUE target misses (ladder too with --ladder)
   --envelope      print the server rate-envelope table (JSON) the sim's tables need
   --empty-table   what-if: the table starts with no coins on it (same as --heap-coins 0)
   --heap-coins    what-if: opening-heap coins instead of the shipped ${economyConfig.openingHeap.coins}
   --heap-tier     what-if: opening-heap coin tier instead of the shipped ${economyConfig.openingHeap.tier}
-  --return-ratio  what-if: front-edge value per coin dropped (shipped model: ${simModel.baseReturnRatio})`;
+  --return-ratio  what-if: front-edge value per coin dropped (shipped model: ${simModel.baseReturnRatio})
+  --fusion-share  what-if: share of returned value fused at fusionWindow 1 (shipped model: ${simModel.fusionShare})
+  --ladder        print fusion tier-creation times per play style (physics-measured) against the ladder targets,
+                  and the pacing targets rerun with each cadence style's measured fusionShare`;
 
 export interface CliIo {
   readonly out: (text: string) => void;
@@ -58,6 +63,14 @@ function parsePositive(name: string, raw: string): number {
   return value;
 }
 
+function parseShare(name: string, raw: string): number {
+  const value = Number(raw);
+  if (!(raw.trim() !== '' && Number.isFinite(value) && value >= 0 && value <= 1)) {
+    throw new RangeError(`--${name} expects a share in [0, 1], got "${raw}"`);
+  }
+  return value;
+}
+
 function finiteJson(value: unknown): string {
   return JSON.stringify(
     value,
@@ -80,6 +93,8 @@ function run(argv: readonly string[], io: CliIo): number {
       'heap-coins': { type: 'string' },
       'heap-tier': { type: 'string' },
       'return-ratio': { type: 'string' },
+      'fusion-share': { type: 'string' },
+      ladder: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     strict: true,
@@ -97,6 +112,10 @@ function run(argv: readonly string[], io: CliIo): number {
       values['return-ratio'] === undefined
         ? simModel.baseReturnRatio
         : parsePositive('return-ratio', values['return-ratio']),
+    fusionShare:
+      values['fusion-share'] === undefined
+        ? simModel.fusionShare
+        : parseShare('fusion-share', values['fusion-share']),
   };
   const heapCoins = values['empty-table']
     ? 0
@@ -119,13 +138,29 @@ function run(argv: readonly string[], io: CliIo): number {
     return 0;
   }
 
-  const result = runSimulation(config, model, {
+  const options = {
     days: parseInteger('days', values.days),
     players: parseInteger('players', values.players),
     seed,
-  });
-  io.out(values.json ? finiteJson(result) : formatSummary(result));
-  const missed = [...result.targets, ...result.ftue].some((t) => !t.pass);
+  };
+  const result = runSimulation(config, model, options);
+  const ladder = values.ladder ? evaluateLadder(model, config.fusion.bonusMultiplier) : null;
+  const pacing = values.ladder ? pacingAcrossStyles(config, model, options) : null;
+  io.out(
+    values.json
+      ? finiteJson(ladder === null ? result : { ...result, ladder, pacing })
+      : [
+          formatSummary(result),
+          ...(ladder === null ? [] : ['', formatLadder(ladder)]),
+          ...(pacing === null ? [] : ['', formatStylePacing(pacing)]),
+        ].join('\n'),
+  );
+  const missed = [
+    ...result.targets,
+    ...result.ftue,
+    ...(ladder?.targets ?? []),
+    ...(pacing ?? []).flatMap((p) => p.targets),
+  ].some((t) => !t.pass);
   return values.strict && missed ? 1 : 0;
 }
 

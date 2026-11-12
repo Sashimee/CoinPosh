@@ -98,7 +98,7 @@ export function percentile(values: readonly number[], p: number): number {
   return sorted[rank - 1] ?? Number.POSITIVE_INFINITY;
 }
 
-function distribution(values: readonly (number | undefined)[]): Distribution {
+export function distribution(values: readonly (number | undefined)[]): Distribution {
   const filled = values.map((v) => v ?? Number.POSITIVE_INFINITY);
   return {
     p10: percentile(filled, 10),
