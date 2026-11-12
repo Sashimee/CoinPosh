@@ -1,5 +1,11 @@
 export { CoinContactFinder, NO_GROUP, type CoinPair } from './contacts.ts';
-export { ContactFusion, fusionTicks, type ContactProgress, type FusionRules } from './fusion.ts';
+export {
+  ContactFusion,
+  freshTicks,
+  fusionTicks,
+  type ContactProgress,
+  type FusionRules,
+} from './fusion.ts';
 export {
   TableMechanics,
   type FusionEvent,

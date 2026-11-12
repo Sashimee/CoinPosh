@@ -3,7 +3,7 @@ import type { StateHasher } from '../hash.ts';
 import type { Rapier } from '../rapier.ts';
 import type { TableCoin } from '../table/table.ts';
 import { type CoinPair, CoinContactFinder, NO_GROUP } from './contacts.ts';
-import { ContactFusion, type ContactProgress, type FusionRules } from './fusion.ts';
+import { ContactFusion, type ContactProgress, freshTicks, type FusionRules } from './fusion.ts';
 import type { MechanicTable } from './table.ts';
 import { ChampagneTower, type TowerState } from './tower.ts';
 import { FUSION_TUNING, type TowerPlacement } from './tuning.ts';
@@ -57,7 +57,7 @@ export interface LaidCoin<Tier extends string> {
 }
 
 interface Freshness {
-  /** The first tick the coin may fuse on; it is fresh for FUSION_TUNING.freshTicks from there. */
+  /** The first tick the coin may fuse on; it is fresh for TableMechanics.freshTicks from it. */
   readonly from: number;
   /** Whether it wakes the idle coins it touches: a coin that entered play does, a woken one does not. */
   readonly wakes: boolean;
@@ -71,12 +71,13 @@ interface Freshness {
  *
  * A coin fuses only while it is fresh, and only with fresh coins (FUSION_TUNING
  * spawnGraceTicks, freshTicks, wakeFromTier): a coin added during play waits out a spawn
- * grace and is then fresh for a fixed window. A coin laid before the first tick, or one
- * whose window has closed, is idle. An idle coin of wakeFromTier or above becomes fresh
- * again, for a window of its own, when a coin of its tier that entered play touches it
- * while fresh, which is how a new silver joins silvers that settled long ago. A woken coin
- * wakes no others, so one coin never wakes a whole heap. The windows are kept, and hashed,
- * only on a table that fuses.
+ * grace and is then fresh for a window, freshTicks stretched by the fusionWindow upgrade
+ * (FusionRules.fusionWindow). A coin laid before the first tick, or one whose window has
+ * closed, is idle. An idle coin of wakeFromTier or above becomes fresh again, for a window
+ * of its own, when a coin of its tier that entered play touches it while fresh, which is
+ * how a new silver joins silvers that settled long ago. A woken coin wakes no others, so
+ * one coin never wakes a whole heap. The windows are kept, and hashed, only on a table
+ * that fuses.
  */
 export class TableMechanics<Tier extends string> {
   readonly #table: MechanicTable;
@@ -88,6 +89,7 @@ export class TableMechanics<Tier extends string> {
   readonly #contacts: CoinContactFinder;
   readonly #fusion: ContactFusion | null;
   readonly #tower: ChampagneTower | null;
+  readonly #freshTicks: number;
   #lastTick = -1;
 
   constructor(rapier: Rapier, world: World, table: MechanicTable, config: MechanicsConfig<Tier>) {
@@ -107,6 +109,7 @@ export class TableMechanics<Tier extends string> {
       config.fusion === null
         ? null
         : new ContactFusion(config.fusion, FUSION_TUNING.graceTicks, FUSION_TUNING.sampleTicks);
+    this.#freshTicks = freshTicks(config.fusion?.fusionWindow);
     this.#tower = config.tower === null ? null : new ChampagneTower(rapier, world, config.tower);
   }
 
@@ -117,6 +120,11 @@ export class TableMechanics<Tier extends string> {
   /** Ticks of contact a fusion needs; null when the table does not fuse. */
   get fusionTicks(): number | null {
     return this.#fusion?.requiredTicks ?? null;
+  }
+
+  /** Ticks a coin stays fresh after its spawn grace; null when the table does not fuse. */
+  get freshTicks(): number | null {
+    return this.#fusion ? this.#freshTicks : null;
   }
 
   /** Records the tier of a coin just added to the table; it waits out the spawn grace, then is fresh. */
@@ -251,7 +259,11 @@ export class TableMechanics<Tier extends string> {
     coins.forEach((coin, i) => {
       const index = this.#index(coin.id);
       this.#expire(coin.id, tick);
-      groups[i] = index === top || this.#inGrace(coin.id, tick) ? NO_GROUP : index;
+      const fresh = this.#fresh.get(coin.id);
+      // An idle coin below wakeFromTier can neither fuse nor be woken, so every pair it
+      // would make is dropped by #wake; leaving it out spares the search the paved strip.
+      const sitsOut = fresh ? tick < fresh.from : index < FUSION_TUNING.wakeFromTier;
+      groups[i] = index === top || sitsOut ? NO_GROUP : index;
     });
     const touching = this.#contacts.find(
       coins,
@@ -341,20 +353,13 @@ export class TableMechanics<Tier extends string> {
   /** Coin `id`'s freshness if it may fuse at `tick`: its spawn grace is over and its window is not. */
   #freshAt(id: number, tick: number): Freshness | undefined {
     const fresh = this.#fresh.get(id);
-    return fresh && tick >= fresh.from && tick < fresh.from + FUSION_TUNING.freshTicks
-      ? fresh
-      : undefined;
-  }
-
-  #inGrace(id: number, tick: number): boolean {
-    const fresh = this.#fresh.get(id);
-    return fresh !== undefined && tick < fresh.from;
+    return fresh && tick >= fresh.from && tick < fresh.from + this.#freshTicks ? fresh : undefined;
   }
 
   /** Makes coin `id` idle once its fresh window has closed. */
   #expire(id: number, tick: number): void {
     const fresh = this.#fresh.get(id);
-    if (fresh && tick >= fresh.from + FUSION_TUNING.freshTicks) {
+    if (fresh && tick >= fresh.from + this.#freshTicks) {
       this.#fresh.delete(id);
     }
   }
