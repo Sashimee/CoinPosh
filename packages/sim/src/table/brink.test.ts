@@ -107,7 +107,7 @@ describe('the Demo opening heap rests at the brink (P-258)', () => {
     expect(droppedAgain.hash).toBe((await dropped).hash);
     // Changing these values breaks replay audits of every input log recorded before the
     // change. Update them only alongside a deliberate sim version bump.
-    expect((await idle).hash).toMatchInlineSnapshot(`"fdccb1a574c9357a"`);
-    expect((await dropped).hash).toMatchInlineSnapshot(`"819ef376edaf2fbe"`);
+    expect((await idle).hash).toMatchInlineSnapshot(`"072b5a62115e9410"`);
+    expect((await dropped).hash).toMatchInlineSnapshot(`"6175e869dcccfcba"`);
   });
 });

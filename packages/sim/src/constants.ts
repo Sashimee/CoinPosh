@@ -65,5 +65,13 @@ export const SOLVER = {
  *   minutes of drops b4f254b6bc329ea8 (was 30afd7256494fcfe); the scripted minute
  *   bdd732e82cbaab2c, nudge 4df094d60c3198e0, opening heap 53ff5809aefa4642 and Demo
  *   pour bb41e00c43e62270 are unchanged.
+ * - 8: a coin fuses only while it is fresh, for FUSION_TUNING.freshTicks after its spawn
+ *   grace, and only with other fresh coins; laid coins start idle (settledShift is gone,
+ *   #132), and an idle silver or above is woken by a fresh coin of its tier that entered
+ *   play (wakeFromTier). Fused heap 78a2e6ac17f29895 (was 982470c1506c0983), Demo table
+ *   with fusion b38156d0f90afa3c (was 8d8b89f4c3c645a5), mechanics digest
+ *   ea9d594fbf71f999 (was 5507fe238035656a), brink heap idle 072b5a62115e9410 (was
+ *   fdccb1a574c9357a) and after a drop 6175e869dcccfcba (was 819ef376edaf2fbe). Tables
+ *   without mechanics hash as before.
  */
-export const SIM_VERSION = 7;
+export const SIM_VERSION = 8;

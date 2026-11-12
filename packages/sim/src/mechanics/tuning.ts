@@ -33,16 +33,30 @@ import { DROP_ZONE } from '../table/layout.ts';
  *   chute drop lands and settles in about half that, so it joins the heap first and
  *   then charges up with its neighbours; a fused coin hops, lands and is seen before
  *   it can chain. The 1 s also covers the server's minFusionMsAfterSpawn (250 ms).
- * - settledShift 2.6 mm (one coin thickness): a coin laid before the first tick (the
- *   opening heap, a restored table) is settled and never fuses on age alone, since
- *   the heap is laid touching and would otherwise all fuse the moment a grace ran out.
- *   It joins play once its height has changed by more than a coin's thickness from
- *   where it was laid: it slid off the coins under it (3.2 mm), tumbled off the upper
- *   tier (35 mm) or was shoved up onto another coin. Sliding across its own floor does
- *   not count, so the pusher packing the bottom sheet, or the upper tier riding the
- *   block, does not wake the whole heap. Seeded runs at 1 drop/s onto the 100-coin
- *   silver heap: no heap coin fuses in the first 8 s, the first fusion (three copper
- *   drops) comes at 4 to 8 s, and 12 to 18 fusions fire in the first minute.
+ * - freshTicks 315 (5.25 s): once its grace is over a coin may fuse for this long, and
+ *   only with coins that are fresh too; after that it is idle (#132). A coin laid before
+ *   the first tick (the opening heap, a restored table) starts idle, since the heap is
+ *   laid touching and its second layer rests on the first. The window is what makes a
+ *   copper fusion something the player aims for: the 1 s grace and the economy's 0.4 s
+ *   contact barely mattered, because coppers pile on the drop strip for far longer than
+ *   either (a 15 s contact still fused 17 a minute). Three coppers fuse only when they
+ *   were dropped close together in time and place: a pour, or four or five taps at one
+ *   aim. Before the window: 28 to 30 a minute, one drop in 2, the first at 4.5 to 8 s.
+ *   The rate climbs steeply with the window because the pusher packs the strip every 4 s
+ *   (240 ticks): 300 gives 3.1 a minute, 330 gives 5.3, 480 gives 7.1, 600 gives 10.8.
+ * - wakeFromTier 1 (silver): an idle coin of this ladder tier or above becomes fresh
+ *   again, for a window of its own, when a fresh coin of its tier that entered play (a
+ *   drop, a fused coin, a released one) touches it; a coin woken so wakes no others. So
+ *   a new silver joins silvers fused minutes ago, or the silver heap it lands on, and the
+ *   ladder climbs. Coppers are the drop tier: the strip is always paved with idle
+ *   coppers, so waking them made nearly every drop land on a pair and fuse again, 15 to
+ *   18 a minute whatever freshTicks was (60 to 315), the #132 flicker back. Seeded runs
+ *   of a copper a second at a uniform aim over the chute onto the 100-coin silver heap
+ *   (fusionRate.test.ts), 16 seeds of 3 min: 3.8 copper and 0.2 silver fusions a minute,
+ *   one drop in 15 fused, the first fusion at 4 to 46 s (median 11 s), and a heap coin
+ *   fuses only once a silver made in play has touched it. Aimed at the middle, a copper a
+ *   second gives 15 to 17 copper, 1.3 to 3.3 silver and up to 0.3 gold fusions a minute;
+ *   two a second climb to platinum within the minute.
  */
 export const FUSION_TUNING = {
   touchGap: 0.001,
@@ -50,7 +64,8 @@ export const FUSION_TUNING = {
   spawnLift: 0.0015,
   sampleTicks: 3,
   spawnGraceTicks: 60,
-  settledShift: 2 * COIN.halfThickness,
+  freshTicks: 315,
+  wakeFromTier: 1,
 } as const;
 
 /** Where the Champagne Tower pedestal stands on the upper tier, in metres. */
