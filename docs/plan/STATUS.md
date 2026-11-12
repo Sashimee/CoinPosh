@@ -85,6 +85,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-258 | done | task/P-258 (merge 83429ae) | Opening heap rests at the brink with no front falls without input: packages/sim/src/table/brink.test.ts pins the Demo heap at rest with no input (1424d95); pnpm check green after merge |
 | P-317 | done | task/P-317 (merge a1b8e8e) | Tier fusion juice: routine fusion gets a compact white-gold flash and tier-up chime with no camera kick or hit-stop; full set piece only for the first fusion of the session or a gold+ result, camera kicks rate-limited to 1 per 3 s; vfx/fusionJuice.ts + tests, emitters and index updated (dea13f6); pnpm check green after merge |
 | P-308 | blocked(review: crate:fell hold never released when UnboxDirector.startNext throws or a claim stays queued offline (main.ts:923), and tierStamp leave() keeps the rank card visible up to 420 ms into the hold (tierStamp.ts:84); bound pre-reveal and fell-to-opened phases, hide the stamp on the hold tick) | task/P-308 (fb75ae4) | Rework needed; seeded e2e spec queued as P-324 |
+| P-318 | done | task/P-318 (merge b2117b9) | Vault Crate reads as a prize: bevelled body, gold corner caps, rarity-coloured seam glow and an idle glint in crates/view.ts with view.test.ts, index.ts updated (3c2c118); pnpm check green after merge; follow-up P-334 (table.rolled on crate:opened) |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
