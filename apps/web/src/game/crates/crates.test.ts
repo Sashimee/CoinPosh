@@ -77,7 +77,9 @@ import {
   crateFlyOffset,
   pityLineCopy,
   placeCrateCard,
+  placeSkipHint,
   rewardLineCopy,
+  SKIP_HINT_GAP,
   type CratesT,
   type CrateCardLayout,
   type CrateCardPlacement,
@@ -849,6 +851,106 @@ describe('crate reward card placement', () => {
     expect(css).toMatch(/\.cp-crate-card\[hidden\]\s*\{\s*display:\s*none;/);
     expect(css).not.toMatch(/margin-top:\s*\d+vh/);
     expect(css).not.toMatch(/\.cp-crate\.is-revealed\s*\{[^}]*place-items/);
+  });
+});
+
+describe('crate skip hint placement', () => {
+  const rect = (left: number, top: number, right: number, bottom: number): HintRect => ({
+    left,
+    top,
+    right,
+    bottom,
+  });
+  const intersects = (a: HintRect, b: HintRect) =>
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const swollen = (plaque: HintRect) => {
+    const half = ((plaque.bottom - plaque.top) * PLAQUE_SWELL) / 2;
+    const centre = (plaque.top + plaque.bottom) / 2;
+    return rect(plaque.left, centre - half, plaque.right, centre + half);
+  };
+  const HINT = { width: 150, height: 29 };
+  const hintBox = (top: number, viewportWidth: number) =>
+    rect(
+      (viewportWidth - HINT.width) / 2,
+      top,
+      (viewportWidth + HINT.width) / 2,
+      top + HINT.height,
+    );
+
+  /** Measured in seeded Demo Mode: the Vault plaque and the dock. */
+  const viewports = [
+    {
+      name: '390x844',
+      width: 390,
+      height: 844,
+      plaque: rect(97, 90.1, 293, 163.6),
+      dock: rect(16, 774, 374, 830),
+    },
+    {
+      name: '360x640',
+      width: 360,
+      height: 640,
+      plaque: rect(95, 90.1, 265, 153.6),
+      dock: rect(12, 574, 348, 626),
+    },
+    {
+      name: '844x390',
+      width: 844,
+      height: 390,
+      plaque: rect(325, 12, 519, 86),
+      dock: rect(198, 322, 646, 374),
+    },
+  ];
+
+  for (const viewport of viewports) {
+    it(`sits just above the dock and clear of the Vault at ${viewport.name}`, () => {
+      const top = placeSkipHint({
+        viewportHeight: viewport.height,
+        plaque: viewport.plaque,
+        base: viewport.dock.top,
+        hintHeight: HINT.height,
+      });
+      const box = hintBox(top, viewport.width);
+      expect(intersects(box, viewport.dock)).toBe(false);
+      expect(intersects(box, swollen(viewport.plaque))).toBe(false);
+      expect(viewport.dock.top - box.bottom).toBeGreaterThanOrEqual(SKIP_HINT_GAP);
+      expect(viewport.dock.top - box.bottom).toBeLessThan(SKIP_HINT_GAP + 1);
+    });
+  }
+
+  it('keeps clear of the dock even while the entrance lifts it into place', () => {
+    const top = placeSkipHint({ viewportHeight: 844, plaque: null, base: 774, hintHeight: 29 });
+    const entranceDrop = 8;
+    expect(top + 29 + entranceDrop).toBeLessThan(774);
+  });
+
+  it('never lands under the plaque when the dock leaves no room above it', () => {
+    const plaque = rect(325, 12, 519, 86);
+    const top = placeSkipHint({ viewportHeight: 390, plaque, base: 120, hintHeight: 29 });
+    expect(top).toBe(347);
+    expect(intersects(hintBox(top, 844), swollen(plaque))).toBe(false);
+  });
+
+  it('uses the viewport floor without a laid-out dock, and the top without a plaque', () => {
+    expect(placeSkipHint({ viewportHeight: 640, plaque: null, base: 0, hintHeight: 29 })).toBe(597);
+    expect(placeSkipHint({ viewportHeight: 640, plaque: null, base: 574, hintHeight: 29 })).toBe(
+      531,
+    );
+  });
+
+  it('dims the dock through the cinematic and breathes only with full motion', () => {
+    const css = readFileSync(new URL('./crates.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/\.cp-crate::before\s*\{[^}]*var\(--cp-crate-dock-top/);
+    expect(css).toMatch(/\.cp-crate-skip\s*\{[^}]*cp-crate-breathe/);
+    const reduced = /([^{}]*)\{\s*animation:\s*none;\s*\}/g;
+    const selectors = [...css.matchAll(reduced)].map((match) => match[1] ?? '').join(',');
+    expect(selectors).toContain(".cp-crate[data-motion='reduced'] .cp-crate-skip");
+  });
+
+  it('keeps the skip hint to one line on a 360 px phone in every language', () => {
+    for (const language of LANGUAGES) {
+      expect(CRATES_STRINGS[language].skip.length).toBeLessThanOrEqual(26);
+    }
   });
 });
 

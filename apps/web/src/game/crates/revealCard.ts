@@ -47,17 +47,42 @@ export interface CrateCardPlacement {
  * room between them shrinks to fit rather than covering either.
  */
 export function placeCrateCard(layout: CrateCardLayout): CrateCardPlacement {
-  let ceiling = 0;
-  if (layout.plaque && layout.plaque.bottom > layout.plaque.top) {
-    const { top, bottom } = layout.plaque;
-    ceiling = (top + bottom) / 2 + ((bottom - top) * PLAQUE_SWELL) / 2;
-  }
+  const ceiling = plaqueCeiling(layout.plaque);
   const base = layout.base > ceiling ? layout.base : layout.viewportHeight;
   const room = Math.max(0, base - ceiling - 2 * CARD_CHROME_GAP);
   const height = Math.max(1, layout.cardHeight);
   const scale = height <= room ? 1 : Math.floor((room / height) * 100) / 100;
   const top = Math.floor(base - CARD_CHROME_GAP - height * scale);
   return { top: Math.max(Math.ceil(ceiling + CARD_CHROME_GAP), top), scale };
+}
+
+function plaqueCeiling(plaque: CrateCardLayout['plaque']): number {
+  if (!plaque || plaque.bottom <= plaque.top) return 0;
+  return (plaque.top + plaque.bottom) / 2 + ((plaque.bottom - plaque.top) * PLAQUE_SWELL) / 2;
+}
+
+/** Air between the skip hint and the dock it sits on. */
+export const SKIP_HINT_GAP = 14;
+
+export interface SkipHintLayout {
+  readonly viewportHeight: number;
+  readonly plaque: CrateCardLayout['plaque'];
+  /** Top edge of the dock. */
+  readonly base: number;
+  readonly hintHeight: number;
+}
+
+/**
+ * Where "Tap to skip" sits while the cinematic plays: a step above the dock the veil dims,
+ * never under the Vault plaque at the peak of its credit pop. A dock with no room above it
+ * under the plaque (or none laid out) leaves the hint on the viewport floor instead.
+ */
+export function placeSkipHint(layout: SkipHintLayout): number {
+  const lowest = Math.ceil(plaqueCeiling(layout.plaque) + SKIP_HINT_GAP);
+  const height = Math.max(0, layout.hintHeight);
+  const aboveDock = Math.floor(layout.base - SKIP_HINT_GAP - height);
+  const base = aboveDock >= lowest ? layout.base : layout.viewportHeight;
+  return Math.max(lowest, Math.floor(base - SKIP_HINT_GAP - height));
 }
 
 /** Final `scale()` of the `cp-crate-fly` keyframe in crates.css. */
@@ -207,9 +232,23 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     if (collecting) return;
     const dock = options.host.querySelector(DOCK)?.getBoundingClientRect();
     if (!dock || dock.height <= 0) return;
+    const viewportHeight = document.documentElement.clientHeight;
+    const plaque = options.host.querySelector(BALANCE)?.getBoundingClientRect() ?? null;
+    root.style.setProperty('--cp-crate-dock-top', `${Math.floor(dock.top)}px`);
+    if (!shown) {
+      const top = placeSkipHint({
+        viewportHeight,
+        plaque,
+        base: dock.top,
+        hintHeight: skipHint.offsetHeight,
+      });
+      skipHint.style.setProperty('--cp-crate-skip-top', `${top}px`);
+      skipHint.classList.add('is-placed');
+      return;
+    }
     const at = placeCrateCard({
-      viewportHeight: document.documentElement.clientHeight,
-      plaque: options.host.querySelector(BALANCE)?.getBoundingClientRect() ?? null,
+      viewportHeight,
+      plaque,
       base: dock.top,
       cardHeight: card.offsetHeight,
     });
@@ -218,18 +257,17 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     card.style.setProperty('--cp-crate-card-top', `${at.top}px`);
     card.style.setProperty('--cp-crate-card-scale', String(at.scale));
   };
+  const resizes = new ResizeObserver(place);
+  ctx.own(() => {
+    resizes.disconnect();
+  });
   const show = () => {
     if (shown) return;
     shown = true;
     card.hidden = false;
     skipHint.hidden = true;
     place();
-    const observer = new ResizeObserver(place);
-    observer.observe(document.documentElement);
-    observer.observe(card);
-    ctx.own(() => {
-      observer.disconnect();
-    });
+    resizes.observe(card);
     root.classList.add('is-revealed');
     restartAnimation(card, 'is-entering');
     ctx.own(loc.text(status, () => t('opened', { rarity: rarityName() })));
@@ -264,6 +302,9 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
 
   root.tabIndex = -1;
   options.host.append(root);
+  place();
+  resizes.observe(document.documentElement);
+  resizes.observe(skipHint);
   root.focus({ preventScroll: true });
 
   let disposed = false;
