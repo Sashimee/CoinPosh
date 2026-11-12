@@ -324,3 +324,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 23 · 2026-11-12 · P-329 P-333 P-338 P-337 P-335 · merged P-337 (b0a5f63), P-335 (d51d679), P-338 (cf1de84), P-333 (8c90ad9), P-329 (7d36d37); 0 rejected
 - wave 24 · 2026-11-12 · P-341 P-328 P-331 · merged P-331 (6b27852), P-328 (ea900b2); 1 rejected (P-341)
 - wave 25 · 2026-11-12 · P-341 P-343 P-339 P-346 · merged P-341 (bd470d7), P-339 (12581c4); 2 rejected (P-343, P-346)
+- wave 26 · 2026-11-12 · P-345 P-343 P-348 P-350 · merged P-345 (bb2d650), P-343 (480fe05), P-348 (577c6ea), P-350 (36062bc); 0 rejected
