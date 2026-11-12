@@ -81,7 +81,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-222 | done | task/P-222 (merge d692f54) | Contact Fusion on in the worker with a spawn grace: table-config takes fusion from economyConfig, sim fuses only coins past the spawn grace so the opening heap and fresh drops are kept, determinism hashes updated by design (234e115); pnpm check green after merge; follow-ups P-311..P-314 |
 | P-239 | done | task/P-239 (merge 268d0cc) | First-affordable-upgrade nudge shown once only: upgradeNudgeTrigger fires on the first affordable upgrade, upgradeNudge component in the HUD and upgrades panel, EN/FR/DE strings, trigger unit tests (81bbcc3); pnpm check green after merge |
 | P-290 | done | task/P-290 (merge fd1c81d) | Crate reward lines name the charm/card and pluralise currencies: loot.ts resolves charm and album-card names with rarity, revealCard shows them with album set progress, EN/FR/DE plural currency lines in crates/i18n.ts (a4f873d); follow-up P-321 (GET /v1/album on the server); pnpm check green after merge |
-| T-92.04 | todo | | Waits on T-92.01, T-92.02, T-92.03 (#92) |
+| T-92.04 | done | task/T-92.04 (merge 1a41f90) | Server pose storage, POST /v1/table/snapshot and boot placement: apps/server/src/do/snapshot.ts + tests, routes/table.ts (d7444c3); follow-ups P-266 (re-raised), P-322, P-323; pnpm check green after merge (#92) |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
