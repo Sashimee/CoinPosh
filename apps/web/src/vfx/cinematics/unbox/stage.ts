@@ -10,25 +10,40 @@ import {
   Mesh,
   MeshBasicNodeMaterial,
   MeshPhysicalNodeMaterial,
-  OctahedronGeometry,
   PlaneGeometry,
   PointLight,
   Quaternion,
   Sprite,
   SpriteNodeMaterial,
   Vector3,
+  WebGPURenderer,
   type BufferGeometry,
   type Camera,
   type Material,
   type Object3D,
 } from 'three/webgpu';
+import { bakeCoinEmboss, type CoinEmbossBake } from '../../../scene/coins/emboss.ts';
+import { flatEmbossTexture } from '../../../scene/coins/materials.ts';
+import { COIN_LOOKS, type CoinTierId } from '../../../scene/coins/tiers.ts';
 import { rivieraTokens } from '../../../scene/venues/riviera/palette.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../palette.ts';
+import {
+  createHeroMaterial,
+  HERO_FACE_RESOLUTION,
+  HERO_FACE_TIERS,
+  heroGeometry,
+  heroPitch,
+  heroYaw,
+  ITEM_SIZE,
+  pedestalCapGeometry,
+  UNBOX_HEROES,
+  type HeroMaterial,
+  type UnboxHero,
+} from './hero.ts';
 import { rayStyle, type RayStyle, type UnboxPose } from './plan.ts';
 import { warmUnboxShots } from './shot.ts';
 
-/** What sits on the pedestal: the headline reward of the roll. */
-export type UnboxHero = 'coins' | 'pearls' | 'keys' | 'tickets' | 'charm' | 'safe' | 'card';
+export type { UnboxHero } from './hero.ts';
 
 /** Crate edge in metres: a chunky lacquer box a little wider than two coins. */
 export const CRATE_SIZE = 0.042;
@@ -53,7 +68,6 @@ const RAY_LENGTH = CRATE_SIZE * 2.6;
 const RAY_WIDTH = CRATE_SIZE * 0.3;
 const PEDESTAL_RADIUS = 0.016;
 const PEDESTAL_HEIGHT = 0.03;
-const ITEM_SIZE = 0.016;
 /** Light levels as irradiance on the crate faces; the venue key alone gives about 3. */
 const LIGHT = { rest: 2.2, rumble: 3, rays: 7, burst: 16 } as const;
 const LIGHT_RANGE = CRATE_SIZE * 12;
@@ -63,6 +77,18 @@ const LIGHT_LIFT = CRATE_SIZE * 1.1;
 /** A round bloom-hot flare over the lid at the burst, a crate and a half across at its peak. */
 const FLARE_SIZE = CRATE_SIZE * 1.6;
 const FLARE_PEAK = 2.6;
+/**
+ * How far the god-rays slide back from the camera as the pedestal rises, so the hero stands in
+ * front of the shaft instead of inside its haze.
+ */
+const RAY_PARTING = ITEM_SIZE * 1.6;
+/**
+ * Share of the burst's key and flare that still reaches the hero once it stands on its risen
+ * pedestal. The full cinematic raises the pedestal as the burst decays, so this only bites when
+ * motion is reduced and the hero is on the cap from the burst frame: at full strength the flare
+ * and a 16-irradiance key washed the reveal frame out to a flat pale haze.
+ */
+const BURST_ON_HERO = 0.45;
 /** Where the crate shrinks to as it sinks back into the tray after Collect. */
 const FLY_SCALE = 0.55;
 /**
@@ -78,16 +104,6 @@ interface RaySlot {
   readonly angle: number;
 }
 
-const HEROES: readonly UnboxHero[] = [
-  'coins',
-  'pearls',
-  'keys',
-  'tickets',
-  'charm',
-  'safe',
-  'card',
-];
-
 /**
  * Everything an unbox draws with, built once per table and borrowed by each `UnboxStage`, so no
  * unbox builds a node graph or uploads a buffer mid-cinematic. The point light sits in `parent`
@@ -101,7 +117,7 @@ export class UnboxAssets {
   readonly lid: BoxGeometry;
   readonly clasp: BoxGeometry;
   readonly column: CylinderGeometry;
-  readonly cap: CylinderGeometry;
+  readonly cap: BufferGeometry;
   readonly ray: PlaneGeometry;
   readonly lacquer: MeshPhysicalNodeMaterial;
   readonly gold: MeshPhysicalNodeMaterial;
@@ -113,9 +129,13 @@ export class UnboxAssets {
   /** One flare, lent to whichever stage is playing. */
   readonly flare: Sprite;
   readonly light: PointLight;
+  private readonly heroLook: HeroMaterial;
   private readonly flareTint = uniform(new Color());
   private readonly flareStrength = uniform(0);
   private readonly heroes = new Map<UnboxHero, BufferGeometry>();
+  private readonly faces = new Map<CoinTierId, CoinEmbossBake>();
+  private faceTier: CoinTierId = HERO_FACE_TIERS.common;
+  private facesQueued = false;
   private readonly rays = new Map<Object3D, RaySlot>();
   private readonly primer = new Group();
   private primerSlot: RaySlot | null = null;
@@ -129,12 +149,10 @@ export class UnboxAssets {
     this.lid = parts.lid;
     this.clasp = parts.clasp;
     this.column = new CylinderGeometry(PEDESTAL_RADIUS * 0.8, PEDESTAL_RADIUS, PEDESTAL_HEIGHT, 28);
-    this.cap = new CylinderGeometry(PEDESTAL_RADIUS * 1.15, PEDESTAL_RADIUS * 1.15, 0.003, 28);
+    this.cap = pedestalCapGeometry();
     this.ray = new PlaneGeometry(RAY_WIDTH, RAY_LENGTH);
     this.ray.translate(0, RAY_LENGTH / 2, 0);
-    for (const hero of HEROES) {
-      this.heroes.set(hero, this.heroes.get(twinOf(hero)) ?? heroGeometry(hero));
-    }
+    for (const hero of UNBOX_HEROES) this.heroes.set(hero, heroGeometry(hero));
 
     this.lacquer = new MeshPhysicalNodeMaterial({
       color: rivieraTokens['navy-lacquer'],
@@ -159,7 +177,8 @@ export class UnboxAssets {
       blending: AdditiveBlending,
       depthWrite: false,
     });
-    this.heroMaterial = new MeshPhysicalNodeMaterial({ emissiveIntensity: 0.35, clearcoat: 1 });
+    this.heroLook = createHeroMaterial();
+    this.heroMaterial = this.heroLook.material;
     this.rayMaterial = this.createRayMaterial();
     this.flareMaterial = this.createFlareMaterial();
     this.flare = new Sprite(this.flareMaterial);
@@ -200,6 +219,26 @@ export class UnboxAssets {
     return geometry;
   }
 
+  /**
+   * Tints every hero prop's enamel, gem and rim in `accent`, the rolled rarity's colour, and
+   * strikes its coins with that rarity's face once the primer has baked it.
+   */
+  tintHero(accent: Color, rarity: Rarity): void {
+    this.heroLook.tint(accent);
+    this.faceTier = HERO_FACE_TIERS[rarity];
+    this.heroLook.setFace(this.faces.get(this.faceTier)?.texture ?? flatEmbossTexture());
+  }
+
+  /** The coin tier whose face the hero's coins wear now. */
+  get heroFace(): CoinTierId {
+    return this.faceTier;
+  }
+
+  /** The rarity colour the hero props are tinted in now. */
+  get heroAccent(): Color {
+    return this.heroLook.accent;
+  }
+
   /** Tints and lights the burst flare; strength 0 draws nothing. */
   setFlare(color: Color, strength: number): void {
     this.flareTint.value.copy(color);
@@ -233,6 +272,8 @@ export class UnboxAssets {
       ...this.heroes.values(),
     ]);
     for (const geometry of geometries) geometry.dispose();
+    for (const face of this.faces.values()) face.dispose();
+    this.faces.clear();
     const materials: Material[] = [
       this.lacquer,
       this.gold,
@@ -260,12 +301,18 @@ export class UnboxAssets {
     const slot: RaySlot = { mesh: ray, tint: new Color(), strength: 0, angle: 0 };
     this.primerSlot = slot;
     this.bindRay(slot);
+    const hero = new Mesh(this.hero('card'), this.heroMaterial);
+    hero.onBeforeRender = (renderer) => {
+      if (!(renderer instanceof WebGPURenderer))
+        throw new Error('The unbox primer was drawn by a renderer that cannot bake coin faces');
+      this.queueFaceBakes(renderer);
+    };
     const parts: Object3D[] = [
       new Mesh(this.body, this.lacquer),
       new Mesh(this.band, this.gold),
       new Mesh(this.column, this.velvet),
       new Mesh(this.seam, this.seamMaterial),
-      new Mesh(this.cap, this.heroMaterial),
+      hero,
       ray,
       new Sprite(this.flareMaterial),
     ];
@@ -284,6 +331,27 @@ export class UnboxAssets {
     }
     this.primer.add(...parts);
     this.light.add(this.primer);
+  }
+
+  /**
+   * Bakes each rarity's coin face once, the one tinted now first, one per idle slot after the
+   * frame that drew the primer: the hero then reads its relief from a texture, as the table
+   * coins do, instead of evaluating the face's SDF in every fragment of every prop.
+   */
+  private queueFaceBakes(renderer: WebGPURenderer): void {
+    if (this.facesQueued) return;
+    this.facesQueued = true;
+    const tiers = new Set<CoinTierId>([this.faceTier, ...Object.values(HERO_FACE_TIERS)]);
+    const pending = [...tiers];
+    const next = (): void => {
+      const tier = pending.shift();
+      if (tier === undefined || this.disposed) return;
+      const face = bakeCoinEmboss(renderer, COIN_LOOKS[tier].face, HERO_FACE_RESOLUTION);
+      this.faces.set(tier, face);
+      if (tier === this.faceTier) this.heroLook.setFace(face.texture);
+      afterFrame(next);
+    };
+    afterFrame(next);
   }
 
   private unmountPrimer(): void {
@@ -355,9 +423,11 @@ export class UnboxStage {
   private readonly rays: RaySlot[] = [];
   private readonly pedestal = new Group();
   private readonly item: Mesh;
+  private readonly cap: Mesh;
   private readonly accent: Color;
   private readonly warm = new Color(rivieraTokens.champagne);
   private readonly toCamera = new Vector3(0, 0, 1);
+  private readonly hero: UnboxHero;
   private restYaw = 0;
   private flareStrength = 0;
   private swirl = 0;
@@ -366,6 +436,7 @@ export class UnboxStage {
   constructor(rarity: Rarity, hero: UnboxHero, assets: UnboxAssets) {
     this.rarity = rarity;
     this.style = rayStyle(rarity);
+    this.hero = hero;
     this.assets = assets;
     this.root.name = 'unbox';
     this.accent = new Color(rarity === 'heirloom' ? HEIRLOOM_PRISM[0] : RARITY_COLORS[rarity]);
@@ -381,12 +452,14 @@ export class UnboxStage {
 
     const column = new Mesh(assets.column, velvet);
     column.position.y = PEDESTAL_HEIGHT / 2;
-    const cap = new Mesh(assets.cap, gold);
+    const cap = new Mesh(assets.cap, assets.heroMaterial);
+    cap.name = 'unbox-pedestal-cap';
     cap.position.y = PEDESTAL_HEIGHT;
-    this.item = new Mesh(
-      assets.hero(hero),
-      hero === 'coins' || hero === 'keys' ? gold : this.tintHero(hero, this.accent),
-    );
+    this.cap = cap;
+    assets.tintHero(this.accent, rarity);
+    this.item = new Mesh(assets.hero(hero), assets.heroMaterial);
+    this.item.name = `unbox-hero-${hero}`;
+    this.item.rotation.order = 'YXZ';
     this.item.position.y = PEDESTAL_HEIGHT + ITEM_SIZE;
     this.pedestal.add(column, cap, this.item);
 
@@ -449,6 +522,16 @@ export class UnboxStage {
     return this.crate;
   }
 
+  /** The prop on the pedestal, for framing and luminance checks. */
+  get heroObject(): Object3D {
+    return this.item;
+  }
+
+  /** The pedestal's gold cap the hero stands on, for clearance and blow-out checks. */
+  get capObject(): Object3D {
+    return this.cap;
+  }
+
   /** Scale over the flare's rest size times its strength: 0 while no burst is on screen. */
   get flareLevel(): number {
     return this.disposed ? 0 : this.flareStrength;
@@ -476,7 +559,12 @@ export class UnboxStage {
 
     const top = this.crate.position.y + bodyHeight * pose.squash;
     this.swirl += Math.max(0, dt) * this.style.swirl;
-    this.fan.position.y = top;
+    const view = facing - this.root.rotation.y;
+    const risen = Math.min(1, Math.max(0, pose.pedestal));
+    const parting = RAY_PARTING * risen;
+    const awayX = -Math.sin(view) * parting;
+    const awayZ = -Math.cos(view) * parting;
+    this.fan.position.set(awayX, top, awayZ);
     this.fan.rotation.set(0, facing - this.root.rotation.y, Math.sin(this.swirl * 2.4) * 0.18);
     const reach = Math.max(0.05, pose.rayReach);
     for (const ray of this.rays) {
@@ -487,16 +575,17 @@ export class UnboxStage {
     }
 
     const flare = this.assets.flare;
-    flare.position.set(0, top + LID_HEIGHT, 0);
+    const shielded = 1 - (1 - BURST_ON_HERO) * risen;
+    flare.position.set(awayX, top + LID_HEIGHT, awayZ);
     flare.scale.setScalar(FLARE_SIZE * Math.max(0.001, pose.flareScale));
-    this.flareStrength = FLARE_PEAK * pose.burst;
+    this.flareStrength = FLARE_PEAK * pose.burst * shielded;
     this.assets.setFlare(this.accent, this.flareStrength);
 
     const rise = Math.max(0, pose.pedestal);
     this.pedestal.visible = rise > 0.001 && pose.fly < 1;
     this.pedestal.scale.setScalar(Math.max(0.001, rise));
     this.pedestal.position.y = this.crate.position.y + bodyHeight * (1 - Math.min(1, rise)) * 0.5;
-    this.item.rotation.y = pose.itemSpin;
+    this.item.rotation.set(heroPitch(this.hero, this.toCamera.y), view + heroYaw(pose.itemSpin), 0);
     this.item.scale.setScalar(1 - pose.fly);
 
     const glow = Math.max(pose.burst, pose.rays, pose.rumble * 0.5);
@@ -505,7 +594,7 @@ export class UnboxStage {
         LIGHT.rest,
         LIGHT.rumble * pose.rumble,
         LIGHT.rays * pose.rays,
-        LIGHT.burst * pose.burst,
+        LIGHT.burst * pose.burst * shielded,
       ) *
       (1 - pose.fly);
     const light = this.assets.light;
@@ -525,15 +614,6 @@ export class UnboxStage {
     this.assets.setFlare(this.accent, 0);
     for (const ray of this.rays) this.assets.unbindRay(ray.mesh);
     this.assets.light.intensity = 0;
-  }
-
-  private tintHero(hero: UnboxHero, accent: Color): Material {
-    const material = this.assets.heroMaterial;
-    const color = hero === 'pearls' ? new Color(rivieraTokens.ivory) : accent;
-    material.color.copy(color);
-    material.emissive.copy(color);
-    material.roughness = hero === 'pearls' ? 0.15 : 0.25;
-    return material;
   }
 }
 
@@ -616,32 +696,17 @@ const hinge = new Vector3();
 const forwardAxis = new Vector3(0, 0, 1);
 const shake = new Quaternion();
 
+/**
+ * Runs `task` once the frame being drawn has finished, when the main thread is idle where the
+ * host can say so: never inside a render, where a bake would swap the render target.
+ */
+function afterFrame(task: () => void): void {
+  if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(task);
+  else setTimeout(task, 0);
+}
+
 /** Runs `task` when the main thread is idle where the host can say so, otherwise now. */
 function scheduleIdle(task: () => void): void {
   if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(task);
   else task();
-}
-
-/** Heroes drawn with the same shape share one geometry. */
-function twinOf(hero: UnboxHero): UnboxHero {
-  if (hero === 'tickets') return 'coins';
-  if (hero === 'safe') return 'keys';
-  return hero;
-}
-
-function heroGeometry(hero: UnboxHero): BufferGeometry {
-  switch (hero) {
-    case 'coins':
-    case 'tickets':
-      return new CylinderGeometry(ITEM_SIZE, ITEM_SIZE, ITEM_SIZE * 0.2, 32).rotateX(Math.PI / 2);
-    case 'pearls':
-      return new OctahedronGeometry(ITEM_SIZE * 0.8, 3);
-    case 'keys':
-    case 'safe':
-      return new BoxGeometry(ITEM_SIZE * 1.4, ITEM_SIZE * 1.4, ITEM_SIZE * 1.4);
-    case 'card':
-      return new BoxGeometry(ITEM_SIZE * 1.3, ITEM_SIZE * 1.8, ITEM_SIZE * 0.08);
-    case 'charm':
-      return new OctahedronGeometry(ITEM_SIZE, 0);
-  }
 }
