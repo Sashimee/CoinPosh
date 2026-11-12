@@ -8,11 +8,43 @@ import { schedule } from '../motion/loop.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
+import { announcementHoldFor, type AnnouncementHold } from './announcementHold.ts';
 import { makePressable } from './pressable.ts';
 import { createFirstUpgradeNudge, hasBeenActivated } from './upgradeNudgeTrigger.ts';
 
 /** The line folds away after this long; the dock keeps its glow until Upgrades is opened. */
-const HINT_LINGER_MS = 12_000;
+export const HINT_LINGER_MS = 6_000;
+
+/**
+ * Folds the line after `lingerMs`, or the moment a crate cinematic takes the screen: the
+ * crate:fell handler in cinematicHold.ts engages the shared announcement hold synchronously.
+ * Returns a cancel for the pending fold.
+ */
+export function foldNudgeOnCue(
+  hold: AnnouncementHold,
+  fold: () => void,
+  lingerMs: number = HINT_LINGER_MS,
+): () => void {
+  if (hold.held) {
+    fold();
+    return () => undefined;
+  }
+  let off = (): void => undefined;
+  const timer = setTimeout(() => {
+    off();
+    fold();
+  }, lingerMs);
+  const cancel = (): void => {
+    clearTimeout(timer);
+    off();
+  };
+  off = hold.onChange((held) => {
+    if (!held) return;
+    cancel();
+    fold();
+  });
+  return cancel;
+}
 
 export interface UpgradeNudgeOptions {
   /** The dock's Upgrades button: it pulses once, then keeps a gold glow until it is opened. */
@@ -60,7 +92,8 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
     notice.style.opacity = String(Math.min(1, Math.max(0, value)));
   });
   let lineId: string | null = null;
-  let linger: ReturnType<typeof setTimeout> | undefined;
+  const hold = announcementHoldFor(ctx.store);
+  let cancelLinger = (): void => undefined;
   let folding = false;
 
   const paint = (): void => {
@@ -83,10 +116,10 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
     }
     // Before the first gesture audio is still locked and Chrome logs an error for vibrate().
     if (hasBeenActivated(navigator)) feedback(ctx, 'open');
-    linger = setTimeout(fold, HINT_LINGER_MS);
+    cancelLinger = foldNudgeOnCue(hold, fold);
   };
   const fold = (): void => {
-    clearTimeout(linger);
+    cancelLinger();
     if (notice.hidden || folding) return;
     folding = true;
     void drop.to(0, SPRINGS.snappy).then(() => {
@@ -171,7 +204,7 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
   );
   ctx.own(ctx.loc.bind(paint));
   ctx.own(() => {
-    clearTimeout(linger);
+    cancelLinger();
     drop.stop();
   });
   return notice;

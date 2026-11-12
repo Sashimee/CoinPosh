@@ -22,9 +22,9 @@
       "hint": "Your coins on the ledge are still in play. Watch them fall."
     },
     "upgradeHint": {
-      "title": "{{name}} is within reach",
-      "hint": "Tap to see your first upgrade.",
-      "aria": "{{name}} is within reach. Open Upgrades"
+      "title": "{{name}} is ready",
+      "hint": "Tap to buy your first upgrade.",
+      "aria": "{{name}} is ready to buy. Open Upgrades"
     }
   },
   "combo": {
