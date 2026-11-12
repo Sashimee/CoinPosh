@@ -13,6 +13,8 @@ export interface MeterRail {
   readonly side: RailSide;
   /** Opens the rail into its card, or closes it after `linger` ms (cancelled by a reopen). */
   setOpen(open: boolean, linger?: number): void;
+  /** Folds the rail shut on this frame, with no spring, whatever the motion setting. */
+  collapse(): void;
   /** Moves the rail to its slot in viewport px, relative to `origin`; null hides it. */
   place(slot: RailSlot | null, origin: { left: number; top: number }): void;
   /** How far, in px, a transient effect pushes the contents past their field-side edge. */
@@ -69,11 +71,15 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
     paint(value);
   });
 
-  const apply = (): void => {
-    const open = wanted && slot !== null && slot.card !== null;
-    if (root.dataset.open === String(open)) return;
+  const mark = (open: boolean): boolean => {
+    if (root.dataset.open === String(open)) return false;
     root.dataset.open = String(open);
     root.classList.toggle('is-open', open);
+    return true;
+  };
+  const apply = (): void => {
+    const open = wanted && slot !== null && slot.card !== null;
+    if (!mark(open)) return;
     if (isReducedMotion()) {
       root.classList.add('is-swapping');
       root.getBoundingClientRect();
@@ -115,6 +121,12 @@ export function createMeterRail(ctx: UiContext, options: MeterRailOptions): Mete
         wanted = false;
         apply();
       }, delay);
+    },
+    collapse() {
+      clearTimeout(linger);
+      wanted = false;
+      mark(false);
+      openness.jump(0);
     },
     place(next, at) {
       slot = next;

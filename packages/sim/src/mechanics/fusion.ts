@@ -1,6 +1,7 @@
 import { TICK_RATE_HZ } from '../constants.ts';
 import type { StateHasher } from '../hash.ts';
 import type { CoinPair } from './contacts.ts';
+import { FUSION_TUNING } from './tuning.ts';
 
 /**
  * The economy's fusion rules (`economyConfig.fusion` in packages/economy), which the
@@ -11,6 +12,13 @@ export interface FusionRules {
   readonly inputCount: number;
   /** How long every contact in the group must have lasted, in seconds. */
   readonly contactSeconds: number;
+  /**
+   * The fusionWindow upgrade stat (`upgradeStatAt(levels, 'fusionWindow')`), which stretches
+   * the window a coin stays fresh for, FUSION_TUNING.freshTicks, by that factor; 1 when
+   * omitted. It leaves contactSeconds alone: a fusion is held back by how long coins stay
+   * fresh, not by how long they must touch (#132).
+   */
+  readonly fusionWindow?: number;
 }
 
 /** A pair's touching progress toward a fusion, for the renderer's charge-up. */
@@ -54,6 +62,18 @@ export function fusionTicks(contactSeconds: number): number {
     throw new RangeError(`Fusion contactSeconds must be a positive number, got ${contactSeconds}`);
   }
   return Math.max(1, Math.ceil(contactSeconds * TICK_RATE_HZ - 1e-9));
+}
+
+/**
+ * Ticks a coin stays fresh once its spawn grace is over: FUSION_TUNING.freshTicks stretched
+ * by the fusionWindow stat and rounded up, with the same billionth-of-a-tick slack as
+ * fusionTicks, so level 1 (× 1.05) gives 331 ticks.
+ */
+export function freshTicks(fusionWindow = 1): number {
+  if (!Number.isFinite(fusionWindow) || fusionWindow <= 0) {
+    throw new RangeError(`Fusion fusionWindow must be a positive number, got ${fusionWindow}`);
+  }
+  return Math.max(1, Math.ceil(FUSION_TUNING.freshTicks * fusionWindow - 1e-9));
 }
 
 /**

@@ -1,6 +1,7 @@
 import { economyConfig, openingHeap } from '@coinposh/economy';
 import { COIN_TIERS } from '@coinposh/shared';
 import { afterAll, describe, expect, it } from 'vitest';
+import { COIN } from '../coin.ts';
 import { TICK_RATE_HZ } from '../constants.ts';
 import { MAX_DROP_OFFSET_MM, type SimInput } from '../inputs.ts';
 import { Xoshiro128ss } from '../prng.ts';
@@ -141,6 +142,45 @@ describe('aimed drops on the Demo table', () => {
       expect(gold?.tick).toBeGreaterThanOrEqual(
         (silver?.tick ?? 0) + FUSION_TUNING.spawnGraceTicks,
       );
+    },
+  );
+
+  /**
+   * P-332: kept on purpose. The drop strip rides the pusher, which carries a landed coin
+   * about two coin widths a second, so a copper tapped a second after another lands two
+   * widths behind it, not on it. Three taps lay a line that the backboard folds into a
+   * pair and a straggler; a fourth or fifth tap, or a pour, closes the gap.
+   * Fusing them anyway would take a contact gap the player can see.
+   */
+  it.each([-120, -60, 0, 60, 120])(
+    'does not fuse three coppers tapped a second apart at %i mm: the strip carries each two widths on',
+    async (xMm) => {
+      const sim = await Sim.create({ seed: 0xa1d, mechanics: DEMO_MECHANICS, openingHeap });
+      try {
+        const [first, second] = dropped(2);
+        let apart = 0;
+        for (let tick = 0; tick < 8 * TICK_RATE_HZ; tick++) {
+          if (tick === 2 * TICK_RATE_HZ) {
+            const at = (id: number | undefined) => {
+              const coin = sim.coins().find((c) => c.id === id);
+              if (!coin) {
+                throw new Error(`coin ${id} is not on the table`);
+              }
+              return coin.translation;
+            };
+            const p = at(first);
+            const q = at(second);
+            const dx = p.x - q.x;
+            const dz = p.z - q.z;
+            apart = Math.sqrt(dx * dx + dz * dz);
+          }
+          const events = sim.step(aimed(xMm, 3, TICK_RATE_HZ)(tick)).mechanics;
+          expect(events.filter(({ kind }) => kind === 'fusion')).toEqual([]);
+        }
+        expect(apart).toBeGreaterThan(1.5 * 2 * COIN.radius);
+      } finally {
+        sim.dispose();
+      }
     },
   );
 
