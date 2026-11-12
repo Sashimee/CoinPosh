@@ -22,9 +22,9 @@
       "hint": "Ihre Münzen an der Kante sind noch im Spiel. Sehen Sie zu, wie sie fallen."
     },
     "upgradeHint": {
-      "title": "{{name}} ist in Reichweite",
-      "hint": "Tippen Sie für Ihr erstes Upgrade.",
-      "aria": "{{name}} ist in Reichweite. Upgrades öffnen"
+      "title": "{{name}} ist bereit",
+      "hint": "Tippen Sie, um Ihr erstes Upgrade zu kaufen.",
+      "aria": "{{name}} ist jetzt kaufbar. Upgrades öffnen"
     }
   },
   "combo": {
