@@ -1,18 +1,24 @@
-import { album, pity as pityConfig } from '@coinposh/economy';
+import { album, pity as pityConfig, rarityRank } from '@coinposh/economy';
 import type { AlbumResponse, Currency, PityCounters, Rarity, Reward } from '@coinposh/shared';
 import type { UnboxHero } from '../../vfx/cinematics/unbox/stage.ts';
 
 export interface PityOutlook {
   readonly rarity: Rarity & keyof PityCounters;
-  /** Opens left until this rarity or better is guaranteed; 1 means the next crate. */
+  /** Opens left until a crate of this rarity or better is guaranteed; 1 means the next open. */
   readonly within: number;
 }
 
 /**
  * The nearest guarantee the server's counters promise, read against the economy's pity rules.
- * The client never rolls: this only tells the player what the server has already committed to.
+ * `rollDrop` forces a rule's floor once its counter has `within - 1` misses, so the forced
+ * crate is open number `within - misses` from now. Pass the crate just opened to leave out the
+ * floors it met itself; null then means it met every one. The client never rolls: this only
+ * tells the player what the server has already committed to.
  */
-export function pityOutlook(counters: PityCounters): PityOutlook {
+export function pityOutlook(
+  counters: PityCounters,
+  opened: Rarity | null = null,
+): PityOutlook | null {
   let best: PityOutlook | null = null;
   for (const rule of pityConfig.rules) {
     const misses = counters[rule.rarity];
@@ -21,10 +27,10 @@ export function pityOutlook(counters: PityCounters): PityOutlook {
         `Server pity counter for ${rule.rarity} is ${misses}, past its ${rule.within}-open guarantee; the roll that should have forced it did not`,
       );
     }
+    if (opened !== null && rarityRank(opened) >= rarityRank(rule.rarity)) continue;
     const within = rule.within - misses;
     if (best === null || within < best.within) best = { rarity: rule.rarity, within };
   }
-  if (best === null) throw new Error('Economy pity config has no rules; crates need at least one');
   return best;
 }
 
