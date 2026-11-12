@@ -4,9 +4,10 @@ import { watch } from '../../app/store.ts';
 import { formatDecimal, formatInteger } from '../../i18n/index.ts';
 import { tr, type UiContext } from '../context.ts';
 import { fromMarkup, h } from '../dom.ts';
+import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
-import { announcementHoldFor, createRankGate } from './announcementHold.ts';
+import { announcementHoldFor, createRankGate, peakReplay } from './announcementHold.ts';
 import { createMeterRail, type MeterRail } from './meterRail.ts';
 import { fitCaption, swellOverhang } from './railLayout.ts';
 
@@ -61,6 +62,24 @@ function fluteMarkup(id: string, tiers: number): string {
 let fluteIds = 0;
 /** A spent cascade keeps its card up this long, so the drain reads before it folds away. */
 const RANK_LINGER_MS = 1500;
+const PULSE_MS = 1100;
+const PULSE_REDUCED_MS = 700;
+const PULSE_RUNG_STAGGER_MS = 70;
+const PULSE_GLOW = [
+  '0 0 0 1.5px rgb(var(--cp-champagne-rgb) / 0.55)',
+  '0 0 20px 3px rgb(var(--cp-gold-brushed-rgb) / 0.7)',
+  'inset 0 0 16px rgb(var(--cp-champagne-rgb) / 0.4)',
+];
+const PULSE_GLOW_OFF = ['0 0 0 0 transparent', '0 0 0 0 transparent', 'inset 0 0 0 transparent'];
+
+/**
+ * The glow layered over whatever the rail already casts. Both frames keep the same list of
+ * shadows, outset and inset in the same places, so the browser interpolates them instead of
+ * flipping between them halfway.
+ */
+function withGlow(rest: string, glow: readonly string[]): string {
+  return rest === 'none' ? glow.join(', ') : [...glow, rest].join(', ');
+}
 
 export function createComboLadder(ctx: UiContext): MeterRail {
   const id = `cp-flute-${++fluteIds}`;
@@ -181,8 +200,59 @@ export function createComboLadder(ctx: UiContext): MeterRail {
     root.setAttribute('aria-label', view.tier ? spoken.textContent : tr(ctx, 'combo.ariaIdle'));
   };
 
+  const pulses: Animation[] = [];
+  /**
+   * A compact echo of a rank reached under a hold whose cascade has since fallen: the rail
+   * flares gold and the flute's rungs light up to the peak, all in the rail's own box.
+   */
+  const pulse = (peak: number): void => {
+    for (const running of pulses.splice(0)) running.cancel();
+    const reduced = isReducedMotion();
+    const style = getComputedStyle(root);
+    const rest = {
+      boxShadow: withGlow(style.boxShadow, PULSE_GLOW_OFF),
+      borderColor: style.borderColor,
+    };
+    const flare = {
+      boxShadow: withGlow(style.boxShadow, PULSE_GLOW),
+      borderColor: 'var(--cp-gold-brushed)',
+    };
+    const duration = reduced ? PULSE_REDUCED_MS : PULSE_MS;
+    const rise = 'cubic-bezier(0.2, 0.9, 0.3, 1)';
+    const fade = 'cubic-bezier(0.45, 0, 0.55, 1)';
+    pulses.push(
+      root.animate(
+        reduced
+          ? [{ ...rest, easing: fade }, { ...flare, offset: 0.3, easing: fade }, { ...rest }]
+          : [
+              { ...rest, scale: '1', easing: rise },
+              { ...flare, scale: '1.06', offset: 0.16, easing: 'linear' },
+              { ...flare, scale: '1.02', offset: 0.34, easing: fade },
+              { ...rest, scale: '1' },
+            ],
+        { duration },
+      ),
+    );
+    rungs.slice(0, peak).forEach((rung, i) => {
+      pulses.push(
+        rung.animate(
+          [
+            { easing: rise },
+            { stroke: 'var(--cp-champagne)', strokeWidth: '2.2', offset: 0.22, easing: fade },
+            {},
+          ],
+          { duration, delay: reduced ? 0 : i * PULSE_RUNG_STAGGER_MS },
+        ),
+      );
+    });
+  };
+  ctx.own(() => {
+    for (const running of pulses.splice(0)) running.cancel();
+  });
+
   // Under a hold the flute keeps filling but the card stays folded; once free it opens again
-  // with one swell for the highest rank the hold kept quiet.
+  // with one swell for the highest rank the hold kept quiet, or, when the cascade has fallen
+  // from that rank, the rail pulses for it instead of the centre stamp.
   const hold = announcementHoldFor(ctx.store);
   const openFor = (rank: number): void => {
     rail.setOpen(rank > 0 && !hold.held, RANK_LINGER_MS);
@@ -199,8 +269,9 @@ export function createComboLadder(ctx: UiContext): MeterRail {
       rise: () => {
         swell.kick(6);
       },
-      replay: (_peak, live) => {
+      replay: (peak, live) => {
         if (live > 0) swell.kick(6);
+        if (peakReplay(peak, live) === 'pulse') pulse(peak);
       },
     },
     comboView(ctx.store.getState().cascadeCount, cascade).rank,

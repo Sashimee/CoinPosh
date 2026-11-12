@@ -6,6 +6,8 @@ import {
   createAnnouncementHold,
   createRankGate,
   holdTierVoice,
+  peakReplay,
+  type PeakReplay,
   type RankAnnouncements,
 } from './announcementHold.ts';
 
@@ -182,6 +184,41 @@ describe('createRankGate', () => {
     }
     release();
     expect(held.live).toBe(cascade.tiers.length);
+  });
+});
+
+describe('peakReplay', () => {
+  it('stamps a peak the cascade still stands at', () => {
+    expect(peakReplay(3, 3)).toBe('stamp');
+  });
+
+  it('pulses a peak whose cascade has ended', () => {
+    expect(peakReplay(3, 0)).toBe('pulse');
+  });
+
+  it('pulses a peak the cascade has fallen from but not left', () => {
+    expect(peakReplay(4, 2)).toBe('pulse');
+  });
+
+  it('stamps when the live rank stands above the peak', () => {
+    expect(peakReplay(2, 3)).toBe('stamp');
+  });
+
+  it('routes a hold that ends mid-cascade to the stamp and one that outlives it to the pulse', () => {
+    const hold = createAnnouncementHold();
+    const shown: PeakReplay[] = [];
+    const gate = createRankGate(hold, {
+      rise: () => undefined,
+      replay: (peak, live) => shown.push(peakReplay(peak, live)),
+    });
+    const crate = hold.hold();
+    for (const count of [1, countFor(2), countFor(3)]) gate.update(comboView(count, cascade).rank);
+    crate();
+    const next = hold.hold();
+    gate.update(comboView(countFor(4), cascade).rank);
+    gate.update(comboView(0, cascade).rank);
+    next();
+    expect(shown).toEqual(['stamp', 'pulse']);
   });
 });
 

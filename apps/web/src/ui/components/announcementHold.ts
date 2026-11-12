@@ -59,6 +59,17 @@ export interface RankAnnouncements {
   readonly replay: (peak: number, live: number) => void;
 }
 
+/**
+ * How a peak kept quiet by a hold is announced once the hold ends. Only a rank the count still
+ * stands at earns the centre stamp; a peak the cascade has already fallen from would announce a
+ * rank that is over, over the table the player just got back, so it only pulses on the rail.
+ */
+export type PeakReplay = 'stamp' | 'pulse';
+
+export function peakReplay(peak: number, live: number): PeakReplay {
+  return live >= peak ? 'stamp' : 'pulse';
+}
+
 export interface RankGate {
   /** The live rank, which keeps following the count through a hold. */
   readonly live: number;
