@@ -8,6 +8,7 @@ import type {
   Wallet,
 } from '@coinposh/shared';
 import type { TablePoint } from '../systems/events.ts';
+import type { AlbumProgressMap } from './loot.ts';
 
 export type CrateStingerCue =
   'arrive' | 'teeter' | 'fall' | 'land' | 'shudder' | 'rays' | 'burst' | 'collect';
@@ -37,6 +38,10 @@ export interface CrateEvents {
     readonly roll: Roll;
     readonly wallet: Wallet;
   };
+  /** The server's album after an open that rolled album cards: each card's set progress. */
+  'crate:album': { readonly crateId: CrateId; readonly progress: AlbumProgressMap };
+  /** The album read failed; the card lines show without set progress. */
+  'crate:albumFailed': { readonly crateId: CrateId; readonly error: unknown };
   /** The cinematic burst: the rarity is now on screen. */
   'crate:revealed': { readonly crateId: CrateId; readonly rarity: Rarity };
   /** The player collected; the HUD shows the wallet from `crate:opened`. */

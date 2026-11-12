@@ -1,7 +1,15 @@
-import type { CrateId, NudgeDirection, PityCounters, TableCrate, Tick } from '@coinposh/shared';
+import type {
+  CrateId,
+  NudgeDirection,
+  PityCounters,
+  Reward,
+  TableCrate,
+  Tick,
+} from '@coinposh/shared';
 import type { Bus } from '../../app/bus.ts';
 import type { ApiClient, TableEvent, TableSync } from '../../net/index.ts';
 import type { CrateEvents } from './events.ts';
+import { albumProgress, rollHasAlbumCard, type AlbumProgressMap } from './loot.ts';
 import { CrateRide } from './ride.ts';
 
 /** The slice of `SimBridge` crates read: the sim clock for claims and the pusher for the ride. */
@@ -26,6 +34,7 @@ export class CrateController {
   private readonly rides = new Map<CrateId, CrateRide>();
   private readonly awaitingClaim = new Set<CrateId>();
   private readonly opening = new Map<CrateId, Promise<void>>();
+  private queue: Promise<void> = Promise.resolve();
   private readonly unsubscribe: () => void;
   private latestPity: PityCounters | null = null;
   private disposed = false;
@@ -144,10 +153,17 @@ export class CrateController {
     this.options.table.claimCrate(crateId, tick, 'front');
   }
 
+  /**
+   * Opens run one at a time, each with its album read, so a crate's set progress is the album
+   * right after its own grant: overlapping opens would let a later crate's card land first.
+   */
   private open(crateId: CrateId): void {
     if (this.opening.has(crateId)) return;
-    const request = this.request(crateId).finally(() => this.opening.delete(crateId));
+    const run = () => this.request(crateId);
+    // A failed open still surfaces through `settled()`; it must not stall the crates behind it.
+    const request = this.queue.then(run, run).finally(() => this.opening.delete(crateId));
     this.opening.set(crateId, request);
+    this.queue = request;
   }
 
   /** Only the server call can fail the open; once it answers, the wallet is already credited. */
@@ -166,5 +182,18 @@ export class CrateController {
       wallet: opened.wallet,
     });
     this.options.events.emit('crate:pity', { pity: opened.roll.pity });
+    if (rollHasAlbumCard(opened.roll.rewards)) await this.readAlbum(crateId, opened.roll.rewards);
+  }
+
+  /** Set progress is the server's album after the open, never a count kept on this client. */
+  private async readAlbum(crateId: CrateId, rewards: readonly Reward[]): Promise<void> {
+    let progress: AlbumProgressMap;
+    try {
+      progress = albumProgress(await this.options.client.call('album'), rewards);
+    } catch (error) {
+      if (!this.disposed) this.options.events.emit('crate:albumFailed', { crateId, error });
+      return;
+    }
+    if (!this.disposed) this.options.events.emit('crate:album', { crateId, progress });
   }
 }

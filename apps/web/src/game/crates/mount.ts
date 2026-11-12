@@ -1,3 +1,4 @@
+import type { CrateId } from '@coinposh/shared';
 import type { Object3D, PerspectiveCamera } from 'three/webgpu';
 import type { UiApp } from '../../app/index.ts';
 import { createBus, type Bus } from '../../app/bus.ts';
@@ -11,7 +12,8 @@ import { CrateController, type CrateControllerOptions, type CrateSimPort } from 
 import type { CrateEvents } from './events.ts';
 import { bindArrivalHint, mountArrivalHint } from './hint.ts';
 import { registerCratesStrings } from './i18n.ts';
-import { mountCrateReveal } from './revealCard.ts';
+import type { AlbumProgressMap } from './loot.ts';
+import { mountCrateReveal, type CrateReveal } from './revealCard.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
 
 export interface CratesMountOptions {
@@ -58,6 +60,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   const reducedMotion = options.reducedMotion ?? isReducedMotion;
   const disposers: (() => void)[] = [];
   const table = new TableCrateView(options.stage.scene);
+  const albums = new Map<CrateId, AlbumProgressMap>();
+  const reveals = new Map<CrateId, CrateReveal>();
   const controller = new CrateController({
     table: options.net.table,
     client: options.net.client,
@@ -72,17 +76,21 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     reducedMotion,
     vfx: options.vfx ?? null,
     haptics: options.haptics ?? null,
-    card: (opened, controls) =>
-      mountCrateReveal({
+    card: (opened, controls) => {
+      const reveal = mountCrateReveal({
         ui: options.ui,
         host: options.host,
         rarity: opened.roll.rarity,
         roll: opened.roll,
+        album: albums.get(opened.crateId) ?? null,
         reducedMotion: reducedMotion(),
         inventoryTarget: options.inventoryTarget,
         onSkip: controls.skip,
         onCollect: controls.collect,
-      }),
+      });
+      reveals.set(opened.crateId, reveal);
+      return reveal;
+    },
     onStart: (crateId) => {
       table.remove(crateId);
     },
@@ -120,6 +128,14 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       const at = table.landing(crateId) ?? trayLanding(0);
       director.enqueue({ crateId, roll, wallet, at });
     }),
+    events.on('crate:album', ({ crateId, progress }) => {
+      albums.set(crateId, progress);
+      reveals.get(crateId)?.setAlbum(progress);
+    }),
+    events.on('crate:collected', ({ crateId }) => {
+      albums.delete(crateId);
+      reveals.delete(crateId);
+    }),
     events.on('crate:rejected', ({ crateId }) => {
       table.remove(crateId);
     }),
@@ -153,6 +169,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       if (disposed) return;
       disposed = true;
       for (const off of disposers.splice(0)) off();
+      albums.clear();
+      reveals.clear();
       director.dispose();
       controller.dispose();
       table.dispose();
