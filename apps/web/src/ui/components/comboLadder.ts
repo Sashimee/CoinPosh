@@ -189,7 +189,7 @@ export function createComboLadder(ctx: UiContext): MeterRail {
   };
   ctx.own(
     hold.onChange((held) => {
-      if (held) rail.setOpen(false);
+      if (held) rail.collapse();
       else openFor(comboView(ctx.store.getState().cascadeCount, cascade).rank);
     }),
   );

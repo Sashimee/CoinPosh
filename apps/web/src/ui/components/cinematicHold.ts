@@ -11,7 +11,10 @@ export interface CinematicEvents {
 export interface CinematicHoldOptions {
   readonly events: CinematicEvents;
   readonly hold: AnnouncementHold;
-  /** The crate whose unbox is on screen, if any; the director plays opened crates in order. */
+  /**
+   * The crate whose unbox is on screen, if any; the director plays opened crates in order. It is
+   * read on the frame after an open, so it need not have taken the crate before this hears it.
+   */
   readonly director: { readonly active: string | null };
   /** Runs `check` once per rendered frame; returns its unsubscribe. */
   readonly onFrame: (check: () => void) => () => void;
@@ -28,7 +31,7 @@ export interface CinematicHoldOptions {
 /** Demo answers in a frame and live in well under a second; a claim queued offline can sit forever. */
 export const CLAIM_HOLD_CAP_MS = 6000;
 
-type Phase = 'claiming' | 'lapsed' | 'queued' | 'playing' | 'leaving';
+type Phase = 'claiming' | 'queued' | 'playing' | 'leaving';
 
 interface Tracked {
   phase: Phase;
@@ -39,7 +42,7 @@ interface Tracked {
 /**
  * Holds the HUD's announcements from a crate's fall until its unbox has left the screen, so the
  * cinematic owns it. Every phase has a way out: a claim that never answers lapses after
- * `claimCapMs` (and holds again if the open turns up later), a refused or failed claim lets go
+ * `claimCapMs` and is forgotten (an open that turns up later holds afresh), a refused or failed claim lets go
  * at once, and an opened crate the director never plays (its card or cinematic threw) or drops
  * mid-play lets go on the next frame.
  */
@@ -71,6 +74,7 @@ export function holdForCrateCinematics(options: CinematicHoldOptions): () => voi
   };
 
   const check = (): void => {
+    if (order.length === 0) return;
     const active = director.active;
     const activeAt = active === null ? -1 : order.indexOf(active);
     for (const [i, crateId] of [...order].entries()) {
@@ -103,8 +107,7 @@ export function holdForCrateCinematics(options: CinematicHoldOptions): () => voi
         warn(
           `CoinPosh crates: crate ${crateId} waited ${claimCapMs} ms for its open; HUD announcements resume until it opens.`,
         );
-        crate.phase = 'lapsed';
-        settle(crate);
+        forget(crateId);
       }, claimCapMs);
       crate.cancel = () => {
         clearTimeout(timer);
@@ -122,7 +125,6 @@ export function holdForCrateCinematics(options: CinematicHoldOptions): () => voi
       crate.release ??= hold.hold();
       crate.phase = 'queued';
       if (!order.includes(crateId)) order.push(crateId);
-      check();
     }),
     events.on('crate:collected', ({ crateId }) => {
       const crate = crates.get(crateId);

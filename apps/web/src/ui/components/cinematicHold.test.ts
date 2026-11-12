@@ -152,8 +152,34 @@ describe('holdForCrateCinematics', () => {
     r.emit('crate:fell', 'a');
     r.emit('crate:opened', 'a');
     expect(r.director.active).toBeNull();
+    expect(r.hold.held).toBe(true);
+    r.frame();
     expect(r.hold.held).toBe(false);
     expect(r.warnings).toHaveLength(1);
+  });
+
+  it('does not depend on the director hearing the open before it does', () => {
+    const r = rig();
+    r.emit('crate:fell', 'a');
+    r.emit('crate:opened', 'a');
+    r.director.active = 'a';
+    r.frame();
+    expect(r.hold.held).toBe(true);
+    expect(r.warnings).toEqual([]);
+    r.emit('crate:collected', 'a');
+    r.exitReveal();
+    expect(r.hold.held).toBe(false);
+  });
+
+  it('forgets a lapsed claim so it does not linger until dispose', () => {
+    const r = rig();
+    r.emit('crate:fell', 'a');
+    vi.advanceTimersByTime(CAP_MS);
+    expect(r.hold.held).toBe(false);
+    r.emit('crate:fell', 'a');
+    expect(r.hold.held).toBe(true);
+    r.emit('crate:rejected', 'a');
+    expect(r.hold.held).toBe(false);
   });
 
   it('keeps a queued crate held behind the one playing, and lets go if its turn throws', () => {
