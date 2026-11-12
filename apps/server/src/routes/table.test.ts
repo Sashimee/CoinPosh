@@ -1,5 +1,10 @@
 import { coinTiers, crateSpawn, fusion, fusionValue, openingHeap } from '@coinposh/economy';
-import { endpoints, MAX_CLAIMS_PER_BATCH, type MintedCoin } from '@coinposh/shared';
+import {
+  endpoints,
+  MAX_CLAIMS_PER_BATCH,
+  tableSnapshotEndpoint,
+  type MintedCoin,
+} from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { mintedValue } from '../do/entities.ts';
@@ -12,6 +17,7 @@ import {
   expectConserved,
   expectError,
   playerStub,
+  reload,
   state,
   vaultCoins,
 } from '../test/game.ts';
@@ -548,6 +554,79 @@ describe('idempotency', () => {
       }),
       401,
       'invalid_signature',
+    );
+  });
+});
+
+describe('POST /v1/table/snapshot', () => {
+  async function snapshotBody(session: Session) {
+    const { table } = await reload(session);
+    const coin = table.coins[0];
+    if (table.session === undefined || coin === undefined) {
+      throw new Error('A boot should return a session and the opening heap.');
+    }
+    return {
+      session: table.session,
+      seq: 1,
+      tick: 60,
+      pusher: { tickInCycle: 0 },
+      coins: [[coin.id, 0, 160, -9_000, 0, 0, 0, 32_767, 'asleep']],
+      crates: [],
+    };
+  }
+
+  it('stores a signed snapshot and answers with the contract response', async () => {
+    const session = await newSession();
+    const body = await snapshotBody(session);
+    const response = await session.call(tableSnapshotEndpoint.path, { body });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(tableSnapshotEndpoint.response.parse(await response.json())).toEqual({
+      seq: 1,
+      stored: 1,
+      ignored: 0,
+    });
+  });
+
+  it('requires a sign-in, a device signature over the body and an Idempotency-Key', async () => {
+    const session = await newSession();
+    const body = await snapshotBody(session);
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body, accessToken: 'forged.token.value' }),
+      401,
+      'unauthorized',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body, signature: null }),
+      401,
+      'invalid_signature',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, {
+        body,
+        signBody: JSON.stringify({ ...body, seq: 2 }),
+      }),
+      401,
+      'invalid_signature',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body, idempotencyKey: null }),
+      400,
+      'idempotency_key_missing',
+    );
+    expect((await session.call(tableSnapshotEndpoint.path, { body })).status).toBe(200);
+  });
+
+  it('refuses a body that is not JSON or not a snapshot', async () => {
+    const session = await newSession();
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body: '{"session":' }),
+      400,
+      'bad_request',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body: { coins: [] } }),
+      400,
+      'validation_failed',
     );
   });
 });
