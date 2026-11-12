@@ -1,16 +1,5 @@
 import type { CrateId, Rarity, Roll, Wallet } from '@coinposh/shared';
-import {
-  abs,
-  dot,
-  exp,
-  float,
-  normalView,
-  positionLocal,
-  positionViewDirection,
-  uniform,
-  vec3,
-  vec4,
-} from 'three/tsl';
+import { abs, dot, exp, float, normalLocal, positionLocal, uniform, vec3, vec4 } from 'three/tsl';
 import {
   AdditiveBlending,
   Color,
@@ -73,12 +62,24 @@ const TEETER_GLOW = 1.45;
 const TEETER_PULSE_S = 0.42;
 /** Reduced motion holds the seam lit at one level: no breath, no pulse, no sweep. */
 export const STATIC_GLOW = 1;
-/** HDR peak of the seam line; above 1 so the bloom pass gives it a halo from across the table. */
-const SEAM_PEAK = 2.6;
-/** The lacquer picks up a rim of the seam colour so the box itself reads lit, not a dark hole. */
-const RIM_GLOW = 0.9;
+/**
+ * Peak of the seam line. Kept under the bloom threshold: at 45 px a bloomed seam washes the whole
+ * crate grey, and the halo spreads further on the smaller back-shelf crate than on the front floor.
+ */
+const SEAM_PEAK = 0.75;
+/** The lacquer's side faces pick up the seam colour so the box itself reads lit, not a dark hole. */
+const RIM_GLOW = 0.25;
 /** Brushed gold never drops below this self-light, so the trim reads even off the key light. */
-const TRIM_FLOOR = 0.42;
+const TRIM_FLOOR = 1;
+/**
+ * The lacquer is matte and self-lit along its own normals rather than by the venue: its sheen
+ * caught the warm rim light on the back shelf but not on the dim front floor, so the same crate
+ * read lighter at the back than where the player pushes it over.
+ */
+const LACQUER_LIFT = '#1E3A6E';
+const LIFT_FLOOR = 0.28;
+const LACQUER_ALBEDO = 0.5;
+const LIFT_KEY = 0.22;
 const GLINT_PEAK = 3.2;
 /** A glint runs corner to corner right after the crate lands, then again every few seconds. */
 const GLINT_DELAY_S = ARRIVE_S;
@@ -89,6 +90,12 @@ const GLINT_FROM = -0.75;
 const GLINT_TO = 1.55;
 /** Where a parked glint sits: far enough off the diagonal that the trim shows none of it. */
 export const GLINT_OFF = 8;
+/**
+ * Reduced motion trades the sweep for a still highlight: the glint rests on the lid corner nearest
+ * the player, at a fraction of its sweep strength so it reads as a sheen rather than a flash.
+ */
+export const GLINT_REST = 1.15;
+export const GLINT_STILL = 0.3;
 const GLINT_SHARPNESS = 110;
 /** The standby crate is drawn this small, under the tray floor: there for the shader, not seen. */
 const STANDBY_SCALE = 1e-3;
@@ -112,11 +119,13 @@ export interface CrateShine {
   readonly glow: number;
   /** Glint sweep position along the crate diagonal, in crate edges; `GLINT_OFF` when parked. */
   readonly sweep: number;
+  /** Glint strength: 1 for the sweep, `GLINT_STILL` for the reduced-motion highlight. */
+  readonly glint: number;
 }
 
 /** How a crate shines `age` seconds after it spawned. */
 export function crateShine(age: number, teeter: boolean, reducedMotion: boolean): CrateShine {
-  if (reducedMotion) return { glow: STATIC_GLOW, sweep: GLINT_OFF };
+  if (reducedMotion) return { glow: STATIC_GLOW, sweep: GLINT_REST, glint: GLINT_STILL };
   const t = Math.max(0, age);
   const glow = teeter
     ? TEETER_GLOW + 0.25 * Math.sin((t / TEETER_PULSE_S) * Math.PI * 2)
@@ -127,13 +136,14 @@ export function crateShine(age: number, teeter: boolean, reducedMotion: boolean)
     since < 0 || cycle >= GLINT_SWEEP_S
       ? GLINT_OFF
       : lerp(GLINT_FROM, GLINT_TO, easeInOutCubic(cycle / GLINT_SWEEP_S));
-  return { glow, sweep };
+  return { glow, sweep, glint: 1 };
 }
 
 interface CrateLook {
   readonly seam: Color;
   glow: number;
   sweep: number;
+  glint: number;
 }
 
 interface TableCrate {
@@ -262,25 +272,29 @@ export class TableCrateView {
     const tint = uniform(new Color()).onObjectUpdate(({ object }) => this.lookOf(object).seam);
     const glow = uniform(0).onObjectUpdate(({ object }) => this.lookOf(object).glow);
     const sweep = uniform(GLINT_OFF).onObjectUpdate(({ object }) => this.lookOf(object).sweep);
+    const strength = uniform(1).onObjectUpdate(({ object }) => this.lookOf(object).glint);
 
     this.lacquer = new MeshPhysicalNodeMaterial({
-      color: rivieraTokens['navy-lacquer'],
-      roughness: 0.24,
-      clearcoat: 1,
-      clearcoatRoughness: 0.06,
+      color: new Color(rivieraTokens['navy-lacquer']).multiplyScalar(LACQUER_ALBEDO),
+      roughness: 1,
+      specularIntensity: 0,
     });
-    const facing = abs(dot(normalView, positionViewDirection));
-    this.lacquer.emissiveNode = tint.mul(float(1).sub(facing).pow(2).mul(glow).mul(RIM_GLOW));
+    const up = normalLocal.y;
+    const lift = uniform(new Color(LACQUER_LIFT)).mul(up.max(0).mul(LIFT_KEY).add(LIFT_FLOOR));
+    const sides = float(1).sub(abs(up));
+    this.lacquer.emissiveNode = lift.add(tint.mul(sides.mul(glow).mul(RIM_GLOW)));
 
     const brushed = new Color(rivieraTokens['gold-brushed']);
     this.gold = new MeshPhysicalNodeMaterial({
       color: brushed,
       metalness: 1,
-      roughness: 0.26,
+      roughness: 0.55,
     });
     const along = dot(positionLocal, vec3(1, 1, 1).normalize()).div(S);
     const glint = exp(along.sub(sweep).pow(2).mul(-GLINT_SHARPNESS));
-    this.gold.emissiveNode = uniform(brushed).mul(glint.mul(GLINT_PEAK).add(TRIM_FLOOR));
+    this.gold.emissiveNode = uniform(brushed).mul(
+      glint.mul(strength).mul(GLINT_PEAK).add(TRIM_FLOOR),
+    );
 
     this.glow = new MeshBasicNodeMaterial({
       transparent: true,
@@ -290,7 +304,12 @@ export class TableCrateView {
     this.glow.colorNode = vec4(tint.mul(glow).mul(SEAM_PEAK), 1);
     this.glow.fog = false;
 
-    this.standby = this.build('crate:standby', { seam: new Color(), glow: 0, sweep: GLINT_OFF });
+    this.standby = this.build('crate:standby', {
+      seam: new Color(),
+      glow: 0,
+      sweep: GLINT_OFF,
+      glint: 0,
+    });
     this.standby.position.set(0, TRAY_FLOOR_Y - S, TRAY_Z);
     this.standby.scale.setScalar(STANDBY_SCALE);
     for (const child of this.standby.children) child.frustumCulled = false;
@@ -308,7 +327,12 @@ export class TableCrateView {
   spawn(crateId: CrateId): void {
     if (this.crates.has(crateId)) return;
     this.retireStandby();
-    const look: CrateLook = { seam: new Color(seamColor(null)), glow: 1, sweep: GLINT_OFF };
+    const look: CrateLook = {
+      seam: new Color(seamColor(null)),
+      glow: 1,
+      sweep: GLINT_OFF,
+      glint: 1,
+    };
     const root = this.build(`crate:${crateId}`, look);
     this.parent.add(root);
     this.crates.set(crateId, { root, look, arrive: 0, age: 0, fall: null });
@@ -328,7 +352,7 @@ export class TableCrateView {
   /** A crate's current shine, for tests and the frame budget; `null` for an unknown crate. */
   shineOf(crateId: CrateId): CrateShine | null {
     const look = this.crates.get(crateId)?.look;
-    return look ? { glow: look.glow, sweep: look.sweep } : null;
+    return look ? { glow: look.glow, sweep: look.sweep, glint: look.glint } : null;
   }
 
   /** Sends a crate over the edge into the tray from where it was last drawn. */
@@ -373,6 +397,7 @@ export class TableCrateView {
       const shine = crateShine(crate.age, teetering.has(crateId), reducedMotion);
       crate.look.glow = shine.glow;
       crate.look.sweep = shine.sweep;
+      crate.look.glint = shine.glint;
       const fall = crate.fall;
       if (!fall) continue;
       fall.t = reducedMotion ? 1 : Math.min(1, fall.t + step / FALL_S);
