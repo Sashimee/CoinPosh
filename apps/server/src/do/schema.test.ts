@@ -13,6 +13,12 @@ const COPPER = coinTiers[0];
 const STARTING_COINS = 20;
 const DROPPED_VALUE = mintedValue(COPPER.id, {});
 
+function migrationIndex(marker: string): number {
+  const index = MIGRATIONS.findIndex((migration) => migration.includes(marker));
+  if (index < 0) throw new Error(`No PlayerDO migration contains "${marker}".`);
+  return index;
+}
+
 function coinId(n: number): string {
   return `${ENTITY_ID_PREFIXES.coin}_${String(n).padStart(20, '0')}`;
 }
@@ -121,13 +127,17 @@ describe('a player stored before table persistence', () => {
           )
           .toArray();
       const seeded = slots();
+      sql.exec('DROP INDEX ledger_tx_id');
       sql.exec('DROP TABLE table_snapshot');
       sql.exec('DROP TABLE snapshot_flags');
       sql.exec('ALTER TABLE coins DROP COLUMN heap_slot');
       sql.exec(
         "DELETE FROM meta WHERE key LIKE 'table\\_session%' ESCAPE '\\' OR key LIKE 'snapshot\\_%' ESCAPE '\\'",
       );
-      sql.exec('UPDATE schema_version SET version = ?', MIGRATIONS.length - 1);
+      sql.exec(
+        'UPDATE schema_version SET version = ?',
+        migrationIndex('CREATE TABLE table_snapshot'),
+      );
 
       const player = new PlayerDO(ctx, env);
       expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
