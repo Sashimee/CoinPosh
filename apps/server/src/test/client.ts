@@ -49,6 +49,8 @@ export interface SendOptions {
   readonly signPath?: string;
   readonly signBody?: string;
   readonly signWith?: CryptoKey;
+  /** Delivers the request somewhere other than the deployed worker, e.g. an app with a failing binding. */
+  readonly via?: (request: Request) => Promise<Response>;
 }
 
 export async function signParts(
@@ -105,7 +107,8 @@ export async function send(
         )
       : options.signature;
   if (signature !== null) headers.set(HEADERS.deviceSignature, signature);
-  return exports.default.fetch(
+  const deliver = options.via ?? ((request: Request) => exports.default.fetch(request));
+  return deliver(
     new Request(`${API_ORIGIN}${path}`, {
       method,
       headers,

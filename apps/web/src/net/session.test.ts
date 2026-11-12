@@ -74,6 +74,28 @@ describe('Session', () => {
     expect(requirePlayerId(player)).toBe(id);
   });
 
+  it('falls back to one guest sign-in, not a loop, when the server will not replay a lost refresh', async () => {
+    const player = await connectPlayer(server, time);
+    await player.client.call('state');
+    const id = requirePlayerId(player);
+    time.advance(MOCK_RULES.accessTokenTtlMs);
+    server.setNetwork('dropResponses');
+    await expect(player.client.call('state')).rejects.toMatchObject({ name: 'NetworkError' });
+    server.setNetwork('up');
+    time.advance(MOCK_RULES.authRefreshReplayWindowMs + 1);
+    const refreshesBefore = paths(player.requests, '/v1/auth/refresh').length;
+
+    await player.client.call('state');
+    await player.client.call('state');
+
+    expect(paths(player.requests, '/v1/auth/refresh').length - refreshesBefore).toBe(1);
+    expect(paths(player.requests, '/v1/auth/guest')).toHaveLength(2);
+    expect(player.errors).toHaveLength(1);
+    expect(player.errors[0]?.message).toMatch(/idempotency_key_reused/);
+    expect(requirePlayerId(player)).toBe(id);
+    expect(await player.store.get('session')).toMatchObject({ pendingKey: null });
+  });
+
   it('survives a reload: the stored refresh token signs the same device back in', async () => {
     const first = await connectPlayer(server, time);
     await first.client.call('state');

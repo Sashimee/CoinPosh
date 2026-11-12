@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../crypto.ts';
 import { deviceKeyThumbprint } from '../auth/device.ts';
 import { MAX_OPEN_NONCES_PER_DEVICE, MAX_OPEN_NONCES_PER_IP } from '../auth/link/nonces.ts';
+import { REFRESH_REPLAY_WINDOW_MS } from '../auth/refreshReplay.ts';
 import { PROVIDERS } from '../auth/link/providers.ts';
 import { LocalJwks, newSigningKey, signIdToken, type SigningKey } from '../auth/link/testIssuer.ts';
 import { createApp } from '../index.ts';
@@ -576,6 +577,37 @@ describe('POST /v1/auth/signin', () => {
     );
     await expectError(await refresh(phone, tokens.refreshToken), 401, 'unauthorized');
     await expectError(await refresh(phone, first.refreshToken), 401, 'unauthorized');
+  });
+
+  it("replays the new device's refresh resent under the same key, and the family stays live", async () => {
+    const { subject } = await linkedAccount();
+    const phone = await newDevice();
+    const tokens = await signedIn(phone, subject);
+    const idempotencyKey = newIdempotencyKey();
+    const resend = (body: unknown = { refreshToken: tokens.refreshToken }) =>
+      send(phone, endpoints.authRefresh.path, { body, idempotencyKey });
+
+    const first = endpoints.authRefresh.response.parse(await (await resend()).json());
+    const again = await resend();
+    expect(again.status, await again.clone().text()).toBe(200);
+    expect(endpoints.authRefresh.response.parse(await again.json())).toMatchObject({
+      playerId: first.playerId,
+      accessToken: first.accessToken,
+      refreshToken: first.refreshToken,
+    });
+
+    await expectError(
+      await resend(JSON.stringify({ refreshToken: tokens.refreshToken }, null, 1)),
+      422,
+      'idempotency_key_reused',
+    );
+    await env.DB.prepare('UPDATE auth_requests SET at = at - ? WHERE idempotency_key = ?')
+      .bind(REFRESH_REPLAY_WINDOW_MS + 1, idempotencyKey)
+      .run();
+    await expectError(await resend(), 422, 'idempotency_key_reused');
+
+    const next = await refresh(phone, first.refreshToken);
+    expect(next.status, await next.clone().text()).toBe(200);
   });
 
   it('offers a choice, never a merge, when the device holds an unlinked guest with progress', async () => {
