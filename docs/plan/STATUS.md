@@ -96,6 +96,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-328 | done | task/P-328 (merge ea900b2) | Crate cinematic "Tap to skip" hint sits above the dimmed HUD dock and clear of the Vault balance (crates.css, revealCard.ts); crates.test.ts covers the placement (60965ca); pnpm check green after merge (shot.perf p95 missed 2 ms once at load avg 13.7, passed on rerun) |
 | P-341 | done | task/P-341 (merge bd470d7) | Review rework: unbox heroes are recognisable rarity-tinted props (new hero.ts) seated on the pedestal cap top with an open key bow; reduced-motion reveal is shielded from the burst (stage.ts); shot.test.ts covers the hero mapping and cap clearance (59b1a75); pnpm check green after merge; scratch-card vs collectible mapping queued for crates owner in POLISH.md |
 | P-339 | done | task/P-339 (merge 12581c4) | Vault Crate keeps its gold caps and seam glow on the dim front floor: matte self-lit lacquer and floor-independent cap/seam emissive in crates/view.ts with view.test.ts coverage (8626645, review rework ee8546f); pnpm check green after merge; glint-constant re-export and front-lip gloss imbalance queued in POLISH.md |
+| P-343 | blocked(review: pnpm check red, 2 crates.test.ts tests fail at :1068/:1088 because a 1.2 s frame now stops on the burst frame; fix is in crates.test.ts outside owns) | task/P-343 (979452a, not merged) | Fix: crates owner adds `unbox.update(0.1)` after `unbox.update(1.2)` in both tests (POLISH), then re-gate; also add a non-aligned reduced-motion case to unbox.test.ts:372; branch kept |
+| P-346 | blocked(review: e2e acceptance 3 not delivered, apps/web/e2e/callouts.spec.ts missing; needs T-1.17/P-286 e2e infra) | task/P-346 (448e84a, not merged) | Fix: land callouts.spec.ts with T-1.17's apps/web/package.json, e2e tsconfig and fixtures, re-gate with pnpm e2e; CRATE_HINT_SLOT_MS mirrors ARRIVAL_HINT_MS (follow-up: crate:hint-shown/hidden events); branch kept |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
@@ -318,3 +320,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 22 · 2026-11-12 · P-308 P-318 P-329 P-332 P-333 · merged P-318 (b2117b9), P-308 (1a0bd3f), P-332 (4816a52); 2 rejected (P-329, P-333)
 - wave 23 · 2026-11-12 · P-329 P-333 P-338 P-337 P-335 · merged P-337 (b0a5f63), P-335 (d51d679), P-338 (cf1de84), P-333 (8c90ad9), P-329 (7d36d37); 0 rejected
 - wave 24 · 2026-11-12 · P-341 P-328 P-331 · merged P-331 (6b27852), P-328 (ea900b2); 1 rejected (P-341)
+- wave 25 · 2026-11-12 · P-341 P-343 P-339 P-346 · merged P-341 (bd470d7), P-339 (12581c4); 2 rejected (P-343, P-346)
