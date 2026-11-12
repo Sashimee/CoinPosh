@@ -176,15 +176,35 @@ describe('Contact Fusion on the table', () => {
     expect(laid.map(({ id }) => mechanics.tierOf(id))).toEqual(['copper', 'copper', 'copper']);
   });
 
-  it('frees a laid coin once it drops a level', async () => {
+  it('never fuses a laid coin, even once it drops a level', async () => {
     const { rig, mechanics } = await setUp(false);
     const ids = [0, 1, 2].map((i) => rig.placeFlat(-0.05 + i * RESTING, LANE_Z, 1));
     mechanics.layCoins(ids.map((id) => ({ id, tier: 'copper' })));
-    const [fusion, ...rest] = run(rig, mechanics, 120);
-    expect(rest).toEqual([]);
-    expect(fusion).toMatchObject({ kind: 'fusion', ids, into: 'silver' });
-    expect(fusion?.tick).toBeGreaterThanOrEqual(ripeTicks(mechanics));
-    expect(fusion?.tick).toBeLessThan(FIRST_LOOK);
+    expect(run(rig, mechanics, 10 * 60)).toEqual([]);
+    expect(rig.coins()).toHaveLength(3);
+    expect(mechanics.fusionProgress()).toEqual([]);
+  });
+
+  it.each([
+    ['joins a fresh pair', FUSION_TUNING.freshTicks - 2 * FUSION_TUNING.spawnGraceTicks, 1],
+    [
+      'never joins a pair past its fresh window',
+      FUSION_TUNING.spawnGraceTicks + FUSION_TUNING.freshTicks,
+      0,
+    ],
+  ])('a third copper %s (added on tick %i)', async (_, addedOn, fusions) => {
+    const { rig, mechanics } = await setUp(false);
+    const pair = placeRow(rig, mechanics, ['copper', 'copper']);
+    expect(run(rig, mechanics, addedOn)).toEqual([]);
+    const third = rig.placeFlat(-0.05 + 2 * RESTING, LANE_Z);
+    mechanics.registerCoin(third, 'copper');
+    const events = run(rig, mechanics, 3 * FUSION_TUNING.spawnGraceTicks + ripeTicks(mechanics));
+    expect(events).toHaveLength(fusions);
+    if (fusions > 0) {
+      expect(events[0]).toMatchObject({ kind: 'fusion', ids: [...pair, third], into: 'silver' });
+    } else {
+      expect(rig.coins()).toHaveLength(3);
+    }
   });
 
   it('lays coins only before the first step and only coins on the table', async () => {
@@ -348,6 +368,6 @@ describe('mechanics determinism', () => {
 
   it('pins the session state so a change to the mechanics is noticed', async () => {
     const { digests } = await playSession(SEED);
-    expect(digests.at(-1)).toMatchInlineSnapshot(`"5507fe238035656a"`);
+    expect(digests.at(-1)).toMatchInlineSnapshot(`"33d32c32c1eb7cc9"`);
   });
 });

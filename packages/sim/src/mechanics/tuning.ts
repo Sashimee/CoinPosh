@@ -33,16 +33,21 @@ import { DROP_ZONE } from '../table/layout.ts';
  *   chute drop lands and settles in about half that, so it joins the heap first and
  *   then charges up with its neighbours; a fused coin hops, lands and is seen before
  *   it can chain. The 1 s also covers the server's minFusionMsAfterSpawn (250 ms).
- * - settledShift 2.6 mm (one coin thickness): a coin laid before the first tick (the
- *   opening heap, a restored table) is settled and never fuses on age alone, since
- *   the heap is laid touching and would otherwise all fuse the moment a grace ran out.
- *   It joins play once its height has changed by more than a coin's thickness from
- *   where it was laid: it slid off the coins under it (3.2 mm), tumbled off the upper
- *   tier (35 mm) or was shoved up onto another coin. Sliding across its own floor does
- *   not count, so the pusher packing the bottom sheet, or the upper tier riding the
- *   block, does not wake the whole heap. Seeded runs at 1 drop/s onto the 100-coin
- *   silver heap: no heap coin fuses in the first 8 s, the first fusion (three copper
- *   drops) comes at 4 to 8 s, and 12 to 18 fusions fire in the first minute.
+ * - freshTicks 315 (5.25 s): once its grace is over a coin may fuse for this long, and
+ *   only with coins that are fresh too; after that it keeps its tier for good (#132). A
+ *   coin laid before the first tick (the opening heap, a restored table) is never fresh,
+ *   since the heap is laid touching and its second layer rests on the first. The window
+ *   is what makes a fusion something the player aims for: the 1 s grace and the economy's
+ *   0.4 s contact barely mattered, because coppers pile on the drop strip for far longer
+ *   than either (a 15 s contact still fused 17 a minute). Three coins fuse only when they
+ *   were dropped close together in time and place: a pour, or four or five taps at one
+ *   aim. Seeded runs of a copper a second at a uniform aim over the chute onto the
+ *   100-coin silver heap (fusionRate.test.ts), 16 seeds of 3 min: no heap coin fuses,
+ *   3.6 fusions a minute, one drop in 17, the first fusion at 4 to 46 s (median 11 s).
+ *   Before the window: 28 to 30 a minute, one drop in 2, the first at 4.5 to 8 s. The
+ *   rate climbs steeply with the window because the pusher packs the strip every 4 s
+ *   (240 ticks): 300 gives 3.1 a minute, 330 gives 5.3, 480 gives 7.1, 600 gives 10.8.
+ *   At 3 drops a second it is 40 a minute (P-311 measured about 83 before).
  */
 export const FUSION_TUNING = {
   touchGap: 0.001,
@@ -50,7 +55,7 @@ export const FUSION_TUNING = {
   spawnLift: 0.0015,
   sampleTicks: 3,
   spawnGraceTicks: 60,
-  settledShift: 2 * COIN.halfThickness,
+  freshTicks: 315,
 } as const;
 
 /** Where the Champagne Tower pedestal stands on the upper tier, in metres. */

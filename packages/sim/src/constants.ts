@@ -65,5 +65,10 @@ export const SOLVER = {
  *   minutes of drops b4f254b6bc329ea8 (was 30afd7256494fcfe); the scripted minute
  *   bdd732e82cbaab2c, nudge 4df094d60c3198e0, opening heap 53ff5809aefa4642 and Demo
  *   pour bb41e00c43e62270 are unchanged.
+ * - 8: a coin fuses only while it is fresh, for FUSION_TUNING.freshTicks after its spawn
+ *   grace, and only with other fresh coins; laid coins never fuse (settledShift is gone,
+ *   #132). Fused heap 349bf327f5349f63 (was 982470c1506c0983), Demo table with fusion
+ *   40f0137f34acfcec (was 8d8b89f4c3c645a5), mechanics digest 33d32c32c1eb7cc9 (was
+ *   5507fe238035656a). Tables without mechanics hash as before.
  */
-export const SIM_VERSION = 7;
+export const SIM_VERSION = 8;

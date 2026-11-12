@@ -190,7 +190,7 @@ describe('determinism', () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate SIM_VERSION bump.
-    expect(SIM_VERSION).toBe(7);
+    expect(SIM_VERSION).toBe(8);
     expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"bdd732e82cbaab2c"`);
   });
 
@@ -570,7 +570,7 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"982470c1506c0983"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"349bf327f5349f63"`);
   });
 
   it('plays the Demo table with fusion: the heap holds, drops fuse, coins still fall', async () => {
@@ -599,13 +599,13 @@ describe('opening heap and mechanics', () => {
       const { sim, fusions, falls } = await play(seed);
       const heapFusions = fusions.filter((f) => f.ids.some((id) => id < openingHeap.coins));
       expect(fusions.length, `seed ${seed}`).toBeGreaterThan(0);
-      expect(heapFusions[0]?.tick ?? Infinity, `seed ${seed}`).toBeGreaterThan(2 * TICK_RATE_HZ);
+      expect(heapFusions, `seed ${seed}`).toEqual([]);
       expect(falls.filter((fall) => fall.edge === 'front').length, `seed ${seed}`).toBeGreaterThan(
         0,
       );
       if (seed === DEMO_SEED) {
         // Changing this value breaks replay audits of every Demo input log played with fusion.
-        expect(sim.hash()).toMatchInlineSnapshot(`"8d8b89f4c3c645a5"`);
+        expect(sim.hash()).toMatchInlineSnapshot(`"40f0137f34acfcec"`);
       }
     }
   });
