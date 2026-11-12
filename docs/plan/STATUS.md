@@ -93,6 +93,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-337 | done | task/P-337 (merge b0a5f63) | Pity line names the crate ("A Rare crate or better within N opens", EN/FR/DE) and is hidden when this crate met the floor; N pinned to the economy forcedFloor rule in crates.test.ts after 0, 1 and 9 non-Rare opens (fa5fffc); pnpm check green after merge; follow-ups in POLISH.md |
 | P-335 | done | task/P-335 (merge d51d679) | Confirmed upgrade purchases (on `upgrade:purchased`, not on tap) play the chime plus a medallion overshoot spring, a gold glint across the row, a number pop of the new effect and a haptic; reduced-motion fades the row without moving it; feedback binding unit test in feedback.test.ts (dc50877); pnpm check green after merge; follow-ups in POLISH.md |
 | P-331 | done | task/P-331 (merge 6b27852) | First-upgrade nudge says the upgrade is ready now ("Pusher Tempo is ready", EN/FR/DE) and folds after 6 s or immediately on crate:fell; upgradeNudge.test.ts covers both fold paths (ca1a66e); pnpm check green after merge |
+| P-328 | done | task/P-328 (merge ea900b2) | Crate cinematic "Tap to skip" hint sits above the dimmed HUD dock and clear of the Vault balance (crates.css, revealCard.ts); crates.test.ts covers the placement (60965ca); pnpm check green after merge (shot.perf p95 missed 2 ms once at load avg 13.7, passed on rerun) |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
