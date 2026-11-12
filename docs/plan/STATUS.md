@@ -84,6 +84,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-92.04 | done | task/T-92.04 (merge 1a41f90) | Server pose storage, POST /v1/table/snapshot and boot placement: apps/server/src/do/snapshot.ts + tests, routes/table.ts (d7444c3); follow-ups P-266 (re-raised), P-322, P-323; pnpm check green after merge (#92) |
 | P-258 | done | task/P-258 (merge 83429ae) | Opening heap rests at the brink with no front falls without input: packages/sim/src/table/brink.test.ts pins the Demo heap at rest with no input (1424d95); pnpm check green after merge |
 | P-317 | done | task/P-317 (merge a1b8e8e) | Tier fusion juice: routine fusion gets a compact white-gold flash and tier-up chime with no camera kick or hit-stop; full set piece only for the first fusion of the session or a gold+ result, camera kicks rate-limited to 1 per 3 s; vfx/fusionJuice.ts + tests, emitters and index updated (dea13f6); pnpm check green after merge |
+| P-308 | blocked(review: crate:fell hold never released when UnboxDirector.startNext throws or a claim stays queued offline (main.ts:923), and tierStamp leave() keeps the rank card visible up to 420 ms into the hold (tierStamp.ts:84); bound pre-reveal and fell-to-opened phases, hide the stamp on the hold tick) | task/P-308 (fb75ae4) | Rework needed; seeded e2e spec queued as P-324 |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
 | T-92.06 | todo | | Waits on T-92.02 (#92) |
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
@@ -302,3 +303,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 18 · 2026-11-09 · T-92.02 T-92.03 T-10.01 P-231 P-264 · merged T-10.01 (75e63f3), T-92.03 (0f3b434), P-264 (2f4a90c); 2 rejected (T-92.02, P-231)
 - wave 19 · 2026-11-09 · P-284 P-231 P-286 T-10.02 P-288 · merged P-288 (815cfac), P-231 (7d07031); 3 rejected (P-284, P-286, T-10.02)
 - wave 20 · 2026-11-09 · P-222 P-284 T-10.02 P-307 P-239 · merged T-10.02 (695d63b), P-307 (6387d4a), P-222 (d692f54), P-239 (268d0cc), P-284 (f3072ec); 0 rejected
+- wave 21 · 2026-11-12 · P-258 P-317 P-308 P-290 T-92.04 · merged P-290 (fd1c81d), T-92.04 (1a41f90), P-258 (83429ae), P-317 (a1b8e8e); 1 rejected (P-308)
