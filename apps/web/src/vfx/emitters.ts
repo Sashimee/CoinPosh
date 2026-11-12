@@ -260,8 +260,9 @@ export function fusionImplosion(
   center: Vec3,
   slot: number,
   tier: CoinTier,
+  density = 1,
 ): void {
-  const perSource = scaledCount(ctx, 70);
+  const perSource = scaledCount(ctx, 70 * density);
   const hot = toLinear(VFX_COLORS.whiteGold);
   for (const source of sources) {
     const ox = source[0] - center[0];
@@ -321,6 +322,54 @@ export function fusionImpact(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
       size: range(ctx.rng, 0.012, 0.022),
       drag: 3,
       gravity: 0.05,
+      kind: ParticleKind.Glint,
+    });
+  }
+}
+
+/** Furthest a compact fusion's sparks travel from the centre, metres: about 1.5 coins. */
+export const COMPACT_FUSION_REACH = 0.04;
+
+/**
+ * The routine fusion's burst: a tight crown of warm white-gold sparks that stays over the
+ * new coin, and a few glints in its metal. Speeds and drag keep every throw inside
+ * `COMPACT_FUSION_REACH`, so a busy table never streaks across the shelf.
+ */
+export function fusionSpark(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
+  const hot = toLinear(VFX_COLORS.whiteGold);
+  const gold = toLinear(VFX_COLORS.gold);
+  const drag = 9;
+  const maxSpeed = COMPACT_FUSION_REACH * drag * 0.9;
+  const speed = ctx.reducedMotion ? 0.3 : 1;
+  const sparks = scaledCount(ctx, 28);
+  for (let i = 0; i < sparks; i++) {
+    const a = (i / sparks) * Math.PI * 2 + range(ctx.rng, -0.2, 0.2);
+    const v = range(ctx.rng, 0.45, 1) * maxSpeed * speed;
+    const up = range(ctx.rng, 0.3, 0.8);
+    emitOne(ctx, {
+      at,
+      velocity: [Math.cos(a) * v, up * v, Math.sin(a) * v],
+      life: range(ctx.rng, 0.22, 0.38),
+      color: mixLinear(hot, gold, range(ctx.rng, 0.15, 0.5)),
+      intensity: WARM,
+      size: range(ctx.rng, 0.0022, 0.0034),
+      drag,
+      gravity: 0.5,
+      kind: ctx.reducedMotion ? ParticleKind.Glint : ParticleKind.Spark,
+    });
+  }
+  const glints = scaledCount(ctx, 6);
+  for (let i = 0; i < glints; i++) {
+    const d = direction(ctx.rng, [0, 1, 0]);
+    emitOne(ctx, {
+      at: [at[0] + d[0] * 0.01, at[1] + d[1] * 0.01 + 0.004, at[2] + d[2] * 0.01],
+      velocity: [d[0] * 0.05 * speed, d[1] * 0.08 * speed, d[2] * 0.05 * speed],
+      life: range(ctx.rng, 0.4, 0.6),
+      color: mixLinear(tierAccent(ctx.rng, tier), gold, 0.35),
+      intensity: WARM,
+      size: range(ctx.rng, 0.006, 0.01),
+      drag: 4,
+      gravity: 0,
       kind: ParticleKind.Glint,
     });
   }

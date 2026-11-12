@@ -6,6 +6,7 @@ import { FIXED_DT, SIM_VERSION, SOLVER, TICK_RATE_HZ } from './constants.ts';
 import type { SimInput } from './inputs.ts';
 import type { FusionEvent, FusionRules, MechanicsConfig } from './mechanics/index.ts';
 import { Sim, type SimEvents } from './sim.ts';
+import { FUSION_TUNING } from './mechanics/tuning.ts';
 import { DEFAULT_PUSHER_MOTION, type FallEvent, PUSHER, TABLE_SOLVER } from './table/index.ts';
 
 const TICKS = 3600;
@@ -190,7 +191,7 @@ describe('determinism', () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate SIM_VERSION bump.
-    expect(SIM_VERSION).toBe(7);
+    expect(SIM_VERSION).toBe(8);
     expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"bdd732e82cbaab2c"`);
   });
 
@@ -570,10 +571,10 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"982470c1506c0983"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"78a2e6ac17f29895"`);
   });
 
-  it('plays the Demo table with fusion: the heap holds, drops fuse, coins still fall', async () => {
+  it('plays the Demo table with fusion: the heap holds until a silver wakes it, drops fuse, coins still fall', async () => {
     const play = async (seed: number) => {
       const sim = await Sim.create({ seed, mechanics: DEMO_MECHANICS, openingHeap });
       live.push(sim);
@@ -599,13 +600,19 @@ describe('opening heap and mechanics', () => {
       const { sim, fusions, falls } = await play(seed);
       const heapFusions = fusions.filter((f) => f.ids.some((id) => id < openingHeap.coins));
       expect(fusions.length, `seed ${seed}`).toBeGreaterThan(0);
-      expect(heapFusions[0]?.tick ?? Infinity, `seed ${seed}`).toBeGreaterThan(2 * TICK_RATE_HZ);
+      const firstSilver = fusions.find((f) => f.into === 'silver')?.tick ?? 0;
+      for (const fusion of heapFusions) {
+        expect(fusion.tier, `seed ${seed}`).toBe(openingHeap.tier);
+        expect(fusion.tick, `seed ${seed}`).toBeGreaterThanOrEqual(
+          firstSilver + FUSION_TUNING.spawnGraceTicks,
+        );
+      }
       expect(falls.filter((fall) => fall.edge === 'front').length, `seed ${seed}`).toBeGreaterThan(
         0,
       );
       if (seed === DEMO_SEED) {
         // Changing this value breaks replay audits of every Demo input log played with fusion.
-        expect(sim.hash()).toMatchInlineSnapshot(`"8d8b89f4c3c645a5"`);
+        expect(sim.hash()).toMatchInlineSnapshot(`"b38156d0f90afa3c"`);
       }
     }
   });

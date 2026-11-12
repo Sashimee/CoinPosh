@@ -68,8 +68,8 @@ export type RestoreEntry =
  * coin id i, every coin at rest velocity. Poses must pass validateSnapshot. A heap slot
  * that overlaps a coin before it or the pusher is lifted clear and restores awake; an
  * `asleep` pose restores asleep if something at rest below holds it (PusherTable.restore).
- * Fusion streaks start over, and every restored coin is settled like the opening heap
- * (FUSION_TUNING.settledShift). `restore` with every entry `heapSlot` 0..n − 1 lays the
+ * Fusion streaks start over, and every restored coin is idle like the opening heap: it
+ * fuses only once a fresh coin of its tier wakes it (FUSION_TUNING.wakeFromTier). `restore` with every entry `heapSlot` 0..n − 1 lays the
  * same table as `openingHeap: { coins: n }`.
  */
 export interface SimRestore {
@@ -141,8 +141,8 @@ export class Sim {
   /**
    * The most coins `openingHeap` can ask for on a Sim made with `mechanics`. A tower keeps
    * its pedestal bare, so a Sim with one holds fewer. A Sim that fuses lays the same heap
-   * as one that does not: the heap is settled (FUSION_TUNING.settledShift), so its second
-   * layer does not fuse with the coins it rests on.
+   * as one that does not: the heap is idle (FUSION_TUNING.freshTicks, wakeFromTier), so
+   * its second layer does not fuse with the coins it rests on until a fresh coin wakes it.
    */
   static heapCapacity(mechanics?: MechanicsConfig<string>): number {
     return PusherTable.heapCapacity(heapLayout(mechanics));

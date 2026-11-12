@@ -2,7 +2,7 @@ import type { Vector, World } from '@dimforge/rapier3d-deterministic-compat';
 import type { StateHasher } from '../hash.ts';
 import type { Rapier } from '../rapier.ts';
 import type { TableCoin } from '../table/table.ts';
-import { CoinContactFinder, NO_GROUP } from './contacts.ts';
+import { type CoinPair, CoinContactFinder, NO_GROUP } from './contacts.ts';
 import { ContactFusion, type ContactProgress, type FusionRules } from './fusion.ts';
 import type { MechanicTable } from './table.ts';
 import { ChampagneTower, type TowerState } from './tower.ts';
@@ -56,25 +56,35 @@ export interface LaidCoin<Tier extends string> {
   readonly tier: Tier;
 }
 
+interface Freshness {
+  /** The first tick the coin may fuse on; it is fresh for FUSION_TUNING.freshTicks from there. */
+  readonly from: number;
+  /** Whether it wakes the idle coins it touches: a coin that entered play does, a woken one does not. */
+  readonly wakes: boolean;
+}
+
 /**
  * The table's mechanics, run once a tick after the table steps: Contact Fusion, then
  * the Champagne Tower. It keeps each coin's tier (the table knows only bodies), so the
  * caller registers every coin it adds and passes the ids of coins that fell. Events
  * are physical facts for the server to value; the sim does no value math.
  *
- * Not every coin may fuse (FUSION_TUNING.spawnGraceTicks, settledShift): a coin added
- * during play waits out a spawn grace, and a coin laid before the first tick is
- * settled until its height changes. Both are kept, and hashed, only on a table that fuses.
+ * A coin fuses only while it is fresh, and only with fresh coins (FUSION_TUNING
+ * spawnGraceTicks, freshTicks, wakeFromTier): a coin added during play waits out a spawn
+ * grace and is then fresh for a fixed window. A coin laid before the first tick, or one
+ * whose window has closed, is idle. An idle coin of wakeFromTier or above becomes fresh
+ * again, for a window of its own, when a coin of its tier that entered play touches it
+ * while fresh, which is how a new silver joins silvers that settled long ago. A woken coin
+ * wakes no others, so one coin never wakes a whole heap. The windows are kept, and hashed,
+ * only on a table that fuses.
  */
 export class TableMechanics<Tier extends string> {
   readonly #table: MechanicTable;
   readonly #tiers: readonly Tier[];
   readonly #tierIndex = new Map<Tier, number>();
   readonly #tierOf = new Map<number, number>();
-  /** Coins still in their spawn grace, with the first tick they may fuse on. */
-  readonly #fusesFrom = new Map<number, number>();
-  /** Settled coins, with the height they were laid at. */
-  readonly #laidY = new Map<number, number>();
+  /** Coins in their spawn grace or fresh, and whether they wake the idle coins they touch. */
+  readonly #fresh = new Map<number, Freshness>();
   readonly #contacts: CoinContactFinder;
   readonly #fusion: ContactFusion | null;
   readonly #tower: ChampagneTower | null;
@@ -109,7 +119,7 @@ export class TableMechanics<Tier extends string> {
     return this.#fusion?.requiredTicks ?? null;
   }
 
-  /** Records the tier of a coin just added to the table; it waits out the spawn grace. */
+  /** Records the tier of a coin just added to the table; it waits out the spawn grace, then is fresh. */
   registerCoin(id: number, tier: Tier): void {
     this.#setTier(id, tier, 'registerCoin');
     this.#startGrace(id, this.#lastTick + 1);
@@ -117,7 +127,7 @@ export class TableMechanics<Tier extends string> {
 
   /**
    * Records the coins laid on the table before the first step, such as the opening heap.
-   * They are settled: none fuses until its height has changed by FUSION_TUNING.settledShift.
+   * They are idle: none of them fuses until a fresh coin of its tier wakes it.
    */
   layCoins(coins: Iterable<LaidCoin<Tier>>): void {
     if (this.#lastTick >= 0) {
@@ -125,16 +135,12 @@ export class TableMechanics<Tier extends string> {
         `TableMechanics.layCoins: coins are laid before the first step, but tick ${this.#lastTick} has run; use registerCoin`,
       );
     }
-    const heights = new Map(this.#table.coins().map((coin) => [coin.id, coin.translation.y]));
+    const onTable = new Set(this.#table.coins().map((coin) => coin.id));
     for (const { id, tier } of coins) {
-      const y = heights.get(id);
-      if (y === undefined) {
+      if (!onTable.has(id)) {
         throw new RangeError(`TableMechanics.layCoins: coin ${id} is not on the table`);
       }
       this.#setTier(id, tier, 'layCoins');
-      if (this.#fusion) {
-        this.#laidY.set(id, y);
-      }
     }
   }
 
@@ -182,8 +188,7 @@ export class TableMechanics<Tier extends string> {
     if (captures.length > 0) {
       this.#fusion?.forget(captures.map((capture) => capture.coinId));
       for (const { coinId } of captures) {
-        this.#fusesFrom.delete(coinId);
-        this.#laidY.delete(coinId);
+        this.#fresh.delete(coinId);
       }
     }
     for (const { coinId, group, height } of captures) {
@@ -220,15 +225,12 @@ export class TableMechanics<Tier extends string> {
       h.int(id).int(this.#index(id));
     }
     if (this.#fusion) {
-      const grace = Array.from(this.#fusesFrom).sort((p, q) => p[0] - q[0]);
-      h.int(grace.length);
-      for (const [id, from] of grace) {
-        h.int(id).int(from);
-      }
-      const laid = Array.from(this.#laidY).sort((p, q) => p[0] - q[0]);
-      h.int(laid.length);
-      for (const [id, y] of laid) {
-        h.int(id).float(y);
+      const fresh = Array.from(this.#fresh).sort((p, q) => p[0] - q[0]);
+      h.int(fresh.length);
+      for (const [id, { from, wakes }] of fresh) {
+        h.int(id)
+          .int(from)
+          .int(wakes ? 1 : 0);
       }
       this.#fusion.hashInto(h);
     }
@@ -248,17 +250,16 @@ export class TableMechanics<Tier extends string> {
     const groups = new Int32Array(coins.length);
     coins.forEach((coin, i) => {
       const index = this.#index(coin.id);
-      groups[i] = index === top || !this.#mayFuse(coin, tick) ? NO_GROUP : index;
+      this.#expire(coin.id, tick);
+      groups[i] = index === top || this.#inGrace(coin.id, tick) ? NO_GROUP : index;
     });
-    const ripe = fusion.update(
-      tick,
-      this.#contacts.find(
-        coins,
-        groups,
-        tick % FUSION_TUNING.sampleTicks,
-        FUSION_TUNING.sampleTicks,
-      ),
+    const touching = this.#contacts.find(
+      coins,
+      groups,
+      tick % FUSION_TUNING.sampleTicks,
+      FUSION_TUNING.sampleTicks,
     );
+    const ripe = fusion.update(tick, this.#wake(tick, touching));
     if (ripe.length === 0) {
       return fused;
     }
@@ -312,31 +313,59 @@ export class TableMechanics<Tier extends string> {
   }
 
   /**
-   * Whether `coin` may take part in a fusion at `tick`. A coin whose spawn grace has run
-   * out, or a settled coin that has moved off its level, is free for good from then on.
+   * Wakes the idle coins that `touching` (same-tier contacts, sorted) pairs with a fresh
+   * coin that wakes, and returns the contacts whose coins are both fresh, still sorted.
+   * Only coins fresh before this call wake others, so the order of the pairs does not matter.
    */
-  #mayFuse(coin: TableCoin, tick: number): boolean {
-    const from = this.#fusesFrom.get(coin.id);
-    if (from !== undefined) {
-      if (tick < from) {
-        return false;
+  #wake(tick: number, touching: readonly CoinPair[]): CoinPair[] {
+    const woken: number[] = [];
+    const wakeBy = (waker: number, idle: number) => {
+      if (
+        this.#freshAt(waker, tick)?.wakes === true &&
+        !this.#fresh.has(idle) &&
+        this.#index(idle) >= FUSION_TUNING.wakeFromTier
+      ) {
+        woken.push(idle);
       }
-      this.#fusesFrom.delete(coin.id);
+    };
+    for (const { a, b } of touching) {
+      wakeBy(a, b);
+      wakeBy(b, a);
     }
-    const laidY = this.#laidY.get(coin.id);
-    if (laidY !== undefined) {
-      if (Math.abs(coin.translation.y - laidY) <= FUSION_TUNING.settledShift) {
-        return false;
-      }
-      this.#laidY.delete(coin.id);
+    for (const id of woken) {
+      this.#fresh.set(id, { from: tick, wakes: false });
     }
-    return true;
+    return touching.filter(({ a, b }) => this.#freshAt(a, tick) && this.#freshAt(b, tick));
+  }
+
+  /** Coin `id`'s freshness if it may fuse at `tick`: its spawn grace is over and its window is not. */
+  #freshAt(id: number, tick: number): Freshness | undefined {
+    const fresh = this.#fresh.get(id);
+    return fresh && tick >= fresh.from && tick < fresh.from + FUSION_TUNING.freshTicks
+      ? fresh
+      : undefined;
+  }
+
+  #inGrace(id: number, tick: number): boolean {
+    const fresh = this.#fresh.get(id);
+    return fresh !== undefined && tick < fresh.from;
+  }
+
+  /** Makes coin `id` idle once its fresh window has closed. */
+  #expire(id: number, tick: number): void {
+    const fresh = this.#fresh.get(id);
+    if (fresh && tick >= fresh.from + FUSION_TUNING.freshTicks) {
+      this.#fresh.delete(id);
+    }
   }
 
   /** Starts the spawn grace of a coin that entered the table on `tick`. */
   #startGrace(id: number, tick: number): void {
     if (this.#fusion) {
-      this.#fusesFrom.set(id, tick + FUSION_TUNING.spawnGraceTicks);
+      this.#fresh.set(id, {
+        from: tick + FUSION_TUNING.spawnGraceTicks,
+        wakes: true,
+      });
     }
   }
 
@@ -354,8 +383,7 @@ export class TableMechanics<Tier extends string> {
   /** Drops a coin that left the table for good. */
   #forgetCoin(id: number): void {
     this.#tierOf.delete(id);
-    this.#fusesFrom.delete(id);
-    this.#laidY.delete(id);
+    this.#fresh.delete(id);
   }
 
   #index(id: number): number {

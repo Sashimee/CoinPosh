@@ -106,6 +106,57 @@ export const MIGRATIONS: readonly string[] = [
   INSERT INTO meta (key, value)
     SELECT 'drop_high_water', value FROM meta WHERE key = 'drop_count';
   `,
+  // Table persistence (92-table-persistence 3.1). The heap was minted in the order the client
+  // lays it, so a coin's slot is its rowid rank within the latest heap grant.
+  `
+  CREATE TABLE table_snapshot (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    session     TEXT    NOT NULL,
+    seq         INTEGER NOT NULL CHECK (seq >= 0),
+    tick        INTEGER NOT NULL CHECK (tick >= 0),
+    pusher_tick INTEGER NOT NULL CHECK (pusher_tick >= 0),
+    poses       TEXT    NOT NULL,
+    crate_poses TEXT    NOT NULL,
+    coin_count  INTEGER NOT NULL CHECK (coin_count >= 0),
+    received_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE snapshot_flags (
+    kind     TEXT PRIMARY KEY
+             CHECK (kind IN ('snapshot.foreign', 'snapshot.teleport', 'snapshot.implausible')),
+    count    INTEGER NOT NULL CHECK (count >= 1),
+    first_at INTEGER NOT NULL,
+    last_at  INTEGER NOT NULL
+  );
+
+  CREATE TRIGGER snapshot_flags_no_update BEFORE UPDATE ON snapshot_flags
+  WHEN NEW.kind IS NOT OLD.kind
+    OR NEW.first_at IS NOT OLD.first_at
+    OR NEW.count <= OLD.count
+    OR NEW.last_at < OLD.last_at
+  BEGIN
+    SELECT RAISE(ABORT, 'snapshot_flags only counts up');
+  END;
+
+  CREATE TRIGGER snapshot_flags_no_delete BEFORE DELETE ON snapshot_flags
+  BEGIN
+    SELECT RAISE(ABORT, 'snapshot_flags is append-only');
+  END;
+
+  ALTER TABLE coins ADD COLUMN heap_slot INTEGER CHECK (heap_slot >= 0);
+
+  WITH heap_grant (id) AS (
+    SELECT ref FROM ledger
+    WHERE kind = 'grant.heap' AND account = 'table' AND tx_id = (
+      SELECT tx_id FROM ledger WHERE kind = 'grant.heap' ORDER BY seq DESC LIMIT 1
+    )
+  )
+  UPDATE coins SET heap_slot = (
+    SELECT COUNT(*) FROM coins AS earlier
+    WHERE earlier.rowid < coins.rowid AND earlier.id IN (SELECT id FROM heap_grant)
+  )
+  WHERE id IN (SELECT id FROM heap_grant);
+  `,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {
