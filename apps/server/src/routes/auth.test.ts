@@ -9,6 +9,7 @@ import { verifyTurnstile } from '../auth/turnstile.ts';
 import { sha256Hex } from '../crypto.ts';
 import { IDEMPOTENT_REPLAYED_HEADER } from '../http/cors.ts';
 import { PREMINT_BUFFER_TARGET } from '../do/PlayerDO.ts';
+import { createApp } from '../index.ts';
 import {
   API_ORIGIN,
   guestSignIn,
@@ -391,15 +392,87 @@ describe('POST /v1/auth/refresh resent under the same Idempotency-Key', () => {
     const session = await newSession();
     await refreshed(await refresh(session, session.tokens.refreshToken));
     const idempotencyKey = newIdempotencyKey();
-    await expectError(
-      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
-      401,
-      'unauthorized',
+    const first = await refresh(session, session.tokens.refreshToken, { idempotencyKey });
+    const again = await refresh(session, session.tokens.refreshToken, { idempotencyKey });
+    const revoked = {
+      error: {
+        code: 'unauthorized',
+        message: expect.stringMatching(/already used, so its session was revoked/) as string,
+      },
+    };
+    expect([first.status, again.status]).toEqual([401, 401]);
+    expect(await first.json()).toMatchObject(revoked);
+    expect(await again.json()).toMatchObject(revoked);
+  });
+
+  it('settles two concurrent sends of one request with a single rotation', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    const responses = await Promise.all([
+      refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+      refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+    ]);
+    const original = responses.filter(
+      (response) => response.status === 200 && !response.headers.has(IDEMPOTENT_REPLAYED_HEADER),
     );
+    expect(original).toHaveLength(1);
+    const [winner] = original;
+    if (winner === undefined) throw new Error('Expected one original answer.');
+    const other = responses.find((response) => response !== winner);
+    if (other === undefined) throw new Error('Expected a second answer.');
+    if (other.status === 200) {
+      expect(other.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+    } else {
+      await expectError(other, 409, 'idempotency_in_progress');
+    }
+    const issued = await refreshed(winner);
+    await refreshed(await refresh(session, issued.refreshToken));
+  });
+
+  it('frees the key when the commit fails, so the retry rotates and the family survives', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    let failures = 0;
+    const flakyDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') {
+          return () => {
+            failures++;
+            return Promise.reject(new Error('Test: D1 dropped the batch.'));
+          };
+        }
+        const value: unknown = Reflect.get(target, property);
+        return typeof value === 'function' ? (value.bind(target) as unknown) : value;
+      },
+    });
+    const failing = createApp({
+      fetchJwks: () => Promise.reject(new Error('No JWKS in this test.')),
+    });
+    const broken = await send(session.device, endpoints.authRefresh.path, {
+      body: { refreshToken: session.tokens.refreshToken },
+      idempotencyKey,
+      via: (request) => Promise.resolve(failing.fetch(request, { ...env, DB: flakyDb })),
+    });
+    await expectError(broken, 500, 'internal');
+    expect(failures).toBe(1);
+
+    const retried = await refreshed(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+    );
+    await refreshed(await refresh(session, retried.refreshToken));
+  });
+
+  it('stops replaying once the token it issued was refreshed again', async () => {
+    const session = await newSession();
+    const idempotencyKey = newIdempotencyKey();
+    const first = await refreshed(
+      await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
+    );
+    await refreshed(await refresh(session, first.refreshToken));
     await expectError(
       await refresh(session, session.tokens.refreshToken, { idempotencyKey }),
-      401,
-      'unauthorized',
+      422,
+      'idempotency_key_reused',
     );
   });
 

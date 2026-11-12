@@ -17,7 +17,7 @@ import {
   tokenBundle,
   type AccessGrant,
 } from '../auth/tokens.ts';
-import { refreshOnce } from '../auth/refreshReplay.ts';
+import { refreshOnce, type PresentedRefreshToken } from '../auth/refreshReplay.ts';
 import { verifyTurnstile } from '../auth/turnstile.ts';
 import { randomBase62 } from '../crypto.ts';
 import type { AppContext, AppEnv } from '../http/context.ts';
@@ -136,7 +136,6 @@ authRoutes.post(endpoints.authGuest.path, async (c) => {
 });
 
 authRoutes.post(endpoints.authRefresh.path, async (c) => {
-  const secret = authSecret(c.env.AUTH_SECRET);
   const request = await readSignedRequest(c);
   const idempotencyKey = requireIdempotencyKey(request);
   const body = parseBody(endpoints.authRefresh.body, request.rawBody);
@@ -144,50 +143,17 @@ authRoutes.post(endpoints.authRefresh.path, async (c) => {
 
   const row = await c.env.DB.prepare(
     `SELECT t.token_hash, t.player_id, t.family_id, t.expires_at, t.rotated_at, t.revoked_at,
-            p.device_jwk
+            t.device_jkt, p.device_jwk
        FROM refresh_tokens t JOIN players p ON p.id = t.player_id
       WHERE t.token_hash = ?`,
   )
     .bind(await hashRefreshToken(body.refreshToken))
-    .first<{
-      token_hash: string;
-      player_id: string;
-      family_id: string;
-      expires_at: number;
-      rotated_at: number | null;
-      revoked_at: number | null;
-      device_jwk: string;
-    }>();
+    .first<PresentedRefreshToken & { device_jwk: string }>();
   if (row === null) {
     throw new ApiFailure('unauthorized', 'Unknown refresh token. Sign in again as a guest.');
   }
   const deviceKey = DevicePublicKeySchema.parse(JSON.parse(row.device_jwk));
   await verifySigned(c, request, deviceKey);
 
-  return refreshOnce(c, request, idempotencyKey, now, async () => {
-    if (row.revoked_at !== null || row.expires_at <= now) {
-      throw new ApiFailure('unauthorized', 'This refresh token is no longer valid. Sign in again.');
-    }
-    const rotated = await c.env.DB.prepare(
-      'UPDATE refresh_tokens SET rotated_at = ? WHERE token_hash = ? AND rotated_at IS NULL AND revoked_at IS NULL',
-    )
-      .bind(now, row.token_hash)
-      .run();
-    if (row.rotated_at !== null || rotated.meta.changes !== 1) {
-      // Only a copy of an already-rotated token gets here: treat the family as stolen.
-      await c.env.DB.prepare(
-        'UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL',
-      )
-        .bind(now, row.family_id)
-        .run();
-      throw new ApiFailure(
-        'unauthorized',
-        'This refresh token was already used, so its session was revoked. Sign in again.',
-      );
-    }
-
-    const playerId = PlayerIdSchema.parse(row.player_id);
-    const refreshToken = await issueRefreshToken(c, playerId, row.family_id, now);
-    return tokenBundle(secret, { playerId, deviceKey }, refreshToken, now);
-  });
+  return refreshOnce(c, request, idempotencyKey, now, row, deviceKey);
 });

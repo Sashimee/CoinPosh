@@ -1,7 +1,9 @@
 import {
   endpoints,
   ErrorCodeSchema,
+  PlayerIdSchema,
   type AuthTokens,
+  type DevicePublicKey,
   type EpochMs,
   type IdempotencyKey,
 } from '@coinposh/shared';
@@ -11,7 +13,14 @@ import type { AppContext } from '../http/context.ts';
 import { IDEMPOTENT_REPLAYED_HEADER } from '../http/cors.ts';
 import { ApiFailure } from '../http/errors.ts';
 import type { SignedRequest } from '../http/signed.ts';
-import { ACCESS_TOKEN_TTL_MS, authSecret, hashRefreshToken } from './tokens.ts';
+import {
+  ACCESS_TOKEN_TTL_MS,
+  authSecret,
+  hashRefreshToken,
+  newRefreshToken,
+  REFRESH_TOKEN_TTL_MS,
+  tokenBundle,
+} from './tokens.ts';
 
 /**
  * Covers a stalled answer plus the client's retries, and stays under the access token's TTL so
@@ -136,37 +145,72 @@ async function replay(
   }
   const tokens = await open(secret, key, fingerprint, row.response);
   const issued = await c.env.DB.prepare(
-    'SELECT expires_at, revoked_at FROM refresh_tokens WHERE token_hash = ?',
+    'SELECT expires_at, rotated_at, revoked_at FROM refresh_tokens WHERE token_hash = ?',
   )
     .bind(await hashRefreshToken(tokens.refreshToken))
-    .first<{ expires_at: number; revoked_at: number | null }>();
+    .first<{ expires_at: number; rotated_at: number | null; revoked_at: number | null }>();
   if (issued?.revoked_at !== null || issued.expires_at <= now) {
     throw new ApiFailure(
       'unauthorized',
       'The session this refresh issued was revoked since. Sign in again.',
     );
   }
+  if (issued.rotated_at !== null) {
+    throw new ApiFailure(
+      'idempotency_key_reused',
+      'The refresh token this request issued was already refreshed again, so its answer is stale. Sign the request again with a new key.',
+    );
+  }
   return { ...tokens, accessTokenTtlMs: ACCESS_TOKEN_TTL_MS - (now - row.at) };
 }
 
+export interface PresentedRefreshToken {
+  readonly token_hash: string;
+  readonly player_id: string;
+  readonly family_id: string;
+  readonly expires_at: number;
+  readonly rotated_at: number | null;
+  readonly revoked_at: number | null;
+  readonly device_jkt: string | null;
+}
+
+/** Only a copy of an already-rotated token gets here: treat the family as stolen. */
+async function revokeFamily(c: AppContext, familyId: string, now: EpochMs): Promise<ApiFailure> {
+  await c.env.DB.prepare(
+    'UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL',
+  )
+    .bind(now, familyId)
+    .run();
+  return new ApiFailure(
+    'unauthorized',
+    'This refresh token was already used, so its session was revoked. Sign in again.',
+  );
+}
+
 /**
- * Runs `rotate` at most once per Idempotency-Key. A resend of the same signed request within
- * the window gets the first answer back rather than rotating the spent token again, which would
- * revoke the family. Handing the bundle out twice is safe: the caller has already checked the
- * device signature, and both tokens are useless without that device key.
+ * Rotates `presented` at most once per Idempotency-Key. A resend of the same signed request
+ * within the window gets the first answer back rather than rotating the spent token again, which
+ * would revoke the family. Handing the bundle out twice is safe: the caller has already checked
+ * the device signature, and both tokens are useless without that device key. The rotation, the
+ * new token and the sealed answer commit in one batch, so a claim without an answer always means
+ * nothing rotated. `refusal` is a caller's reason to refuse, kept on the claim like any other.
  */
 export async function refreshOnce(
   c: AppContext,
   request: SignedRequest,
   key: IdempotencyKey,
   now: EpochMs,
-  rotate: () => Promise<AuthTokens>,
+  presented: PresentedRefreshToken,
+  deviceKey: DevicePublicKey,
+  refusal: ApiFailure | null = null,
 ): Promise<Response> {
   const secret = authSecret(c.env.AUTH_SECRET);
+  const db = c.env.DB;
   const fingerprint = request.bodySha256;
-  const claimed = await c.env.DB.prepare(
-    'INSERT OR IGNORE INTO auth_requests (idempotency_key, route, at, fingerprint) VALUES (?, ?, ?, ?)',
-  )
+  const claimed = await db
+    .prepare(
+      'INSERT OR IGNORE INTO auth_requests (idempotency_key, route, at, fingerprint) VALUES (?, ?, ?, ?)',
+    )
     .bind(key, ROUTE, now, fingerprint)
     .run();
   if (claimed.meta.changes !== 1) {
@@ -175,22 +219,60 @@ export async function refreshOnce(
     return c.json(endpoints.authRefresh.response.parse(tokens));
   }
 
-  let tokens: AuthTokens;
   try {
-    tokens = endpoints.authRefresh.response.parse(await rotate());
+    if (refusal !== null) throw refusal;
+    if (presented.revoked_at !== null || presented.expires_at <= now) {
+      throw new ApiFailure('unauthorized', 'This refresh token is no longer valid. Sign in again.');
+    }
+    if (presented.rotated_at !== null) throw await revokeFamily(c, presented.family_id, now);
+
+    const playerId = PlayerIdSchema.parse(presented.player_id);
+    const refreshToken = newRefreshToken();
+    const tokens = endpoints.authRefresh.response.parse(
+      await tokenBundle(secret, { playerId, deviceKey }, refreshToken, now),
+    );
+    const sealed = await seal(secret, key, fingerprint, tokens);
+    const [rotated] = await db.batch([
+      db
+        .prepare(
+          'UPDATE refresh_tokens SET rotated_at = ? WHERE token_hash = ? AND rotated_at IS NULL AND revoked_at IS NULL',
+        )
+        .bind(now, presented.token_hash),
+      db
+        .prepare(
+          `INSERT INTO refresh_tokens
+             (token_hash, player_id, family_id, issued_at, expires_at, device_jkt)
+           SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1`,
+        )
+        .bind(
+          await hashRefreshToken(refreshToken),
+          playerId,
+          presented.family_id,
+          now,
+          now + REFRESH_TOKEN_TTL_MS,
+          presented.device_jkt,
+        ),
+      db
+        .prepare(
+          'UPDATE auth_requests SET response = ? WHERE idempotency_key = ? AND changes() = 1',
+        )
+        .bind(sealed, key),
+    ]);
+    if (rotated?.meta.changes !== 1) throw await revokeFamily(c, presented.family_id, now);
+    return c.json(tokens);
   } catch (error) {
     if (error instanceof ApiFailure) {
-      await c.env.DB.prepare('UPDATE auth_requests SET error = ? WHERE idempotency_key = ?')
+      await db
+        .prepare('UPDATE auth_requests SET error = ? WHERE idempotency_key = ?')
         .bind(JSON.stringify({ code: error.code, message: error.message }), key)
         .run();
     } else {
-      // An unexpected failure may have stopped before rotating: free the key so a retry runs.
-      await c.env.DB.prepare('DELETE FROM auth_requests WHERE idempotency_key = ?').bind(key).run();
+      // Nothing rotated while the claim has no answer, so a retry can safely run afresh.
+      await db
+        .prepare('DELETE FROM auth_requests WHERE idempotency_key = ? AND response IS NULL')
+        .bind(key)
+        .run();
     }
     throw error;
   }
-  await c.env.DB.prepare('UPDATE auth_requests SET response = ? WHERE idempotency_key = ?')
-    .bind(await seal(secret, key, fingerprint, tokens), key)
-    .run();
-  return c.json(tokens);
 }
