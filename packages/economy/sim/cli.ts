@@ -10,7 +10,8 @@ import { runSimulation } from './simulate.ts';
 
 export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] [--seed N] [--json] [--strict]
                                 [--envelope] [--empty-table] [--heap-coins N]
-                                [--heap-tier T] [--return-ratio X] [--ladder]
+                                [--heap-tier T] [--return-ratio X] [--fusion-share X]
+                                [--ladder]
 
   --days          casual calendar days to simulate (default 7)
   --players       simulated players per cohort (default 100)
@@ -22,6 +23,7 @@ export const USAGE = `Usage: pnpm --filter economy sim [--days N] [--players N] 
   --heap-coins    what-if: opening-heap coins instead of the shipped ${economyConfig.openingHeap.coins}
   --heap-tier     what-if: opening-heap coin tier instead of the shipped ${economyConfig.openingHeap.tier}
   --return-ratio  what-if: front-edge value per coin dropped (shipped model: ${simModel.baseReturnRatio})
+  --fusion-share  what-if: share of returned value fused at fusionWindow 1 (shipped model: ${simModel.fusionShare})
   --ladder        print fusion tier-creation times per play style (physics-measured) against the ladder targets`;
 
 export interface CliIo {
@@ -60,6 +62,14 @@ function parsePositive(name: string, raw: string): number {
   return value;
 }
 
+function parseShare(name: string, raw: string): number {
+  const value = Number(raw);
+  if (!(raw.trim() !== '' && Number.isFinite(value) && value >= 0 && value <= 1)) {
+    throw new RangeError(`--${name} expects a share in [0, 1], got "${raw}"`);
+  }
+  return value;
+}
+
 function finiteJson(value: unknown): string {
   return JSON.stringify(
     value,
@@ -82,6 +92,7 @@ function run(argv: readonly string[], io: CliIo): number {
       'heap-coins': { type: 'string' },
       'heap-tier': { type: 'string' },
       'return-ratio': { type: 'string' },
+      'fusion-share': { type: 'string' },
       ladder: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -100,6 +111,10 @@ function run(argv: readonly string[], io: CliIo): number {
       values['return-ratio'] === undefined
         ? simModel.baseReturnRatio
         : parsePositive('return-ratio', values['return-ratio']),
+    fusionShare:
+      values['fusion-share'] === undefined
+        ? simModel.fusionShare
+        : parseShare('fusion-share', values['fusion-share']),
   };
   const heapCoins = values['empty-table']
     ? 0

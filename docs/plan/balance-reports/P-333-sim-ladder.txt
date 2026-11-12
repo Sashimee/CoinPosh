@@ -3,43 +3,43 @@ CoinPosh balancing sim · 100 players · seed 1 · 7 casual days
 Pacing targets (02-ECONOMY.md): 7/7 on target
       Target                   Bound                    At   Sim          p10 / p50 / p90
 ────  ───────────────────────  ───────────────────────  ───  ───────────  ──────────────────────────────────────
-PASS  First upgrade            ≤ 2 min                  p90  17 s         17 s / 17 s / 17 s
+PASS  First upgrade            ≤ 2 min                  p90  18 s         18 s / 18 s / 18 s
 PASS  First Charm              ≤ 5 min                  p90  14 s         14 s / 14 s / 14 s
-PASS  First album set          ≤ 45 min                 p50  15 min 12 s  8 min 31 s / 15 min 12 s / 22 min 39 s
-PASS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  3 h 02 min   2 h 43 min / 3 h 02 min / 3 h 14 min
-PASS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  day 1.50     day 1.50 / day 1.50 / day 1.50
-PASS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  ×1.70        ×1.59 / ×1.70 / ×1.81
-PASS  Free season track        25.0 h – 35.0 h          p50  28.3 h       28.0 h / 28.3 h / 28.5 h
+PASS  First album set          ≤ 45 min                 p50  15 min 16 s  7 min 56 s / 15 min 16 s / 22 min 45 s
+PASS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  3 h 09 min   2 h 51 min / 3 h 09 min / 3 h 23 min
+PASS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  day 1.50     day 1.50 / day 1.50 / day 1.51
+PASS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  ×1.71        ×1.58 / ×1.71 / ×1.82
+PASS  Free season track        25.0 h – 35.0 h          p50  28.3 h       28.0 h / 28.3 h / 28.6 h
 
 FTUE targets (00-VISION.md): 1/1 on target
       Target             Bound   At   Sim   p10 / p50 / p90
 ────  ─────────────────  ──────  ───  ────  ─────────────────
 PASS  First Vault Crate  ≤ 45 s  p90  14 s  6 s / 14 s / 14 s
 
-Opening heap: 100 silver coins on the house · first fall after 10 drops · paid 652 / 652 / 660 coins (p10 / p50 / p90)
+Opening heap: 100 silver coins on the house · first fall after 10 drops · paid 637 / 637 / 645 coins (p10 / p50 / p90)
 
 Active-play milestones (continuous play, capped at 60 h)
 Milestone              p10          p50          p90
 ─────────────────────  ───────────  ───────────  ───────────
-Opening heap cleared   1 min 28 s   1 min 29 s   1 min 29 s
-First upgrade          17 s         17 s         17 s
+Opening heap cleared   1 min 29 s   1 min 29 s   1 min 29 s
+First upgrade          18 s         18 s         18 s
 First Vault Crate      6 s          14 s         14 s
 First Charm            14 s         14 s         14 s
-First album set        8 min 31 s   15 min 12 s  22 min 39 s
-Ascend Riviera Yacht   2 h 43 min   3 h 02 min   3 h 14 min
-Ascend Salon de Paris  7 h 30 min   8 h 23 min   8 h 40 min
-Free season track      28 h 01 min  28 h 19 min  28 h 33 min
+First album set        7 min 56 s   15 min 16 s  22 min 45 s
+Ascend Riviera Yacht   2 h 51 min   3 h 09 min   3 h 23 min
+Ascend Salon de Paris  7 h 46 min   8 h 45 min   9 h 04 min
+Free season track      28 h 02 min  28 h 20 min  28 h 34 min
 
 Casual player, median at end of each day
 Day  Active   Venue  Bullion  Gold Bars  Crates  Charms  Sets  Pearls  Keys  Season
 ───  ───────  ─────  ───────  ─────────  ──────  ──────  ────  ──────  ────  ───────
-1    50 min   1      18 %     0          137     14      2     171     8     tier 1
-2    100 min  2      3 %      1          295     30      2     382     17    tier 2
-3    150 min  2      68 %     1          463     48      2     600     28    tier 4
-4    200 min  3      18 %     1          636     65      2     833     39    tier 5
-5    250 min  3      60 %     1          813     84      2     1052    49    tier 7
-6    300 min  4      1 %      1          990     102     2     1285    60    tier 8
-7    350 min  4      17 %     1          1164    122     2     1518    71    tier 10
+1    50 min   1      17 %     0          136     14      2     171     7     tier 1
+2    100 min  2      3 %      0          294     30      2     377     17    tier 2
+3    150 min  2      62 %     0          462     48      2     604     28    tier 4
+4    200 min  3      16 %     1          635     65      2     824     39    tier 5
+5    250 min  3      56 %     1          811     83      2     1050    48    tier 7
+6    300 min  3      80 %     1          988     102     2     1286    59    tier 8
+7    350 min  4      8 %      0          1162    120     2     1514    70    tier 10
 
 Fusion ladder (packages/sim e3eb761, SIM_VERSION 8, 10 seeds × 300 s): 6/9 on target
       Target                             Bound    At   Sim          p10 / p50 / p90
@@ -70,7 +70,7 @@ Style                  silver                    gold              platinum     
 3/s + Pours, one spot  2 s / 2 s / 2 s           3 s / 3 s / 4 s   6 s / 9 s / 14 s             30 s / 49 s / 1 min 48 s        — / — / —  10/10/10/5/0
 4/s, one spot          2 s / 2 s / 3 s           4 s / 4 s / 4 s   7 s / 10 s / 14 s            28 s / 1 min 08 s / 1 min 44 s  — / — / —  10/10/10/3/0
 
-Rates per style (envelope windows: fusions 60 s, fallValue 30 s); model fusion bonus per drop 0.047
+Rates per style (envelope windows: fusions 60 s, fallValue 30 s); model fusion bonus per drop 0.018, calibrated on 0.8/s, whole chute (0.018)
 Style                  Fusions/min  Busiest 60 s  Busiest fallValue 30 s  Fusion bonus/drop
 ─────────────────────  ───────────  ────────────  ──────────────────────  ─────────────────
 0.8/s, whole chute     1.9          7             207                     0.018

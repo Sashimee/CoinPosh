@@ -1,7 +1,7 @@
 import type { LadderRun } from './ladder.ts';
 import type { PlayStyleId } from '../src/types.ts';
 
-// Generated from packages/sim; sim/ladder.ts documents the measurement and how to rerun it.
+// Measured on packages/sim; sim/ladder.ts (ladderMeasurement) documents the recipe and how to rerun it.
 export const ladderRuns: Readonly<Record<PlayStyleId, readonly LadderRun[]>> = {
   casual: [
     {

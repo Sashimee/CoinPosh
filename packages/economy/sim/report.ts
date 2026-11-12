@@ -172,7 +172,7 @@ export function formatLadder(result: LadderResult): string {
       ]),
     ),
     '',
-    `Rates per style (envelope windows: fusions 60 s, fallValue 30 s); model fusion bonus per drop ${result.modelFusionBonusPerDrop.toFixed(3)}`,
+    `Rates per style (envelope windows: fusions 60 s, fallValue 30 s); model fusion bonus per drop ${result.modelFusionBonusPerDrop.toFixed(3)}, calibrated on ${playStyles[result.calibration.style].label} (${result.calibration.fusionBonusPerDrop.toFixed(3)})`,
     table(
       ['Style', 'Fusions/min', 'Busiest 60 s', 'Busiest fallValue 30 s', 'Fusion bonus/drop'],
       result.styles.map((s) => [

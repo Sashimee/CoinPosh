@@ -13,7 +13,12 @@ export interface SimModel {
   readonly baseReturnRatio: number;
   /** Share of pushed-off coins landing in each cascade tier (the rest earn no combo). */
   readonly cascadeShare: Readonly<Record<CascadeTierId, number>>;
-  /** Share of returned value that passed through one Contact Fusion at fusionWindow 1. */
+  /**
+   * Share of returned value that passed through one Contact Fusion at fusionWindow 1.
+   * Calibrated on the physics ladder (sim/ladder.ts) style that taps at
+   * `baseDropsPerSecond` across the whole chute: fusion bonus per drop =
+   * baseReturnRatio × fusionShare × (bonusMultiplier − 1).
+   */
   readonly fusionShare: number;
   /** Income bonus per slotted Charm (proxy for pegs, ropes, magnets...). */
   readonly charmIncomeBonus: number;
@@ -84,7 +89,7 @@ export const simModel = {
   baseDropsPerSecond: 0.8,
   baseReturnRatio: 1.25,
   cascadeShare: { chic: 0.3, lavish: 0.15, opulent: 0.09, decadent: 0.045, obscene: 0.015 },
-  fusionShare: 0.15,
+  fusionShare: 0.056,
   charmIncomeBonus: 0.06,
   dropReserve: 10,
   activeCapHours: 60,

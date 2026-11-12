@@ -47,27 +47,30 @@ export const rateEnvelopeDerivation = {
 export const rateEnvelope = {
   drops: {
     windowMs: 10_000,
-    max: 113,
+    max: 110,
     scaleBy: { dropRate: 1 },
     value: null,
   },
   falls: {
     windowMs: 30_000,
-    max: 274,
+    max: 300,
     scaleBy: { dropRate: 1, pusherSpeed: 1 },
     value: null,
   },
   fallValue: {
     windowMs: 30_000,
-    max: 517,
-    // fusionWindow only lifts the fused share of value: 0.15 × 0.25 / (1 + 0.15 × 0.25).
-    scaleBy: { dropRate: 1, pusherSpeed: 1, coinValue: 1, globalCoinValue: 1, fusionWindow: 0.037 },
+    max: 477,
+    // fusionWindow only lifts the fused share of value: 0.056 × 0.25 / (1 + 0.056 × 0.25).
+    scaleBy: { dropRate: 1, pusherSpeed: 1, coinValue: 1, globalCoinValue: 1, fusionWindow: 0.014 },
     value: { perCharm: 0.06 },
   },
   fusions: {
     windowMs: 60_000,
     max: 127,
-    scaleBy: { dropRate: 1, pusherSpeed: 1, fusionWindow: 1 },
+    // No pusherSpeed: aimed play already fuses close to one merge per (inputCount − 1) coins
+    // fed (sim/ladder.ts), so a faster pusher cannot add merges the drops do not feed. With
+    // it, every table past ~30 min had a limit the drop cap could never reach.
+    scaleBy: { dropRate: 1, fusionWindow: 1 },
     value: null,
   },
   crates: {

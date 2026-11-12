@@ -1,0 +1,42 @@
+CoinPosh balancing sim · 100 players · seed 1 · 7 casual days
+
+Pacing targets (02-ECONOMY.md): 5/7 on target
+      Target                   Bound                    At   Sim          p10 / p50 / p90
+────  ───────────────────────  ───────────────────────  ───  ───────────  ──────────────────────────────────────
+PASS  First upgrade            ≤ 2 min                  p90  17 s         17 s / 17 s / 17 s
+PASS  First Charm              ≤ 5 min                  p90  14 s         14 s / 14 s / 14 s
+PASS  First album set          ≤ 45 min                 p50  14 min 43 s  7 min 46 s / 14 min 43 s / 21 min 55 s
+MISS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  2 h 22 min   2 h 09 min / 2 h 22 min / 2 h 35 min
+MISS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  day 1.02     day 1.00 / day 1.02 / day 1.50
+PASS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  ×1.69        ×1.55 / ×1.69 / ×1.84
+PASS  Free season track        25.0 h – 35.0 h          p50  28.2 h       27.9 h / 28.2 h / 28.4 h
+
+FTUE targets (00-VISION.md): 1/1 on target
+      Target             Bound   At   Sim   p10 / p50 / p90
+────  ─────────────────  ──────  ───  ────  ─────────────────
+PASS  First Vault Crate  ≤ 45 s  p90  14 s  6 s / 14 s / 14 s
+
+Opening heap: 100 silver coins on the house · first fall after 10 drops · paid 749 / 749 / 758 coins (p10 / p50 / p90)
+
+Active-play milestones (continuous play, capped at 60 h)
+Milestone              p10          p50          p90
+─────────────────────  ───────────  ───────────  ───────────
+Opening heap cleared   1 min 26 s   1 min 27 s   1 min 27 s
+First upgrade          17 s         17 s         17 s
+First Vault Crate      6 s          14 s         14 s
+First Charm            14 s         14 s         14 s
+First album set        7 min 46 s   14 min 43 s  21 min 55 s
+Ascend Riviera Yacht   2 h 09 min   2 h 22 min   2 h 35 min
+Ascend Salon de Paris  5 h 53 min   6 h 30 min   6 h 48 min
+Free season track      27 h 55 min  28 h 13 min  28 h 27 min
+
+Casual player, median at end of each day
+Day  Active   Venue  Bullion  Gold Bars  Crates  Charms  Sets  Pearls  Keys  Season
+───  ───────  ─────  ───────  ─────────  ──────  ──────  ────  ──────  ────  ───────
+1    50 min   1      28 %     0          141     15      2     177     8     tier 1
+2    100 min  2      7 %      0          304     31      2     395     18    tier 2
+3    150 min  3      3 %      1          475     48      2     624     29    tier 4
+4    200 min  3      50 %     1          652     65      2     849     39    tier 5
+5    250 min  4      2 %      1          828     84      2     1070    50    tier 7
+6    300 min  4      23 %     1          1009    103     2     1311    61    tier 8
+7    350 min  4      47 %     1          1188    123     2     1550    72    tier 10

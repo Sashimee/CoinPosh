@@ -23,6 +23,7 @@ import {
   VENUE_IDS,
   type RateEnvelopeConfig,
   type RateEnvelopeDerivation,
+  type RateEnvelopeLimits,
   type RateEnvelopeMetricId,
   type RateEnvelopeTable,
 } from './types.ts';
@@ -262,6 +263,16 @@ const tables: fc.Arbitrary<RateEnvelopeTable> = fc.record({
   albumBonus: fc.double({ min: 0, max: 2, noNaN: true }),
 });
 
+/**
+ * The most merges one fusions window can hold on this table: every coin the drop cap lets
+ * in plus the opening heap, and each merge removes inputCount − 1 of them.
+ */
+function fusionFeedBound(limits: RateEnvelopeLimits): number {
+  const { inputCount } = economyConfig.fusion;
+  const dropsPerWindow = (limits.drops.max * limits.fusions.windowMs) / limits.drops.windowMs;
+  return (dropsPerWindow + economyConfig.openingHeap.coins) / (inputCount - 1);
+}
+
 const maxTable: RateEnvelopeTable = {
   levels: Object.fromEntries(economyConfig.upgradeLines.map((line) => [line.id, line.maxLevel])),
   venue: 'orbitalCasino',
@@ -310,15 +321,6 @@ describe('rate envelope base limits', () => {
       );
       expect(rateEnvelope[metric].max).toBeLessThanOrEqual(Math.max(4 * median, 4));
     }
-  });
-
-  it('bound fusions below what the drop cap could feed: each merge removes inputCount − 1 coins', () => {
-    const { inputCount } = economyConfig.fusion;
-    const dropsPerWindow =
-      (rateEnvelope.drops.max * rateEnvelope.fusions.windowMs) / rateEnvelope.drops.windowMs;
-    expect(rateEnvelope.fusions.max).toBeLessThanOrEqual(
-      (dropsPerWindow + economyConfig.openingHeap.coins) / (inputCount - 1),
-    );
   });
 
   it('stay within 4× the busiest fusion minute of the fastest measured honest style', () => {
@@ -397,16 +399,35 @@ describe('rate envelope scaling', () => {
         expect(
           (sim.dropsPerSecond * sim.grossPerDrop) / (base.dropsPerSecond * base.grossPerDrop),
         ).toBeLessThanOrEqual(grows('fallValue') * slack);
-        expect(
+        // Honest merges grow with the sim's fused-coin rate, but the coins that feed them
+        // (drops plus a fixed heap) never grow faster than the drops.
+        const fusionGrowth = Math.min(
           (sim.dropsPerSecond * sim.inputsPerDrop * sim.fusedShare) /
             (base.dropsPerSecond * base.inputsPerDrop * base.fusedShare),
-        ).toBeLessThanOrEqual(grows('fusions') * slack);
+          grows('drops'),
+        );
+        expect(fusionGrowth).toBeLessThanOrEqual(grows('fusions') * slack);
         expect(
           (sim.dropsPerSecond * sim.crateChancePerDrop) /
             (base.dropsPerSecond * base.crateChancePerDrop),
         ).toBeLessThanOrEqual(grows('crates') * slack);
       }),
       { numRuns: 300, seed: 0x45 },
+    );
+  });
+
+  it('bounds fusions below what the drop cap could feed, on every upgrade level and venue', () => {
+    const check = (table: RateEnvelopeTable): void => {
+      const limits = rateEnvelopeFor(table);
+      expect(limits.fusions.max).toBeLessThanOrEqual(fusionFeedBound(limits));
+    };
+    check(BASE_TABLE);
+    for (const venue of VENUE_IDS) check({ ...maxTable, venue });
+    fc.assert(
+      fc.property(upgradeLevels, fc.constantFrom(...VENUE_IDS), (levels, venue) => {
+        check({ ...BASE_TABLE, levels, venue });
+      }),
+      { numRuns: 500 },
     );
   });
 

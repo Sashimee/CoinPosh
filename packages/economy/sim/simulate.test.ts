@@ -241,6 +241,15 @@ describe('sim CLI', () => {
     expect(run.out).not.toEqual(shipped.out);
   });
 
+  it('applies the --fusion-share what-if', () => {
+    const run = cli('--days', '1', '--players', '1', '--fusion-share', '0.77', '--json');
+    const shipped = cli('--days', '1', '--players', '1', '--json');
+    expect(run.out).not.toEqual(shipped.out);
+    expect(
+      cli('--days', '1', '--players', '1', '--fusion-share', '0.77', '--ladder').out,
+    ).toContain('model fusion bonus per drop 0.241');
+  });
+
   it('adds the fusion ladder under --ladder, in text and JSON', () => {
     const run = cli('--days', '1', '--players', '1', '--ladder');
     expect(run.code).toBe(0);
@@ -273,6 +282,8 @@ describe('sim CLI', () => {
   it.each([
     [['--days', 'seven'], '--days expects an integer, got "seven"'],
     [['--return-ratio', '0'], '--return-ratio expects a positive number, got "0"'],
+    [['--fusion-share', '1.5'], '--fusion-share expects a share in [0, 1], got "1.5"'],
+    [['--fusion-share', ''], '--fusion-share expects a share in [0, 1], got ""'],
     [['--heap-coins=-1'], '--heap-coins expects a whole number ≥ 0, got "-1"'],
     [['--heap-coins', '2.5'], '--heap-coins expects a whole number ≥ 0, got "2.5"'],
     [['--heap-tier', 'bronze'], '--heap-tier expects one of copper, silver, gold'],

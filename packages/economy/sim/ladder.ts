@@ -62,8 +62,13 @@ export const playStyles: Readonly<Record<PlayStyleId, PlayStyle>> = {
  * Where `ladderRuns` comes from: packages/sim at `simCommit` with the Demo mechanics
  * (economy fusion rule, no tower) and the shipped opening heap, stepped `seconds` at 60 Hz
  * for each seed. Taps land every round(60 / tapsPerSecond) ticks at
- * `Xoshiro128ss.fromSeed(seed ^ 0x7a9).nextRange(-spread, spread)` mm, the aim RNG
- * fusionRate.test.ts uses. Rerun it whenever FUSION_TUNING or SIM_VERSION changes.
+ * `xMm = Math.round(Xoshiro128ss.fromSeed(seed ^ 0x7a9).nextRange(-spread, spread))`, the
+ * aim RNG fusionRate.test.ts uses; a one-spot style (spread 0) drops at `xMm = 0` and draws
+ * no RNG, since nextRange needs max > min. A Pour adds a drop every 8 ticks for 2 s every
+ * 20 s. `first` times are the fusion event's tick / 60, rounded to 0.1 s; an independent
+ * rebuild matched within one 0.1 s step. The generator is not committed yet (economy cannot
+ * import @coinposh/sim, which depends on economy): it belongs in packages/sim, pinned to
+ * `simVersion`. Rerun it whenever FUSION_TUNING or SIM_VERSION changes.
  */
 export const ladderMeasurement = {
   simCommit: 'e3eb761',
@@ -89,6 +94,35 @@ export interface LadderResult {
   readonly targets: readonly TargetResult[];
   /** What the economy model assumes `fusionBonusPerDrop` is at fusionWindow 1. */
   readonly modelFusionBonusPerDrop: number;
+  /** The measured style the model's fusionShare is calibrated on, and what it measured. */
+  readonly calibration: {
+    readonly style: PlayStyleId;
+    readonly fusionBonusPerDrop: number;
+  };
+}
+
+/** How far the model's fusion bonus per drop may sit from its calibration style. */
+export const CALIBRATION_TOLERANCE = 0.1;
+
+/** The style that plays like the economy model: its base cadence across the whole chute. */
+export function calibrationStyle(model: SimModel): PlayStyleId {
+  const style = PLAY_STYLE_IDS.find(
+    (id) =>
+      playStyles[id].tapsPerSecond === model.baseDropsPerSecond &&
+      playStyles[id].aimSpreadMm === 150 &&
+      !playStyles[id].pour,
+  );
+  if (style === undefined) {
+    throw new RangeError(
+      `No ladder style taps ${model.baseDropsPerSecond}/s across the whole chute; measure one before changing baseDropsPerSecond.`,
+    );
+  }
+  return style;
+}
+
+function fusionBonusPerDrop(runs: readonly LadderRun[]): number {
+  const sum = (f: (run: LadderRun) => number): number => runs.reduce((a, run) => a + f(run), 0);
+  return sum((run) => run.fusionBonusOut) / sum((run) => run.drops);
 }
 
 function firstTimes(runs: readonly LadderRun[], tier: FusedTier): (number | undefined)[] {
@@ -136,7 +170,7 @@ function styleResult(style: PlayStyleId, runs: readonly LadderRun[]): LadderStyl
     fusionsPerMinute: (sum((run) => run.fusions) / runs.length / ladderMeasurement.seconds) * 60,
     busiestFusions: Math.max(...runs.map((run) => run.busiestFusions)),
     busiestFallValue: Math.max(...runs.map((run) => run.busiestFallValue)),
-    fusionBonusPerDrop: sum((run) => run.fusionBonusOut) / sum((run) => run.drops),
+    fusionBonusPerDrop: fusionBonusPerDrop(runs),
   };
 }
 
@@ -146,10 +180,12 @@ export function evaluateLadder(
   targets: readonly LadderTargetDef[] = ladderTargets,
   runs: Readonly<Record<PlayStyleId, readonly LadderRun[]>> = ladderRuns,
 ): LadderResult {
+  const style = calibrationStyle(model);
   return {
-    styles: PLAY_STYLE_IDS.map((style) => styleResult(style, runs[style])),
+    styles: PLAY_STYLE_IDS.map((id) => styleResult(id, runs[id])),
     targets: targets.map((target) => evaluateLadderTarget(target, runs)),
     modelFusionBonusPerDrop: model.baseReturnRatio * model.fusionShare * (bonusMultiplier - 1),
+    calibration: { style, fusionBonusPerDrop: fusionBonusPerDrop(runs[style]) },
   };
 }
 

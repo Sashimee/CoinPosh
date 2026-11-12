@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { economyConfig, ladderTargets } from '../src/config/index.ts';
 import { PLAY_STYLE_IDS, type LadderTargetDef, type PlayStyleId } from '../src/types.ts';
 import {
+  CALIBRATION_TOLERANCE,
   FUSED_TIERS,
+  calibrationStyle,
   evaluateLadder,
   evaluateLadderTarget,
   honestFusionPeak,
@@ -187,6 +189,34 @@ describe('ladder targets', () => {
         },
       ),
       RUNS,
+    );
+  });
+});
+
+describe('economy model calibration', () => {
+  it('keeps the model’s fusion bonus per drop within tolerance of the style it plays like', () => {
+    const result = evaluateLadder(simModel, bonusMultiplier);
+    expect(result.calibration.style).toBe('casual');
+    const measured = result.calibration.fusionBonusPerDrop;
+    expect(measured).toBeGreaterThan(0);
+    expect(Math.abs(result.modelFusionBonusPerDrop / measured - 1)).toBeLessThanOrEqual(
+      CALIBRATION_TOLERANCE,
+    );
+  });
+
+  it('flags a model that drifts from the physics, either way', () => {
+    for (const factor of [0.8, 1.25, 2.7]) {
+      const drifted = { ...simModel, fusionShare: simModel.fusionShare * factor };
+      const result = evaluateLadder(drifted, bonusMultiplier);
+      expect(
+        Math.abs(result.modelFusionBonusPerDrop / result.calibration.fusionBonusPerDrop - 1),
+      ).toBeGreaterThan(CALIBRATION_TOLERANCE);
+    }
+  });
+
+  it('refuses a model cadence no ladder style measured', () => {
+    expect(() => calibrationStyle({ ...simModel, baseDropsPerSecond: 1.7 })).toThrow(
+      /No ladder style taps 1.7\/s/,
     );
   });
 });
