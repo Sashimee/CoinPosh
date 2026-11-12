@@ -14,6 +14,7 @@ import {
   rewardLines,
   type AlbumProgress,
   type AlbumProgressMap,
+  type PityOutlook,
   type RewardLine,
 } from './loot.ts';
 
@@ -125,7 +126,7 @@ export interface CrateReveal {
  */
 export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   const { ui, roll, rarity, reducedMotion } = options;
-  const outlook = pityOutlook(roll.pity);
+  const outlook = pityOutlook(roll.pity, roll.rarity);
   registerCratesStrings(ui.i18n);
   const disposers: (() => void)[] = [];
   const loc = new Localizer(ui.i18n);
@@ -156,12 +157,8 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     list.append(item);
   });
   const pity = h('p', { class: 'cp-crate-pity' });
-  ctx.own(
-    loc.text(pity, () => {
-      const values = { rarity: t(`rarity.${outlook.rarity}`), count: outlook.within };
-      return outlook.within === 1 ? t('pityNext', values) : t('pity', values);
-    }),
-  );
+  pity.hidden = outlook === null;
+  if (outlook !== null) ctx.own(loc.text(pity, () => pityLineCopy(outlook, t)));
   const fair = h('p', {
     class: 'cp-crate-fair',
     attrs: { title: `${roll.proof.serverSeedHash} · ${roll.proof.nonce}` },
@@ -295,6 +292,15 @@ export type CratesT = (
   key: Parameters<typeof cratesKey>[0],
   values?: InterpolationValues,
 ) => string;
+
+/**
+ * The pity promise, about crates rather than the items in them, since the server counts the
+ * crate's rarity: a Fine crate holding a Rare charm still leaves the Rare guarantee pending.
+ */
+export function pityLineCopy(outlook: PityOutlook, t: CratesT): string {
+  const values = { crate: t(`pityCrate.${outlook.rarity}`), count: outlook.within };
+  return outlook.within === 1 ? t('pityNext', values) : t('pity', values);
+}
 
 /** What one reward line says: the headline, the line under it, and the rarity it wears. */
 export interface RewardLineCopy {
