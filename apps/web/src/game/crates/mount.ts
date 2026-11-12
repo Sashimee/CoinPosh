@@ -2,6 +2,9 @@ import type { CrateId } from '@coinposh/shared';
 import type { Object3D, PerspectiveCamera } from 'three/webgpu';
 import type { UiApp } from '../../app/index.ts';
 import { createBus, type Bus } from '../../app/bus.ts';
+import type { UiState } from '../../app/state.ts';
+import { watch, type Store } from '../../app/store.ts';
+import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
 import type { CameraPreset } from '../../scene/venues/riviera/layout.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
@@ -39,6 +42,58 @@ export interface CratesMountOptions {
   readonly audio?: (() => CrateAudioPort | null) | null;
   readonly inventoryTarget?: () => HTMLElement | null;
   readonly reducedMotion?: () => boolean;
+}
+
+const COLLECT = '[data-testid="crate-collect"]';
+
+/** Holds the unbox while any sheet is open and lets it go the moment the last one closes. */
+export function holdWhileSheetOpen(
+  store: Store<UiState>,
+  director: Pick<UnboxDirector, 'hold'>,
+): () => void {
+  return watch(
+    store,
+    (state) => state.panel !== null,
+    (open) => {
+      director.hold(open);
+    },
+  );
+}
+
+export interface KeyDocument {
+  addEventListener(type: 'keydown', listener: (event: KeyLike) => void): void;
+  removeEventListener(type: 'keydown', listener: (event: KeyLike) => void): void;
+}
+
+/** Escape while the reward card is up collects it, wherever focus sits. */
+export function bindEscapeCollect(
+  doc: KeyDocument,
+  options: { readonly ready: () => boolean; readonly collect: () => void },
+): () => void {
+  const onKeyDown = (event: KeyLike): void => {
+    if (event.key !== 'Escape' || event.defaultPrevented || !options.ready()) return;
+    event.preventDefault();
+    options.collect();
+  };
+  doc.addEventListener('keydown', onKeyDown);
+  return () => {
+    doc.removeEventListener('keydown', onKeyDown);
+  };
+}
+
+/** Presses the card's own Collect, so Escape gets the same fly, sound and haptic as a tap. */
+function pressCollect(reveal: CrateReveal): void {
+  const button = reveal.el.querySelector<HTMLElement>(COLLECT);
+  if (!button) throw new Error('CoinPosh crates: the reward card has no Collect button to press.');
+  button.click();
+}
+
+function holdReveal(reveal: CrateReveal, held: boolean): void {
+  reveal.el.inert = held;
+  reveal.el.style.visibility = held ? 'hidden' : '';
+  if (held) return;
+  const target = reveal.shown ? reveal.el.querySelector<HTMLElement>(COLLECT) : reveal.el;
+  target?.focus({ preventScroll: true });
 }
 
 export interface CratesModule {
@@ -89,12 +144,34 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
         onCollect: controls.collect,
       });
       reveals.set(opened.crateId, reveal);
-      return reveal;
+      const unbindEscape = bindEscapeCollect(reveal.el.ownerDocument, {
+        ready: () => reveal.shown && !director.held && reveals.get(opened.crateId) === reveal,
+        collect: () => {
+          pressCollect(reveal);
+        },
+      });
+      return {
+        get shown() {
+          return reveal.shown;
+        },
+        show: () => {
+          reveal.show();
+        },
+        hold: (held) => {
+          holdReveal(reveal, held);
+        },
+        dispose: () => {
+          unbindEscape();
+          reveal.dispose();
+        },
+      };
     },
     onStart: (crateId) => {
       table.remove(crateId);
     },
   });
+
+  disposers.push(holdWhileSheetOpen(options.ui.store, director));
 
   const hint = mountArrivalHint({ ui: options.ui, host: options.host, reducedMotion });
   disposers.push(bindArrivalHint(events, hint), () => {
