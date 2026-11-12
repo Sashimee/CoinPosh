@@ -1310,6 +1310,7 @@
 
 .cp-upgrade {
   --cp-glow: 0;
+  position: relative;
   display: grid;
   grid-template-columns: 40px 1fr auto;
   align-items: center;
@@ -1326,14 +1327,137 @@
   border-color: var(--cp-hairline);
 }
 
-.cp-upgrade.is-levelled .cp-medallion {
-  animation: cp-medal 600ms cubic-bezier(0.2, 1.6, 0.4, 1);
+.cp-upgrade-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-@keyframes cp-medal {
-  40% {
-    scale: 1.25;
-    rotate: 12deg;
+.cp-upgrade-glint {
+  background: linear-gradient(
+    105deg,
+    transparent 28%,
+    rgb(var(--cp-gold-brushed-rgb) / 0.22) 40%,
+    rgb(var(--cp-champagne-rgb) / 0.5) 48%,
+    rgb(var(--cp-ivory-rgb) / 0.62) 50%,
+    rgb(var(--cp-champagne-rgb) / 0.5) 52%,
+    rgb(var(--cp-gold-brushed-rgb) / 0.22) 60%,
+    transparent 72%
+  );
+  mix-blend-mode: screen;
+}
+
+.cp-upgrade.is-celebrating {
+  animation: cp-upgrade-flare 1100ms ease-out;
+}
+
+.cp-upgrade.is-celebrating .cp-upgrade-glint {
+  animation: cp-upgrade-glint 950ms cubic-bezier(0.25, 0.6, 0.35, 1) both;
+}
+
+.cp-upgrade.is-celebrating .cp-medallion {
+  animation: cp-medal-ring 900ms ease-out;
+}
+
+.cp-upgrade.is-celebrating .cp-upgrade-effect {
+  animation: cp-effect-flash 1000ms ease-out;
+}
+
+.cp-upgrade.is-celebrating .cp-upgrade-pop {
+  animation: cp-upgrade-pop 1150ms cubic-bezier(0.2, 1.3, 0.4, 1) both;
+}
+
+@keyframes cp-upgrade-glint {
+  from {
+    translate: -62% 0;
+  }
+  to {
+    translate: 72% 0;
+  }
+}
+
+@keyframes cp-upgrade-flare {
+  0%,
+  20% {
+    border-color: var(--cp-gold-brushed);
+    background-color: rgb(var(--cp-gold-brushed-rgb) / 0.16);
+  }
+}
+
+@keyframes cp-medal-ring {
+  0%,
+  30% {
+    border-color: var(--cp-champagne);
+    box-shadow:
+      0 0 0 3px rgb(var(--cp-gold-brushed-rgb) / 0.35),
+      0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.6);
+  }
+}
+
+@keyframes cp-effect-flash {
+  0%,
+  35% {
+    color: var(--cp-champagne);
+  }
+}
+
+@keyframes cp-upgrade-pop {
+  0% {
+    opacity: 0;
+    translate: -50% -50%;
+    scale: 0.4;
+  }
+  14% {
+    opacity: 1;
+    translate: -50% -150%;
+    scale: 1.16;
+  }
+  30% {
+    translate: -50% -170%;
+    scale: 1;
+  }
+  74% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    translate: -50% -210%;
+    scale: 1;
+  }
+}
+
+/* Reduced motion keeps the row still: it washes gold and the new effect fades in and out in
+   place. These outrank the host's blanket 1ms animation rule on purpose. */
+.cp-upgrade.is-celebrating.is-calm {
+  animation: cp-upgrade-flare 900ms ease-out !important;
+}
+
+.cp-upgrade.is-celebrating.is-calm .cp-upgrade-glint {
+  animation: none !important;
+}
+
+.cp-upgrade.is-celebrating.is-calm .cp-medallion {
+  animation: cp-medal-ring 900ms ease-out !important;
+}
+
+.cp-upgrade.is-celebrating.is-calm .cp-upgrade-pop {
+  translate: -50% -170%;
+  animation: cp-upgrade-pop-calm 1100ms ease-out both !important;
+}
+
+@keyframes cp-upgrade-pop-calm {
+  0% {
+    opacity: 0;
+  }
+  15%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
   }
 }
 
@@ -1385,6 +1509,7 @@
 }
 
 .cp-upgrade-meta {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1397,6 +1522,36 @@
   font-weight: 600;
   color: var(--cp-sea-glass);
   font-variant-numeric: tabular-nums lining-nums;
+}
+
+.cp-upgrade-pop {
+  position: absolute;
+  z-index: 2;
+  left: 33px;
+  top: 50%;
+  padding: 4px 10px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-gold-brushed);
+  background: linear-gradient(
+    180deg,
+    rgb(var(--cp-navy-lacquer-rgb) / 0.96),
+    rgb(var(--cp-navy-lacquer-rgb) / 0.88)
+  );
+  box-shadow:
+    0 6px 16px rgb(0 0 0 / 0.45),
+    0 0 16px rgb(var(--cp-gold-brushed-rgb) / 0.45),
+    inset 0 1px 0 rgb(var(--cp-champagne-rgb) / 0.3);
+  font-family: var(--cp-font-display);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--cp-champagne);
+  font-variant-numeric: tabular-nums lining-nums;
+  text-shadow: 0 0 10px rgb(var(--cp-gold-brushed-rgb) / 0.6);
+  translate: -50% -50%;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .cp-upgrade-progress {
