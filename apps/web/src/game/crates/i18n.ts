@@ -23,6 +23,36 @@ interface CratesFlatStrings {
   collectible: string;
   albumSet: string;
   albumSetComplete: string;
+  fairNonce: string;
+  fairOpen: string;
+  oddsSubtitle: string;
+  oddsHeading: string;
+  oddsShare: string;
+  oddsThis: string;
+  oddsTotal: string;
+  oddsNote: string;
+  oddsPityHeading: string;
+  oddsPityFloor: string;
+  oddsPityLeft: string;
+  oddsPityNext: string;
+  proofHeading: string;
+  proofCommitment: string;
+  proofClientSeed: string;
+  proofNonce: string;
+  verifyLabel: string;
+  verifyPlaceholder: string;
+  verifyAction: string;
+  verifyPending: string;
+  verifyChecking: string;
+  verifyUnavailable: string;
+  verifyMalformed: string;
+  verifyMismatch: string;
+  verifyOk: string;
+  verifyPaste: string;
+  verifyUnrevealed: string;
+  verifyReveal: string;
+  oddsBroken: string;
+  oddsPityBroken: string;
 }
 
 type GainKey = `${Currency}_${'one' | 'other' | 'many'}`;
@@ -75,6 +105,40 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     collectible: 'Album Card',
     albumSet: '{{set}} · {{owned}} / {{total}}',
     albumSetComplete: '{{set}} complete · {{owned}} / {{total}}',
+    fairNonce: '#{{nonce}}',
+    fairOpen: 'Certified Fair, roll #{{nonce}}: see the odds and the proof',
+    oddsSubtitle: 'Vault Crate odds · roll #{{nonce}}',
+    oddsHeading: 'Odds per crate',
+    oddsShare: '{{value}}%',
+    oddsThis: 'This crate',
+    oddsTotal: 'Total',
+    oddsNote:
+      'The server rolls every crate from this table. Guarantees only raise the floor; the odds above it stay the same.',
+    oddsPityHeading: 'Guarantees',
+    oddsPityFloor: '{{rarity}} or better',
+    oddsPityLeft: 'within {{count}} opens',
+    oddsPityNext: 'on your next open',
+    proofHeading: 'Provably fair proof',
+    proofCommitment: 'Server seed commitment (SHA-256)',
+    proofClientSeed: 'Your client seed',
+    proofNonce: 'Nonce of this roll',
+    verifyLabel: 'Revealed server seed',
+    verifyPlaceholder: 'Paste the 64-character seed',
+    verifyAction: 'Verify',
+    verifyPending:
+      'The server reveals this seed when it rotates to a new one. Paste it here to check this roll.',
+    verifyChecking: 'Checking…',
+    verifyUnavailable: 'The server could not be reached. Paste the seed here to check this roll.',
+    verifyMalformed: 'A server seed is 64 hex characters (0–9, a–f).',
+    verifyMismatch:
+      'This seed does not hash to the commitment, so it is not the seed this roll used.',
+    verifyOk: 'Verified: the seed matches the commitment. This roll’s HMAC-SHA256 digest:',
+    verifyPaste: 'Paste a revealed server seed to check this roll.',
+    verifyUnrevealed:
+      'This seed is still in play. Reveal it to check this roll; your next crates roll under a fresh seed.',
+    verifyReveal: 'Reveal seed',
+    oddsBroken: 'The odds table could not be shown. The server still rolls every crate from it.',
+    oddsPityBroken: 'Your guarantees could not be shown right now. The server still keeps count.',
     rarity: {
       common: 'Common',
       fine: 'Fine',
@@ -149,6 +213,42 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     collectible: 'Carte d’album',
     albumSet: '{{set}} · {{owned}} / {{total}}',
     albumSetComplete: '{{set}} au complet · {{owned}} / {{total}}',
+    fairNonce: 'n°\u00a0{{nonce}}',
+    fairOpen: 'Équité certifiée, tirage n°\u00a0{{nonce}} : voir les chances et la preuve',
+    oddsSubtitle: 'Chances de la Caisse du Coffre · tirage n°\u00a0{{nonce}}',
+    oddsHeading: 'Chances par caisse',
+    oddsShare: '{{value}} %',
+    oddsThis: 'Cette caisse',
+    oddsTotal: 'Total',
+    oddsNote:
+      'Le serveur tire chaque caisse dans cette table. Les garanties relèvent seulement le plancher ; les chances au-dessus restent les mêmes.',
+    oddsPityHeading: 'Garanties',
+    oddsPityFloor: '{{rarity}} ou mieux',
+    oddsPityLeft: 'd’ici {{count}} ouvertures',
+    oddsPityNext: 'à votre prochaine ouverture',
+    proofHeading: 'Preuve d’équité',
+    proofCommitment: 'Engagement de la graine serveur (SHA-256)',
+    proofClientSeed: 'Votre graine client',
+    proofNonce: 'Nonce de ce tirage',
+    verifyLabel: 'Graine serveur révélée',
+    verifyPlaceholder: 'Collez la graine de 64 caractères',
+    verifyAction: 'Vérifier',
+    verifyPending:
+      'Le serveur révèle cette graine lorsqu’il passe à une nouvelle. Collez-la ici pour vérifier ce tirage.',
+    verifyChecking: 'Vérification…',
+    verifyUnavailable: 'Le serveur est injoignable. Collez la graine ici pour vérifier ce tirage.',
+    verifyMalformed: 'Une graine serveur compte 64 caractères hexadécimaux (0–9, a–f).',
+    verifyMismatch:
+      'Cette graine ne correspond pas à l’engagement : ce n’est pas celle de ce tirage.',
+    verifyOk: 'Vérifié : la graine correspond à l’engagement. Empreinte HMAC-SHA256 de ce tirage :',
+    verifyPaste: 'Collez une graine serveur révélée pour vérifier ce tirage.',
+    verifyUnrevealed:
+      'Cette graine est encore en jeu. Révélez-la pour vérifier ce tirage ; vos prochaines caisses seront tirées avec une nouvelle graine.',
+    verifyReveal: 'Révéler la graine',
+    oddsBroken:
+      'La table des chances ne peut pas s’afficher. Le serveur tire toujours chaque caisse dans cette table.',
+    oddsPityBroken:
+      'Vos garanties ne peuvent pas s’afficher pour l’instant. Le serveur continue de les compter.',
     rarity: {
       common: 'Commune',
       fine: 'Raffinée',
@@ -223,6 +323,43 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     collectible: 'Albumkarte',
     albumSet: '{{set}} · {{owned}} / {{total}}',
     albumSetComplete: '{{set}} komplett · {{owned}} / {{total}}',
+    fairNonce: 'Nr.\u00a0{{nonce}}',
+    fairOpen: 'Zertifiziert fair, Wurf Nr.\u00a0{{nonce}}: Chancen und Nachweis ansehen',
+    oddsSubtitle: 'Chancen der Tresorkiste · Wurf Nr.\u00a0{{nonce}}',
+    oddsHeading: 'Chancen pro Kiste',
+    oddsShare: '{{value}} %',
+    oddsThis: 'Diese Kiste',
+    oddsTotal: 'Summe',
+    oddsNote:
+      'Der Server zieht jede Kiste aus dieser Tabelle. Garantien heben nur die Untergrenze an; die Chancen darüber bleiben gleich.',
+    oddsPityHeading: 'Garantien',
+    oddsPityFloor: '{{rarity}} oder besser',
+    oddsPityLeft: 'in höchstens {{count}} Öffnungen',
+    oddsPityNext: 'bei Ihrer nächsten Öffnung',
+    proofHeading: 'Fairness-Nachweis',
+    proofCommitment: 'Verpflichtung auf den Server-Seed (SHA-256)',
+    proofClientSeed: 'Ihr Client-Seed',
+    proofNonce: 'Nonce dieses Wurfs',
+    verifyLabel: 'Enthüllter Server-Seed',
+    verifyPlaceholder: '64-stelligen Seed einfügen',
+    verifyAction: 'Prüfen',
+    verifyPending:
+      'Der Server enthüllt diesen Seed, sobald er zu einem neuen wechselt. Fügen Sie ihn hier ein, um diesen Wurf zu prüfen.',
+    verifyChecking: 'Wird geprüft …',
+    verifyUnavailable:
+      'Der Server ist nicht erreichbar. Fügen Sie den Seed hier ein, um diesen Wurf zu prüfen.',
+    verifyMalformed: 'Ein Server-Seed besteht aus 64 Hex-Zeichen (0–9, a–f).',
+    verifyMismatch:
+      'Dieser Seed ergibt nicht die Verpflichtung, er ist also nicht der Seed dieses Wurfs.',
+    verifyOk: 'Geprüft: Der Seed passt zur Verpflichtung. HMAC-SHA256-Digest dieses Wurfs:',
+    verifyPaste: 'Fügen Sie einen enthüllten Server-Seed ein, um diesen Wurf zu prüfen.',
+    verifyUnrevealed:
+      'Dieser Seed ist noch im Spiel. Enthüllen Sie ihn, um diesen Wurf zu prüfen; Ihre nächsten Kisten werden mit einem neuen Seed gezogen.',
+    verifyReveal: 'Seed enthüllen',
+    oddsBroken:
+      'Die Chancentabelle kann nicht angezeigt werden. Der Server zieht trotzdem jede Kiste aus ihr.',
+    oddsPityBroken:
+      'Ihre Garantien können gerade nicht angezeigt werden. Der Server zählt weiter mit.',
     rarity: {
       common: 'Gewöhnlich',
       fine: 'Fein',

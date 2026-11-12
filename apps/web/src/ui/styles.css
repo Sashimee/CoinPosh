@@ -1310,9 +1310,12 @@
 
 .cp-upgrade {
   --cp-glow: 0;
+  /* Fixed outer columns: a wider price or the pending label must never steal width from the
+     text and rewrap the description mid-purchase. */
+  --cp-upgrade-buy-width: 106px;
   position: relative;
   display: grid;
-  grid-template-columns: 40px 1fr auto;
+  grid-template-columns: 40px minmax(0, 1fr) var(--cp-upgrade-buy-width);
   align-items: center;
   gap: 12px;
   padding: 10px 10px 10px 12px;
@@ -1510,16 +1513,21 @@
 
 .cp-upgrade-meta {
   position: relative;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 16px 14px;
+  row-gap: 3px;
   align-items: center;
-  gap: 4px 10px;
   margin-top: 3px;
 }
 
 .cp-upgrade-effect {
+  overflow: hidden;
   font-size: 12px;
   font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--cp-sea-glass);
   font-variant-numeric: tabular-nums lining-nums;
 }
@@ -1555,17 +1563,27 @@
 }
 
 .cp-upgrade-progress {
-  display: inline-flex;
+  display: flex;
+  overflow: hidden;
+  height: 14px;
   white-space: nowrap;
   align-items: center;
   gap: 6px;
   font-size: 11px;
+  line-height: 14px;
   color: var(--cp-ink-muted);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
+/* Wide enough for "Niv. 100", so the meter does not slide when the level gains a digit. */
+.cp-upgrade-level {
+  flex: none;
+  min-width: 7.5ch;
+}
+
 .cp-level-bar {
   position: relative;
+  flex: none;
   width: 56px;
   height: 4px;
   border-radius: 999px;
@@ -1652,6 +1670,22 @@
 
 .cp-upgrade.is-maxed .cp-buy {
   border-style: dashed;
+}
+
+.cp-upgrade > .cp-buy {
+  width: 100%;
+  min-width: 0;
+  padding-inline: 6px;
+}
+
+.cp-upgrade .cp-buy-label,
+.cp-upgrade .cp-buy-cost {
+  white-space: nowrap;
+}
+
+/* "Wird bestätigt…" outgrows the column even tightly tracked; upgradesPanel scales it to fit. */
+.cp-upgrade .cp-buy.is-pending .cp-buy-label {
+  letter-spacing: 0.06em;
 }
 
 .cp-upgrade.is-maxed .cp-medallion {
