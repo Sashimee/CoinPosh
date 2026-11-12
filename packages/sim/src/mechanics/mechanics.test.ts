@@ -3,6 +3,7 @@ import { COIN } from '../coin.ts';
 import { StateHasher } from '../hash.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { COIN_MATERIAL } from '../table/tuning.ts';
+import type { FusionRules } from './fusion.ts';
 import { type MechanicEvent, TableMechanics } from './mechanics.ts';
 import { MechanicsRig } from './rig.ts';
 import { FUSION_TUNING, TOWER_TUNING } from './tuning.ts';
@@ -33,12 +34,13 @@ afterEach(() => {
 async function setUp(
   tower: boolean,
   moving = false,
+  fusion: FusionRules = FUSION,
 ): Promise<{ rig: MechanicsRig; mechanics: TableMechanics<Tier> }> {
   const rig = await MechanicsRig.create({ moving });
   live.push(rig);
   const mechanics = new TableMechanics(rig.rapier, rig.world, rig, {
     tiers: TIERS,
-    fusion: FUSION,
+    fusion,
     tower: tower ? TOWER_TUNING.placement : null,
   });
   return { rig, mechanics };
@@ -197,6 +199,83 @@ describe('Contact Fusion on the table', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ kind: 'fusion', ids: [...pair, third], into: 'silver' });
   });
+
+  it.each([
+    [1, false],
+    [1.5, true],
+  ])(
+    'keeps coins fresh for fusionWindow × %d: a copper placed as the base window shuts joins: %s',
+    async (fusionWindow, joins) => {
+      const { rig, mechanics } = await setUp(false, false, { ...FUSION, fusionWindow });
+      expect(mechanics.freshTicks).toBe(Math.ceil(FUSION_TUNING.freshTicks * fusionWindow));
+      expect(mechanics.fusionTicks).toBe(ripeTicks(mechanics));
+      const pair = placeRow(rig, mechanics, ['copper', 'copper']);
+      expect(run(rig, mechanics, FUSION_TUNING.freshTicks)).toEqual([]);
+      const third = rig.placeFlat(-0.05 + 2 * RESTING, LANE_Z);
+      mechanics.registerCoin(third, 'copper');
+      const events = run(rig, mechanics, 3 * FUSION_TUNING.spawnGraceTicks + ripeTicks(mechanics));
+      expect(events).toEqual(
+        joins ? [expect.objectContaining({ kind: 'fusion', ids: [...pair, third] })] : [],
+      );
+    },
+  );
+
+  it('rejects a fusionWindow that is not positive', async () => {
+    const rig = await MechanicsRig.create();
+    live.push(rig);
+    expect(
+      () =>
+        new TableMechanics(rig.rapier, rig.world, rig, {
+          tiers: TIERS,
+          fusion: { ...FUSION, fusionWindow: 0 },
+          tower: null,
+        }),
+    ).toThrow(/fusionWindow must be a positive number/);
+  });
+
+  /**
+   * A fresh coin at one end of a row of idle silvers. The row's coins get ids a multiple of
+   * FUSION_TUNING.sampleTicks apart, with laid golds (the top tier, which never touches
+   * anything) in between, so both of its contacts are looked at on the same tick and #wake
+   * sees them in one call, the fresh coin's first when it has the lowest id.
+   */
+  it.each([
+    ['lowest', true],
+    ['highest', false],
+  ])(
+    'wakes only the silver a fresh coin touches when the fresh coin has the %s id of the row',
+    async (_, freshFirst) => {
+      const { rig, mechanics } = await setUp(false);
+      const spots = [0, 1, 2].map((k) => -0.1 + k * RESTING);
+      const order = freshFirst ? spots : [...spots].reverse();
+      const row: number[] = [];
+      const golds: number[] = [];
+      order.forEach((x, k) => {
+        row.push(rig.placeFlat(x, LANE_Z));
+        if (k < order.length - 1) {
+          for (let j = 1; j < FUSION_TUNING.sampleTicks; j++) {
+            golds.push(rig.placeFlat(0.03 * golds.length, LANE_Z));
+          }
+        }
+      });
+      expect(row.map((id) => id % FUSION_TUNING.sampleTicks)).toEqual([0, 0, 0]);
+      const [fresh = -1, touched = -1, beyond = -1] = freshFirst ? row : [...row].reverse();
+      mechanics.registerCoin(fresh, 'silver');
+      mechanics.layCoins([
+        ...[touched, beyond].map((id) => ({ id, tier: 'silver' as const })),
+        ...golds.map((id) => ({ id, tier: 'gold' as const })),
+      ]);
+      const pairs = new Set<string>();
+      for (let i = 0; i < FUSION_TUNING.spawnGraceTicks + FUSION_TUNING.freshTicks; i++) {
+        expect(run(rig, mechanics, 1)).toEqual([]);
+        for (const { a, b } of mechanics.fusionProgress()) {
+          pairs.add(`${a}-${b}`);
+        }
+      }
+      expect([...pairs]).toEqual([`${Math.min(fresh, touched)}-${Math.max(fresh, touched)}`]);
+      expect(rig.coins().map(({ id }) => id)).toEqual(expect.arrayContaining(row));
+    },
+  );
 
   /** Where a coin lies flat touching both coins of a pair laid by placeRow or nested. */
   const NESTED = { x: -0.05 + RESTING / 2, z: LANE_Z + (RESTING * Math.sqrt(3)) / 2 };
@@ -357,8 +436,8 @@ class Session {
     this.#rng = Xoshiro128ss.fromSeed(seed);
   }
 
-  static async start(seed: number): Promise<Session> {
-    const { rig, mechanics } = await setUp(true, true);
+  static async start(seed: number, fusion: FusionRules = FUSION): Promise<Session> {
+    const { rig, mechanics } = await setUp(true, true, fusion);
     return new Session(rig, mechanics, seed);
   }
 
@@ -381,8 +460,12 @@ class Session {
   }
 }
 
-async function playSession(seed: number, ticks = 60 * 60): Promise<Session> {
-  const session = await Session.start(seed);
+async function playSession(
+  seed: number,
+  ticks = 60 * 60,
+  fusion: FusionRules = FUSION,
+): Promise<Session> {
+  const session = await Session.start(seed, fusion);
   for (let i = 0; i < ticks; i++) {
     session.step();
   }
@@ -424,5 +507,15 @@ describe('mechanics determinism', () => {
   it('pins the session state so a change to the mechanics is noticed', async () => {
     const { digests } = await playSession(SEED);
     expect(digests.at(-1)).toMatchInlineSnapshot(`"ea9d594fbf71f999"`);
+  });
+
+  it('replays and pins a session with the fusionWindow upgrade at its top level', async () => {
+    const upgraded = { ...FUSION, fusionWindow: 2 };
+    const a = await playSession(SEED, 60 * 60, upgraded);
+    const b = await playSession(SEED, 60 * 60, upgraded);
+    expect(b.digests).toEqual(a.digests);
+    expect(b.events).toEqual(a.events);
+    expect(a.digests.at(-1)).not.toBe('ea9d594fbf71f999');
+    expect(a.digests.at(-1)).toMatchInlineSnapshot(`"e03a2b8ca2026950"`);
   });
 });

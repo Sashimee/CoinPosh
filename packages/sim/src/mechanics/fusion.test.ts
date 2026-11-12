@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { StateHasher } from '../hash.ts';
 import type { CoinPair } from './contacts.ts';
-import { ContactFusion, fusionTicks } from './fusion.ts';
+import { economyConfig, upgradeStatAt } from '@coinposh/economy';
+import { ContactFusion, freshTicks, fusionTicks } from './fusion.ts';
+import { FUSION_TUNING } from './tuning.ts';
 
 const RULES = { inputCount: 3, contactSeconds: 0.4 };
 const TRIPLE: CoinPair[] = [
@@ -40,6 +42,30 @@ describe('fusionTicks', () => {
   it('rejects windows that are not positive', () => {
     for (const bad of [0, -0.4, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => fusionTicks(bad)).toThrow(RangeError);
+    }
+  });
+});
+
+describe('freshTicks', () => {
+  it('is FUSION_TUNING.freshTicks without the fusionWindow upgrade', () => {
+    expect(freshTicks()).toBe(FUSION_TUNING.freshTicks);
+    expect(freshTicks(upgradeStatAt({}, 'fusionWindow'))).toBe(FUSION_TUNING.freshTicks);
+  });
+
+  it('stretches the fresh window by the economy’s fusionWindow stat, rounding up', () => {
+    expect(freshTicks(upgradeStatAt({ fusionWindow: 1 }, 'fusionWindow'))).toBe(331);
+    expect(freshTicks(upgradeStatAt({ fusionWindow: 10 }, 'fusionWindow'))).toBe(473);
+    const top = economyConfig.upgradeLines.find(({ id }) => id === 'fusionWindow')?.maxLevel;
+    expect(freshTicks(upgradeStatAt({ fusionWindow: top ?? 0 }, 'fusionWindow'))).toBe(630);
+  });
+
+  it('forgives a rounding error just above a whole tick', () => {
+    expect(freshTicks(1 + 1e-15)).toBe(FUSION_TUNING.freshTicks);
+  });
+
+  it('rejects a fusionWindow that is not positive', () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => freshTicks(bad)).toThrow(RangeError);
     }
   });
 });

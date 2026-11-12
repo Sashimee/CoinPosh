@@ -48,10 +48,24 @@ jobs:
       - name: Install
         run: pnpm i --frozen-lockfile
 
+      # This is `pnpm check` with the unit suites one package at a time. On the runner's 2 cores,
+      # turbo running every suite at once starved the sim and bridge tests 3-5x past their
+      # timeouts (#134); one at a time, the step takes about as long.
       - name: Check (format, typecheck, lint, unit)
         run: |
           set -o pipefail
-          pnpm check 2>&1 | tee "$RUNNER_TEMP/check.log"
+          expected='pnpm format:check && turbo run typecheck lint test && pnpm test:perf'
+          actual=$(node -p "require('./package.json').scripts.check")
+          if [ "$actual" != "$expected" ]; then
+            echo "::error file=.github/workflows/ci.yml::The root check script is now '$actual'. Mirror it in this step, which splits it to run the unit suites one package at a time."
+            exit 1
+          fi
+          {
+            pnpm format:check &&
+              pnpm turbo run typecheck lint &&
+              pnpm turbo run test --concurrency=1 &&
+              pnpm test:perf
+          } 2>&1 | tee "$RUNNER_TEMP/check.log"
 
       - name: Build
         env:

@@ -28,5 +28,13 @@ export { CARD_FLY_MS, mountCrateReveal } from './revealCard.ts';
 export type { CrateReveal, CrateRevealOptions } from './revealCard.ts';
 export { CRATE_RIDE_SECONDS, CrateRide } from './ride.ts';
 export type { CrateRidePhase } from './ride.ts';
-export { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
-export type { OpenedCrate, UnboxCard, UnboxDirectorOptions } from './view.ts';
+export {
+  crateShine,
+  GLINT_OFF,
+  seamColor,
+  STATIC_GLOW,
+  TableCrateView,
+  trayLanding,
+  UnboxDirector,
+} from './view.ts';
+export type { CrateShine, OpenedCrate, UnboxCard, UnboxDirectorOptions } from './view.ts';

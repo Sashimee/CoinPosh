@@ -80,7 +80,8 @@ class ManualTimers {
 }
 
 async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  // Each hop lets a MessagePort round trip land; setTimeout(0) would idle 1 ms per hop for nothing.
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
 interface Harness {

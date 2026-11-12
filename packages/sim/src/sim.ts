@@ -69,8 +69,9 @@ export type RestoreEntry =
  * that overlaps a coin before it or the pusher is lifted clear and restores awake; an
  * `asleep` pose restores asleep if something at rest below holds it (PusherTable.restore).
  * Fusion streaks start over, and every restored coin is idle like the opening heap: it
- * fuses only once a fresh coin of its tier wakes it (FUSION_TUNING.wakeFromTier). `restore` with every entry `heapSlot` 0..n − 1 lays the
- * same table as `openingHeap: { coins: n }`.
+ * fuses only once a fresh coin of its tier wakes it (FUSION_TUNING.wakeFromTier).
+ * `restore` with every entry `heapSlot` 0..n − 1 lays the same table as
+ * `openingHeap: { coins: n }`.
  */
 export interface SimRestore {
   readonly pusherTickInCycle: number;

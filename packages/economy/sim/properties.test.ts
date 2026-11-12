@@ -108,12 +108,16 @@ describe('sim coin conservation', () => {
         const face = config.coinTiers.find((t) => t.id === tier)?.value ?? Number.NaN;
         let left = player.heapCoins;
         expect(left).toBe(coins);
+        const breaches: string[] = [];
         for (let i = 0; i < 1_200 && player.ledger.dropsPaid < 400; i += 1) {
           activeTick(ctx, player);
-          expect(player.heapCoins).toBeGreaterThanOrEqual(0);
-          expect(player.heapCoins).toBeLessThanOrEqual(left);
+          // One expect per tick costs more than the trajectory itself, so breaches are collected.
+          if (!(player.heapCoins >= 0 && player.heapCoins <= left)) {
+            breaches.push(`tick ${i}: heap went from ${left} to ${player.heapCoins} coins`);
+          }
           left = player.heapCoins;
         }
+        expect(breaches).toEqual([]);
         if (player.heapCoins === coins) expect(player.ledger.heap).toBe(0);
         if (coins > 0 && player.heapCoins === 0) {
           expect(player.milestones.heapCleared).toBeDefined();

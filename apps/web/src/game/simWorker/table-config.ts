@@ -1,4 +1,4 @@
-import { economyConfig } from '@coinposh/economy';
+import { economyConfig, upgradeStatAt, type UpgradeLevelMap } from '@coinposh/economy';
 import { COIN_TIERS } from '@coinposh/shared';
 import { Sim, type MechanicsConfig } from '@coinposh/sim';
 
@@ -10,7 +10,7 @@ import { Sim, type MechanicsConfig } from '@coinposh/sim';
  * and then a short window in which it may fuse with other fresh coins; the laid opening
  * heap is idle until a fresh silver wakes the coins it touches (FUSION_TUNING
  * spawnGraceTicks, freshTicks and wakeFromTier), so drops join the heap before they fuse
- * and only coppers dropped close together in time and place merge.
+ * and copper fusions need drops close together in time and place.
  */
 export const SIM_MECHANICS: MechanicsConfig<string> = {
   tiers: COIN_TIERS,
@@ -20,6 +20,21 @@ export const SIM_MECHANICS: MechanicsConfig<string> = {
   },
   tower: null,
 };
+
+/**
+ * SIM_MECHANICS on a table with these upgrade levels: the fusionWindow line stretches how
+ * long a coin stays fresh (FusionRules.fusionWindow), by the economy's own stat.
+ */
+export function simMechanicsAt(levels: UpgradeLevelMap): MechanicsConfig<string> {
+  const fusion = SIM_MECHANICS.fusion;
+  if (!fusion) {
+    throw new Error('simMechanicsAt: SIM_MECHANICS has no fusion rules to stretch');
+  }
+  return {
+    ...SIM_MECHANICS,
+    fusion: { ...fusion, fusionWindow: upgradeStatAt(levels, 'fusionWindow') },
+  };
+}
 
 /** The most coins an `openingHeap` may ask the worker's Sim for. */
 export const OPENING_HEAP_CAPACITY = Sim.heapCapacity(SIM_MECHANICS);
