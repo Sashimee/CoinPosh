@@ -8,6 +8,7 @@ import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { announcementHoldFor, createRankGate, peakReplay } from './announcementHold.ts';
+import { announcementSlotFor } from './announcementSlot.ts';
 
 const HOLD_MS = 950;
 const STAMP_FROM = 1.9;
@@ -16,8 +17,9 @@ const LEAVE_MS = 420;
 
 /**
  * The cascade tier name stamps onto the screen with a serif flourish when a tier is reached.
- * While announcements are held it stays down; afterwards the highest rank reached stamps only if
- * the cascade still stands at it, and a stamp leaves early once its cascade ends.
+ * While announcements are held or the crate hint has the announcement slot it stays down;
+ * afterwards the highest rank reached stamps only if the cascade still stands at it, and a stamp
+ * leaves early once its cascade ends. A stamp on screen holds the slot against the upgrade nudge.
  */
 export function createTierStamp(ctx: UiContext): HTMLElement {
   const name = h('span', { class: 'cp-stamp-name' });
@@ -43,6 +45,13 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
     card.style.opacity = String(Math.min(1, Math.max(0, value * 1.6)));
   });
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  const hold = announcementHoldFor(ctx.store);
+  const slot = announcementSlotFor(hold);
+  let releaseSlot: (() => void) | null = null;
+  const letGo = (): void => {
+    releaseSlot?.();
+    releaseSlot = null;
+  };
 
   const leave = (): void => {
     if (!layer.classList.contains('is-visible')) return;
@@ -51,16 +60,18 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
     hideTimer = setTimeout(() => {
       layer.classList.remove('is-visible', 'is-leaving');
       hideTimer = null;
+      letGo();
     }, LEAVE_MS);
   };
 
-  // A hold means a cinematic is taking the screen this frame, so even the reduced-motion fade
-  // would show the card over it: the stamp cuts away instead.
+  // Being outranked means a cinematic or the crate hint takes the screen this frame, so even the
+  // reduced-motion fade would show the card over it: the stamp cuts away instead.
   const dismiss = (): void => {
     if (hideTimer !== null) clearTimeout(hideTimer);
     hideTimer = null;
     impact.jump(0);
     layer.classList.remove('is-visible', 'is-leaving');
+    letGo();
   };
 
   const stamp = (rank: number): void => {
@@ -71,6 +82,7 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
       value: formatDecimal(tier.multiplier, ctx.i18n.language),
     });
     const reduced = isReducedMotion();
+    releaseSlot ??= slot.claim('rank-stamp');
     layer.dataset.tier = tier.id;
     layer.classList.remove('is-leaving');
     layer.classList.add('is-visible');
@@ -83,9 +95,9 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
     hideTimer = setTimeout(leave, HOLD_MS);
   };
 
-  const hold = announcementHoldFor(ctx.store);
+  const quiet = slot.quietFor('rank-stamp');
   const gate = createRankGate(
-    hold,
+    quiet,
     {
       rise: stamp,
       replay: (peak, live) => {
@@ -95,7 +107,7 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
     comboView(ctx.store.getState().cascadeCount, cascade).rank,
   );
   ctx.own(
-    hold.onChange((held) => {
+    quiet.onChange((held) => {
       if (held) dismiss();
     }),
   );
@@ -112,6 +124,7 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
   ctx.own(() => {
     gate.dispose();
     if (hideTimer !== null) clearTimeout(hideTimer);
+    letGo();
   });
   return layer;
 }

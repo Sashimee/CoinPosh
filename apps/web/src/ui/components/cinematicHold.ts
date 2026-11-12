@@ -1,7 +1,13 @@
 import type { AnnouncementHold } from './announcementHold.ts';
+import { announcementSlotFor, type AnnouncementSlot } from './announcementSlot.ts';
 
 type CrateEventName =
-  'crate:fell' | 'crate:opened' | 'crate:collected' | 'crate:rejected' | 'crate:failed';
+  | 'crate:spawned'
+  | 'crate:fell'
+  | 'crate:opened'
+  | 'crate:collected'
+  | 'crate:rejected'
+  | 'crate:failed';
 
 /** The slice of the crates bus the hold follows; every one of these names a crate. */
 export interface CinematicEvents {
@@ -30,6 +36,70 @@ export interface CinematicHoldOptions {
 
 /** Demo answers in a frame and live in well under a second; a claim queued offline can sit forever. */
 export const CLAIM_HOLD_CAP_MS = 6000;
+
+/**
+ * How long the first crate's arrival hint (game/crates/hint.ts, ARRIVAL_HINT_MS) stays up. The
+ * crates module is loaded lazily, so it is mirrored here rather than imported; a unit test keeps
+ * the two equal.
+ */
+export const CRATE_HINT_SLOT_MS = 4200;
+
+/** A crate wedged on the table must not keep the upgrade nudge away for good. */
+export const CRATE_ON_TABLE_CAP_MS = 30_000;
+
+/**
+ * Gives the announcement slot to crates on the table: the first crate this session claims it as
+ * `crate-hint` for as long as its arrival hint is up, and every crate claims `crate-on-table`
+ * until it falls, is refused or fails (or `tableCapMs` passes). The fall itself hands over to the
+ * cinematic hold, which outranks both.
+ */
+export function claimSlotForCrates(options: {
+  readonly events: CinematicEvents;
+  readonly slot: AnnouncementSlot;
+  readonly hintMs?: number;
+  readonly tableCapMs?: number;
+}): () => void {
+  const { events, slot } = options;
+  const hintMs = options.hintMs ?? CRATE_HINT_SLOT_MS;
+  const tableCapMs = options.tableCapMs ?? CRATE_ON_TABLE_CAP_MS;
+  const onTable = new Map<string, () => void>();
+  let hinted = false;
+
+  const timed = (callout: 'crate-hint' | 'crate-on-table', ms: number): (() => void) => {
+    const release = slot.claim(callout);
+    const timer = setTimeout(release, ms);
+    return () => {
+      clearTimeout(timer);
+      release();
+    };
+  };
+  const settle = ({ crateId }: { readonly crateId: string }): void => {
+    onTable.get(crateId)?.();
+    onTable.delete(crateId);
+  };
+
+  const offs = [
+    events.on('crate:spawned', ({ crateId }) => {
+      if (onTable.has(crateId)) return;
+      const releases = [timed('crate-on-table', tableCapMs)];
+      if (!hinted) {
+        hinted = true;
+        releases.push(timed('crate-hint', hintMs));
+      }
+      onTable.set(crateId, () => {
+        for (const release of releases) release();
+      });
+    }),
+    events.on('crate:fell', settle),
+    events.on('crate:rejected', settle),
+    events.on('crate:failed', settle),
+  ];
+  return () => {
+    for (const off of offs) off();
+    for (const release of onTable.values()) release();
+    onTable.clear();
+  };
+}
 
 type Phase = 'claiming' | 'queued' | 'playing' | 'leaving';
 
@@ -143,6 +213,8 @@ export function holdForCrateCinematics(options: CinematicHoldOptions): () => voi
       forget(crateId);
     }),
     onFrame(check),
+    // After the fall handler above, so a falling crate is held before it leaves the slot.
+    claimSlotForCrates({ events, slot: announcementSlotFor(hold) }),
   ];
 
   return () => {

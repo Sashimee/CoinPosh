@@ -8,42 +8,117 @@ import { schedule } from '../motion/loop.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
-import { announcementHoldFor, type AnnouncementHold } from './announcementHold.ts';
+import { announcementHoldFor, type AnnouncementQuiet } from './announcementHold.ts';
+import { announcementSlotFor } from './announcementSlot.ts';
 import { makePressable } from './pressable.ts';
 import { createFirstUpgradeNudge, hasBeenActivated } from './upgradeNudgeTrigger.ts';
 
 /** The line folds away after this long; the dock keeps its glow until Upgrades is opened. */
 export const HINT_LINGER_MS = 6_000;
+/** A line put off by a bigger moment comes back once, briefly, as a reminder. */
+export const REAPPEAR_LINGER_MS = 4_000;
+/** How long the slot must stay free before a put-off line comes back, so it never flickers in. */
+export const NUDGE_SETTLE_MS = 700;
+/** The first appearance plus the one reappearance after being put off. */
+export const NUDGE_MAX_APPEARANCES = 2;
+
+export interface NudgeView {
+  /** `reappearing` is true for the comeback after the line was put off. */
+  show(reappearing: boolean): void;
+  fold(): void;
+}
+
+export type NudgePhase = 'idle' | 'waiting' | 'showing' | 'resting' | 'done';
+
+export interface NudgeSchedule {
+  readonly phase: NudgePhase;
+  /** The nudge fired: show the line now, or as soon as the announcement slot frees up. */
+  offer(): void;
+  /** The player acted on it (opened Upgrades, bought something): fold for good. */
+  dismiss(): void;
+  dispose(): void;
+}
+
+export interface NudgeTiming {
+  readonly lingerMs?: number;
+  readonly reappearLingerMs?: number;
+  readonly settleMs?: number;
+}
 
 /**
- * Folds the line after `lingerMs`, or the moment a crate cinematic takes the screen: the
- * crate:fell handler in cinematicHold.ts engages the shared announcement hold synchronously.
- * Returns a cancel for the pending fold.
+ * When the first-upgrade line is on screen. It is the lowest callout in the announcement slot:
+ * offered while something outranks it (a crate on the table, its hint, a rank stamp, a crate
+ * cinematic) it waits; put off while showing it folds at once and comes back at most once,
+ * after the slot has been free for `settleMs`. Otherwise it folds after its linger.
  */
-export function foldNudgeOnCue(
-  hold: AnnouncementHold,
-  fold: () => void,
-  lingerMs: number = HINT_LINGER_MS,
-): () => void {
-  if (hold.held) {
-    fold();
-    return () => undefined;
-  }
-  let off = (): void => undefined;
-  const timer = setTimeout(() => {
-    off();
-    fold();
-  }, lingerMs);
-  const cancel = (): void => {
-    clearTimeout(timer);
-    off();
+export function scheduleNudge(
+  quiet: AnnouncementQuiet,
+  view: NudgeView,
+  timing: NudgeTiming = {},
+): NudgeSchedule {
+  const lingerMs = timing.lingerMs ?? HINT_LINGER_MS;
+  const reappearLingerMs = timing.reappearLingerMs ?? REAPPEAR_LINGER_MS;
+  const settleMs = timing.settleMs ?? NUDGE_SETTLE_MS;
+  let phase: NudgePhase = 'idle';
+  let appearances = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clear = (): void => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
   };
-  off = hold.onChange((held) => {
-    if (!held) return;
-    cancel();
-    fold();
+
+  const display = (): void => {
+    clear();
+    appearances += 1;
+    phase = 'showing';
+    const reappearing = appearances > 1;
+    view.show(reappearing);
+    timer = setTimeout(
+      () => {
+        timer = null;
+        phase = 'done';
+        view.fold();
+      },
+      reappearing ? reappearLingerMs : lingerMs,
+    );
+  };
+
+  const off = quiet.onChange((held) => {
+    if (held) {
+      clear();
+      if (phase !== 'showing') return;
+      phase = appearances < NUDGE_MAX_APPEARANCES ? 'resting' : 'done';
+      view.fold();
+      return;
+    }
+    if (phase !== 'waiting' && phase !== 'resting') return;
+    clear();
+    timer = setTimeout(() => {
+      timer = null;
+      if (!quiet.held) display();
+    }, settleMs);
   });
-  return cancel;
+
+  return {
+    get phase() {
+      return phase;
+    },
+    offer() {
+      if (phase !== 'idle') return;
+      if (quiet.held) phase = 'waiting';
+      else display();
+    },
+    dismiss() {
+      clear();
+      const wasShowing = phase === 'showing';
+      phase = 'done';
+      if (wasShowing) view.fold();
+    },
+    dispose() {
+      clear();
+      off();
+    },
+  };
 }
 
 export interface UpgradeNudgeOptions {
@@ -86,15 +161,15 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
   if (nudge.retired) return notice;
 
   const { trigger } = options;
+  let folding = false;
   const drop = new SpringValue(0, SPRINGS.bouncy, (value) => {
+    // The fold's spring dips past zero and swings back; the line is gone the first time it does.
+    if (folding && value <= 0) notice.hidden = true;
     notice.style.translate = value === 1 ? '' : `0 ${(1 - value) * -18}px`;
     notice.style.scale = value === 1 ? '' : String(0.94 + 0.06 * Math.min(1, value));
     notice.style.opacity = String(Math.min(1, Math.max(0, value)));
   });
   let lineId: string | null = null;
-  const hold = announcementHoldFor(ctx.store);
-  let cancelLinger = (): void => undefined;
-  let folding = false;
 
   const paint = (): void => {
     if (!lineId) return;
@@ -103,35 +178,42 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
     hint.textContent = tr(ctx, 'hud.upgradeHint.hint');
     notice.setAttribute('aria-label', tr(ctx, 'hud.upgradeHint.aria', { name }));
   };
+  const turns = scheduleNudge(
+    announcementSlotFor(announcementHoldFor(ctx.store)).quietFor('upgrade-nudge'),
+    {
+      show(reappearing) {
+        folding = false;
+        paint();
+        notice.hidden = false;
+        drop.jump(0);
+        void drop.to(1);
+        trigger.classList.add('is-hinted');
+        if (!isReducedMotion()) {
+          restartAnimation(notice, 'is-glinting');
+          restartAnimation(trigger, 'is-beckoning');
+        }
+        // Before the first gesture audio is still locked and Chrome logs an error for vibrate().
+        // A reminder comes back silently: the chime belongs to the news, not the repeat.
+        if (!reappearing && hasBeenActivated(navigator)) feedback(ctx, 'open');
+      },
+      fold() {
+        if (notice.hidden) return;
+        folding = true;
+        void drop.to(0, SPRINGS.snappy).then(() => {
+          if (folding) notice.hidden = true;
+        });
+      },
+    },
+  );
   const show = (id: string): void => {
     lineId = id;
-    paint();
-    notice.hidden = false;
-    drop.jump(0);
-    void drop.to(1);
-    trigger.classList.add('is-hinted');
-    if (!isReducedMotion()) {
-      restartAnimation(notice, 'is-glinting');
-      restartAnimation(trigger, 'is-beckoning');
-    }
-    // Before the first gesture audio is still locked and Chrome logs an error for vibrate().
-    if (hasBeenActivated(navigator)) feedback(ctx, 'open');
-    cancelLinger = foldNudgeOnCue(hold, fold);
-  };
-  const fold = (): void => {
-    cancelLinger();
-    if (notice.hidden || folding) return;
-    folding = true;
-    void drop.to(0, SPRINGS.snappy).then(() => {
-      folding = false;
-      notice.hidden = true;
-    });
+    turns.offer();
   };
   const dismiss = (): void => {
     if (!lineId) return;
     lineId = null;
     trigger.classList.remove('is-hinted', 'is-beckoning');
-    fold();
+    turns.dismiss();
   };
   const evaluate = (): void => {
     const state = ctx.store.getState();
@@ -204,7 +286,7 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
   );
   ctx.own(ctx.loc.bind(paint));
   ctx.own(() => {
-    cancelLinger();
+    turns.dispose();
     drop.stop();
   });
   return notice;

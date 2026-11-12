@@ -10,6 +10,9 @@ export interface AnnouncementHold {
   onChange(listener: (held: boolean) => void): () => void;
 }
 
+/** What a gated announcer reads: whether to keep quiet, and when that changes. */
+export type AnnouncementQuiet = Pick<AnnouncementHold, 'held' | 'onChange'>;
+
 export function createAnnouncementHold(): AnnouncementHold {
   let holds = 0;
   const listeners = new Set<(held: boolean) => void>();
@@ -84,7 +87,7 @@ export interface RankGate {
  * held back, so whatever reads it, like a multiplier, keeps counting underneath.
  */
 export function createRankGate(
-  hold: AnnouncementHold,
+  hold: AnnouncementQuiet,
   announce: RankAnnouncements,
   initial = 0,
 ): RankGate {

@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ARRIVAL_HINT_MS } from '../../game/crates/hint.ts';
 import { createAnnouncementHold, type AnnouncementHold } from './announcementHold.ts';
-import { holdForCrateCinematics, type CinematicEvents } from './cinematicHold.ts';
+import { announcementSlotFor, createAnnouncementSlot } from './announcementSlot.ts';
+import {
+  claimSlotForCrates,
+  CRATE_HINT_SLOT_MS,
+  holdForCrateCinematics,
+  type CinematicEvents,
+} from './cinematicHold.ts';
 
 type Name = Parameters<CinematicEvents['on']>[0];
 type Handler = Parameters<CinematicEvents['on']>[1];
@@ -265,5 +272,119 @@ describe('holdForCrateCinematics', () => {
     vi.advanceTimersByTime(CAP_MS * 2);
     r.exitReveal();
     expect(r.warnings).toEqual([]);
+  });
+});
+
+describe('claimSlotForCrates', () => {
+  const HINT_MS = 400;
+  const TABLE_MS = 2000;
+
+  function slotRig() {
+    const handlers = new Map<Name, Set<Handler>>();
+    const slot = createAnnouncementSlot(createAnnouncementHold());
+    const stop = claimSlotForCrates({
+      events: {
+        on(type, handler) {
+          const set = handlers.get(type) ?? new Set();
+          handlers.set(type, set);
+          set.add(handler);
+          return () => set.delete(handler);
+        },
+      },
+      slot,
+      hintMs: HINT_MS,
+      tableCapMs: TABLE_MS,
+    });
+    return {
+      slot,
+      emit(type: Name, crateId: string) {
+        for (const handler of [...(handlers.get(type) ?? [])]) handler({ crateId });
+      },
+      listeners: () => [...handlers.values()].reduce((n, set) => n + set.size, 0),
+      stop,
+    };
+  }
+
+  it('mirrors how long the crates module keeps its arrival hint up', () => {
+    expect(CRATE_HINT_SLOT_MS).toBe(ARRIVAL_HINT_MS);
+  });
+
+  it('gives the first crate the slot as its hint, over the rank stamp, for the hint read time', () => {
+    const r = slotRig();
+    r.emit('crate:spawned', 'a');
+    expect(r.slot.outranked('rank-stamp')).toBe(true);
+    expect(r.slot.outranked('upgrade-nudge')).toBe(true);
+    vi.advanceTimersByTime(HINT_MS);
+    expect(r.slot.outranked('rank-stamp')).toBe(false);
+    expect(r.slot.outranked('upgrade-nudge')).toBe(true);
+    r.emit('crate:fell', 'a');
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+  });
+
+  it('lets the hint go the moment its crate falls', () => {
+    const r = slotRig();
+    r.emit('crate:spawned', 'a');
+    r.emit('crate:fell', 'a');
+    expect(r.slot.outranked('rank-stamp')).toBe(false);
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+  });
+
+  it('hints only the first crate; later crates keep only the nudge away', () => {
+    const r = slotRig();
+    r.emit('crate:spawned', 'a');
+    r.emit('crate:fell', 'a');
+    r.emit('crate:spawned', 'b');
+    expect(r.slot.outranked('rank-stamp')).toBe(false);
+    expect(r.slot.outranked('upgrade-nudge')).toBe(true);
+    r.emit('crate:rejected', 'b');
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+  });
+
+  it('frees the slot only when the last crate on the table leaves it', () => {
+    const r = slotRig();
+    r.emit('crate:spawned', 'a');
+    r.emit('crate:spawned', 'b');
+    r.emit('crate:spawned', 'b');
+    r.emit('crate:failed', 'a');
+    expect(r.slot.outranked('upgrade-nudge')).toBe(true);
+    r.emit('crate:fell', 'b');
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+  });
+
+  it('stops keeping the nudge away from a crate wedged on the table', () => {
+    const r = slotRig();
+    r.emit('crate:spawned', 'a');
+    vi.advanceTimersByTime(TABLE_MS - 1);
+    expect(r.slot.outranked('upgrade-nudge')).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+    r.emit('crate:fell', 'a');
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+  });
+
+  it('releases every claim and unsubscribes on dispose', () => {
+    const r = slotRig();
+    r.emit('crate:spawned', 'a');
+    r.stop();
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+    expect(r.listeners()).toBe(0);
+    vi.advanceTimersByTime(TABLE_MS);
+    expect(r.slot.outranked('upgrade-nudge')).toBe(false);
+  });
+
+  it('hands a falling crate to the cinematic hold without the slot ever coming free', () => {
+    const r = rig();
+    const changes: boolean[] = [];
+    announcementSlotFor(r.hold)
+      .quietFor('upgrade-nudge')
+      .onChange((held) => changes.push(held));
+    r.emit('crate:spawned', 'a');
+    r.emit('crate:fell', 'a');
+    openAndPlay(r, 'a');
+    r.emit('crate:collected', 'a');
+    expect(changes).toEqual([true]);
+    r.exitReveal();
+    expect(changes).toEqual([true, false]);
+    r.stop();
   });
 });
