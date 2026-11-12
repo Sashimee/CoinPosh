@@ -19,7 +19,7 @@ import { COIN_MATERIAL } from './tuning.ts';
  * 3. A second layer over the upper tier, then over the lower sheet, each coin over the
  *    hollow between three below it, so a pile reads as heaped rather than tiled. Those
  *    coins rest on the ones below and so touch them from the first tick; Contact Fusion
- *    leaves them be because the heap is settled (FUSION_TUNING.settledShift).
+ *    leaves them be because the heap is idle (FUSION_TUNING.freshTicks, wakeFromTier).
  *
  * Values, in metres:
  *
