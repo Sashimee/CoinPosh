@@ -5,22 +5,26 @@ import {
   RARITY_IDS,
   weightToPercent,
 } from '@coinposh/economy';
-import { fairDigest, type FairProof } from '@coinposh/shared';
-import { describe, expect, it } from 'vitest';
+import { commitmentOf, fairDigest, type FairProof, type RevealedSeed } from '@coinposh/shared';
+import { describe, expect, it, vi } from 'vitest';
 import { createI18n, LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
 import { toHex } from '../../net/encoding.ts';
 import { fairDigest as rollDigest } from '../../net/fair.ts';
 import { newSeed, nextRoll, reveal } from '../../net/mock/fair.ts';
 import { cratesKey, CRATES_STRINGS, registerCratesStrings } from './i18n.ts';
 import {
+  cardPityOutlook,
   CRATE_DROP_SOURCE,
   crateOdds,
+  FairVerifier,
   nonceLabel,
+  oddsSheetData,
   oddsShare,
   oddsTotalPercent,
   pityLadder,
   revealedSeedFor,
   verifyRevealedSeed,
+  type FairSources,
 } from './odds.ts';
 import type { CratesT } from './revealCard.ts';
 
@@ -183,6 +187,216 @@ describe('verifying a revealed seed', () => {
     expect(revealedSeedFor({ ...proof, nonce: seed.nonce }, revealed)).toBeNull();
     expect(revealedSeedFor({ ...proof, clientSeed: 'someone-else' }, revealed)).toBeNull();
     expect(revealedSeedFor(proof, [])).toBeNull();
+  });
+});
+
+/** A player's seed history as the mock world keeps it, with its fairSeeds and fairRotate. */
+async function fairServer() {
+  let active = await newSeed('player-seed');
+  const revealed: RevealedSeed[] = [];
+  let now = 1_000;
+  return {
+    roll: () => nextRoll(active),
+    get active() {
+      return active;
+    },
+    sources: {
+      revealedSeeds: () => Promise.resolve([...revealed]),
+      rotateSeed: async () => {
+        const seed = reveal(active, (now += 1));
+        revealed.push(seed);
+        active = await newSeed(active.clientSeed);
+        return seed;
+      },
+    } satisfies FairSources,
+  };
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (reason: unknown) => void = () => undefined;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('the sheet’s verify step', () => {
+  it('reveals a seed still in play and verifies the crate against it', async () => {
+    const server = await fairServer();
+    await server.roll();
+    const { proof } = await server.roll();
+    const seed = server.active;
+    const states: string[] = [];
+    const verifier = new FairVerifier(proof, server.sources, (state) => states.push(state.status));
+
+    expect(verifier.canLookUp).toBe(true);
+    expect(verifier.canReveal).toBe(false);
+    await verifier.lookUp();
+    expect(verifier.state).toEqual({ status: 'unrevealed' });
+    expect(verifier.canReveal).toBe(true);
+
+    await verifier.reveal();
+    expect(states).toEqual(['checking', 'unrevealed', 'checking', 'verified']);
+    expect(verifier.state).toEqual({
+      status: 'verified',
+      digest: await fairDigest(seed.serverSeed, proof.clientSeed, proof.nonce),
+    });
+    expect(verifier.seed).toBe(seed.serverSeed);
+    expect(await commitmentOf(seed.serverSeed)).toBe(proof.serverSeedHash);
+    expect(proof.nonce).toBe(1);
+    expect(verifier.canReveal).toBe(false);
+    expect(server.active.serverSeedHash).not.toBe(proof.serverSeedHash);
+  });
+
+  it('finds a seed the server already revealed and verifies it on open, without rotating', async () => {
+    const server = await fairServer();
+    const { proof } = await server.roll();
+    const seed = server.active;
+    await server.sources.rotateSeed();
+    const rotate = vi.fn(server.sources.rotateSeed);
+    const verifier = new FairVerifier(proof, { ...server.sources, rotateSeed: rotate });
+
+    await verifier.lookUp();
+    expect(verifier.state).toEqual({
+      status: 'verified',
+      digest: await fairDigest(seed.serverSeed, proof.clientSeed, proof.nonce),
+    });
+    expect(verifier.seed).toBe(seed.serverSeed);
+    expect(verifier.canReveal).toBe(false);
+    await verifier.reveal();
+    expect(rotate).not.toHaveBeenCalled();
+  });
+
+  it('looks up only once per sheet', async () => {
+    const server = await fairServer();
+    const { proof } = await server.roll();
+    const revealedSeeds = vi.fn(server.sources.revealedSeeds);
+    const verifier = new FairVerifier(proof, { revealedSeeds });
+    await verifier.lookUp();
+    await verifier.lookUp();
+    expect(revealedSeeds).toHaveBeenCalledOnce();
+    expect(verifier.canReveal).toBe(false);
+  });
+
+  it('offers only the paste check when the server’s seeds are not wired', async () => {
+    const server = await fairServer();
+    const { proof } = await server.roll();
+    const verifier = new FairVerifier(proof, {});
+    expect(verifier.canLookUp).toBe(false);
+    expect(verifier.canReveal).toBe(false);
+    await verifier.lookUp();
+    await verifier.reveal();
+    expect(verifier.state).toEqual({ status: 'idle' });
+
+    const seed = server.active.serverSeed;
+    await verifier.paste(seed);
+    expect(verifier.state.status).toBe('verified');
+    expect(verifier.seed).toBe(seed);
+  });
+
+  it('offers the reveal straight away when it can rotate but not look up', async () => {
+    const server = await fairServer();
+    const { proof } = await server.roll();
+    const verifier = new FairVerifier(proof, { rotateSeed: server.sources.rotateSeed });
+    expect(verifier.canReveal).toBe(true);
+    await verifier.reveal();
+    expect(verifier.state.status).toBe('verified');
+  });
+
+  it('keeps a newer pasted check over a lookup that answers late', async () => {
+    const server = await fairServer();
+    const { proof } = await server.roll();
+    const seed = server.active.serverSeed;
+    await server.sources.rotateSeed();
+    const late = deferred<readonly RevealedSeed[]>();
+    const verifier = new FairVerifier(proof, { revealedSeeds: () => late.promise });
+
+    const lookup = verifier.lookUp();
+    expect(verifier.state).toEqual({ status: 'checking' });
+    const other = await newSeed('player-seed');
+    await verifier.paste(other.serverSeed);
+    expect(verifier.state.status).toBe('mismatch');
+
+    late.resolve(await server.sources.revealedSeeds());
+    await lookup;
+    expect(verifier.state.status).toBe('mismatch');
+    expect(verifier.seed).toBe(other.serverSeed);
+    expect(seed).not.toBe(other.serverSeed);
+  });
+
+  it('says the server could not be reached, and reports it, when a call fails', async () => {
+    const server = await fairServer();
+    const { proof } = await server.roll();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const failing = new FairVerifier(proof, {
+      revealedSeeds: () => Promise.reject(new Error('offline')),
+    });
+    await failing.lookUp();
+    expect(failing.state).toEqual({ status: 'unavailable' });
+
+    const rotating = new FairVerifier(proof, {
+      rotateSeed: () => Promise.reject(new Error('offline')),
+    });
+    await rotating.reveal();
+    expect(rotating.state).toEqual({ status: 'unavailable' });
+    expect(error).toHaveBeenCalledTimes(2);
+    error.mockRestore();
+  });
+
+  it('stops answering once the sheet is gone', async () => {
+    const server = await fairServer();
+    const { proof } = await server.roll();
+    const late = deferred<readonly RevealedSeed[]>();
+    const onChange = vi.fn();
+    const verifier = new FairVerifier(proof, { revealedSeeds: () => late.promise }, onChange);
+    const lookup = verifier.lookUp();
+    verifier.dispose();
+    late.resolve([]);
+    await lookup;
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(verifier.state).toEqual({ status: 'checking' });
+  });
+});
+
+describe('a counter past its guarantee', () => {
+  const broken = { rare: pityConfig.rules[0].within, exquisite: 0, legendary: 0 };
+
+  it('still gives the sheet its odds and reports the guarantees it cannot show', () => {
+    const report = vi.fn();
+    const data = oddsSheetData(broken, report);
+    expect(data.rows.ok).toBe(true);
+    if (data.rows.ok) expect(data.rows.value).toEqual(crateOdds());
+    expect(data.ladder.ok).toBe(false);
+    if (!data.ladder.ok) expect(data.ladder.error).toBeInstanceOf(RangeError);
+    expect(report).toHaveBeenCalledOnce();
+  });
+
+  it('reports to the console by default instead of throwing', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(() => oddsSheetData(broken)).not.toThrow();
+    expect(() => cardPityOutlook(broken, 'fine')).not.toThrow();
+    expect(error).toHaveBeenCalledTimes(2);
+    error.mockRestore();
+  });
+
+  it('leaves the reward card without a pity line rather than without Collect', () => {
+    const report = vi.fn();
+    expect(cardPityOutlook(broken, 'fine', report)).toBeNull();
+    expect(report).toHaveBeenCalledOnce();
+    expect(cardPityOutlook({ rare: 0, exquisite: 0, legendary: 0 }, 'fine', report)).toEqual({
+      rarity: 'rare',
+      within: pityConfig.rules[0].within,
+    });
+    expect(report).toHaveBeenCalledOnce();
+  });
+
+  it('shows a fair data set untouched', () => {
+    const report = vi.fn();
+    const data = oddsSheetData({ rare: 1, exquisite: 2, legendary: 3 }, report);
+    expect(data.ladder.ok && data.ladder.value.map((step) => step.misses)).toEqual([1, 2, 3]);
+    expect(report).not.toHaveBeenCalled();
   });
 });
 

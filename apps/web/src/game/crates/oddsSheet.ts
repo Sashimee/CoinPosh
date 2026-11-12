@@ -1,5 +1,5 @@
 import { ODDS_SCALE } from '@coinposh/economy';
-import type { FairProof, PityCounters, Rarity, RevealedSeed } from '@coinposh/shared';
+import type { FairProof, PityCounters, Rarity } from '@coinposh/shared';
 import type { Language } from '../../i18n/index.ts';
 import { makePressable } from '../../ui/components/pressable.ts';
 import { feedback, type UiContext } from '../../ui/context.ts';
@@ -7,14 +7,13 @@ import { fromMarkup, h, listen, restartAnimation } from '../../ui/dom.ts';
 import { icon } from '../../ui/icons.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../vfx/palette.ts';
 import {
-  crateOdds,
+  FairVerifier,
   nonceLabel,
   oddsShare,
+  oddsSheetData,
   oddsTotalPercent,
-  pityLadder,
-  verifyRevealedSeed,
-  revealedSeedFor,
-  type FairCheck,
+  type FairSources,
+  type VerifyState,
 } from './odds.ts';
 import type { CratesT } from './revealCard.ts';
 
@@ -22,9 +21,9 @@ import type { CratesT } from './revealCard.ts';
 export const ODDS_CLOSE_MS = 220;
 const ROW_STAGGER_MS = 55;
 const GLINTS = 4;
-const FOCUSABLE = 'button:not([disabled]), input:not([disabled])';
+const FOCUSABLE = 'button:not([disabled]):not([hidden]), input:not([disabled])';
 
-export interface OddsSheetOptions {
+export interface OddsSheetOptions extends FairSources {
   readonly ctx: UiContext;
   readonly t: CratesT;
   readonly language: () => Language;
@@ -32,8 +31,6 @@ export interface OddsSheetOptions {
   readonly proof: FairProof;
   readonly pity: PityCounters;
   readonly reducedMotion: boolean;
-  /** The server's revealed seeds; when this roll's seed is among them it is checked on open. */
-  readonly revealedSeeds?: (() => Promise<readonly RevealedSeed[]>) | undefined;
 }
 
 export interface OddsSheet {
@@ -59,10 +56,14 @@ export function sealIcon(): Element {
 export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
   const { ctx, t, proof } = options;
   const loc = ctx.loc;
-  const rows = crateOdds();
-  const ladder = pityLadder(options.pity);
+  const data = oddsSheetData(options.pity);
   const nonce = () => nonceLabel(proof, options.language());
   const share = (value: string) => t('oddsShare', { value });
+  const broken = (key: 'oddsBroken' | 'oddsPityBroken') => {
+    const message = h('p', { class: 'cp-odds-broken', attrs: { role: 'note' } });
+    ctx.own(loc.text(message, () => t(key)));
+    return message;
+  };
 
   const titleId = 'cp-odds-title';
   const seal = h('span', { class: 'cp-odds-seal', attrs: { 'aria-hidden': 'true' } }, sealIcon());
@@ -82,81 +83,98 @@ export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
   ctx.own(loc.text(subtitle, () => t('oddsSubtitle', { nonce: nonce() })));
   ctx.own(loc.attr(closeButton, 'aria-label', () => ctx.i18n.t('common.close')));
 
-  const oddsList = h('ol', { class: 'cp-odds-rows' });
-  rows.forEach((row, index) => {
-    const name = h('span', { class: 'cp-odds-name' });
-    const value = h('span', { class: 'cp-odds-value' });
-    const fill = h('span', { class: 'cp-odds-fill' });
-    const item = h(
-      'li',
-      { class: 'cp-odds-row', attrs: { 'data-rarity': row.rarity } },
-      h(
-        'span',
-        { class: 'cp-odds-row-head' },
-        h('span', { class: 'cp-odds-gem', attrs: { 'aria-hidden': 'true' } }),
-        name,
-        value,
-      ),
-      h('span', { class: 'cp-odds-bar', attrs: { 'aria-hidden': 'true' } }, fill),
-    );
-    item.style.setProperty('--cp-odds-accent', RARITY_COLORS[row.rarity]);
-    item.style.setProperty('--cp-odds-share', String(row.weight / ODDS_SCALE));
-    item.style.setProperty('--cp-odds-stagger', `${index * ROW_STAGGER_MS}ms`);
-    if (row.rarity === 'heirloom') {
-      item.style.setProperty('--cp-odds-prism', HEIRLOOM_PRISM.join(', '));
-    }
-    if (row.rarity === options.rarity) {
-      item.classList.add('is-this');
-      const tag = h('span', { class: 'cp-odds-this' });
-      ctx.own(loc.text(tag, () => t('oddsThis')));
-      name.after(tag);
-    }
-    ctx.own(loc.text(name, () => t(`rarity.${row.rarity}`)));
-    ctx.own(loc.text(value, () => share(oddsShare(row.percent, options.language()))));
-    oddsList.append(item);
-  });
-  const totalValue = h('span');
-  const totalLabel = h('span');
-  const total = h('p', { class: 'cp-odds-total' }, totalLabel, totalValue);
-  ctx.own(loc.text(totalLabel, () => t('oddsTotal')));
-  ctx.own(loc.text(totalValue, () => share(oddsShare(oddsTotalPercent(rows), options.language()))));
-
-  const pityList = h('ul', { class: 'cp-odds-pity' });
-  for (const step of ladder) {
-    const floor = h('span', { class: 'cp-odds-pity-floor' });
-    const left = h('span', { class: 'cp-odds-pity-left' });
-    const fill = h('span', { class: 'cp-odds-pity-fill' });
-    const meter = h(
-      'span',
-      {
-        class: 'cp-odds-pity-meter',
-        attrs: {
-          role: 'progressbar',
-          'aria-valuemin': '0',
-          'aria-valuemax': String(step.within),
-          'aria-valuenow': String(step.misses),
-        },
-      },
-      fill,
-    );
-    const item = h(
-      'li',
-      { class: 'cp-odds-pity-step', attrs: { 'data-rarity': step.rarity } },
-      h('span', { class: 'cp-odds-pity-head' }, floor, left),
-      meter,
-    );
-    item.style.setProperty('--cp-odds-accent', RARITY_COLORS[step.rarity]);
-    item.style.setProperty('--cp-odds-share', String(step.misses / step.within));
-    item.classList.toggle('is-next', step.left === 1);
-    const floorCopy = () => t('oddsPityFloor', { rarity: t(`rarity.${step.rarity}`) });
-    ctx.own(loc.text(floor, floorCopy));
+  const oddsParts: HTMLElement[] = [];
+  if (data.rows.ok) {
+    const rows = data.rows.value;
+    const oddsList = h('ol', { class: 'cp-odds-rows' });
+    rows.forEach((row, index) => {
+      const name = h('span', { class: 'cp-odds-name' });
+      const value = h('span', { class: 'cp-odds-value' });
+      const fill = h('span', { class: 'cp-odds-fill' });
+      const item = h(
+        'li',
+        { class: 'cp-odds-row', attrs: { 'data-rarity': row.rarity } },
+        h(
+          'span',
+          { class: 'cp-odds-row-head' },
+          h('span', { class: 'cp-odds-gem', attrs: { 'aria-hidden': 'true' } }),
+          name,
+          value,
+        ),
+        h('span', { class: 'cp-odds-bar', attrs: { 'aria-hidden': 'true' } }, fill),
+      );
+      item.style.setProperty('--cp-odds-accent', RARITY_COLORS[row.rarity]);
+      item.style.setProperty('--cp-odds-share', String(row.weight / ODDS_SCALE));
+      item.style.setProperty('--cp-odds-stagger', `${index * ROW_STAGGER_MS}ms`);
+      if (row.rarity === 'heirloom') {
+        item.style.setProperty('--cp-odds-prism', HEIRLOOM_PRISM.join(', '));
+      }
+      if (row.rarity === options.rarity) {
+        item.classList.add('is-this');
+        const tag = h('span', { class: 'cp-odds-this' });
+        ctx.own(loc.text(tag, () => t('oddsThis')));
+        name.after(tag);
+      }
+      ctx.own(loc.text(name, () => t(`rarity.${row.rarity}`)));
+      ctx.own(loc.text(value, () => share(oddsShare(row.percent, options.language()))));
+      oddsList.append(item);
+    });
+    const totalValue = h('span');
+    const totalLabel = h('span');
+    const total = h('p', { class: 'cp-odds-total' }, totalLabel, totalValue);
+    ctx.own(loc.text(totalLabel, () => t('oddsTotal')));
     ctx.own(
-      loc.text(left, () =>
-        step.left === 1 ? t('oddsPityNext') : t('oddsPityLeft', { count: step.left }),
-      ),
+      loc.text(totalValue, () => share(oddsShare(oddsTotalPercent(rows), options.language()))),
     );
-    ctx.own(loc.attr(meter, 'aria-label', floorCopy));
-    pityList.append(item);
+    const note = h('p', { class: 'cp-odds-note' });
+    ctx.own(loc.text(note, () => t('oddsNote')));
+    oddsParts.push(oddsList, total, note);
+  } else {
+    oddsParts.push(broken('oddsBroken'));
+  }
+
+  const pityParts: HTMLElement[] = [];
+  if (data.ladder.ok) {
+    const pityList = h('ul', { class: 'cp-odds-pity' });
+    for (const step of data.ladder.value) {
+      const floor = h('span', { class: 'cp-odds-pity-floor' });
+      const left = h('span', { class: 'cp-odds-pity-left' });
+      const fill = h('span', { class: 'cp-odds-pity-fill' });
+      const meter = h(
+        'span',
+        {
+          class: 'cp-odds-pity-meter',
+          attrs: {
+            role: 'progressbar',
+            'aria-valuemin': '0',
+            'aria-valuemax': String(step.within),
+            'aria-valuenow': String(step.misses),
+          },
+        },
+        fill,
+      );
+      const item = h(
+        'li',
+        { class: 'cp-odds-pity-step', attrs: { 'data-rarity': step.rarity } },
+        h('span', { class: 'cp-odds-pity-head' }, floor, left),
+        meter,
+      );
+      item.style.setProperty('--cp-odds-accent', RARITY_COLORS[step.rarity]);
+      item.style.setProperty('--cp-odds-share', String(step.misses / step.within));
+      item.classList.toggle('is-next', step.left === 1);
+      const floorCopy = () => t('oddsPityFloor', { rarity: t(`rarity.${step.rarity}`) });
+      ctx.own(loc.text(floor, floorCopy));
+      ctx.own(
+        loc.text(left, () =>
+          step.left === 1 ? t('oddsPityNext') : t('oddsPityLeft', { count: step.left }),
+        ),
+      );
+      ctx.own(loc.attr(meter, 'aria-label', floorCopy));
+      pityList.append(item);
+    }
+    pityParts.push(pityList);
+  } else {
+    pityParts.push(broken('oddsPityBroken'));
   }
 
   const proofList = h('dl', { class: 'cp-odds-proof' });
@@ -200,9 +218,15 @@ export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
     { class: 'cp-odds-verify-button', attrs: { type: 'button', 'data-testid': 'odds-verify' } },
     verifyLabel,
   );
+  const revealLabel = h('span');
+  const revealButton = h(
+    'button',
+    { class: 'cp-odds-reveal-button', attrs: { type: 'button', 'data-testid': 'odds-reveal' } },
+    revealLabel,
+  );
   const verdict = h('p', {
     class: 'cp-odds-verdict',
-    attrs: { role: 'status', 'data-state': 'pending' },
+    attrs: { role: 'status', 'data-state': 'idle' },
   });
   const verdictText = h('span');
   const verdictDigest = h('code', { class: 'cp-odds-digest' });
@@ -211,43 +235,66 @@ export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
   ctx.own(loc.text(seedLabel, () => t('verifyLabel')));
   ctx.own(loc.attr(seedInput, 'placeholder', () => t('verifyPlaceholder')));
   ctx.own(loc.text(verifyLabel, () => t('verifyAction')));
+  ctx.own(loc.text(revealLabel, () => t('verifyReveal')));
 
-  type VerdictState = 'pending' | 'checking' | 'unavailable' | FairCheck['status'];
-  let state: VerdictState = 'pending';
-  let digest = '';
-  const VERDICT_KEYS = {
-    pending: 'verifyPending',
-    checking: 'verifyChecking',
-    unavailable: 'verifyUnavailable',
-    malformed: 'verifyMalformed',
-    mismatch: 'verifyMismatch',
-    verified: 'verifyOk',
-  } as const satisfies Record<VerdictState, Parameters<CratesT>[0]>;
+  let disposed = false;
+  const verifier = new FairVerifier(
+    proof,
+    { revealedSeeds: options.revealedSeeds, rotateSeed: options.rotateSeed },
+    (state) => {
+      if (disposed) return;
+      const seed = verifier.seed;
+      if (seed !== null && (state.status === 'verified' || state.status === 'mismatch')) {
+        seedInput.value = seed;
+      }
+      if (
+        state.status === 'verified' ||
+        state.status === 'mismatch' ||
+        state.status === 'malformed'
+      ) {
+        restartAnimation(verdict, 'is-landing');
+        feedback(ctx, state.status === 'verified' ? 'confirm' : 'deny');
+      }
+      loc.refresh();
+    },
+  );
+  const verdictKey = (state: VerifyState): Parameters<CratesT>[0] => {
+    switch (state.status) {
+      case 'idle':
+        return 'verifyPaste';
+      case 'checking':
+        return 'verifyChecking';
+      case 'unrevealed':
+        return verifier.canReveal ? 'verifyUnrevealed' : 'verifyPending';
+      case 'unavailable':
+        return 'verifyUnavailable';
+      case 'malformed':
+        return 'verifyMalformed';
+      case 'mismatch':
+        return 'verifyMismatch';
+      case 'verified':
+        return 'verifyOk';
+    }
+  };
   ctx.own(
     loc.bind(() => {
-      verdict.dataset.state = state;
-      verdictText.textContent = t(VERDICT_KEYS[state]);
-      verdictDigest.hidden = state !== 'verified';
-      verdictDigest.textContent = state === 'verified' ? digest : '';
+      const state = verifier.state;
+      verdict.dataset.state = state.status;
+      verdictText.textContent = t(verdictKey(state));
+      verdictDigest.hidden = state.status !== 'verified';
+      verdictDigest.textContent = state.status === 'verified' ? state.digest : '';
+      revealButton.hidden = !verifier.canReveal;
     }),
   );
-  let check = 0;
-  const runCheck = async (seed: string) => {
-    const token = ++check;
-    state = 'checking';
-    loc.refresh();
-    const result = await verifyRevealedSeed(proof, seed);
-    if (token !== check || disposed) return;
-    state = result.status;
-    digest = result.status === 'verified' ? result.digest : '';
-    restartAnimation(verdict, 'is-landing');
-    feedback(ctx, result.status === 'verified' ? 'confirm' : 'deny');
-    loc.refresh();
-  };
   makePressable(verifyButton, ctx, {
     feedback: 'tap',
     enabled: () => seedInput.value.trim().length > 0,
-    onPress: () => void runCheck(seedInput.value),
+    onPress: () => void verifier.paste(seedInput.value),
+  });
+  makePressable(revealButton, ctx, {
+    feedback: 'open',
+    enabled: () => verifier.canReveal,
+    onPress: () => void verifier.reveal(),
   });
   ctx.own(
     listen(seedInput, 'keydown', (event) => {
@@ -262,15 +309,13 @@ export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
     ctx.own(loc.text(heading, () => t(key)));
     return h('section', { class: 'cp-odds-section' }, heading, ...children);
   };
-  const note = h('p', { class: 'cp-odds-note' });
-  ctx.own(loc.text(note, () => t('oddsNote')));
   const verifyRow = h('div', { class: 'cp-odds-verify-row' }, seedInput, verifyButton);
   const body = h(
     'div',
     { class: 'cp-odds-body' },
-    section('oddsHeading', oddsList, total, note),
-    section('oddsPityHeading', pityList),
-    section('proofHeading', proofList, seedLabel, verifyRow, verdict),
+    section('oddsHeading', ...oddsParts),
+    section('oddsPityHeading', ...pityParts),
+    section('proofHeading', proofList, seedLabel, verifyRow, verdict, revealButton),
   );
   const panel = h(
     'section',
@@ -303,10 +348,8 @@ export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
   root.hidden = true;
 
   let isOpen = false;
-  let disposed = false;
   let trigger: HTMLElement | null = null;
   let closing: ReturnType<typeof setTimeout> | null = null;
-  let looked = false;
 
   const settleClosed = () => {
     closing = null;
@@ -325,31 +368,6 @@ export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
     root.classList.remove('is-opening');
     root.classList.add('is-closing');
     closing = setTimeout(settleClosed, ODDS_CLOSE_MS);
-  };
-  const lookUpRevealed = () => {
-    if (looked || options.revealedSeeds === undefined) return;
-    looked = true;
-    const token = ++check;
-    state = 'checking';
-    loc.refresh();
-    options.revealedSeeds().then(
-      (revealed) => {
-        if (token !== check || disposed) return;
-        const seed = revealedSeedFor(proof, revealed);
-        if (seed === null) {
-          state = 'pending';
-          loc.refresh();
-          return;
-        }
-        seedInput.value = seed.serverSeed;
-        void runCheck(seed.serverSeed);
-      },
-      () => {
-        if (token !== check || disposed) return;
-        state = 'unavailable';
-        loc.refresh();
-      },
-    );
   };
 
   makePressable(closeButton, ctx, { feedback: 'close', onPress: close });
@@ -398,12 +416,13 @@ export function createOddsSheet(options: OddsSheetOptions): OddsSheet {
       body.scrollTop = 0;
       restartAnimation(root, 'is-opening');
       closeButton.focus({ preventScroll: true });
-      lookUpRevealed();
+      void verifier.lookUp();
     },
     close,
     dispose() {
       if (disposed) return;
       disposed = true;
+      verifier.dispose();
       if (closing !== null) clearTimeout(closing);
       root.remove();
     },

@@ -1,5 +1,5 @@
 import './crates.css';
-import type { Rarity, RevealedSeed, Roll } from '@coinposh/shared';
+import type { Rarity, Roll } from '@coinposh/shared';
 import type { UiApp } from '../../app/index.ts';
 import { formatBalance, type InterpolationValues, type Language } from '../../i18n/index.ts';
 import { makePressable } from '../../ui/components/pressable.ts';
@@ -9,10 +9,9 @@ import { Localizer } from '../../ui/localize.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../vfx/palette.ts';
 import { PLAQUE_SWELL } from './hint.ts';
 import { cratesKey, registerCratesStrings } from './i18n.ts';
-import { nonceLabel } from './odds.ts';
-import { createOddsSheet, sealIcon } from './oddsSheet.ts';
+import { cardPityOutlook, nonceLabel, type FairSources } from './odds.ts';
+import { createOddsSheet, sealIcon, type OddsSheet } from './oddsSheet.ts';
 import {
-  pityOutlook,
   rewardLines,
   type AlbumProgress,
   type AlbumProgressMap,
@@ -121,7 +120,11 @@ export function crateFlyOffset(
 const DOCK = '[data-testid="hud-dock"]';
 const BALANCE = '[data-testid="hud-balance"]';
 
-export interface CrateRevealOptions {
+/**
+ * `revealedSeeds` and `rotateSeed` let the fairness sheet find, or reveal, this roll's server
+ * seed; without them it offers only the paste check.
+ */
+export interface CrateRevealOptions extends FairSources {
   readonly ui: Pick<UiApp, 'store' | 'bus' | 'i18n'>;
   readonly host: HTMLElement;
   readonly rarity: Rarity;
@@ -134,8 +137,6 @@ export interface CrateRevealOptions {
   /** A tap on the overlay before the reveal. */
   readonly onSkip: () => void;
   readonly onCollect: () => void;
-  /** The server's revealed seeds, so the fairness sheet can check this roll once its seed is out. */
-  readonly revealedSeeds?: (() => Promise<readonly RevealedSeed[]>) | undefined;
 }
 
 export interface CrateReveal {
@@ -156,7 +157,7 @@ export interface CrateReveal {
  */
 export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   const { ui, roll, rarity, reducedMotion } = options;
-  const outlook = pityOutlook(roll.pity, roll.rarity);
+  const outlook = cardPityOutlook(roll.pity, roll.rarity);
   registerCratesStrings(ui.i18n);
   const disposers: (() => void)[] = [];
   const loc = new Localizer(ui.i18n);
@@ -211,19 +212,27 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   ctx.own(loc.text(fairLabel, () => t('fair')));
   ctx.own(loc.text(fairNonce, () => t('fairNonce', { nonce: nonce() })));
   ctx.own(loc.attr(fair, 'aria-label', () => t('fairOpen', { nonce: nonce() })));
-  const odds = createOddsSheet({
-    ctx,
-    t,
-    language: () => ui.i18n.language,
-    rarity,
-    proof: roll.proof,
-    pity: roll.pity,
-    reducedMotion,
-    revealedSeeds: options.revealedSeeds,
-  });
-  ctx.own(() => {
-    odds.dispose();
-  });
+  let odds: OddsSheet | null = null;
+  const oddsSheet = (): OddsSheet => {
+    if (odds !== null) return odds;
+    const sheet = createOddsSheet({
+      ctx,
+      t,
+      language: () => ui.i18n.language,
+      rarity,
+      proof: roll.proof,
+      pity: roll.pity,
+      reducedMotion,
+      revealedSeeds: options.revealedSeeds,
+      rotateSeed: options.rotateSeed,
+    });
+    status.before(sheet.el);
+    ctx.own(() => {
+      sheet.dispose();
+    });
+    odds = sheet;
+    return sheet;
+  };
   const collectLabel = h('span');
   const collect = h(
     'button',
@@ -251,7 +260,6 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     },
     skipHint,
     card,
-    odds.el,
     status,
   );
   root.style.setProperty('--cp-crate-accent', RARITY_COLORS[rarity]);
@@ -311,12 +319,12 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     feedback: 'open',
     enabled: () => shown && !collecting,
     onPress: () => {
-      odds.open(fair);
+      oddsSheet().open(fair);
     },
   });
   makePressable(collect, ctx, {
     feedback: 'confirm',
-    enabled: () => shown && !collecting && !odds.isOpen,
+    enabled: () => shown && !collecting && !(odds?.isOpen ?? false),
     onPress: () => {
       if (collecting) return;
       collecting = true;

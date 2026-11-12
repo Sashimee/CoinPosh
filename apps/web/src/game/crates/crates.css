@@ -1089,6 +1089,44 @@
   animation: cp-crate-pop 320ms cubic-bezier(0.2, 1.6, 0.4, 1) both;
 }
 
+.cp-odds-reveal-button {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--cp-radius-sm);
+  border: 1px solid var(--cp-sea-glass);
+  background: rgb(var(--cp-sea-glass-rgb) / 0.12);
+  color: var(--cp-sea-glass);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgb(var(--cp-ivory-rgb) / 0.18);
+}
+
+.cp-odds-reveal-button:focus-visible,
+.cp-odds-verify-button:focus-visible {
+  outline: 2px solid var(--cp-focus);
+  outline-offset: 2px;
+}
+
+.cp-odds-reveal-button[hidden] {
+  display: none;
+}
+
+.cp-odds-broken {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--cp-radius-sm);
+  border: 1px solid var(--cp-warning);
+  background: color-mix(in srgb, var(--cp-warning) 12%, transparent);
+  color: var(--cp-warning);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .cp-odds-digest[hidden] {
   display: none;
 }

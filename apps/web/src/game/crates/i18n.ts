@@ -48,6 +48,11 @@ interface CratesFlatStrings {
   verifyMalformed: string;
   verifyMismatch: string;
   verifyOk: string;
+  verifyPaste: string;
+  verifyUnrevealed: string;
+  verifyReveal: string;
+  oddsBroken: string;
+  oddsPityBroken: string;
 }
 
 type GainKey = `${Currency}_${'one' | 'other' | 'many'}`;
@@ -123,12 +128,17 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     verifyPending:
       'The server reveals this seed when it rotates to a new one. Paste it here to check this roll.',
     verifyChecking: 'Checking…',
-    verifyUnavailable:
-      'The revealed seeds could not be loaded. Paste the seed here to check this roll.',
+    verifyUnavailable: 'The server could not be reached. Paste the seed here to check this roll.',
     verifyMalformed: 'A server seed is 64 hex characters (0–9, a–f).',
     verifyMismatch:
       'This seed does not hash to the commitment, so it is not the seed this roll used.',
     verifyOk: 'Verified: the seed matches the commitment. This roll’s HMAC-SHA256 digest:',
+    verifyPaste: 'Paste a revealed server seed to check this roll.',
+    verifyUnrevealed:
+      'This seed is still in play. Reveal it to check this roll; your next crates roll under a fresh seed.',
+    verifyReveal: 'Reveal seed',
+    oddsBroken: 'The odds table could not be shown. The server still rolls every crate from it.',
+    oddsPityBroken: 'Your guarantees could not be shown right now. The server still keeps count.',
     rarity: {
       common: 'Common',
       fine: 'Fine',
@@ -226,12 +236,19 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
     verifyPending:
       'Le serveur révèle cette graine lorsqu’il passe à une nouvelle. Collez-la ici pour vérifier ce tirage.',
     verifyChecking: 'Vérification…',
-    verifyUnavailable:
-      'Impossible de charger les graines révélées. Collez la graine ici pour vérifier ce tirage.',
+    verifyUnavailable: 'Le serveur est injoignable. Collez la graine ici pour vérifier ce tirage.',
     verifyMalformed: 'Une graine serveur compte 64 caractères hexadécimaux (0–9, a–f).',
     verifyMismatch:
       'Cette graine ne correspond pas à l’engagement : ce n’est pas celle de ce tirage.',
     verifyOk: 'Vérifié : la graine correspond à l’engagement. Empreinte HMAC-SHA256 de ce tirage :',
+    verifyPaste: 'Collez une graine serveur révélée pour vérifier ce tirage.',
+    verifyUnrevealed:
+      'Cette graine est encore en jeu. Révélez-la pour vérifier ce tirage ; vos prochaines caisses seront tirées avec une nouvelle graine.',
+    verifyReveal: 'Révéler la graine',
+    oddsBroken:
+      'La table des chances ne peut pas s’afficher. Le serveur tire toujours chaque caisse dans cette table.',
+    oddsPityBroken:
+      'Vos garanties ne peuvent pas s’afficher pour l’instant. Le serveur continue de les compter.',
     rarity: {
       common: 'Commune',
       fine: 'Raffinée',
@@ -330,11 +347,19 @@ export const CRATES_STRINGS: Readonly<Record<Language, CratesStrings>> = {
       'Der Server enthüllt diesen Seed, sobald er zu einem neuen wechselt. Fügen Sie ihn hier ein, um diesen Wurf zu prüfen.',
     verifyChecking: 'Wird geprüft …',
     verifyUnavailable:
-      'Die enthüllten Seeds konnten nicht geladen werden. Fügen Sie den Seed hier ein, um diesen Wurf zu prüfen.',
+      'Der Server ist nicht erreichbar. Fügen Sie den Seed hier ein, um diesen Wurf zu prüfen.',
     verifyMalformed: 'Ein Server-Seed besteht aus 64 Hex-Zeichen (0–9, a–f).',
     verifyMismatch:
       'Dieser Seed ergibt nicht die Verpflichtung, er ist also nicht der Seed dieses Wurfs.',
     verifyOk: 'Geprüft: Der Seed passt zur Verpflichtung. HMAC-SHA256-Digest dieses Wurfs:',
+    verifyPaste: 'Fügen Sie einen enthüllten Server-Seed ein, um diesen Wurf zu prüfen.',
+    verifyUnrevealed:
+      'Dieser Seed ist noch im Spiel. Enthüllen Sie ihn, um diesen Wurf zu prüfen; Ihre nächsten Kisten werden mit einem neuen Seed gezogen.',
+    verifyReveal: 'Seed enthüllen',
+    oddsBroken:
+      'Die Chancentabelle kann nicht angezeigt werden. Der Server zieht trotzdem jede Kiste aus ihr.',
+    oddsPityBroken:
+      'Ihre Garantien können gerade nicht angezeigt werden. Der Server zählt weiter mit.',
     rarity: {
       common: 'Gewöhnlich',
       fine: 'Fein',
