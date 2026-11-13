@@ -33,6 +33,9 @@ export interface BenchmarkResult {
  * Renders the bench scene offscreen through the high-tier post pipeline at the canvas's
  * real drawing-buffer size and scores the device. It never touches the visible canvas, and
  * gives up within `TIME_BUDGET_MS` so first boot never stalls on a slow device.
+ *
+ * Its pipeline applies the bench look (exposure, shadow map) to the shared renderer, so a
+ * caller that already draws a scene re-applies its own look before the next frame.
  */
 export async function runBenchmark(
   renderer: WebGPURenderer,
@@ -40,9 +43,12 @@ export async function runBenchmark(
 ): Promise<BenchmarkResult> {
   const started = now();
   const bench = createBenchScene(renderer);
+  // Measured at the ratio already on the renderer: resizing a live canvas would blank it for
+  // as long as the run lasts.
   const post = createPostPipeline(renderer, bench.scene, bench.camera, QUALITY_PROFILES.high, {
     reducedMotion: true,
     look: BENCH_LOOK,
+    devicePixelRatio: () => renderer.getPixelRatio(),
   });
   const size = renderer.getDrawingBufferSize(new Vector2());
   const target = new RenderTarget(Math.max(size.x, 1), Math.max(size.y, 1));

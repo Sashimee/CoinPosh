@@ -23,8 +23,16 @@ import {
   type QualityTier,
   type RenderLook,
 } from './scene/quality/index.ts';
+import { rivieraTokens, rivieraTones } from './scene/venues/riviera/palette.ts';
 
 const CAMERA_NEAR = 0.05;
+// Until the first frame the canvas is see-through, so it shows this instead of a black void;
+// the clear colour and scene background carry the same lacquer once frames start.
+const BACKDROP = rivieraTokens['navy-lacquer'];
+const BACKDROP_CSS = [
+  `radial-gradient(120% 70% at 50% 40%, ${rivieraTones.feltSheen}8c 0%, transparent 72%)`,
+  `linear-gradient(180deg, ${BACKDROP} 0%, ${rivieraTones.velvet} 100%)`,
+].join(', ');
 // The venue sky dome has a 90 m radius around the table, so the far plane must clear it.
 const CAMERA_FAR = 120;
 // Right after a device loss the GPU process is still restarting and getContext('webgl2')
@@ -41,6 +49,8 @@ export interface StageOptions {
   readonly vignetteTint?: ColorRepresentation;
   /** Forces a quality tier; defaults to `?quality=low|medium|high` in the page URL. */
   readonly quality?: QualityTier;
+  /** The backend tried first; defaults to WebGL2 with `?webgl` in the page URL, else WebGPU. */
+  readonly backend?: RenderBackend;
   /** The coin field the stage bakes, shadows and uploads; casting is driven by the tier. */
   readonly coins: Omit<CoinFieldOptions, 'castShadow'>;
 }
@@ -93,13 +103,18 @@ interface ActiveRenderer {
  * GPU side: the emboss bake and shadow casting follow the live tier, and both are redone on
  * the replacement renderer after a device loss. Feed coins through `stage.coins.setTransforms`
  * from a frame listener; the stage uploads them once per frame before rendering.
+ *
+ * It resolves without benchmarking: a device with no saved tier starts at the provisional low
+ * tier and switches in place once the benchmark has run after the first frames, through
+ * `onTierChange` like a runtime step down.
  */
 export async function createStage(
   canvas: HTMLCanvasElement,
   options: StageOptions,
 ): Promise<Stage> {
+  canvas.style.background = BACKDROP_CSS;
   const scene = new Scene();
-  scene.background = new Color(0x000000);
+  scene.background = new Color(BACKDROP);
   const camera = new PerspectiveCamera(40, 1, CAMERA_NEAR, CAMERA_FAR);
   const timer = new Timer();
   timer.connect(document);
@@ -183,7 +198,7 @@ export async function createStage(
   };
 
   try {
-    active = await start(canvas, 'webgpu');
+    active = await start(canvas, options.backend ?? backendRequestedBy(location.search));
   } catch (error) {
     coins.dispose();
     timer.dispose();
@@ -258,7 +273,7 @@ async function startRenderer(
     powerPreference: 'high-performance',
     forceWebGL: attempt === 'webgl2',
   });
-  renderer.setClearColor(0x000000, 1);
+  renderer.setClearColor(BACKDROP, 1);
   try {
     await renderer.init();
   } catch (error) {
@@ -270,7 +285,8 @@ async function startRenderer(
   reportBackend(backend);
 
   // A lost WebGPU device falls back to WebGL2; a lost WebGL2 context comes back as WebGL2.
-  // The watch starts before the benchmark, which is long enough for a device to be reclaimed.
+  // The watch starts before the post pipeline compiles, which can take long enough for a
+  // device to be reclaimed.
   const next = fallbackBackend(backend) ?? backend;
   let active: ActiveRenderer | null = null;
   const lossWatch = watchGpuLoss(
@@ -304,6 +320,7 @@ async function startRenderer(
       camera,
       backend,
       look: context.look(),
+      benchmark: 'deferred',
       onTierChange: (profile) => {
         context.applyProfile(renderer, profile);
       },
@@ -338,6 +355,11 @@ async function stopRenderer(active: ActiveRenderer): Promise<void> {
   await active.renderer.setAnimationLoop(null);
   active.adaptive.dispose();
   await active.renderer.dispose();
+}
+
+/** `?webgl` starts on WebGL2, as the venue, post and vfx previews do. */
+export function backendRequestedBy(search: string): RenderBackend {
+  return new URLSearchParams(search).has('webgl') ? 'webgl2' : 'webgpu';
 }
 
 function wait(ms: number): Promise<void> {

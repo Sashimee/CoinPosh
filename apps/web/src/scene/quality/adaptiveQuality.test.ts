@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createQualityGovernor,
+  createQualitySession,
+  pendingQuality,
+  PROVISIONAL_TIER,
   resolveQuality,
+  resumeQuality,
   type QualityGovernor,
   type ScalablePipeline,
 } from './adaptiveQuality.ts';
@@ -356,7 +360,7 @@ describe('createQualityGovernor', () => {
     });
   });
 
-  it.each(['override', 'provisional'] as const)(
+  it.each(['override', 'provisional', 'pending'] as const)(
     'steps down in memory only for a %s session',
     (source) => {
       const store = memoryStore();
@@ -589,5 +593,134 @@ describe('createQualityGovernor', () => {
         expect(post.profile.tier).toBe('medium');
       },
     );
+  });
+});
+
+describe('a first boot on the provisional tier', () => {
+  it('starts at once at the provisional low tier, with nothing to resume', () => {
+    const store = memoryStore();
+    expect(resumeQuality({ backend: 'webgpu', store, logger: quietLogger() })).toBeNull();
+    expect(PROVISIONAL_TIER).toBe('low');
+    expect(pendingQuality()).toEqual({
+      profile: QUALITY_PROFILES.low,
+      source: 'pending',
+      benchmarkMs: null,
+    });
+  });
+
+  it('resumes a saved tier or an override without a pending benchmark', () => {
+    const store = memoryStore();
+    saveQuality(store, benchRecord('high', 4));
+    expect(resumeQuality({ backend: 'webgpu', store, logger: quietLogger() })?.source).toBe(
+      'stored',
+    );
+    expect(
+      resumeQuality({ backend: 'webgpu', store: null, override: 'medium', logger: quietLogger() }),
+    ).toMatchObject({ source: 'override', profile: QUALITY_PROFILES.medium });
+  });
+
+  it('switches the pipeline in place to the measured tier, saves it and tells listeners once', () => {
+    const store = memoryStore();
+    const post = fakePipeline(QUALITY_PROFILES.low);
+    post.setDynamicScale(QUALITY_PROFILES.low.minResolutionScale);
+    const onTierChange = vi.fn<(profile: QualityProfile) => void>();
+    const session = createQualitySession(post, pendingQuality(), {
+      backend: 'webgpu',
+      store,
+      onTierChange,
+      logger: quietLogger(),
+    });
+    expect(session.pending).toBe(true);
+
+    session.settle({ tier: 'high', complete: true, msPerFrame: 4, samples: [4] });
+
+    expect(session.pending).toBe(false);
+    expect(session.resolved).toEqual({
+      profile: QUALITY_PROFILES.high,
+      source: 'benchmark',
+      benchmarkMs: 4,
+    });
+    expect(post.profile).toBe(QUALITY_PROFILES.high);
+    expect(post.dynamicScale).toBe(QUALITY_PROFILES.high.maxResolutionScale);
+    expect(post.history.filter((entry) => entry.startsWith('tier:'))).toEqual(['tier:high']);
+    expect(onTierChange).toHaveBeenCalledOnce();
+    expect(onTierChange).toHaveBeenCalledWith(QUALITY_PROFILES.high);
+    expect(loadQuality(store, 'webgpu')).toEqual(benchRecord('high', 4));
+  });
+
+  it('leaves the pipeline and listeners alone when the device measures at the provisional tier', () => {
+    const store = memoryStore();
+    const post = fakePipeline(QUALITY_PROFILES.low);
+    const onTierChange = vi.fn<(profile: QualityProfile) => void>();
+    const session = createQualitySession(post, pendingQuality(), {
+      backend: 'webgl2',
+      store,
+      onTierChange,
+      logger: quietLogger(),
+    });
+    session.settle({ tier: 'low', complete: true, msPerFrame: 30, samples: [30] });
+    expect(post.history).toEqual([]);
+    expect(onTierChange).not.toHaveBeenCalled();
+    expect(session.resolved.source).toBe('benchmark');
+    expect(loadQuality(store, 'webgl2')).toEqual({ ...benchRecord('low', 30), backend: 'webgl2' });
+  });
+
+  it('applies an early-exit pick for this boot only, so the next boot measures again', () => {
+    const store = memoryStore();
+    const post = fakePipeline(QUALITY_PROFILES.low);
+    const session = createQualitySession(post, pendingQuality(), {
+      backend: 'webgpu',
+      store,
+      logger: quietLogger(),
+    });
+    session.settle({ tier: 'medium', complete: false, msPerFrame: 11, samples: [11] });
+    expect(post.profile).toBe(QUALITY_PROFILES.medium);
+    expect(session.resolved.source).toBe('provisional');
+    expect(loadQuality(store, 'webgpu')).toBeNull();
+    expect(resumeQuality({ backend: 'webgpu', store, logger: quietLogger() })).toBeNull();
+  });
+
+  it('only starts saving downgrades once the measured tier is settled', () => {
+    const store = memoryStore();
+    const post = fakePipeline(QUALITY_PROFILES.low);
+    const session = createQualitySession(post, pendingQuality(), {
+      backend: 'webgpu',
+      store,
+      logger: quietLogger(),
+    });
+    session.settle({ tier: 'high', complete: true, msPerFrame: 4, samples: [4] });
+    const governor = session.governor;
+    for (let second = 0; second < 120 && post.profile.tier === 'high'; second++) {
+      play(post, governor, GPU_OVERLOAD, 1000);
+    }
+    expect(post.profile.tier).toBe('medium');
+    expect(loadQuality(store, 'webgpu')).toEqual({
+      ...benchRecord('high', 4),
+      downgrade: { tier: 'medium', bootsLeft: DOWNGRADE_BOOTS },
+    });
+  });
+
+  it('refuses a second result, which would otherwise overwrite a saved tier', () => {
+    const post = fakePipeline(QUALITY_PROFILES.low);
+    const session = createQualitySession(post, pendingQuality(), {
+      backend: 'webgpu',
+      store: null,
+      logger: quietLogger(),
+    });
+    const result: BenchmarkResult = { tier: 'high', complete: true, msPerFrame: 4, samples: [4] };
+    session.settle(result);
+    expect(() => {
+      session.settle(result);
+    }).toThrow(/already settled \(benchmark\)/);
+
+    const stored = createQualitySession(
+      fakePipeline(QUALITY_PROFILES.medium),
+      { profile: QUALITY_PROFILES.medium, source: 'stored', benchmarkMs: 9 },
+      { backend: 'webgpu', store: null, logger: quietLogger() },
+    );
+    expect(stored.pending).toBe(false);
+    expect(() => {
+      stored.settle(result);
+    }).toThrow(/already settled \(stored\)/);
   });
 });
