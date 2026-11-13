@@ -52,8 +52,8 @@ export function bindArrivalHint(
     if (crateId === first) hide();
   };
   const offs = [
-    events.on('crate:spawned', ({ crateId }) => {
-      if (first !== null) return;
+    events.on('crate:spawned', ({ crateId, resumed }) => {
+      if (resumed || first !== null) return;
       first = crateId;
       visible = true;
       view.show();

@@ -77,6 +77,12 @@ export const playStyles: Readonly<Record<PlayStyleId, PlayStyle>> = {
  * 20 s. `first` times are the fusion event's tick / 60, rounded to 0.1 s; an independent
  * rebuild matched within one 0.1 s step (P-333 rework: aimed seed 1 and the other spot
  * checks in balance-reports/P-333-tuning-evidence.txt, on SIM_VERSION 8 after P-332).
+ * Values are unfloored (a fused coin = inputs × bonusMultiplier, heap coins at their
+ * tier's face value); `frontValue` and `fusionBonusOut` are rounded and
+ * `busiestFallValue` rounded up. P-375 reran every style on SIM_VERSION 9: the rebuild
+ * reproduced the version 8 fixture exactly on its own sim (franticPinpoint 1 and 2,
+ * aimed 1, franticPour 1, rapidScatter 3), and the jittered heap pile of P-223, which
+ * landed without a version bump, had already moved every style a little.
  *
  * The generator is not committed yet (economy cannot import @coinposh/sim, which depends
  * on economy): it belongs in packages/sim. Until it is, ladder.test.ts reads the
@@ -84,8 +90,8 @@ export const playStyles: Readonly<Record<PlayStyleId, PlayStyle>> = {
  * table inputs here stop matching them, which is when the fixture must be rerun.
  */
 export const ladderMeasurement = {
-  simCommit: 'e3eb761',
-  simVersion: 8,
+  simCommit: 'da6084a',
+  simVersion: 9,
   fusionTuning: {
     touchGap: 0.001,
     graceTicks: 3,
@@ -94,6 +100,8 @@ export const ladderMeasurement = {
     spawnGraceTicks: 60,
     freshTicks: 315,
     wakeFromTier: 1,
+    streamTicks: 15,
+    streamBurst: 4,
   },
   fusion: { inputCount: 3, contactSeconds: 0.4, fusionWindow: 1 },
   openingHeap: { coins: 100, tier: 'silver' },

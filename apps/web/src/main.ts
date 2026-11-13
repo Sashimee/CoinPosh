@@ -1,4 +1,4 @@
-import type { MintedCoin, StateResponse } from '@coinposh/shared';
+import type { MintedCoin, Roll, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
@@ -9,29 +9,32 @@ import {
   netAscensionApi,
   type AscensionHud,
 } from './game/ascension/index.ts';
+import { createTableRelay, type TableRelay } from './game/ascension/relay.ts';
 import type * as CratesApi from './game/crates/index.ts';
+import type * as SessionModule from './game/session/index.ts';
+import type { ElsewhereOverlay, PagePort, SnapshotTriggers } from './game/session/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
 import { mountUpgrades, netUpgradeApi } from './game/upgrades/index.ts';
 import type * as SimWorkerModule from './game/simWorker/index.ts';
-import type {
-  OpeningHeap,
-  SimBridge,
-  SimBridgeStats,
-  SimEventBatch,
-} from './game/simWorker/index.ts';
+import type { SimBridge, SimBridgeStats, SimEventBatch } from './game/simWorker/index.ts';
 import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
 import {
+  ApiRequestError,
   createNet,
   currentNetMode,
   mountDemoBanner,
   NET_I18N_KEYS,
   NET_I18N_SOURCE,
-  openingTableCoins,
+  openingLayout,
+  SnapshotCadence,
   type DemoBannerColors,
   type Net,
   type NetMode,
+  type OpeningLayout,
 } from './net/index.ts';
+import { monotonicNow } from './net/clock.ts';
+import { realScheduler } from './net/connectivity.ts';
 import { currentTurnstileSiteKey } from './net/env.ts';
 import type { CoinField, CoinTierId } from './scene/coins/index.ts';
 import { rivieraTokens } from './scene/venues/riviera/palette.ts';
@@ -43,6 +46,13 @@ import {
   holdTierVoice,
   type AnnouncementHold,
 } from './ui/components/announcementHold.ts';
+import {
+  PAYOUT_FLIGHT_MS,
+  PAYOUT_HOLD_CAP_MS,
+  PAYOUT_STAGGER_MS,
+  walletPayoutFor,
+  type WalletPayout,
+} from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
@@ -121,6 +131,19 @@ interface CoinPoshProbe {
   readonly playable: boolean;
   /** What the sim reported since boot, and what the game systems made of it once playable. */
   readonly counts: Readonly<ProbeCounts>;
+  /** How the table in play was laid when it booted; null before a table was laid. */
+  readonly restored: Readonly<RestoreCounts> | null;
+  /** True while another tab or device holds the table and this page waits on "Play here". */
+  readonly superseded: boolean;
+}
+
+interface RestoreCounts {
+  /** Boots of the table this page ran: 1 for the page load, one more for each "Play here". */
+  boots: number;
+  poses: number;
+  heapSlots: number;
+  cratePoses: number;
+  chutes: number;
 }
 
 interface ProbeCounts {
@@ -144,9 +167,17 @@ declare global {
   }
 }
 
-const probe: { bridge: SimBridge | null; playable: boolean; counts: ProbeCounts } = {
+const probe: {
+  bridge: SimBridge | null;
+  playable: boolean;
+  counts: ProbeCounts;
+  restored: RestoreCounts | null;
+  superseded: boolean;
+} = {
   bridge: null,
   playable: false,
+  restored: null,
+  superseded: false,
   counts: {
     simFalls: 0,
     simFusions: 0,
@@ -171,6 +202,12 @@ window.__coinposh = {
   get counts() {
     return { ...probe.counts, refusedFalls: { ...probe.counts.refusedFalls } };
   },
+  get restored() {
+    return probe.restored ? { ...probe.restored } : null;
+  },
+  get superseded() {
+    return probe.superseded;
+  },
 };
 
 const canvas = document.querySelector<HTMLCanvasElement>('#stage');
@@ -190,7 +227,10 @@ const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
   for (const dispose of teardown.splice(0).reverse()) dispose();
 };
+/** Run on every pagehide before the teardown, also for a page kept in the back/forward cache. */
+const pagehideHooks = new Set<() => void>();
 window.addEventListener('pagehide', (event) => {
+  for (const hook of [...pagehideHooks]) hook();
   if (!event.persisted) runTeardown();
 });
 import.meta.hot?.dispose(runTeardown);
@@ -328,7 +368,8 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
     resync('an upgrade purchase');
   });
   const resyncWhenShown = (): void => {
-    if (document.visibilityState !== 'visible') return;
+    // A table open elsewhere comes back only through "Play here".
+    if (document.visibilityState !== 'visible' || net.table.superseded) return;
     resync('the tab came back');
   };
   document.addEventListener('visibilitychange', resyncWhenShown);
@@ -364,10 +405,6 @@ function mountUpgradePurchases(
     },
     api: netUpgradeApi(net.client),
     venueId: () => ascensionHud?.state.venue.id ?? state.venue.id,
-    onFamilyOffice: () => {
-      app.store.setState({ panel: null });
-      void ascensionHud?.open();
-    },
     audio: () => audio,
     refresh: () => {
       net.client.call('state').then(
@@ -458,6 +495,8 @@ interface VaultTracker {
   spent(coin: MintedCoin | null): void;
   /** The table re-hydrated from a fresh server snapshot after the tab came back. */
   resumed(): void;
+  /** A new boot of the table ("Play here") replaced the buffer with the one `state` lists. */
+  adopted(state: StateResponse): void;
 }
 
 /**
@@ -474,7 +513,7 @@ interface VaultTracker {
  * exposes one.
  */
 function trackVault(app: UiApp, table: Net['table'], state: StateResponse): VaultTracker {
-  const known = state.table.buffer.map((coin) => coin.value);
+  const known: number[] = state.table.buffer.map((coin) => coin.value);
   let refillValue = state.table.buffer.at(-1)?.value ?? 0;
   let awaitingSync = false;
   const refresh = (): void => {
@@ -496,6 +535,11 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
   teardown.push(
     table.subscribe((event) => {
       if (event.type === 'dropSettled') refillValue = event.coin.value;
+      // A claim settles with the new wallet while its estimate is still provisional in the
+      // outbox; the balance event once it leaves is the true sum. Refreshing here counts the
+      // credit twice, and a Vault hold absorbs that phantom rise, so a crate's coin line
+      // would come up short.
+      if (event.type === 'claimSettled') return;
       if (awaitingSync && event.type === 'status' && event.status === 'synced') {
         forgetBuffer();
         return;
@@ -514,6 +558,12 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
     resumed() {
       if (table.status === 'synced') forgetBuffer();
       else awaitingSync = true;
+    },
+    adopted(booted) {
+      awaitingSync = false;
+      known.splice(0, known.length, ...booted.table.buffer.map((coin) => coin.value));
+      refillValue = booted.table.buffer.at(-1)?.value ?? refillValue;
+      refresh();
     },
   };
 }
@@ -555,9 +605,11 @@ function registerNetStrings(i18n: I18n): void {
 }
 
 /**
- * Play starts once the table is hydrated and the first frame is drawn. The sim opens on the heap
- * the server minted, so it pays out from the first shove. Until play starts the
- * bridge draws the coins and a tap on the table answers with the tap cue.
+ * Play starts once the table is hydrated and the first frame is drawn. The sim lays the table
+ * the server stored, each coin bound to the server coin it stands for, so it pays out from the
+ * first shove. Until play starts the bridge draws the coins and a tap on the table answers with
+ * the tap cue. When another tab or device boots the table, play here stops under the "This
+ * table is open elsewhere" overlay, and its "Play here" boots the table again in this page.
  */
 async function bootScene(
   target: HTMLCanvasElement,
@@ -565,27 +617,25 @@ async function bootScene(
 ): Promise<void> {
   let stage: Stage;
   let riviera: typeof RivieraModule;
+  let simApi: typeof SimWorkerModule;
   let systemsModule: typeof SystemsModule;
   let vfxModule: typeof VfxModule;
   let cratesApi: typeof CratesApi;
-  let simWorker: typeof SimWorkerModule;
+  let sessionModule: typeof SessionModule;
   let sim: StartedSim;
-  let started: StartedSim | undefined;
   let built: Stage | undefined;
+  const run = { scope: createScope() };
+  // Pushed before the stage, so teardown stops the renderer before the sim it draws from.
+  teardown.push(() => {
+    run.scope.dispose();
+  });
   const pending: Promise<unknown>[] = [];
   const stopEarlyTaps = answerEarlyTaps(target.id);
-  const scopes: TableScopes = { sim: createScope(), play: createScope() };
-  teardown.push(() => {
-    scopes.sim.dispose();
-  });
   try {
     const simModuleLoaded = import('./game/simWorker/index.ts');
-    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
+    // The sim lays the server's table, so it waits for hydration; the GPU need not.
     const simStarted = Promise.all([simModuleLoaded, openingTable(hydrated)]).then(
-      ([simModule, heap]) => {
-        started = startSim(simModule, heap, scopes.sim.own);
-        return started;
-      },
+      ([simModule, layout]) => startSim(simModule, layout, run.scope),
     );
     pending.push(simStarted);
     // A failed start is already logged and kept in `bridge.failure`; the mark only times success.
@@ -597,20 +647,23 @@ async function bootScene(
         },
         () => undefined,
       );
-    const [stageModule, venueModule, simModule, gameSystems, effects, crates] = await Promise.all([
-      import('./stage.ts'),
-      import('./scene/venues/riviera/index.ts'),
-      simModuleLoaded,
-      import('./game/systems/index.ts'),
-      import('./vfx/index.ts'),
-      import('./game/crates/index.ts'),
-    ]);
+    const [stageModule, venueModule, simModule, gameSystems, effects, crates, session] =
+      await Promise.all([
+        import('./stage.ts'),
+        import('./scene/venues/riviera/index.ts'),
+        simModuleLoaded,
+        import('./game/systems/index.ts'),
+        import('./vfx/index.ts'),
+        import('./game/crates/index.ts'),
+        import('./game/session/index.ts'),
+      ]);
     markBoot('modules');
     riviera = venueModule;
+    simApi = simModule;
     systemsModule = gameSystems;
     vfxModule = effects;
     cratesApi = crates;
-    simWorker = simModule;
+    sessionModule = session;
     // On a software GPU the stage's first frames hold the main thread for seconds, and a worker's
     // first messages wait for the main thread, so Rapier gets a bounded head start before them.
     await Promise.race([
@@ -634,14 +687,14 @@ async function bootScene(
   } catch (error) {
     console.error('CoinPosh boot failed: the renderer could not start.', error);
     void Promise.allSettled(pending).then(() => {
-      started?.bridge.dispose();
+      run.scope.dispose();
       built?.dispose().catch((disposeError: unknown) => {
         console.error('CoinPosh teardown: the stage did not dispose cleanly.', disposeError);
       });
     });
     return;
   }
-  const { bridge, heap, takeEarlyEvents } = sim;
+  const { bridge, layout } = sim;
   let venue: RivieraVenue;
   try {
     venue = await riviera.createRivieraVenue(stage.scene, null, {
@@ -649,7 +702,7 @@ async function bootScene(
       shadows: stage.look.shadows,
     });
   } catch (error) {
-    bridge.dispose();
+    run.scope.dispose();
     console.error('CoinPosh boot failed: the Riviera venue could not load.', error);
     return;
   }
@@ -666,132 +719,143 @@ async function bootScene(
   await frameDrawn(stage);
   const vfx = attachVfx(stage, vfxModule);
   const boot = await hydrated;
-  const simBacklog = takeEarlyEvents();
-  if (!boot || bridge.failure) {
+  if (!boot || !layout || bridge.failure) {
     revealVenue();
     attachTable(stage, venue, bridge);
     return;
   }
   stopEarlyTaps();
-  teardown.push(() => {
-    scopes.play.dispose();
+
+  const play = (started: StartedSim, state: StateResponse, laid: OpeningLayout): GameSystems => {
+    const scope = createScope();
+    run.scope.add(() => {
+      scope.dispose();
+    });
+    playing = { sim: started, layout: laid, scope };
+    const payouts = orderCratePayouts(walletPayoutFor(ui.store));
+    scope.add(() => {
+      payouts.dispose();
+    });
+    const systems = startPlay(systemsModule, stage, started, boot, state, vfx, payouts, scope);
+    const rides = mountTableCrates(
+      cratesApi,
+      { stage, venue, bridge: started.bridge, boot, systems, vfx, crates: laid.crates, payouts },
+      scope,
+    );
+    wireTableSession(
+      {
+        net: boot.net,
+        session: sessionModule,
+        bridge: started.bridge,
+        systems,
+        rides,
+        onSuperseded: () => {
+          probe.superseded = true;
+          probe.playable = false;
+          elsewhere.show();
+        },
+      },
+      scope,
+    );
+    probe.playable = true;
+    return systems;
+  };
+
+  interface Laid {
+    readonly state: StateResponse;
+    readonly layout: OpeningLayout;
+    readonly sim: StartedSim;
+    readonly scope: Scope;
+  }
+
+  let playing: { readonly sim: StartedSim; readonly layout: OpeningLayout; readonly scope: Scope };
+
+  const layFrom = async (state: StateResponse): Promise<Laid> => {
+    const laid = openingLayout(state);
+    const scope = createScope();
+    try {
+      const next = startSim(simApi, laid, scope);
+      await next.bridge.ready;
+      return { state, layout: laid, sim: next, scope };
+    } catch (error) {
+      scope.dispose();
+      throw error;
+    }
+  };
+
+  const adoptState = (state: StateResponse): void => {
+    boot.net.table.hydrate(state);
+    ui.setUpgradeLevels(state.venue.upgrades);
+    boot.vault.adopted(state);
+  };
+
+  /** The new sim is ready before the old run goes, so the table never blanks. */
+  const playOn = ({ state, layout: laid, sim: next, scope }: Laid): void => {
+    run.scope.dispose();
+    run.scope = scope;
+    view.use(next.bridge, next.bridge);
+    adoptState(state);
+    view.use(play(next, state, laid), next.bridge);
+  };
+
+  /**
+   * "Play here": a fresh `hydrate=boot` takes the lease back and lays the table as the other
+   * tab left it.
+   */
+  const retake = sessionModule.createRetake<StateResponse, Laid>({
+    simReady: () => warmSim(simApi),
+    boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
+    lay: layFrom,
+    play: (laid) => {
+      probe.superseded = false;
+      playOn(laid);
+      markBoot('retaken');
+    },
+    discard: ({ scope }) => {
+      scope.dispose();
+    },
   });
-  const systems = startPlay(
-    systemsModule,
-    stage,
-    bridge,
-    boot,
-    { heap, simBacklog, vfx, state: boot.state },
-    scopes.play.own,
-  );
-  mountTableCrates(
-    cratesApi,
-    { stage, venue, bridge, boot, systems, vfx, state: boot.state },
-    scopes.play.own,
-  );
+
+  const elsewhere = mountElsewhere(sessionModule, retake);
+  const systems = play(sim, boot.state, layout);
   // Shown only now that crates have added the unbox light: a light added later changes every lit
   // shader, so a venue drawn before it would have every program linked twice.
   revealVenue();
-  const table = attachTable(stage, venue, bridge);
-  table.use(systems);
-  probe.playable = true;
+  const view = attachTable(stage, venue, bridge);
+  view.use(systems, bridge);
   markBoot('playable');
-  const relay = tableRelay({
-    scopes,
-    bridge,
-    table,
-    simModule: simWorker,
-    boot,
-    lay: (fresh, sim) => {
-      const next = startPlay(
-        systemsModule,
-        stage,
-        sim.bridge,
-        boot,
-        { heap: sim.heap, simBacklog: sim.takeEarlyEvents(), vfx, state: fresh },
-        scopes.play.own,
+
+  const relay = createTableRelay<Laid>({
+    state: boot.state,
+    hold: () => {
+      probe.playable = false;
+      playing.scope.dispose();
+      view.use(playing.sim.bridge, playing.sim.bridge);
+    },
+    boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
+    lay: layFrom,
+    play: (laid) => {
+      playOn(laid);
+      markBoot('ascended');
+    },
+    discard: ({ scope }) => {
+      scope.dispose();
+    },
+    // The held sim's coins and crates are gone on the server, so play resumes on it with no
+    // crates riding; every coin dropped from here on is one the server will pay.
+    resume: (state, booted) => {
+      const { sim: held, layout: heldLayout } = playing;
+      if (booted) adoptState(state);
+      view.use(play(held, state, { ...heldLayout, crates: [] }), held.bridge);
+    },
+    onError: (error) => {
+      console.error(
+        'CoinPosh ascension: the new venue could not be laid; play goes on on the old table.',
+        error,
       );
-      mountTableCrates(
-        cratesApi,
-        { stage, venue, bridge: sim.bridge, boot, systems: next, vfx, state: fresh },
-        scopes.play.own,
-      );
-      return next;
     },
   });
   mountAscensionDoor(stage, boot, relay);
-}
-
-interface TableScopes {
-  /** The sim worker the table draws from. */
-  sim: Scope;
-  /** The game systems and crates played on that sim. */
-  readonly play: Scope;
-}
-
-interface TableRelayOptions {
-  readonly scopes: TableScopes;
-  readonly bridge: SimBridge;
-  readonly table: TableView;
-  readonly simModule: typeof SimWorkerModule;
-  readonly boot: NetBoot;
-  /** Starts the systems and crates on a fresh sim, owned by `scopes.play`. */
-  readonly lay: (state: StateResponse, sim: StartedSim) => CoinTransformSource;
-}
-
-interface TableRelay {
-  /** Stops play on the old table and reads a boot state once its queue reached the server. */
-  bootState(): Promise<StateResponse>;
-  /** Swaps in a sim laid from the boot state's heap, with systems and crates on it. */
-  layTable(state: StateResponse): Promise<void>;
-}
-
-/**
- * Re-lays the table after an ascension the way the boot does: the server forgot every coin and
- * crate on the old table, so the sim restarts on the heap a `hydrate=boot` state lists and every
- * coin on screen is one the server will pay. The old table keeps drawing until the new sim is
- * up, so the swap does not flash an empty table.
- */
-function tableRelay(options: TableRelayOptions): TableRelay {
-  const { scopes, table, simModule, boot } = options;
-  let bridge = options.bridge;
-  let closed = false;
-  teardown.push(() => {
-    closed = true;
-  });
-  return {
-    async bootState() {
-      scopes.play.dispose();
-      table.use(bridge);
-      await boot.net.table.drainBeforeBoot();
-      return boot.net.client.call('state', { query: { hydrate: 'boot' } });
-    },
-    async layTable(fresh) {
-      const sim = createScope();
-      const started = startSim(simModule, openingTableCoins(fresh), sim.own);
-      await Promise.race([
-        started.bridge.ready.catch(() => undefined),
-        new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
-      ]);
-      if (closed) {
-        sim.dispose();
-        return;
-      }
-      const failure = started.bridge.failure;
-      if (failure) {
-        sim.dispose();
-        throw failure;
-      }
-      scopes.play.dispose();
-      boot.net.table.hydrate(fresh);
-      boot.vault.resumed();
-      ui.setUpgradeLevels(fresh.venue.upgrades);
-      table.use(options.lay(fresh, started), started.bridge);
-      scopes.sim.dispose();
-      scopes.sim = sim;
-      bridge = started.bridge;
-    },
-  };
 }
 
 /** The HUD laurel and the prestige loop behind it; an ascension re-lays the new venue in place. */
@@ -819,9 +883,7 @@ function mountAscensionDoor(stage: Stage, boot: NetBoot, relay: TableRelay): voi
     bootState: () => relay.bootState(),
     layTable: (fresh) => relay.layTable(fresh),
     onRelayFailed: (error) => {
-      console.error('CoinPosh net: the new venue could not be laid after the ascension.', error);
-      // Live progress is kept on the server, so a reload boots the new venue; Demo would lose it.
-      if (boot.net.mode.kind !== 'demo') location.reload();
+      relay.failed(error);
     },
     audio: () => audio,
     vibrate: browserVibrate(),
@@ -834,26 +896,175 @@ function mountAscensionDoor(stage: Stage, boot: NetBoot, relay: TableRelay): voi
   ascensionHud = hud;
   teardown.push(() => {
     ascensionHud = null;
+    relay.dispose();
     hud.dispose();
   });
 }
 
-/** The opening heap the server minted onto the table, in every net mode. */
-async function openingTable(hydrated: Promise<NetBoot | null>): Promise<readonly MintedCoin[]> {
-  const boot = await hydrated;
-  return boot === null ? [] : openingTableCoins(boot.state);
+interface Scope {
+  /** Runs `dispose` with the scope, or at once when the scope is already gone. */
+  add(dispose: () => void): void;
+  dispose(): void;
 }
 
-function openingHeapOf(coins: readonly MintedCoin[]): OpeningHeap | null {
-  const tier = coins[0]?.tier;
-  if (tier === undefined) return null;
-  const mixed = coins.find((coin) => coin.tier !== tier);
-  if (mixed) {
-    throw new Error(
-      `CoinPosh boot: the opening table holds ${tier} and ${mixed.tier} coins, but the sim lays its heap in one tier; mint the Demo heap in a single tier (net/mock/world.ts).`,
-    );
+/** What one boot of the table owns, so "Play here" can replace it without a page reload. */
+function createScope(): Scope {
+  const disposers: (() => void)[] = [];
+  let disposed = false;
+  return {
+    add(dispose) {
+      if (disposed) dispose();
+      else disposers.push(dispose);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const dispose of disposers.splice(0).reverse()) dispose();
+    },
+  };
+}
+
+/**
+ * Starts a throwaway sim worker and resolves once it is ready, so "Play here" knows this page
+ * can run a sim before it takes the table: the boot that hands over the layout also takes the
+ * lease, so the laid sim itself can only start after it.
+ */
+async function warmSim(simModule: typeof SimWorkerModule): Promise<void> {
+  const spare = simModule.createSimBridge({ seed: TABLE_SEED });
+  try {
+    await spare.ready;
+  } finally {
+    spare.dispose();
   }
-  return { coins: coins.length, tier };
+}
+
+/** How the server laid the table, in every net mode; null without a table to lay. */
+async function openingTable(hydrated: Promise<NetBoot | null>): Promise<OpeningLayout | null> {
+  const boot = await hydrated;
+  return boot === null ? null : openingLayout(boot.state);
+}
+
+function restoreCounts(layout: OpeningLayout, boots: number): RestoreCounts {
+  const poses = layout.restore.coins.filter((entry) => entry.kind === 'pose').length;
+  const cratePoses = layout.crates.filter(({ placement }) => placement.kind === 'pose').length;
+  return {
+    boots,
+    poses,
+    heapSlots: layout.restore.coins.length - poses,
+    cratePoses,
+    chutes: layout.crates.length - cratePoses,
+  };
+}
+
+const documentPage: PagePort = {
+  visible: () => document.visibilityState === 'visible',
+  onVisibilityChange(listener) {
+    document.addEventListener('visibilitychange', listener);
+    return () => {
+      document.removeEventListener('visibilitychange', listener);
+    };
+  },
+  onPagehide(listener) {
+    pagehideHooks.add(listener);
+    return () => {
+      pagehideHooks.delete(listener);
+    };
+  },
+};
+
+interface SessionWiring {
+  readonly net: Net;
+  readonly session: typeof SessionModule;
+  readonly bridge: SimBridge;
+  readonly systems: GameSystems;
+  readonly rides: () => readonly SessionModule.CapturedRide[];
+  readonly onSuperseded: () => void;
+}
+
+/**
+ * Uploads where the table rests whenever it settles after moving, when the page hides and as
+ * the page goes away, so a boot anywhere lays it again as it was left. Once another tab or
+ * device boots the table, input here stops and the sim holds still under the overlay.
+ */
+function wireTableSession(wiring: SessionWiring, scope: Scope): void {
+  const { net, session, bridge, systems } = wiring;
+  const capture = session.createTableCapture({
+    sample: () => bridge.snapshot(),
+    coinOf: (simId) => systems.coinOf(simId),
+    crates: wiring.rides,
+  });
+  const cadence = new SnapshotCadence({
+    table: net.table,
+    capture: () => capture.capture(),
+    scheduler: realScheduler,
+    monotonic: monotonicNow,
+  });
+  const triggers: SnapshotTriggers = session.wireSnapshotTriggers({
+    cadence,
+    capture,
+    game: systems.events,
+    sim: bridge,
+    page: documentPage,
+    scheduler: realScheduler,
+    now: monotonicNow,
+    onError: (error) => {
+      console.error('CoinPosh table: the sim could not report where the table rests.', error);
+    },
+  });
+  // The bridge resumes itself when the tab is shown, so a table held elsewhere is paused again.
+  const holdStill = (): void => {
+    bridge.pause();
+  };
+  const stopSuperseded = net.table.subscribe((event) => {
+    if (event.type !== 'sessionSuperseded') return;
+    triggers.close();
+    systems.suspend();
+    holdStill();
+    document.addEventListener('visibilitychange', holdStill);
+    wiring.onSuperseded();
+  });
+  scope.add(() => {
+    stopSuperseded();
+    document.removeEventListener('visibilitychange', holdStill);
+    triggers.close();
+  });
+}
+
+/** The "This table is open elsewhere" overlay, mounted hidden once for the page. */
+function mountElsewhere(
+  session: typeof SessionModule,
+  retake: () => Promise<void>,
+): ElsewhereOverlay {
+  session.registerSessionStrings(ui.i18n);
+  let overlay: ElsewhereOverlay | null = null;
+  const view = session.mountElsewhereView({
+    host: uiRoot,
+    translate: (key) => ui.i18n.t(session.sessionKey(key)),
+    onLanguageChanged: (relabel) => ui.i18n.onLanguageChanged(relabel),
+    reducedMotion: isReducedMotion,
+    onReducedMotionChange,
+    onPress: () => {
+      overlay?.press();
+    },
+  });
+  const created = session.createElsewhereOverlay({
+    view,
+    retake,
+    feedback: (kind) => {
+      ui.bus.emit('ui:feedback', { kind });
+    },
+    onRetakeFailed: (error) => {
+      console.warn(
+        'CoinPosh table: "Play here" could not take the table back; the button stays up to try again.',
+        error,
+      );
+    },
+  });
+  overlay = created;
+  teardown.push(() => {
+    created.dispose();
+  });
+  return created;
 }
 
 /**
@@ -861,12 +1072,12 @@ function openingHeapOf(coins: readonly MintedCoin[]): OpeningHeap | null {
  * off while the scene loads is still paid. Contacts are dropped: their clinks are long past.
  * The returned function stops collecting and hands over what was kept.
  */
-function holdEarlyEvents(bridge: SimBridge, own: Own): () => readonly SimEventBatch[] {
+function holdEarlyEvents(bridge: SimBridge, scope: Scope): () => readonly SimEventBatch[] {
   const kept: SimEventBatch[] = [];
   const stop = bridge.onEvents(({ falls, fusions }) => {
     if (falls.length > 0 || fusions.length > 0) kept.push({ falls, contacts: [], fusions });
   });
-  own(stop);
+  scope.add(stop);
   return () => {
     stop();
     return kept.splice(0);
@@ -948,15 +1159,6 @@ function answerEarlyTaps(canvasId: string): () => void {
   return stop;
 }
 
-interface PlayStart {
-  /** The coins the sim's opening heap stands for, in sim id order. */
-  readonly heap: readonly MintedCoin[];
-  readonly simBacklog: readonly SimEventBatch[];
-  readonly vfx: Vfx | null;
-  /** The state the table was laid from. */
-  readonly state: StateResponse;
-}
-
 /**
  * Hands the canvas to the gameplay glue: taps drop, a hold pours, Space drops or pours from the
  * keyboard, A/D/W and two-finger swipes nudge, and the aim reticle rides the drop rail. Each
@@ -966,10 +1168,12 @@ interface PlayStart {
 function startPlay(
   systemsModule: typeof SystemsModule,
   stage: Stage,
-  bridge: SimBridge,
+  sim: StartedSim,
   boot: NetBoot,
-  start: PlayStart,
-  own: Own,
+  state: StateResponse,
+  vfx: Vfx | null,
+  payouts: CratePayoutOrder,
+  scope: Scope,
 ): GameSystems {
   // TODO(ui owner): take the number-pop target from a UiApp vault anchor instead of the DOM.
   const vault = uiRoot.querySelector('.cp-plaque');
@@ -979,26 +1183,27 @@ function startPlay(
     );
   }
   const systems = systemsModule.createGameSystems({
-    bridge,
+    bridge: sim.bridge,
     net: { table: boot.net.table, clock: boot.net.clock },
     ui,
     canvas: () => stage.canvas,
-    simBacklog: start.simBacklog,
-    openingHeap: start.heap,
+    simBacklog: sim.takeEarlyEvents(),
+    tableCoins: sim.coins,
   });
-  own(() => {
+  scope.add(() => {
     systems.dispose();
   });
   const comboAudio = holdComboFlourish(() => audio, announcementHoldFor(ui.store));
-  own(comboAudio.dispose);
-  own(
+  scope.add(comboAudio.dispose);
+  scope.add(
     systemsModule.wireFeedback(systems.events, {
-      vfx: () => start.vfx,
+      vfx: payouts.feedbackVfx(() => vfx),
       audio: comboAudio.port,
       vault,
     }),
   );
-  systems.hydrate(start.state);
+  systems.hydrate(state);
+  scope.add(payouts.bindTable(systems.events));
   const { counts } = probe;
   const offs = [
     systems.events.on('drop:requested', ({ coin, poured }) => {
@@ -1021,7 +1226,7 @@ function startPlay(
       counts.creditedCoins += amount;
     }),
   ];
-  own(() => {
+  scope.add(() => {
     for (const off of offs) off();
   });
   return systems;
@@ -1089,6 +1294,210 @@ function afterCrateRevealExit(host: HTMLElement, done: () => void): () => void {
   return stop;
 }
 
+/** Air between a crate's coin line landing in the Vault and the table's held falls following it. */
+const FALLS_AFTER_CRATE_MS = 450;
+/** The held falls' pops normally land within a second or two; past this the Vault shows them. */
+const HELD_FALL_POPS_CAP_MS = 4000;
+
+type DeferredPop = Parameters<SystemsModule.FeedbackVfx['numberPop']>;
+
+interface FallBatch {
+  readonly id: string;
+  readonly pops: DeferredPop[];
+}
+
+/** Keeps the table's falls out of a crate's payout, so the Vault rises by the card first. */
+interface CratePayoutOrder {
+  /** The feedback effects, with the number pops of held falls kept back until they are paid. */
+  feedbackVfx(vfx: () => Vfx | null): () => SystemsModule.FeedbackVfx | null;
+  bindTable(events: GameSystems['events']): () => void;
+  opened(crateId: string): void;
+  /** The player collected; the card's coin line reaches the Vault in `landsInMs`. */
+  collected(crateId: string, landsInMs: number): void;
+  /** The crate left without a collect, or every crate cinematic is over. */
+  gone(crateId: string | null): void;
+  dispose(): void;
+}
+
+/**
+ * While a crate is open, and until its coin line has landed in the Vault, a table fall's
+ * credit is held off the Vault and its number pop is kept back. Collect then rolls the Vault by
+ * exactly the card's coin line, and the falls follow FALLS_AFTER_CRATE_MS after the frame that
+ * shows it, as their own pops, each landing ticking the Vault. Reduced motion keeps the order: the coin line shows at
+ * once and the falls' pops fade in place. A front fall's provisional estimate is held from its
+ * claim and the rest of its credit when the server pays it.
+ */
+function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
+  const unpaid = new Map<string, ReturnType<typeof setTimeout>>();
+  const landing = new Map<string, () => void>();
+  const estimates = new Map<MintedCoin['id'], number>();
+  const releasing = new Set<() => void>();
+  let holdUntil = 0;
+  let batch: FallBatch | null = null;
+  let batches = 0;
+  let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  let effects: () => Vfx | null = () => null;
+
+  const active = (): boolean =>
+    unpaid.size > 0 || landing.size > 0 || performance.now() < holdUntil;
+  const current = (): FallBatch => {
+    if (batch) return batch;
+    batches += 1;
+    batch = { id: `table-falls-${String(batches)}`, pops: [] };
+    return batch;
+  };
+
+  const pay = (paid: FallBatch): void => {
+    const vfx = effects();
+    if (!vfx || paid.pops.length === 0) {
+      payout.release(paid.id);
+      return;
+    }
+    let landed = 0;
+    const finish = (): void => {
+      if (!releasing.delete(finish)) return;
+      clearTimeout(cap);
+      payout.release(paid.id);
+    };
+    const cap = setTimeout(finish, HELD_FALL_POPS_CAP_MS);
+    releasing.add(finish);
+    for (const [value, from, target, options] of paid.pops) {
+      vfx.numberPop(value, from, target, {
+        ...options,
+        onArrive: () => {
+          options?.onArrive?.();
+          landed += 1;
+          if (landed === paid.pops.length) finish();
+        },
+      });
+    }
+  };
+
+  const settle = (): void => {
+    if (releaseTimer !== null) clearTimeout(releaseTimer);
+    releaseTimer = null;
+    if (unpaid.size > 0 || landing.size > 0) return;
+    const wait = holdUntil - performance.now();
+    if (wait > 0) {
+      releaseTimer = setTimeout(settle, wait);
+      return;
+    }
+    const paid = batch;
+    batch = null;
+    if (paid) pay(paid);
+  };
+
+  const forget = (crateId: string): void => {
+    clearTimeout(unpaid.get(crateId));
+    unpaid.delete(crateId);
+  };
+
+  return {
+    feedbackVfx(vfx) {
+      effects = vfx;
+      let wrapped: SystemsModule.FeedbackVfx | null = null;
+      let wraps: Vfx | null = null;
+      return () => {
+        const real = vfx();
+        if (!real) return null;
+        if (wraps !== real || !wrapped) {
+          wraps = real;
+          wrapped = {
+            contactSparks: (...args) => {
+              real.contactSparks(...args);
+            },
+            fusion: (...args) => {
+              real.fusion(...args);
+            },
+            cascade: (...args) => {
+              real.cascade(...args);
+            },
+            cameraKick: (...args) => {
+              real.cameraKick(...args);
+            },
+            numberPop: (...args) => {
+              if (active()) current().pops.push(args);
+              else real.numberPop(...args);
+            },
+          };
+        }
+        return wrapped;
+      };
+    },
+    bindTable(events) {
+      const offs = [
+        events.on('coin:fell', ({ coin, edge }) => {
+          if (!coin || edge !== 'front') return;
+          estimates.set(coin.id, coin.value);
+          if (active()) payout.hold(current().id, { coins: coin.value });
+        }),
+        events.on('value:credited', ({ amount, coinId }) => {
+          const estimate = estimates.get(coinId) ?? 0;
+          estimates.delete(coinId);
+          if (active() && amount > estimate) {
+            payout.hold(current().id, { coins: amount - estimate });
+          }
+        }),
+        events.on('fall:refused', ({ coinId }) => {
+          estimates.delete(coinId);
+        }),
+      ];
+      return () => {
+        for (const off of offs) off();
+      };
+    },
+    opened(crateId) {
+      forget(crateId);
+      unpaid.set(
+        crateId,
+        setTimeout(() => {
+          forget(crateId);
+          settle();
+        }, PAYOUT_HOLD_CAP_MS),
+      );
+    },
+    collected(crateId, landsInMs) {
+      forget(crateId);
+      landing.get(crateId)?.();
+      let frame = 0;
+      const timer = setTimeout(() => {
+        frame = requestAnimationFrame(() => {
+          landing.delete(crateId);
+          holdUntil = Math.max(holdUntil, performance.now() + FALLS_AFTER_CRATE_MS);
+          settle();
+        });
+      }, landsInMs);
+      landing.set(crateId, () => {
+        clearTimeout(timer);
+        cancelAnimationFrame(frame);
+        landing.delete(crateId);
+      });
+    },
+    gone(crateId) {
+      if (crateId === null) for (const id of [...unpaid.keys()]) forget(id);
+      else forget(crateId);
+      settle();
+    },
+    dispose() {
+      for (const id of [...unpaid.keys()]) forget(id);
+      for (const cancel of [...landing.values()]) cancel();
+      holdUntil = 0;
+      settle();
+      for (const finish of [...releasing]) finish();
+    },
+  };
+}
+
+/** When the card's coin line reaches the Vault after a collect: its flight, or at once. */
+function coinLineLandsInMs(cratesApi: typeof CratesApi, roll: Roll): number {
+  if (isReducedMotion()) return 0;
+  const currencies = cratesApi
+    .rewardLines(roll.rewards)
+    .flatMap((line) => (line.kind === 'currency' ? [line.currency] : []));
+  const index = currencies.indexOf('coins');
+  return index < 0 ? 0 : PAYOUT_FLIGHT_MS + index * PAYOUT_STAGGER_MS;
+}
+
 interface CrateWiring {
   readonly stage: Stage;
   readonly venue: RivieraVenue;
@@ -1096,19 +1505,26 @@ interface CrateWiring {
   readonly boot: NetBoot;
   readonly systems: GameSystems;
   readonly vfx: Vfx | null;
-  /** The state the table was laid from: its crates ride from where it placed them. */
-  readonly state: StateResponse;
+  readonly crates: OpeningLayout['crates'];
+  readonly payouts: CratePayoutOrder;
 }
 
 /**
  * Vault Crates on the table: the server spawns them with drops, they ride the pusher to the lip,
  * and a fall is claimed, opened by the server and played as the unbox. Crates already on the
- * table when the session loads ride from where the snapshot left them. The reward card flies
- * into the Vault plaque, and the plaque re-reads the server wallet once the player collects.
- * Crates are a bonus on top of play, so a failure to mount them is logged, not fatal.
+ * table when the session loads resume their ride where the server stored them, or ride again
+ * from the chute when it stored no pose. The reward card flies into the Vault plaque, and the
+ * plaque re-reads the server wallet once the player collects. Crates are a bonus on top of play,
+ * so a failure to mount them is logged, not fatal.
+ *
+ * Returns the crates riding the table, for the table snapshot.
  */
-function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring, own: Own): void {
-  const { stage, venue, bridge, boot, systems, vfx } = wiring;
+function mountTableCrates(
+  cratesApi: typeof CratesApi,
+  wiring: CrateWiring,
+  scope: Scope,
+): () => readonly SessionModule.CapturedRide[] {
+  const { stage, venue, bridge, boot, systems, vfx, payouts } = wiring;
   const haptics = new Haptics(typeof navigator === 'undefined' ? undefined : navigator, () =>
     performance.now(),
   );
@@ -1133,7 +1549,7 @@ function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring, own:
       'CoinPosh crates failed to mount; the game continues without Vault Crates.',
       error,
     );
-    return;
+    return () => [];
   }
   const { counts } = probe;
   const offs = [
@@ -1150,22 +1566,42 @@ function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring, own:
     crates.events.on('crate:spawned', () => {
       counts.cratesSpawned += 1;
     }),
-    crates.events.on('crate:opened', () => {
+    crates.events.on('crate:opened', ({ crateId }) => {
       counts.cratesOpened += 1;
+      payouts.opened(crateId);
     }),
-    crates.events.on('crate:collected', () => {
+    crates.events.on('crate:collected', ({ crateId, roll }) => {
       counts.cratesCollected += 1;
+      payouts.collected(crateId, coinLineLandsInMs(cratesApi, roll));
       boot.resync('a Vault Crate was collected');
     }),
+    crates.events.on('crate:rejected', ({ crateId }) => {
+      payouts.gone(crateId);
+    }),
+    announcementHoldFor(ui.store).onChange((held) => {
+      if (!held) payouts.gone(null);
+    }),
     crates.events.on('crate:failed', ({ crateId, error }) => {
+      payouts.gone(crateId);
+      if (error instanceof ApiRequestError && error.code === 'session_superseded') {
+        console.warn(
+          `CoinPosh crates: crate ${crateId} is claimed once this page takes the table back.`,
+          error,
+        );
+        return;
+      }
       console.error(`CoinPosh crates: crate ${crateId} could not be claimed or opened.`, error);
     }),
   ];
-  own(() => {
+  scope.add(() => {
     for (const off of offs) off();
     crates.dispose();
   });
-  crates.controller.adopt(wiring.state.table.crates);
+  crates.controller.adopt(
+    wiring.crates.map(({ crate }) => crate),
+    wiring.crates.map(({ placement }) => placement),
+  );
+  return () => crates.controller.riding;
 }
 
 /** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */
@@ -1179,34 +1615,41 @@ function teardownStage(stage: Stage): void {
 
 interface StartedSim {
   readonly bridge: SimBridge;
-  /** The server coins the sim's opening heap stands for, in sim id order. */
-  readonly heap: readonly MintedCoin[];
+  /** How the server laid the table the sim restored; null when there was none to lay. */
+  readonly layout: OpeningLayout | null;
+  /** The server coin each sim body stands for: sim id `i` is `coins[i]`. */
+  readonly coins: readonly MintedCoin[];
   readonly takeEarlyEvents: () => readonly SimEventBatch[];
 }
 
 /** Started alongside the renderer, so the worker loads Rapier while the GPU initialises. */
 function startSim(
   simModule: typeof SimWorkerModule,
-  heap: readonly MintedCoin[],
-  own: Own,
+  layout: OpeningLayout | null,
+  scope: Scope,
 ): StartedSim {
-  const openingHeap = openingHeapOf(heap);
   const bridge = simModule.createSimBridge({
     seed: TABLE_SEED,
-    ...(openingHeap ? { openingHeap } : {}),
+    ...(layout ? { restore: layout.restore } : {}),
   });
   probe.bridge = bridge;
+  if (layout) probe.restored = restoreCounts(layout, (probe.restored?.boots ?? 0) + 1);
   markBoot('sim-start');
   const stopCounting = bridge.onEvents(({ falls, fusions }) => {
     probe.counts.simFalls += falls.length;
     probe.counts.simFusions += fusions.length;
   });
-  own(() => {
+  scope.add(() => {
     stopCounting();
     if (probe.bridge === bridge) probe.bridge = null;
     bridge.dispose();
   });
-  return { bridge, heap, takeEarlyEvents: holdEarlyEvents(bridge, own) };
+  return {
+    bridge,
+    layout,
+    coins: layout?.coins ?? [],
+    takeEarlyEvents: holdEarlyEvents(bridge, scope),
+  };
 }
 
 function attachVenue(
@@ -1233,43 +1676,23 @@ interface CoinTransformSource {
 }
 
 interface TableView {
-  /** Draws the coins from `source`, and the pusher from `bridge` when given, from the next frame on. */
-  use(source: CoinTransformSource, bridge?: SimBridge): void;
+  /** Draws the coins from `source`, and the pusher where `pusher` has it, from the next frame on. */
+  use(source: CoinTransformSource, pusher: Pick<SimBridge, 'stats'>): void;
 }
 
 /** The pusher is set from the same sync as the coins, so it never lags the coins it shoves. */
 function attachTable(stage: Stage, venue: RivieraVenue, bridge: SimBridge): TableView {
   let source: CoinTransformSource = bridge;
-  let pusher = bridge;
+  let pusher: Pick<SimBridge, 'stats'> = bridge;
   const detach = stage.onFrame(() => {
     source.sync(stage.coins);
     venue.setPusherStroke(pusher.stats.pusherStroke);
   });
   teardown.push(detach);
   return {
-    use(next, nextBridge) {
-      source = next;
-      if (nextBridge) pusher = nextBridge;
-    },
-  };
-}
-
-type Own = (dispose: () => void) => void;
-
-/** Disposers let go together, last owned first; disposing twice is a no-op. */
-interface Scope {
-  readonly own: Own;
-  dispose(): void;
-}
-
-function createScope(): Scope {
-  const disposers: (() => void)[] = [];
-  return {
-    own: (dispose) => {
-      disposers.push(dispose);
-    },
-    dispose: () => {
-      for (const dispose of disposers.splice(0).reverse()) dispose();
+    use(nextSource, nextPusher) {
+      source = nextSource;
+      pusher = nextPusher;
     },
   };
 }

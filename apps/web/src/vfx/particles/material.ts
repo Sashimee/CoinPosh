@@ -11,6 +11,7 @@ import {
   Fn,
   length,
   max,
+  min,
   mix,
   normalize,
   positionGeometry,
@@ -42,7 +43,29 @@ export interface ParticleNodes {
 export type ParticleLayer = 'glow' | 'confetti';
 
 /** Seconds of virtual shutter: how long a spark's streak is relative to its speed. */
-const SHUTTER = 0.042;
+export const SHUTTER = 0.042;
+/** A streak's half-length never exceeds this many of its own sizes: sparkle, not needles. */
+export const STREAK_MAX_SIZES = 6;
+/**
+ * A whole streak never spans more than this fraction of the viewport height (about 38 css
+ * px on a 390x844 phone), so fast sparks and homing motes read as glints, not scratches.
+ */
+export const STREAK_MAX_SCREEN = 38 / 844;
+
+/**
+ * The half-length of a streak quad along its motion axis, in view units. `depth` is the
+ * view-space distance and `projY` the projection's vertical focal term (`P[1][1]`).
+ */
+export function streakHalfLength(
+  size: number,
+  speed: number,
+  depth: number,
+  projY: number,
+): number {
+  const stretch = Math.min(speed * SHUTTER, size * (STREAK_MAX_SIZES - 1));
+  const screenCap = (STREAK_MAX_SCREEN * Math.max(depth, 0)) / Math.max(projY, 1e-5);
+  return Math.min(size + stretch, Math.max(screenCap, size));
+}
 const TAU = Math.PI * 2;
 
 function isKind(kind: F, id: number): F {
@@ -87,7 +110,10 @@ function glowMaterial(nodes: ParticleNodes): MeshBasicNodeMaterial {
     const speed = length(viewVelocity);
     const axis = select(speed.greaterThan(1e-5), viewVelocity.div(max(speed, 1e-5)), vec2(1, 0));
     const perp = vec2(axis.y.negate(), axis.x);
-    const along = size.add(speed.mul(SHUTTER).mul(alive));
+    const stretch = min(speed.mul(SHUTTER), size.mul(STREAK_MAX_SIZES - 1)).mul(alive);
+    const projY = max(cameraProjectionMatrix.mul(vec4(0, 1, 0, 0)).y, 1e-5);
+    const screenCap = max(view.z.negate(), 0).mul(STREAK_MAX_SCREEN).div(projY);
+    const along = min(size.add(stretch), max(screenCap, size));
     const streakOffset = axis.mul(corner.x.mul(along).mul(2)).add(perp.mul(corner.y.mul(size)));
     const angle = seed.mul(TAU);
     const c = cos(angle);

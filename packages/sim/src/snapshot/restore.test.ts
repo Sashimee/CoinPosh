@@ -205,7 +205,7 @@ describe('Sim.create({ restore })', () => {
   });
 
   it('pins the hash of the settled fixture restored, so restore changes are caught', async () => {
-    expect(SIM_VERSION).toBe(8);
+    expect(SIM_VERSION).toBe(9);
     expect(validateSnapshot(SETTLED_RAW).dropped).toEqual([{ id: 23, reason: 'out_of_bounds' }]);
     expect(validateSnapshot(SETTLED).dropped).toEqual([]);
     const sim = await restore(SETTLED);

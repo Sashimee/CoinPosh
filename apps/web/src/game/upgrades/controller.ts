@@ -11,7 +11,7 @@ import {
 import type { Bus } from '../../app/bus.ts';
 import type { UiApp } from '../../app/index.ts';
 import type { UpgradeEvents, UpgradeRejection } from './events.ts';
-import { isFamilyOfficeLine, isUpgradeLineV1 } from './lines.ts';
+import { isUpgradeLineV1 } from './lines.ts';
 
 /**
  * The one network call a purchase makes. Resolve with the server's response, or reject with
@@ -38,11 +38,6 @@ export interface BindUpgradesOptions {
   readonly refresh?: () => void;
   /** Where errors the player cannot act on are reported. */
   readonly onError?: (error: unknown) => void;
-  /**
-   * Family Office lines are bought with Gold Bars on the ascension screen, never as venue
-   * upgrades: a request for one is handed here instead. Without it the request is refused.
-   */
-  readonly onFamilyOffice?: (lineId: string) => void;
 }
 
 const REJECTIONS: Partial<Record<ErrorCode, UpgradeRejection>> = {
@@ -89,11 +84,6 @@ export function bindUpgrades(options: BindUpgradesOptions): () => void {
   };
 
   const purchase = async (lineId: string, level: number): Promise<void> => {
-    if (isFamilyOfficeLine(lineId) && options.onFamilyOffice) {
-      ui.resolveUpgrade();
-      options.onFamilyOffice(lineId);
-      return;
-    }
     if (!isUpgradeLineV1(lineId)) {
       reject(lineId, level, 'unavailable');
       return;

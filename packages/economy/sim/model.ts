@@ -20,9 +20,10 @@ export interface SimModel {
    */
   readonly fusionShare: number;
   /**
-   * The ladder style fusionShare is measured on. Aimed play, the most-fusing style at the
-   * model's cadence: the reticle teaches aiming, so the shipped pacing is the fast honest
-   * end, and ladder.ts `pacingAcrossStyles` keeps the whole-chute styles in band too.
+   * The ladder style fusionShare is measured on: the most-fusing style at the model's
+   * cadence (one spot since the SIM_VERSION 9 rerun, ±40 mm before it). The reticle
+   * teaches aiming, so the shipped pacing is the fast honest end, and ladder.ts
+   * `pacingAcrossStyles` keeps the whole-chute styles in band too.
    */
   readonly fusionCalibrationStyle: PlayStyleId;
   /** Income bonus per slotted Charm (proxy for pegs, ropes, magnets...). */
@@ -94,8 +95,8 @@ export const simModel = {
   baseDropsPerSecond: 0.8,
   baseReturnRatio: 1.25,
   cascadeShare: { chic: 0.3, lavish: 0.15, opulent: 0.09, decadent: 0.045, obscene: 0.015 },
-  fusionShare: 0.773,
-  fusionCalibrationStyle: 'aimed',
+  fusionShare: 0.778,
+  fusionCalibrationStyle: 'aimedPinpoint',
   charmIncomeBonus: 0.06,
   dropReserve: 10,
   activeCapHours: 60,

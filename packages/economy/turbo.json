@@ -1,0 +1,13 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/sim/src/constants.ts",
+        "$TURBO_ROOT$/packages/sim/src/mechanics/tuning.ts"
+      ]
+    }
+  }
+}

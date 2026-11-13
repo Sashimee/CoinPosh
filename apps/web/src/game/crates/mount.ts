@@ -274,9 +274,10 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   }
 
   disposers.push(
-    events.on('crate:spawned', ({ crateId }) => {
-      table.spawn(crateId);
+    events.on('crate:spawned', ({ crateId, resumed }) => {
+      table.spawn(crateId, resumed);
       director.prime();
+      if (resumed) return;
       events.emit('crate:stinger', { cue: 'arrive', rarity: null, step: 1, duckSeconds: 0 });
       options.haptics?.pulse('tap');
     }),

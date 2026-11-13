@@ -322,23 +322,33 @@ function createSection(
   );
 }
 
+export interface UpgradeSheetSection {
+  readonly id: string;
+  readonly titleKey: string;
+  readonly hintKey: string | null;
+  readonly lines: readonly UpgradeLineDef[];
+}
+
+/** Family Office lines are bought on the ascension screen, so the sheet lists venue lines only. */
+export const UPGRADE_SHEET_SECTIONS: readonly UpgradeSheetSection[] = [
+  {
+    id: 'venue',
+    titleKey: 'upgrades.venueSection',
+    hintKey: null,
+    lines: upgradeLines.filter((line) => line.scope === 'venue'),
+  },
+];
+
+export const UPGRADE_SHEET_LINES: readonly UpgradeLineDef[] = UPGRADE_SHEET_SECTIONS.flatMap(
+  (section) => section.lines,
+);
+
 export function createUpgradesPanel(ctx: UiContext): HTMLElement {
   return h(
     'div',
     { class: 'cp-upgrades' },
-    createSection(
-      ctx,
-      'venue',
-      'upgrades.venueSection',
-      null,
-      upgradeLines.filter((line) => line.scope === 'venue'),
-    ),
-    createSection(
-      ctx,
-      'global',
-      'upgrades.globalSection',
-      'upgrades.globalHint',
-      upgradeLines.filter((line) => line.scope === 'global'),
+    ...UPGRADE_SHEET_SECTIONS.map((section) =>
+      createSection(ctx, section.id, section.titleKey, section.hintKey, section.lines),
     ),
   );
 }

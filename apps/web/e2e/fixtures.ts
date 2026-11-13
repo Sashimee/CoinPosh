@@ -83,12 +83,7 @@ async function seedDemoMode(page: Page, seed: number): Promise<void> {
  * is one exact message, not a pattern family, and is reported as an annotation when it fires.
  * Remove an entry as soon as its POLISH item ships.
  */
-const KNOWN_PAGE_ERRORS: readonly { readonly item: string; readonly message: string }[] = [
-  {
-    item: 'P-173',
-    message: 'AdaptiveRendering.render(nowMs) needs the requestAnimationFrame timestamp',
-  },
-];
+const KNOWN_PAGE_ERRORS: readonly { readonly item: string; readonly message: string }[] = [];
 
 /** `errors` minus the KNOWN_PAGE_ERRORS, each known one noted as an annotation on `testInfo`. */
 export function unexpectedErrors(errors: readonly string[], testInfo: TestInfo): string[] {

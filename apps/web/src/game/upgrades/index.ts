@@ -12,12 +12,7 @@ export type { BindUpgradesOptions, UpgradeApi, UpgradeUi } from './controller.ts
 export type { UpgradeEvents, UpgradeRejection } from './events.ts';
 export { bindUpgradeFeedback, PURCHASE_CHIME } from './feedback.ts';
 export { registerUpgradeStrings, UPGRADES_NAMESPACE } from './i18n.ts';
-export {
-  isFamilyOfficeLine,
-  isUpgradeLineV1,
-  UPGRADE_LINE_IDS_V1,
-  UPGRADE_LINES_V1,
-} from './lines.ts';
+export { isUpgradeLineV1, UPGRADE_LINE_IDS_V1, UPGRADE_LINES_V1 } from './lines.ts';
 
 export interface UpgradesGame {
   readonly events: Bus<UpgradeEvents>;

@@ -81,7 +81,10 @@ describe('the fusion walk a boot refund runs per stranded coin', () => {
     await runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) => {
       const sql = ctx.storage.sql;
       sql.exec('DROP INDEX ledger_tx_id');
-      sql.exec('UPDATE schema_version SET version = ?', MIGRATIONS.length - 1);
+      sql.exec(
+        'UPDATE schema_version SET version = ?',
+        MIGRATIONS.findIndex((migration) => migration.includes('INDEX IF NOT EXISTS ledger_tx_id')),
+      );
       expect(queryPlan(sql).some((step) => step.startsWith('SCAN'))).toBe(true);
 
       new PlayerDO(ctx, env);

@@ -87,6 +87,8 @@ export interface UpgradeNudgeOptions {
   readonly openUpgrades: () => void;
   /** Scrolls the open Upgrades sheet to a line and lights it. */
   readonly reveal: (lineId: string) => void;
+  /** The lines the Upgrades sheet lists; the nudge never points past them. */
+  readonly lines?: readonly UpgradeLineDef[];
 }
 
 const CHEVRON =
@@ -117,7 +119,8 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
     ),
     h('span', { class: 'cp-glint', attrs: { 'aria-hidden': 'true' } }),
   );
-  const nudge = createFirstUpgradeNudge(upgradeLines, options.storage);
+  const lines = options.lines ?? upgradeLines;
+  const nudge = createFirstUpgradeNudge(lines, options.storage);
   if (nudge.retired) return notice;
 
   const { trigger } = options;
@@ -207,8 +210,7 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
 
   makePressable(notice, ctx, {
     feedback: 'open',
-    enabled: () =>
-      lineId !== null && nudgeStillAffordable(upgradeLines, lineId, ctx.store.getState()),
+    enabled: () => lineId !== null && nudgeStillAffordable(lines, lineId, ctx.store.getState()),
     onPress() {
       options.openUpgrades();
     },

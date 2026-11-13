@@ -1,4 +1,4 @@
-import { coinTiers, openingHeap } from '@coinposh/economy';
+import { coinTiers, openingHeap, venues } from '@coinposh/economy';
 import { CURRENCIES, ENTITY_ID_PREFIXES, PlayerIdSchema } from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -235,5 +235,65 @@ describe('a player stored by the v1 schema', () => {
       ]);
       expect(player.conservation()).toMatchObject({ conserved: true });
     });
+  });
+});
+
+describe('a player stored before Venue Ascension', () => {
+  it('gets the ascension and Family Office tables on construction and boots at the first venue', async () => {
+    const session = await newSession();
+    await state(session);
+    const home = venues[0];
+    await runInDurableObject(playerStub(session.tokens.playerId), (_live: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      const tables = () =>
+        sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger') AND (name LIKE 'ascensions%' OR name = 'family_office_levels') ORDER BY name",
+          )
+          .toArray()
+          .map((row) => row.name);
+      const migrated = tables();
+      expect(migrated).toEqual([
+        'ascensions',
+        'ascensions_no_delete',
+        'ascensions_no_update',
+        'family_office_levels',
+      ]);
+      sql.exec('DROP TABLE ascensions');
+      sql.exec('DROP TABLE family_office_levels');
+      const before = migrationIndex('CREATE TABLE IF NOT EXISTS ascensions');
+      expect(before).toBe(MIGRATIONS.length - 1);
+      sql.exec('UPDATE schema_version SET version = ?', before);
+      expect(tables()).toEqual([]);
+
+      new PlayerDO(ctx, env);
+      expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
+        version: MIGRATIONS.length,
+      });
+      expect(tables()).toEqual(migrated);
+
+      sql.exec(
+        'INSERT INTO ascensions (venue_id, ledger_seq, lifetime_bullion, gold_bars, at) VALUES (?, 0, 0, 0, 0)',
+        home.id,
+      );
+      sql.exec("INSERT INTO family_office_levels (line_id, level) VALUES ('trustFund', 1)");
+      sql.exec('UPDATE schema_version SET version = ?', before);
+      new PlayerDO(ctx, env);
+      expect(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM ascensions').one().n).toBe(1);
+      expect(() => sql.exec('UPDATE ascensions SET gold_bars = 1000000')).toThrow(/append-only/);
+      expect(() => sql.exec('DELETE FROM ascensions')).toThrow(/append-only/);
+      expect(() =>
+        sql.exec("INSERT INTO family_office_levels (line_id, level) VALUES ('oldMoney', -1)"),
+      ).toThrow(/CHECK/);
+    });
+
+    const booted = await reload(session);
+    expect(booted.venue).toMatchObject({
+      id: venues[1].id,
+      unlocked: [home.id, venues[1].id],
+      lifetimeBullion: 0,
+    });
+    expect(booted.familyOffice).toEqual({ oldMoney: 0, privateCourier: 0, trustFund: 1 });
+    await expectConserved(session);
   });
 });
