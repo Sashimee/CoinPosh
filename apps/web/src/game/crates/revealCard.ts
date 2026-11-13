@@ -6,6 +6,11 @@ import { makePressable } from '../../ui/components/pressable.ts';
 import { feedback, type UiContext } from '../../ui/context.ts';
 import { fromMarkup, h, listen, rectOf, restartAnimation } from '../../ui/dom.ts';
 import { Localizer } from '../../ui/localize.ts';
+import {
+  postUnboxClearance,
+  unboxClearance,
+  type UnboxClearance,
+} from '../../vfx/cinematics/unbox/presentation.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../vfx/palette.ts';
 import { PLAQUE_SWELL } from './hint.ts';
 import { cratesKey, registerCratesStrings } from './i18n.ts';
@@ -55,6 +60,32 @@ export function placeCrateCard(layout: CrateCardLayout): CrateCardPlacement {
   const scale = height <= room ? 1 : Math.floor((room / height) * 100) / 100;
   const top = Math.floor(base - CARD_CHROME_GAP - height * scale);
   return { top: Math.max(Math.ceil(ceiling + CARD_CHROME_GAP), top), scale };
+}
+
+/** Air between the card and the 3D reward standing beside it on a wide screen. */
+export const CARD_ASIDE_GAP = 24;
+
+export interface CrateCardAsideLayout {
+  readonly viewportWidth: number;
+  readonly plaque: CrateCardLayout['plaque'];
+  /** The card's resting top, from `placeCrateCard`. */
+  readonly top: number;
+  /** The card's on-screen width, fit scale included. */
+  readonly cardWidth: number;
+}
+
+/**
+ * How far right the card steps so its 3D reward can stand beside it: when there is more room
+ * either side of the card than above it under the Vault, as on a landscape phone, the hero lifts
+ * to its left instead of squeezing into a sliver over it, and the pair shares the middle of the
+ * screen. 0 keeps the card centred, with the hero above it.
+ */
+export function crateCardAside(layout: CrateCardAsideLayout): number {
+  const above = layout.top - plaqueCeiling(layout.plaque);
+  const beside = (layout.viewportWidth - layout.cardWidth) / 2;
+  if (!(layout.cardWidth > 0) || beside <= above) return 0;
+  const shift = Math.min(layout.cardWidth / 2 + CARD_ASIDE_GAP / 2, beside - CARD_CHROME_GAP);
+  return Math.max(0, Math.floor(shift));
 }
 
 function plaqueCeiling(plaque: CrateCardLayout['plaque']): number {
@@ -269,6 +300,7 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
   let shown = false;
   let collecting = false;
   let scale = 1;
+  let clearance: UnboxClearance | null = null;
   const place = () => {
     if (collecting) return;
     const dock = options.host.querySelector(DOCK)?.getBoundingClientRect();
@@ -294,9 +326,26 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
       cardHeight: card.offsetHeight,
     });
     scale = at.scale;
+    const viewportWidth = document.documentElement.clientWidth;
+    const width = card.offsetWidth * at.scale;
+    const shift = crateCardAside({ viewportWidth, plaque, top: at.top, cardWidth: width });
     card.classList.add('is-placed');
     card.style.setProperty('--cp-crate-card-top', `${at.top}px`);
     card.style.setProperty('--cp-crate-card-scale', String(at.scale));
+    card.style.translate = shift === 0 ? '' : `${shift}px 0`;
+    const left = card.offsetLeft + (card.offsetWidth - width) / 2 + shift;
+    clearance = {
+      viewport: { width: viewportWidth, height: viewportHeight },
+      card: {
+        left,
+        top: at.top,
+        right: left + width,
+        bottom: at.top + card.offsetHeight * at.scale,
+      },
+      ceiling: plaqueCeiling(plaque),
+      floor: dock.top,
+    };
+    postUnboxClearance(clearance);
   };
   const resizes = new ResizeObserver(place);
   ctx.own(() => {
@@ -370,6 +419,7 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (clearance !== null && unboxClearance() === clearance) postUnboxClearance(null);
       for (const off of disposers.splice(0)) off();
       loc.dispose();
       root.remove();
