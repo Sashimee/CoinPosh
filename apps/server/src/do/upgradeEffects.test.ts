@@ -20,7 +20,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { recordUpgrade, type UpgradeLineIdV1 } from '../routes/upgrades.ts';
 import { newIdempotencyKey, newSession, send, type Session } from '../test/client.ts';
-import { claims, drop, expectConserved, playerStub, state } from '../test/game.ts';
+import { claims, drop, expectConserved, playerStub, state, tableSession } from '../test/game.ts';
 import { HOME_VENUE, mintedValue } from './entities.ts';
 import { commit, LedgerTx } from './ledger.ts';
 import { PREMINT_BUFFER_TARGET, type PlayerDO } from './PlayerDO.ts';
@@ -280,7 +280,7 @@ describe('coinValue pays its fraction through the mint carry', { timeout: 20_000
     const session = await newSession();
     await reachCoinValue(session, 1);
     const buffer = (await state(session)).table.buffer;
-    const body = { x: 0, tick: 0, coinId: buffer[0]?.id };
+    const body = { session: await tableSession(session), x: 0, tick: 0, coinId: buffer[0]?.id };
     const key = newIdempotencyKey();
     const first = await send(session.device, endpoints.tableDrop.path, {
       accessToken: session.tokens.accessToken,

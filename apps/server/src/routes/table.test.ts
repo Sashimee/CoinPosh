@@ -19,6 +19,7 @@ import {
   playerStub,
   reload,
   state,
+  tableSession,
   vaultCoins,
 } from '../test/game.ts';
 
@@ -36,6 +37,11 @@ async function droppedOnTable(session: Session): Promise<MintedCoin[]> {
     true,
   );
   return coins.slice(openingHeap.coins);
+}
+
+/** A table op body sent under the lease of the tab that booted last. */
+async function leased<B extends object>(session: Session, body: B) {
+  return { session: await tableSession(session), ...body };
 }
 
 function fall(coin: { id: string }, edge: 'front' | 'left' | 'right' = 'front', tick = 10) {
@@ -95,7 +101,7 @@ describe('POST /v1/table/drop', () => {
 
     await expectError(
       await session.call(endpoints.tableDrop.path, {
-        body: { x: 0, tick: 2, coinId: buffered.id },
+        body: await leased(session, { x: 0, tick: 2, coinId: buffered.id }),
       }),
       409,
       'conflict',
@@ -111,7 +117,9 @@ describe('POST /v1/table/drop', () => {
 
     for (const coinId of [FORGED_COIN_ID, foreign.id]) {
       await expectError(
-        await session.call(endpoints.tableDrop.path, { body: { x: 0, tick: 0, coinId } }),
+        await session.call(endpoints.tableDrop.path, {
+          body: await leased(session, { x: 0, tick: 0, coinId }),
+        }),
         404,
         'not_found',
       );
@@ -150,7 +158,9 @@ describe('POST /v1/table/drop', () => {
     expect(after.table.buffer.map((coin) => coin.id)).toEqual(table.buffer.map((coin) => coin.id));
 
     await expectError(
-      await session.call(endpoints.tableDrop.path, { body: { x: 0, tick: 0 } }),
+      await session.call(endpoints.tableDrop.path, {
+        body: await leased(session, { x: 0, tick: 0 }),
+      }),
       409,
       'insufficient_funds',
     );
@@ -165,7 +175,7 @@ describe('POST /v1/table/drop', () => {
     );
     await expectError(
       await session.call(endpoints.tableDrop.path, {
-        body: { x: 0, tick: 0, coinId: reserved.id },
+        body: await leased(session, { x: 0, tick: 0, coinId: reserved.id }),
       }),
       409,
       'conflict',
@@ -459,7 +469,7 @@ describe('idempotency', () => {
     const [coin] = await dropMany(session, 1);
     if (coin === undefined) throw new Error('drop failed');
     const idempotencyKey = newIdempotencyKey();
-    const body = { claims: [fall(coin)] };
+    const body = await leased(session, { claims: [fall(coin)] });
 
     const first = await session.call(endpoints.tableClaims.path, { body, idempotencyKey });
     const retry = await session.call(endpoints.tableClaims.path, { body, idempotencyKey });
@@ -479,7 +489,7 @@ describe('idempotency', () => {
     const session = await newSession();
     const before = await state(session);
     const idempotencyKey = newIdempotencyKey();
-    const body = { x: 0, tick: 0 };
+    const body = await leased(session, { x: 0, tick: 0 });
     const first = await session.call(endpoints.tableDrop.path, { body, idempotencyKey });
     const retry = await session.call(endpoints.tableDrop.path, { body, idempotencyKey });
     expect(await retry.json()).toEqual(await first.json());
@@ -497,21 +507,24 @@ describe('idempotency', () => {
     expect(
       (
         await session.call(endpoints.tableClaims.path, {
-          body: { claims: [fall(b)] },
+          body: await leased(session, { claims: [fall(b)] }),
           idempotencyKey,
         })
       ).status,
     ).toBe(200);
     await expectError(
       await session.call(endpoints.tableClaims.path, {
-        body: { claims: [fall(a)] },
+        body: await leased(session, { claims: [fall(a)] }),
         idempotencyKey,
       }),
       422,
       'idempotency_key_reused',
     );
     await expectError(
-      await session.call(endpoints.tableDrop.path, { body: { x: 0, tick: 0 }, idempotencyKey }),
+      await session.call(endpoints.tableDrop.path, {
+        body: await leased(session, { x: 0, tick: 0 }),
+        idempotencyKey,
+      }),
       422,
       'idempotency_key_reused',
     );
@@ -534,7 +547,7 @@ describe('idempotency', () => {
     const [coin] = await dropMany(session, 1);
     if (coin === undefined) throw new Error('drop failed');
     const captured = newIdempotencyKey();
-    const body = { claims: [fall(coin)] };
+    const body = await leased(session, { claims: [fall(coin)] });
     expect(
       (await session.call(endpoints.tableClaims.path, { body, idempotencyKey: captured })).status,
     ).toBe(200);
@@ -625,6 +638,251 @@ describe('POST /v1/table/snapshot', () => {
     );
     await expectError(
       await session.call(tableSnapshotEndpoint.path, { body: { coins: [] } }),
+      400,
+      'validation_failed',
+    );
+  });
+});
+
+describe('table session lease (#85)', () => {
+  /**
+   * Every row of every table the player's DO keeps: what a fenced op must leave untouched. The
+   * D1 flush cursor is left out, since the flush alarm moves it on its own while a test runs.
+   */
+  function everything(session: Session) {
+    return runInDurableObject(playerStub(session.tokens.playerId), (_instance: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      const tables = sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+        )
+        .toArray()
+        .map((row) => row.name);
+      return Object.fromEntries(
+        tables.map((name) => [
+          name,
+          sql
+            .exec(`SELECT * FROM "${name}"`)
+            .toArray()
+            .filter((row) => name !== 'meta' || row.key !== 'flushed_seq'),
+        ]),
+      );
+    });
+  }
+
+  async function bootedTable(session: Session) {
+    const { table } = await reload(session);
+    if (table.session === undefined) throw new Error('A boot should return a table session.');
+    return { ...table, session: table.session };
+  }
+
+  /** One valid body per table op, all naming `lease`, or no session when it is undefined. */
+  function opsUnder(
+    lease: string | undefined,
+    table: Awaited<ReturnType<typeof bootedTable>>,
+    tick = 60,
+  ) {
+    const coin = table.coins.at(-1);
+    const buffered = table.buffer[0];
+    if (coin === undefined || buffered === undefined) {
+      throw new Error('The table should hold coins and a buffer.');
+    }
+    const named = lease === undefined ? {} : { session: lease };
+    return [
+      { path: endpoints.tableDrop.path, body: { ...named, x: 0, tick } },
+      { path: endpoints.tableDrop.path, body: { ...named, x: 0, tick, coinId: buffered.id } },
+      { path: endpoints.tableClaims.path, body: { ...named, claims: [fall(coin, 'front', tick)] } },
+      { path: endpoints.tableNudge.path, body: { ...named, tick, direction: 'forward' } },
+      {
+        path: tableSnapshotEndpoint.path,
+        body: {
+          ...named,
+          seq: 1_000_000,
+          tick: 9_000_000,
+          pusher: { tickInCycle: 0 },
+          coins: [[coin.id, 0, 160, 4_900, 0, 0, 0, 32_767, 'asleep']],
+          crates: [],
+        },
+      },
+    ];
+  }
+
+  it('refuses drop, claims, nudge and snapshot from a superseded tab and writes nothing', async () => {
+    const session = await newSession();
+    const first = await bootedTable(session);
+    await dropMany(session, 2, 30);
+    const second = await bootedTable(session);
+    expect(second.session).not.toBe(first.session);
+    const before = await everything(session);
+
+    for (const op of opsUnder(first.session, second)) {
+      await expectError(await session.call(op.path, { body: op.body }), 409, 'session_superseded');
+    }
+    expect(await everything(session)).toEqual(before);
+
+    const [drop, , claim, nudge] = opsUnder(second.session, second, 0);
+    if (drop === undefined || claim === undefined || nudge === undefined) {
+      throw new Error('opsUnder lost an op.');
+    }
+    for (const op of [drop, claim, nudge]) {
+      const response = await session.call(op.path, { body: op.body });
+      expect(response.status, await response.clone().text()).toBe(200);
+    }
+    const snapshot = await session.call(tableSnapshotEndpoint.path, {
+      body: {
+        session: second.session,
+        seq: 1,
+        tick: 0,
+        pusher: { tickInCycle: 0 },
+        coins: [],
+        crates: [],
+      },
+    });
+    expect(snapshot.status, await snapshot.clone().text()).toBe(200);
+    await expectConserved(session);
+  });
+
+  it('refuses a table op that names no session at the lease check, before any value moves', async () => {
+    const session = await newSession();
+    const table = await bootedTable(session);
+    const before = await everything(session);
+    const ops = opsUnder(undefined, table);
+    const snapshot = ops.pop();
+    for (const op of ops) {
+      const response = await session.call(op.path, { body: op.body });
+      expect(response.status).toBe(409);
+      const payload: unknown = await response.json();
+      expect(payload).toMatchObject({ error: { code: 'session_superseded' } });
+      expect(JSON.stringify(payload)).toMatch(/names no table session/);
+    }
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body: snapshot?.body }),
+      400,
+      'validation_failed',
+    );
+    expect(await everything(session)).toEqual(before);
+  });
+
+  it('refuses forged sessions, another player’s session and any session before the first boot (forged IDs)', async () => {
+    const session = await newSession();
+    const unbooted = await everything(session);
+    await expectError(
+      await session.call(endpoints.tableDrop.path, {
+        body: { session: 'session_NeverIssuedNever0', x: 0, tick: 0 },
+      }),
+      409,
+      'session_superseded',
+    );
+    expect(await everything(session)).toEqual(unbooted);
+
+    const table = await bootedTable(session);
+    const other = await newSession();
+    const theirs = await bootedTable(other);
+    const before = await everything(session);
+    const forged = [
+      theirs.session,
+      `session_${'A'.repeat(20)}`,
+      `${table.session.slice(0, -1)}${table.session.endsWith('A') ? 'B' : 'A'}`,
+    ];
+    for (const lease of forged) {
+      for (const op of opsUnder(lease, table)) {
+        await expectError(
+          await session.call(op.path, { body: op.body }),
+          409,
+          'session_superseded',
+        );
+      }
+    }
+    expect(await everything(session)).toEqual(before);
+    expect((await state(other)).table.session).toBe(theirs.session);
+  });
+
+  it('keeps a fenced op fenced on every retry and caches nothing under its key (replay)', async () => {
+    const session = await newSession();
+    const first = await bootedTable(session);
+    await bootedTable(session);
+    const before = await everything(session);
+    const idempotencyKey = newIdempotencyKey();
+    const body = { session: first.session, x: 0, tick: 0 };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expectError(
+        await session.call(endpoints.tableDrop.path, { body, idempotencyKey }),
+        409,
+        'session_superseded',
+      );
+    }
+    expect(await everything(session)).toEqual(before);
+  });
+
+  it('replays what the old tab settled before the boot, so a drained outbox is credited once', async () => {
+    const session = await newSession();
+    const first = await bootedTable(session);
+    const [coin] = await dropMany(session, 1, 5);
+    if (coin === undefined) throw new Error('drop failed');
+    const idempotencyKey = newIdempotencyKey();
+    const body = { session: first.session, claims: [fall(coin, 'front', 10)] };
+    const settled = await session.call(endpoints.tableClaims.path, { body, idempotencyKey });
+    expect(settled.status, await settled.clone().text()).toBe(200);
+    const answer: unknown = await settled.json();
+
+    await bootedTable(session);
+    const vault = await vaultCoins(session);
+    const drained = await session.call(endpoints.tableClaims.path, { body, idempotencyKey });
+    expect(drained.status).toBe(200);
+    expect(drained.headers.get('Idempotent-Replayed')).toBe('true');
+    expect(await drained.json()).toEqual(answer);
+    expect(await vaultCoins(session)).toBe(vault);
+    await expectConserved(session);
+  });
+
+  it('lets only the tab holding the lease claim a coin both tabs saw fall (double claim)', async () => {
+    const session = await newSession();
+    const first = await bootedTable(session);
+    const second = await bootedTable(session);
+    const coin = second.coins[0];
+    if (coin === undefined) throw new Error('No heap coin.');
+    const vault = await vaultCoins(session);
+
+    const fenced = { session: first.session, claims: [fall(coin, 'front', 1)] };
+    await expectError(
+      await session.call(endpoints.tableClaims.path, { body: fenced }),
+      409,
+      'session_superseded',
+    );
+    const won = await claims(session, [fall(coin, 'front', 1)]);
+    expect(won.results[0]).toMatchObject({ status: 'accepted', credited: coin.value });
+    await expectError(
+      await session.call(endpoints.tableClaims.path, { body: fenced }),
+      409,
+      'session_superseded',
+    );
+    expect(await vaultCoins(session)).toBe(vault + coin.value);
+    await expectConserved(session);
+  });
+
+  it('answers a nudge from the current tab with the table decorum, and moves no value', async () => {
+    const session = await newSession();
+    const table = await bootedTable(session);
+    const report = await playerStub(session.tokens.playerId).conservation();
+    const idempotencyKey = newIdempotencyKey();
+    const body = { session: table.session, tick: 12, direction: 'left' };
+    const first = await session.call(endpoints.tableNudge.path, { body, idempotencyKey });
+    expect(first.status, await first.clone().text()).toBe(200);
+    expect(endpoints.tableNudge.response.parse(await first.json())).toEqual({
+      decorum: table.decorum,
+      frozenUntil: table.frozenUntil,
+    });
+    const retry = await session.call(endpoints.tableNudge.path, { body, idempotencyKey });
+    expect(retry.headers.get('Idempotent-Replayed')).toBe('true');
+    expect(await playerStub(session.tokens.playerId).conservation()).toEqual(report);
+
+    await expectError(
+      await session.call(endpoints.tableNudge.path, { body, idempotencyKey: null }),
+      400,
+      'idempotency_key_missing',
+    );
+    await expectError(
+      await session.call(endpoints.tableNudge.path, { body: { ...body, direction: 'up' } }),
       400,
       'validation_failed',
     );

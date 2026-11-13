@@ -29,6 +29,7 @@ import {
   playerStub,
   reload,
   state,
+  tableSession,
   vaultCoins,
 } from '../test/game.ts';
 import { Entities, mintedValue } from './entities.ts';
@@ -347,7 +348,12 @@ describe('crate spawns across a boot refund', { timeout: 20_000 }, () => {
   it('replays the original response to a retried spawning drop without minting a crate', async () => {
     const session = await newSession();
     const drops = await dropAsClient(session, SCRIPTED - 1);
-    const body = { x: 0, tick: 0, coinId: drops.at(-1)?.buffer[0]?.id };
+    const body = {
+      session: await tableSession(session),
+      x: 0,
+      tick: 0,
+      coinId: drops.at(-1)?.buffer[0]?.id,
+    };
     const idempotencyKey = newIdempotencyKey();
     const retry = () => session.call(endpoints.tableDrop.path, { body, idempotencyKey });
     const sent = await retry();
@@ -646,6 +652,161 @@ describe('a page reload restores the table from its poses', { timeout: 20_000 },
     const again = (await reload(session)).table;
     expect(again.coins).toEqual(after.coins);
     expect(again.layout).toEqual(after.layout);
+    await expectConserved(session);
+  });
+});
+
+describe('a second tab boots the same table (#85)', { timeout: 20_000 }, () => {
+  async function tab(session: Session) {
+    const { table } = await reload(session);
+    if (table.session === undefined) throw new Error('A boot should return a table session.');
+    return { ...table, session: table.session };
+  }
+
+  /** Coin i of `ids` on a floor grid of rows of 11, none touching another. */
+  function grid(ids: readonly string[]): PoseTuple[] {
+    return ids.map((id, i) =>
+      restingAt(id, -15_000 + (i % 11) * 3_000, -9_000 + Math.floor(i / 11) * 3_000),
+    );
+  }
+
+  function dropUnder(session: Session, lease: string, tick: number) {
+    return session.call(endpoints.tableDrop.path, { body: { session: lease, x: 0, tick } });
+  }
+
+  it("restores the other tab's coins and crate from its poses instead of refunding them", async () => {
+    const session = await newSession();
+    const first = await tab(session);
+    const drops = await dropAsClient(session, crateSpawn.ftueScriptedDrop, (i) => 300 + i);
+    const ids = drops.map((response) => response.coin.id);
+    const crate = drops.flatMap((response) => response.spawnedCrates)[0];
+    if (crate === undefined) throw new Error('The scripted drop spawned no crate.');
+    const ride: CratePoseTuple = [crate.id, 1_200, CHUTE_POSE.z, 0, 'riding'];
+    const table = (await state(session)).table;
+    expect(
+      await upload(session, table, { seq: 1, tick: 400, coins: grid(ids), crates: [ride] }),
+    ).toMatchObject({ stored: ids.length + 1, ignored: 0 });
+    const vault = await vaultCoins(session);
+
+    const second = await tab(session);
+    expect(second.session).not.toBe(first.session);
+    const placed = placements(second);
+    for (const pose of grid(ids)) expect(placed.get(pose[0])).toEqual({ kind: 'pose', pose });
+    expect(second.layout?.crates).toEqual([{ kind: 'pose', pose: ride }]);
+    expect(await refunds(session)).toEqual([]);
+    expect(await vaultCoins(session)).toBe(vault);
+
+    const [coin] = drops;
+    if (coin === undefined) throw new Error('The drops failed.');
+    const won = await claims(session, [
+      { kind: 'fall', coinId: coin.coin.id, tick: 0, edge: 'front' },
+      { kind: 'crate', crateId: crate.id, tick: 0, edge: 'front' },
+    ]);
+    expect(won.results).toEqual([
+      expect.objectContaining({ status: 'accepted', credited: coin.coin.value }),
+      expect.objectContaining({ status: 'accepted' }),
+    ]);
+    await expectConserved(session);
+  });
+
+  it('fences the first tab: its drops, claims and snapshots after the boot write nothing', async () => {
+    const session = await newSession();
+    const first = await tab(session);
+    const ids = (await dropAsClient(session, 3, () => 50)).map((response) => response.coin.id);
+    await upload(session, (await state(session)).table, { seq: 1, tick: 60, coins: row(ids) });
+    const second = await tab(session);
+    const rows = await tableRows(session);
+    const report = await playerStub(session.tokens.playerId).conservation();
+
+    await expectError(await dropUnder(session, first.session, 70), 409, 'session_superseded');
+    const [target] = ids;
+    if (target === undefined) throw new Error('The drops failed.');
+    await expectError(
+      await session.call(endpoints.tableClaims.path, {
+        body: {
+          session: first.session,
+          claims: [{ kind: 'fall', coinId: target, tick: 70, edge: 'front' }],
+        },
+      }),
+      409,
+      'session_superseded',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, {
+        body: {
+          session: first.session,
+          seq: 2,
+          tick: 900_000,
+          pusher: { tickInCycle: 0 },
+          coins: [restingAt(target, 0, 4_900)],
+          crates: [],
+        },
+      }),
+      409,
+      'session_superseded',
+    );
+    expect(await tableRows(session)).toEqual(rows);
+    expect(await playerStub(session.tokens.playerId).conservation()).toEqual(report);
+    expect(await upload(session, second, { seq: 1, tick: 0 })).toMatchObject({ seq: 1 });
+  });
+
+  it('refunds only what the first tab dropped after its last upload, and it cannot pose it back', async () => {
+    const session = await newSession();
+    const first = await tab(session);
+    const [posed] = (await dropAsClient(session, 1, () => 10)).map((response) => response.coin);
+    if (posed === undefined) throw new Error('The drop failed.');
+    await upload(session, (await state(session)).table, {
+      seq: 1,
+      tick: 60,
+      coins: [restingAt(posed.id, 0)],
+    });
+    const late = await dropUnder(session, first.session, 90);
+    expect(late.status, await late.clone().text()).toBe(200);
+    const unposed = endpoints.tableDrop.response.parse(await late.json()).coin;
+
+    const second = await tab(session);
+    expect(placements(second).get(posed.id)).toEqual({
+      kind: 'pose',
+      pose: restingAt(posed.id, 0),
+    });
+    expect(second.coins.map((coin) => coin.id)).not.toContain(unposed.id);
+    const refunded = await refunds(session);
+    expect(new Set(refunded.map((leg) => leg.ref))).toEqual(new Set([unposed.id]));
+    expect(credited(refunded, 'wallet')).toBeLessThanOrEqual(COPPER.value);
+
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, {
+        body: {
+          session: first.session,
+          seq: 2,
+          tick: 120,
+          pusher: { tickInCycle: 0 },
+          coins: [restingAt(unposed.id, 3_000)],
+          crates: [],
+        },
+      }),
+      409,
+      'session_superseded',
+    );
+    await tab(session);
+    expect(await refunds(session)).toEqual(refunded);
+    await expectConserved(session);
+  });
+
+  it('"Play here" takes the lease back: whichever tab booted last holds the table', async () => {
+    const session = await newSession();
+    const first = await tab(session);
+    const second = await tab(session);
+    const back = await tab(session);
+    const leases = [first.session, second.session, back.session];
+    expect(new Set(leases).size).toBe(3);
+
+    for (const stale of [first.session, second.session]) {
+      await expectError(await dropUnder(session, stale, 0), 409, 'session_superseded');
+    }
+    const played = await dropUnder(session, back.session, 0);
+    expect(played.status, await played.clone().text()).toBe(200);
+    expect((await state(session)).table.session).toBe(back.session);
     await expectConserved(session);
   });
 });
