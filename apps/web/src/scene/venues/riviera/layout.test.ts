@@ -116,17 +116,17 @@ describe('RIVIERA_TABLE', () => {
 
 describe('createRivieraTable on the sim layout', () => {
   const table = createRivieraTable(materials, false);
-  const teak = staticMesh(table, 'table-teak');
+  const coinFloor = staticMesh(table, 'table-floor');
   const lacquer = staticMesh(table, 'table-lacquer');
   const down = new Vector3(0, -1, 0);
 
   it('renders the coin floor front edge exactly where the sim drops coins off it', () => {
-    const onFloor = firstHit(teak, new Vector3(0, 0.1, T.fieldFrontZ - 0.01), down);
+    const onFloor = firstHit(coinFloor, new Vector3(0, 0.1, T.fieldFrontZ - 0.01), down);
     expect(onFloor.y).toBeCloseTo(0, 6);
-    const floor = new Box3().setFromObject(teak);
+    const floor = new Box3().setFromObject(coinFloor);
     expect(floor.max.z).toBeCloseTo(PLAYFIELD.fieldFrontZ, 6);
     const pastEdge = new Raycaster(new Vector3(0, 0.1, T.fieldFrontZ + 0.002), down);
-    const below = pastEdge.intersectObject(teak, false).filter((h) => h.point.y > -0.01);
+    const below = pastEdge.intersectObject(coinFloor, false).filter((h) => h.point.y > -0.01);
     expect(below).toHaveLength(0);
   });
 
@@ -195,7 +195,7 @@ describe('createRivieraTable on the sim layout', () => {
       down,
     );
     expect(trayAfter.y).toBeCloseTo(trayBefore.y, 6);
-    const floor = new Box3().setFromObject(staticMesh(moved, 'table-teak'));
+    const floor = new Box3().setFromObject(staticMesh(moved, 'table-floor'));
     expect(floor.max.z).toBeCloseTo(PLAYFIELD.fieldFrontZ, 6);
     moved.dispose();
   });

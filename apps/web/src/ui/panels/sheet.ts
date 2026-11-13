@@ -6,6 +6,7 @@ import { sharedLayoutMorph } from '../motion/morph.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
+import { sharedSheetFocus } from './sheetFocus.ts';
 
 const SHEET_RADIUS = 20;
 const DISMISS_DISTANCE = 110;
@@ -96,14 +97,15 @@ export function createSheet(ctx: UiContext, options: SheetOptions): Sheet {
       requestClose();
     }),
   );
+  const focus = sharedSheetFocus().register(layer, () => {
+    feedback(ctx, 'close');
+    requestClose();
+  });
+  ctx.own(() => {
+    focus.dispose();
+  });
   ctx.own(
     listen(layer, 'keydown', (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        feedback(ctx, 'close');
-        requestClose();
-        return;
-      }
       if (event.key !== 'Tab') return;
       const focusable = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)];
       const first = focusable[0];
@@ -171,6 +173,7 @@ export function createSheet(ctx: UiContext, options: SheetOptions): Sheet {
       restartAnimation(layer, 'is-open');
       if (isReducedMotion()) morph.jump(true);
       else void morph.open(source.getBoundingClientRect());
+      focus.opened();
       panel.focus({ preventScroll: true });
     },
     close() {
@@ -180,10 +183,11 @@ export function createSheet(ctx: UiContext, options: SheetOptions): Sheet {
       layer.classList.remove('is-open');
       layer.classList.toggle('is-reduced', isReducedMotion());
       void drag.to(0);
+      const restoreFocus = focus.closing(trigger);
       const finish = (): void => {
         if (closing !== generation) return;
+        restoreFocus();
         layer.hidden = true;
-        trigger?.focus({ preventScroll: true });
       };
       if (isReducedMotion() || !trigger) {
         morph.jump(false);

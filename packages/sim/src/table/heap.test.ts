@@ -139,15 +139,19 @@ describe('opening heap on the table', () => {
     expect(table.coinCount).toBe(0);
   });
 
-  it('stands on its own, then a single centre drop tips coins over the front within 10 s', async () => {
+  it('stands on its own, then three drops across the chute tip coins over the front within 10 s', async () => {
     const { table, rng } = await createTable();
     const ids = table.placeHeap(heapCapacity(GEOMETRY), rng);
     expect(ids).toEqual(ids.map((_, i) => i));
     const idle = run(table, 0, 10 * TICK_RATE_HZ);
     expect(idle).toEqual([]);
     expect(table.coinCount).toBe(ids.length);
-    table.dropCoin(0, rng);
-    const falls = run(table, 10 * TICK_RATE_HZ, 10 * TICK_RATE_HZ);
+    const falls: FallEvent[] = [];
+    for (const [i, x] of [-0.06, 0, 0.06].entries()) {
+      table.dropCoin(x, rng);
+      falls.push(...run(table, (10 + 2 * i) * TICK_RATE_HZ, 2 * TICK_RATE_HZ));
+    }
+    falls.push(...run(table, 16 * TICK_RATE_HZ, 4 * TICK_RATE_HZ));
     expect(falls.length).toBeGreaterThan(0);
     expect(falls.every((fall) => fall.edge === 'front')).toBe(true);
   });
@@ -162,6 +166,6 @@ describe('opening heap on the table', () => {
     const hash = await play();
     expect(await play()).toBe(hash);
     // Changing this value breaks replay audits of input logs that open with a heap.
-    expect(hash).toMatchInlineSnapshot(`"86dbc4e914eee174"`);
+    expect(hash).toMatchInlineSnapshot(`"53ff5809aefa4642"`);
   });
 });

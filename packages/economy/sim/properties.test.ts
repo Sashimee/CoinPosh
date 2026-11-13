@@ -108,12 +108,16 @@ describe('sim coin conservation', () => {
         const face = config.coinTiers.find((t) => t.id === tier)?.value ?? Number.NaN;
         let left = player.heapCoins;
         expect(left).toBe(coins);
+        const breaches: string[] = [];
         for (let i = 0; i < 1_200 && player.ledger.dropsPaid < 400; i += 1) {
           activeTick(ctx, player);
-          expect(player.heapCoins).toBeGreaterThanOrEqual(0);
-          expect(player.heapCoins).toBeLessThanOrEqual(left);
+          // One expect per tick costs more than the trajectory itself, so breaches are collected.
+          if (!(player.heapCoins >= 0 && player.heapCoins <= left)) {
+            breaches.push(`tick ${i}: heap went from ${left} to ${player.heapCoins} coins`);
+          }
           left = player.heapCoins;
         }
+        expect(breaches).toEqual([]);
         if (player.heapCoins === coins) expect(player.ledger.heap).toBe(0);
         if (coins > 0 && player.heapCoins === 0) {
           expect(player.milestones.heapCleared).toBeDefined();
@@ -139,22 +143,49 @@ describe('sim trajectories stay inside the server rate envelope', () => {
           won: number;
         }
         const history: Sample[] = [];
-        const since = (seconds: number, now: Sample): Sample =>
-          history.find((h) => h.at > now.at - seconds) ?? now;
+        const breaches: string[] = [];
+        // activeSeconds only grows, so each window's oldest sample index only moves forward.
+        let dropsStart = 0;
+        let valueStart = 0;
+        const since = (seconds: number, now: Sample, start: number): number => {
+          let i = start;
+          while ((history[i]?.at ?? now.at) <= now.at - seconds) i += 1;
+          return i;
+        };
         for (let i = 0; i < ticks; i += 1) {
           const venue = player.venueIndex;
+          const before = player.activeSeconds;
           activeTick(ctx, player);
-          if (player.venueIndex !== venue) history.length = 0;
+          if (!(player.activeSeconds >= before)) {
+            breaches.push(
+              `tick ${i}: active time went from ${before} s to ${player.activeSeconds} s`,
+            );
+          }
+          if (player.venueIndex !== venue) {
+            history.length = 0;
+            dropsStart = 0;
+            valueStart = 0;
+          }
           const now = {
             at: player.activeSeconds,
             drops: player.ledger.dropsPaid,
             won: player.ledger.heap + player.ledger.won,
           };
           history.push(now);
+          dropsStart = since(dropsWindow, now, dropsStart);
+          valueStart = since(valueWindow, now, valueStart);
           const limits = rateEnvelopeFor(tableOf(ctx, player));
-          expect(now.drops - since(dropsWindow, now).drops).toBeLessThanOrEqual(limits.drops.max);
-          expect(now.won - since(valueWindow, now).won).toBeLessThanOrEqual(limits.fallValue.max);
+          const drops = now.drops - (history[dropsStart] ?? now).drops;
+          const won = now.won - (history[valueStart] ?? now).won;
+          // One expect per tick costs more than the trajectory itself, so breaches are collected.
+          if (!(drops <= limits.drops.max)) {
+            breaches.push(`tick ${i} at ${now.at} s: ${drops} drops > ${limits.drops.max}`);
+          }
+          if (!(won <= limits.fallValue.max)) {
+            breaches.push(`tick ${i} at ${now.at} s: ${won} fall value > ${limits.fallValue.max}`);
+          }
         }
+        expect(breaches).toEqual([]);
       }),
       { numRuns: 10 },
     );

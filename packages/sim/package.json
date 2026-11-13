@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./layout": "./src/layout.ts"
+    "./layout": "./src/layout.ts",
+    "./snapshot": "./src/snapshot/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -16,6 +17,8 @@
     "@dimforge/rapier3d-deterministic-compat": "0.21.0"
   },
   "devDependencies": {
+    "@coinposh/economy": "workspace:*",
+    "@coinposh/shared": "workspace:*",
     "@types/node": "24.19.2",
     "eslint": "10.14.0",
     "vitest": "4.1.12"

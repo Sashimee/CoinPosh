@@ -260,8 +260,9 @@ export function fusionImplosion(
   center: Vec3,
   slot: number,
   tier: CoinTier,
+  density = 1,
 ): void {
-  const perSource = scaledCount(ctx, 70);
+  const perSource = scaledCount(ctx, 70 * density);
   const hot = toLinear(VFX_COLORS.whiteGold);
   for (const source of sources) {
     const ox = source[0] - center[0];
@@ -326,12 +327,60 @@ export function fusionImpact(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
   }
 }
 
+/** Furthest a compact fusion's sparks travel from the centre, metres: about 1.5 coins. */
+export const COMPACT_FUSION_REACH = 0.04;
+
+/**
+ * The routine fusion's burst: a tight crown of warm white-gold sparks that stays over the
+ * new coin, and a few glints in its metal. Speeds and drag keep every throw inside
+ * `COMPACT_FUSION_REACH`, so a busy table never streaks across the shelf.
+ */
+export function fusionSpark(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
+  const hot = toLinear(VFX_COLORS.whiteGold);
+  const gold = toLinear(VFX_COLORS.gold);
+  const drag = 9;
+  const maxSpeed = COMPACT_FUSION_REACH * drag * 0.9;
+  const speed = ctx.reducedMotion ? 0.3 : 1;
+  const sparks = scaledCount(ctx, 28);
+  for (let i = 0; i < sparks; i++) {
+    const a = (i / sparks) * Math.PI * 2 + range(ctx.rng, -0.2, 0.2);
+    const v = range(ctx.rng, 0.45, 1) * maxSpeed * speed;
+    const up = range(ctx.rng, 0.3, 0.8);
+    emitOne(ctx, {
+      at,
+      velocity: [Math.cos(a) * v, up * v, Math.sin(a) * v],
+      life: range(ctx.rng, 0.22, 0.38),
+      color: mixLinear(hot, gold, range(ctx.rng, 0.15, 0.5)),
+      intensity: WARM,
+      size: range(ctx.rng, 0.0022, 0.0034),
+      drag,
+      gravity: 0.5,
+      kind: ctx.reducedMotion ? ParticleKind.Glint : ParticleKind.Spark,
+    });
+  }
+  const glints = scaledCount(ctx, 6);
+  for (let i = 0; i < glints; i++) {
+    const d = direction(ctx.rng, [0, 1, 0]);
+    emitOne(ctx, {
+      at: [at[0] + d[0] * 0.01, at[1] + d[1] * 0.01 + 0.004, at[2] + d[2] * 0.01],
+      velocity: [d[0] * 0.05 * speed, d[1] * 0.08 * speed, d[2] * 0.05 * speed],
+      life: range(ctx.rng, 0.4, 0.6),
+      color: mixLinear(tierAccent(ctx.rng, tier), gold, 0.35),
+      intensity: WARM,
+      size: range(ctx.rng, 0.006, 0.01),
+      drag: 4,
+      gravity: 0,
+      kind: ParticleKind.Glint,
+    });
+  }
+}
+
 /** Champagne fizz rising off the table; denser and warmer with each Cascade tier. */
 export function cascadeFizz(ctx: EmitContext, at: Vec3, tier: CascadeTier, spread: number): void {
   const level = CASCADE_TIERS.indexOf(tier);
   if (level < 0) throw new RangeError(`Unknown cascade tier "${tier}"`);
   const colors = CASCADE_COLORS[tier].map(toLinear);
-  const count = scaledCount(ctx, 40 + level * 45);
+  const count = scaledCount(ctx, 26 + level * 38);
   for (let i = 0; i < count; i++) {
     const x = at[0] + range(ctx.rng, -spread, spread);
     const z = at[2] + range(ctx.rng, -spread * 0.6, spread * 0.6);
@@ -341,11 +390,11 @@ export function cascadeFizz(ctx: EmitContext, at: Vec3, tier: CascadeTier, sprea
       velocity: [range(ctx.rng, -0.03, 0.03), rise, range(ctx.rng, -0.03, 0.03)],
       life: range(ctx.rng, 0.7, 1.3),
       color: pick(ctx.rng, colors),
-      intensity: WARM + level * 0.5,
-      size: range(ctx.rng, 0.003, 0.006 + level * 0.001),
+      intensity: WARM * 0.7 + level * 0.45,
+      size: range(ctx.rng, 0.0022, 0.0042 + level * 0.0009),
       drag: 1.4,
       gravity: -0.012,
-      kind: ctx.rng() < 0.25 + level * 0.08 ? ParticleKind.Glint : ParticleKind.Mote,
+      kind: ctx.rng() < 0.1 + level * 0.07 ? ParticleKind.Glint : ParticleKind.Mote,
     });
   }
 }

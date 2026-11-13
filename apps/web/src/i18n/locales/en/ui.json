@@ -20,6 +20,11 @@
     "vaultEmpty": {
       "title": "Vault empty",
       "hint": "Your coins on the ledge are still in play. Watch them fall."
+    },
+    "upgradeHint": {
+      "title": "{{name}} is ready",
+      "hint": "Tap to buy your first upgrade.",
+      "aria": "{{name}} is ready to buy. Open Upgrades"
     }
   },
   "combo": {

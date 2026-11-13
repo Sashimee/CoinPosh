@@ -25,10 +25,18 @@ import {
   API_ORIGIN,
   newIdempotencyKey,
   newSession,
+  send,
   signParts,
   type Session,
 } from '../test/client.ts';
-import { expectError, playerStub } from '../test/game.ts';
+import {
+  claims,
+  expectConserved,
+  expectError,
+  playerStub,
+  state,
+  vaultCoins,
+} from '../test/game.ts';
 import {
   createUpgradeRoutes,
   quoteUpgrade,
@@ -324,5 +332,97 @@ describe('POST /v1/upgrades/buy', () => {
     const response = await post(appFor(replay), session, buy('pusherSpeed', 1));
     expect(response.status).toBe(200);
     expect(response.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+  });
+});
+
+async function buyThroughWorker(
+  session: Session,
+  body: unknown,
+  idempotencyKey: IdempotencyKey = newIdempotencyKey(),
+): Promise<Response> {
+  return send(session.device, endpoints.upgradesBuy.path, {
+    accessToken: session.tokens.accessToken,
+    idempotencyKey,
+    body,
+  });
+}
+
+/** Collects the whole opening heap at the front edge, the way a real player earns coins. */
+async function collectHeap(session: Session): Promise<void> {
+  const heap = (await state(session)).table.coins;
+  await claims(
+    session,
+    heap.map((coin) => ({ kind: 'fall', coinId: coin.id, tick: 1, edge: 'front' })),
+  );
+}
+
+function ledgerRows(session: Session, kind: string) {
+  return runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) =>
+    ctx.storage.sql
+      .exec<{
+        account: string;
+        unit: string;
+        delta: number;
+      }>('SELECT account, unit, delta FROM ledger WHERE kind = ? ORDER BY seq', kind)
+      .toArray(),
+  );
+}
+
+describe('POST /v1/upgrades/buy on the deployed worker', () => {
+  it('is routed to the player, not answered 404', async () => {
+    const session = await newSession();
+    const response = await buyThroughWorker(session, buy('pusherSpeed', 1));
+    expect(response.status).not.toBe(404);
+    await expectError(response, 409, 'insufficient_funds');
+  });
+
+  it('charges the price from config to the house once, and the snapshot shows the level', async () => {
+    const session = await newSession();
+    await collectHeap(session);
+    const line = economyLine('pusherSpeed');
+    const before = (await state(session)).wallet.coins;
+    expect(before).toBeGreaterThanOrEqual(line.baseCost);
+    const vault = await vaultCoins(session);
+    const key = newIdempotencyKey();
+
+    const first = await buyThroughWorker(session, buy('pusherSpeed', 1), key);
+    expect(first.status).toBe(200);
+    const bought = endpoints.upgradesBuy.response.parse(await first.json());
+    expect(bought).toMatchObject({ venueId: HOME_VENUE.id, lineId: 'pusherSpeed', level: 1 });
+    expect(bought.wallet.coins).toBe(before - line.baseCost);
+
+    const replay = await buyThroughWorker(session, buy('pusherSpeed', 1), key);
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+    expect(endpoints.upgradesBuy.response.parse(await replay.json())).toEqual(bought);
+    await expectError(await buyThroughWorker(session, buy('pusherSpeed', 1)), 409, 'conflict');
+
+    expect(await vaultCoins(session)).toBe(vault - line.baseCost);
+    expect(await ledgerRows(session, 'upgrade.buy')).toEqual([
+      { account: 'wallet', unit: 'coins', delta: -line.baseCost },
+      { account: 'house', unit: 'coins', delta: line.baseCost },
+    ]);
+    expect((await state(session)).venue.upgrades).toMatchObject({ pusherSpeed: 1, dropRate: 0 });
+    await expectConserved(session);
+  });
+
+  it('refuses a forged price and a key reused for another line without charging', async () => {
+    const session = await newSession();
+    await collectHeap(session);
+    const before = (await state(session)).wallet.coins;
+    await expectError(
+      await buyThroughWorker(session, { ...buy('pusherSpeed', 1), cost: 0 }),
+      400,
+      'validation_failed',
+    );
+    const key = newIdempotencyKey();
+    expect((await buyThroughWorker(session, buy('pusherSpeed', 1), key)).status).toBe(200);
+    await expectError(
+      await buyThroughWorker(session, buy('dropRate', 1), key),
+      422,
+      'idempotency_key_reused',
+    );
+    expect((await state(session)).wallet.coins).toBe(before - economyLine('pusherSpeed').baseCost);
+    expect(await ledgerRows(session, 'upgrade.buy')).toHaveLength(2);
   });
 });

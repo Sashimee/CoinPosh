@@ -72,6 +72,11 @@ export interface TableSyncDeps {
   readonly retry?: RetryPolicy;
   readonly jitter?: () => number;
   readonly onError?: (error: unknown) => void;
+  /**
+   * Why nudges stay on this device instead of reaching the server, or `null` (the default) to
+   * send them. The live server has no nudge endpoint yet, so live mode passes a reason.
+   */
+  readonly localNudges?: string | null;
 }
 
 const DEFAULT_CLAIM_BATCH_MS = 120;
@@ -95,6 +100,7 @@ export class TableSync {
   #timer: unknown = null;
   #failures = 0;
   #closed = false;
+  #nudgeSkipLogged = false;
   /** A pending resume: re-hydrate once the op queued last before it (if any) has been sent. */
   #resync: { readonly after: OutboxOp | undefined } | null = null;
 
@@ -207,6 +213,12 @@ export class TableSync {
    */
   nudge(tick: Tick, direction: NudgeDirection): boolean {
     if (this.#status === 'offline') return false;
+    const localReason = this.#deps.localNudges ?? null;
+    if (localReason !== null) {
+      if (!this.#nudgeSkipLogged) console.info(`CoinPosh net: nudges are not sent. ${localReason}`);
+      this.#nudgeSkipLogged = true;
+      return true;
+    }
     this.#enqueue({
       kind: 'nudge',
       key: newIdempotencyKey(),

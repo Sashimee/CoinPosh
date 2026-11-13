@@ -1,4 +1,15 @@
-import type { z } from 'zod';
+import { z } from 'zod';
+import {
+  AccountLinkRequestSchema,
+  AccountLinkResponseSchema,
+  AccountNonceRequestSchema,
+  AccountNonceResponseSchema,
+  AccountResponseSchema,
+  AccountUnlinkRequestSchema,
+  AccountUnlinkResponseSchema,
+  SignInRequestSchema,
+  SignInResponseSchema,
+} from './account.ts';
 import {
   GuestAuthRequestSchema,
   GuestAuthResponseSchema,
@@ -50,11 +61,16 @@ import {
   InputsResponseSchema,
   NudgeRequestSchema,
   NudgeResponseSchema,
+  TableSnapshotRequestSchema,
+  TableSnapshotResponseSchema,
 } from './table.ts';
 
 export type HttpMethod = 'GET' | 'POST';
 
-/** `none` endpoints are still device-signed; they just carry no bearer access token. */
+/**
+ * `none` endpoints carry no bearer access token but are still device-signed: the verifying key
+ * travels in the body (`devicePublicKey`) or is looked up from the refresh-token row.
+ */
 export type AuthMode = 'none' | 'bearer';
 
 export interface Endpoint<
@@ -71,8 +87,20 @@ export interface Endpoint<
   readonly body: B;
   /** Path parameters (`:name` segments); `null` when the path has none. */
   readonly params: Q;
+  /** Query string fields, each a string on the wire; absent when the endpoint takes none. */
+  readonly query?: z.ZodType;
   readonly response: R;
 }
+
+/**
+ * `hydrate=boot` marks the snapshot a freshly loaded client lays its table from. Its sim can
+ * only lay the opening heap, so the server refunds every other table coin for that one call.
+ * Mid-session snapshots (resync, resume) omit it and leave coins in play alone.
+ */
+export const StateQuerySchema = z.strictObject({
+  hydrate: z.literal('boot').optional(),
+});
+export type StateQuery = z.infer<typeof StateQuerySchema>;
 
 function get<const P extends string, R extends z.ZodType>(
   path: P,
@@ -101,7 +129,7 @@ function post<const P extends string, B extends z.ZodType, R extends z.ZodType>(
 export const endpoints = {
   authGuest: post('/v1/auth/guest', GuestAuthRequestSchema, GuestAuthResponseSchema, 'none'),
   authRefresh: post('/v1/auth/refresh', RefreshRequestSchema, RefreshResponseSchema, 'none'),
-  state: get('/v1/state', StateResponseSchema),
+  state: { ...get('/v1/state', StateResponseSchema), query: StateQuerySchema },
   tableDrop: post('/v1/table/drop', DropRequestSchema, DropResponseSchema),
   tableClaims: post('/v1/table/claims', ClaimsRequestSchema, ClaimsResponseSchema),
   tableNudge: post('/v1/table/nudge', NudgeRequestSchema, NudgeResponseSchema),
@@ -131,6 +159,40 @@ export const endpoints = {
   eventsCurrent: get('/v1/events/current', EventsCurrentResponseSchema),
 } as const satisfies Record<string, Endpoint>;
 
+// TODO(lead-architect): register as `endpoints.tableSnapshot` in the same change that adds its
+// fixture to `test/fixtures.ts` and its mock handler (T-92.05); both are mapped over every
+// EndpointName, so registering it ahead of them breaks their typecheck.
+export const tableSnapshotEndpoint = post(
+  '/v1/table/snapshot',
+  TableSnapshotRequestSchema,
+  TableSnapshotResponseSchema,
+);
+
+// TODO(lead-architect): spread into `endpoints` in the same change that adds their fixtures to
+// `test/fixtures.ts` and their Demo handlers to `apps/web/src/net/mock/world.ts`; both are mapped
+// over every EndpointName (https://github.com/Sashimee/CoinPosh/issues/119).
+/** `none` routes serve a device with no session yet and carry the signing key in the body. */
+export const accountEndpoints = {
+  accountNonce: post(
+    '/v1/account/nonce',
+    AccountNonceRequestSchema,
+    AccountNonceResponseSchema,
+    'none',
+  ),
+  accountLink: post('/v1/account/link', AccountLinkRequestSchema, AccountLinkResponseSchema),
+  authSignIn: post('/v1/auth/signin', SignInRequestSchema, SignInResponseSchema, 'none'),
+  accountUnlink: post(
+    '/v1/account/unlink',
+    AccountUnlinkRequestSchema,
+    AccountUnlinkResponseSchema,
+  ),
+  account: get('/v1/account', AccountResponseSchema),
+} as const satisfies Record<string, Endpoint>;
+
+export type AccountEndpoints = typeof accountEndpoints;
+export type AccountEndpointName = keyof AccountEndpoints;
+export const ACCOUNT_ENDPOINT_NAMES = Object.keys(accountEndpoints) as AccountEndpointName[];
+
 export type Endpoints = typeof endpoints;
 export type EndpointName = keyof Endpoints;
 export const ENDPOINT_NAMES = Object.keys(endpoints) as EndpointName[];
@@ -142,6 +204,11 @@ export type EndpointBody<N extends EndpointName> = Output<Endpoints[N]['body']>;
 export type EndpointBodyInput<N extends EndpointName> = Input<Endpoints[N]['body']>;
 export type EndpointParams<N extends EndpointName> = Output<Endpoints[N]['params']>;
 export type EndpointParamsInput<N extends EndpointName> = Input<Endpoints[N]['params']>;
+export type EndpointQueryInput<N extends EndpointName> = Endpoints[N] extends {
+  readonly query: infer S;
+}
+  ? Input<S>
+  : never;
 export type EndpointResponse<N extends EndpointName> = Output<Endpoints[N]['response']>;
 export type EndpointResponseInput<N extends EndpointName> = Input<Endpoints[N]['response']>;
 

@@ -12,7 +12,7 @@ import { APP_DIR } from './env.ts';
 
 const DIST = join(APP_DIR, 'dist');
 const ASSETS = join(DIST, 'assets');
-const BASE = '/CoinPosh/';
+const BASE = '/';
 const WASM_BASE64 = /["'`](AGFzbQ[A-Za-z0-9+/=]+)["'`]/g;
 const STATIC_IMPORT = /\bimport\s*(?:[\w$\s{},*]+?\s*from\s*)?["']\.\/([\w.-]+\.js)["']/g;
 const STATIC_REEXPORT = /\bexport\s*(?:\*|\{[^}]*\})\s*from\s*["']\.\/([\w.-]+\.js)["']/g;

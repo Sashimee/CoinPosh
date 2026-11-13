@@ -22,6 +22,11 @@
     "vaultEmpty": {
       "title": "Coffre vide",
       "hint": "Vos pièces au bord sont encore en jeu. Regardez-les tomber."
+    },
+    "upgradeHint": {
+      "title": "Disponible : {{name}}",
+      "hint": "Touchez pour acheter votre première amélioration.",
+      "aria": "{{name}} est disponible à l'achat. Ouvrir les améliorations"
     }
   },
   "combo": {

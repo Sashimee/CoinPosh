@@ -7,6 +7,7 @@ import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
 import type { SimEventBatch } from '../simWorker/protocol.ts';
 import {
   createSystemsCore,
+  followUpgradeLevels,
   type ClockPort,
   type ContactReport,
   type FusionReport,
@@ -27,7 +28,8 @@ export interface GameSystemsOptions {
   /** The server's coins for the sim's opening heap, in sim id order from 0. */
   readonly openingHeap?: readonly MintedCoin[];
   readonly net: { readonly table: TablePort; readonly clock: ClockPort };
-  readonly ui: Pick<UiApp, 'setCascade' | 'setDecorum' | 'bus' | 'i18n' | 'bannerSlot'>;
+  /** Its store's `upgradeLevels` are the levels the systems play by, followed live. */
+  readonly ui: Pick<UiApp, 'setCascade' | 'setDecorum' | 'bus' | 'i18n' | 'bannerSlot' | 'store'>;
   /**
    * The surface the player touches: the stage's current canvas. Read every frame, since the
    * stage swaps in a new canvas when it rebuilds its renderer.
@@ -36,7 +38,6 @@ export interface GameSystemsOptions {
   readonly bounds?: TableBounds;
   readonly aimMap?: AimMap;
   readonly now?: () => number;
-  readonly upgradeLevels?: Readonly<Record<string, number>>;
 }
 
 /**
@@ -53,7 +54,6 @@ export interface GameSystems {
   /** Once per frame: reads input, writes the sim's coins into `field`, runs the timers. */
   sync(field: CoinTransformTarget): void;
   hydrate(state: StateResponse): void;
-  setUpgradeLevels(levels: Readonly<Record<string, number>>): void;
   /** A contact from outside the sim's own stream, which the systems already hear. */
   reportContact(contact: ContactReport): void;
   /** A fusion from outside the sim's own stream, which the systems already hear. */
@@ -91,7 +91,6 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     },
     bounds: options.bounds ?? RIVIERA_TABLE,
     now,
-    ...(options.upgradeLevels ? { upgradeLevels: options.upgradeLevels } : {}),
     ...(options.simBacklog ? { simBacklog: options.simBacklog } : {}),
     ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
   });
@@ -152,6 +151,7 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
   surface.binding.focus();
 
   const offs = [
+    followUpgradeLevels(ui.store, core),
     core.events.on('pour:end', ({ grade }) => {
       overlay.stamp(t(`pour.${grade}`), grade === 'perfect' ? 'perfect' : 'neutral');
     }),
@@ -182,9 +182,6 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     },
     hydrate: (state) => {
       core.hydrate(state);
-    },
-    setUpgradeLevels: (levels) => {
-      core.setUpgradeLevels(levels);
     },
     reportContact: (contact) => {
       core.reportContact(contact);

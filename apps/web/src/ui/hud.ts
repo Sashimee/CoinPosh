@@ -1,13 +1,17 @@
 import { stewardAllowance, upgradeLines } from '@coinposh/economy';
 import { affordableCount, upgradeRows } from '../app/model.ts';
 import type { PanelId } from '../app/state.ts';
+import { browserStorage } from '../app/settings.ts';
 import { watch } from '../app/store.ts';
 import { formatInteger } from '../i18n/index.ts';
 import { createBalancePlaque } from './components/balancePlaque.ts';
 import { createComboLadder } from './components/comboLadder.ts';
 import { createConciergeNotice, createDecorumMeter } from './components/decorumMeter.ts';
+import type { MeterRail } from './components/meterRail.ts';
 import { makePressable } from './components/pressable.ts';
+import { coinFloorRect, planMeterRails } from './components/railLayout.ts';
 import { createTierStamp } from './components/tierStamp.ts';
+import { createUpgradeNudge } from './components/upgradeNudge.ts';
 import { tr, type UiContext } from './context.ts';
 import { fromMarkup, h, listen, restartAnimation } from './dom.ts';
 import { icon } from './icons.ts';
@@ -17,7 +21,7 @@ import { SPRINGS } from './motion/spring.ts';
 import { SpringValue } from './motion/value.ts';
 import { createSettingsPanel } from './panels/settingsPanel.ts';
 import { createSheet, type Sheet } from './panels/sheet.ts';
-import { createUpgradesPanel } from './panels/upgradesPanel.ts';
+import { createUpgradesPanel, revealUpgradeLine } from './panels/upgradesPanel.ts';
 
 export interface Hud {
   readonly root: HTMLElement;
@@ -88,11 +92,8 @@ function retirePoster(poster: HTMLElement): void {
  * The first frame that syncs sim coins is the first one drawn with the venue lit, so the poster
  * from index.html leaves on it. Without a probe (the UI preview) there is no boot to wait for.
  */
-function followBoot(ctx: UiContext, meters: HTMLElement): void {
+function followBoot(ctx: UiContext, meters: HTMLElement, onPlayable: () => void): void {
   const probe: BootProbe | undefined = window.__coinposh;
-  const entrance = new SpringValue(probe ? 0 : 1, SPRINGS.bouncy, (value) => {
-    meters.style.setProperty('--cp-meters-in', String(value));
-  });
   if (!probe) return;
   meters.classList.add('is-waiting');
   meters.inert = true;
@@ -105,13 +106,59 @@ function followBoot(ctx: UiContext, meters: HTMLElement): void {
     if (!probe.playable) return true;
     meters.classList.remove('is-waiting');
     meters.inert = false;
-    void entrance.to(1);
+    onPlayable();
     return false;
   });
   ctx.own(() => {
     stop();
-    entrance.stop();
   });
+}
+
+/** The table's aim reticle, which rides a rail low over the cabinet front once play starts. */
+const AIM_RETICLE = '[data-testid="aim-reticle"]';
+
+/**
+ * Keeps the side meters in the margins the camera leaves around the coin floor: re-planned
+ * whenever the viewport, the HUD above the table or the dock below it changes size.
+ */
+function followTable(
+  ctx: UiContext,
+  host: HTMLElement,
+  layer: HTMLElement,
+  rails: readonly MeterRail[],
+  above: HTMLElement,
+  below: HTMLElement,
+): () => void {
+  const reflow = (): void => {
+    const view = host.getBoundingClientRect();
+    if (view.width === 0 || view.height === 0) return;
+    const area = layer.getBoundingClientRect();
+    const safe = {
+      top: area.top - view.top,
+      right: view.right - area.right,
+      bottom: view.bottom - area.bottom,
+      left: area.left - view.left,
+    };
+    const dockTop = below.getBoundingClientRect().top - view.top;
+    const reticle = document.querySelector(AIM_RETICLE)?.getBoundingClientRect();
+    const base =
+      reticle && reticle.height > 0 ? Math.min(dockTop, reticle.top - view.top) : dockTop;
+    const plan = planMeterRails({
+      viewport: { width: view.width, height: view.height },
+      safe,
+      floor: coinFloorRect(view.width, view.height),
+      ceiling: above.getBoundingClientRect().bottom - view.top,
+      base,
+    });
+    layer.dataset.zone = plan.zone;
+    for (const rail of rails) rail.place(plan[rail.side], { left: safe.left, top: safe.top });
+  };
+  const observer = new ResizeObserver(reflow);
+  for (const el of [host, above, below]) observer.observe(el);
+  ctx.own(() => {
+    observer.disconnect();
+  });
+  return reflow;
 }
 
 /** A Vault that empties for a moment between a drop and the fall it pays is not news. */
@@ -269,6 +316,7 @@ export function createHud(ctx: UiContext): Hud {
   const closePanel = (): void => {
     setPanel(null);
   };
+  const upgradesBody = createUpgradesPanel(ctx);
   const sheets: Record<PanelId, { sheet: Sheet; trigger: HTMLElement }> = {
     upgrades: {
       trigger: upgradesButton,
@@ -276,7 +324,7 @@ export function createHud(ctx: UiContext): Hud {
         id: 'upgrades',
         title: () => tr(ctx, 'upgrades.title'),
         subtitle: () => tr(ctx, 'upgrades.subtitle'),
-        body: createUpgradesPanel(ctx),
+        body: upgradesBody,
         onRequestClose: closePanel,
       }),
     },
@@ -312,37 +360,45 @@ export function createHud(ctx: UiContext): Hud {
   );
   ctx.loc.attr(dock, 'aria-label', () => tr(ctx, 'app.hudLabel'));
 
+  const rails = [createDecorumMeter(ctx), createComboLadder(ctx)];
   const meters = h(
     'div',
-    { class: 'cp-hud-middle', attrs: { 'data-testid': 'hud-meters' } },
-    createDecorumMeter(ctx),
-    createComboLadder(ctx),
+    { class: 'cp-meters', attrs: { 'data-testid': 'hud-meters' } },
+    ...rails.map((rail) => rail.root),
   );
-  followBoot(ctx, meters);
 
   const plaque = createBalancePlaque(ctx);
-  const hud = h(
+  const hudTop = h(
     'div',
-    { class: 'cp-hud' },
-    h(
-      'div',
-      { class: 'cp-hud-top' },
-      bannerSlot,
-      plaque,
-      createVaultEmptyNotice(ctx, plaque),
-      createConciergeNotice(ctx),
-    ),
-    meters,
-    dock,
+    { class: 'cp-hud-top' },
+    bannerSlot,
+    plaque,
+    createVaultEmptyNotice(ctx, plaque),
+    createUpgradeNudge(ctx, {
+      trigger: upgradesButton,
+      storage: browserStorage(),
+      playable: isPlayable,
+      openUpgrades() {
+        setPanel('upgrades');
+      },
+      reveal(lineId) {
+        revealUpgradeLine(upgradesBody, lineId);
+      },
+    }),
+    createConciergeNotice(ctx),
   );
+  const hud = h('div', { class: 'cp-hud' }, hudTop, dock);
   const root = h(
     'div',
     { class: 'cp-ui', attrs: { 'data-testid': 'ui-root' } },
     hud,
+    meters,
     createTierStamp(ctx),
     sheets.upgrades.sheet.el,
     sheets.settings.sheet.el,
   );
+
+  followBoot(ctx, meters, followTable(ctx, root, meters, rails, hudTop, dock));
 
   ctx.own(
     watch(

@@ -1,11 +1,26 @@
-import { crateSpawn, pity as pityConfig } from '@coinposh/economy';
+import { readFileSync } from 'node:fs';
 import {
+  album,
+  crateSpawn,
+  createRng,
+  initialPityState,
+  pity as pityConfig,
+  rarityRank,
+  rollDrop,
+  type DropTableDef,
+  type PityState,
+} from '@coinposh/economy';
+import {
+  CURRENCIES,
   RARITIES,
   RollSchema,
   WalletSchema,
+  type AlbumResponse,
   type CoinId,
   type CrateId,
+  type PityCounters,
   type PlayerId,
+  type Rarity,
   type Reward,
   type Roll,
 } from '@coinposh/shared';
@@ -15,11 +30,12 @@ import { createBus } from '../../app/bus.ts';
 import type { ImpactEvent } from '../../audio/index.ts';
 import type { DuckOptions } from '../../audio/index.ts';
 import { createI18n, LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
+import type { ApiClient } from '../../net/client.ts';
 import type { Connectivity, Scheduler } from '../../net/connectivity.ts';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
 import type { MockServer } from '../../net/mock/server.ts';
 import { Outbox } from '../../net/outbox.ts';
-import { TableSync } from '../../net/tableSync.ts';
+import { TableSync, type TableEvent } from '../../net/tableSync.ts';
 import {
   FakeTime,
   connectPlayer,
@@ -32,9 +48,42 @@ import {
 import { bindCrateAudio, stingerDuck } from './audio.ts';
 import { CrateController } from './controller.ts';
 import type { CrateEvents } from './events.ts';
-import { ARRIVAL_HINT_MS, bindArrivalHint, type HintClock } from './hint.ts';
+import {
+  ARRIVAL_HINT_MS,
+  bindArrivalHint,
+  HINT_HEIGHT,
+  hintFontScale,
+  placeArrivalHint,
+  PLAQUE_SWELL,
+  type ArrivalHintLayout,
+  type ArrivalHintPlacement,
+  type HintClock,
+  type HintRect,
+} from './hint.ts';
 import { CRATES_STRINGS, cratesKey, registerCratesStrings } from './i18n.ts';
-import { heroOf, pityOutlook, rewardLines } from './loot.ts';
+import {
+  albumPlace,
+  albumProgress,
+  heroOf,
+  pityOutlook,
+  rewardLines,
+  rollHasAlbumCard,
+  type PityOutlook,
+  type RewardLine,
+} from './loot.ts';
+import {
+  CARD_CHROME_GAP,
+  CARD_FLY_SCALE,
+  crateFlyOffset,
+  pityLineCopy,
+  placeCrateCard,
+  placeSkipHint,
+  rewardLineCopy,
+  SKIP_HINT_GAP,
+  type CratesT,
+  type CrateCardLayout,
+  type CrateCardPlacement,
+} from './revealCard.ts';
 import { CRATE_RIDE_SECONDS, CrateRide } from './ride.ts';
 import { UnboxDirector, type OpenedCrate, type UnboxCard } from './view.ts';
 
@@ -151,6 +200,103 @@ describe('pityOutlook', () => {
       /past its/,
     );
   });
+
+  /** Fine-heavy odds, so every natural open misses Rare and pity alone lifts the floor. */
+  const stingy: DropTableDef = {
+    source: 'vaultCrate',
+    pity: true,
+    odds: { common: 4_998, fine: 4_998, rare: 1, exquisite: 1, legendary: 1, heirloom: 1 },
+  };
+  const counters = (state: PityState): PityCounters => ({
+    rare: state.rare ?? 0,
+    exquisite: state.exquisite ?? 0,
+    legendary: state.legendary ?? 0,
+  });
+
+  it.each([0, 1, 9])(
+    'after %i non-Rare opens counts down to the open the server forces',
+    (misses) => {
+      expect(rare.within).toBe(10);
+      const rng = createRng(337);
+      let state = initialPityState(pityConfig);
+      let last: Rarity = 'fine';
+      for (let open = 0; open < misses; open++) {
+        const roll = rollDrop(stingy, pityConfig, state, rng);
+        expect(rarityRank(roll.rarity)).toBeLessThan(rarityRank('rare'));
+        state = roll.state;
+        last = roll.rarity;
+      }
+      const outlook = pityOutlook(counters(state), misses === 0 ? null : last);
+      expect(outlook).toEqual({ rarity: 'rare', within: rare.within - misses });
+      if (outlook === null) throw new Error('Expected a pending Rare guarantee');
+      for (let open = 1; open <= outlook.within; open++) {
+        const roll = rollDrop(stingy, pityConfig, state, rng);
+        const forced = open === outlook.within;
+        expect(roll.pityFloor).toBe(forced ? 'rare' : null);
+        if (forced) expect(rarityRank(roll.rarity)).toBeGreaterThanOrEqual(rarityRank('rare'));
+        else expect(rarityRank(roll.rarity)).toBeLessThan(rarityRank('rare'));
+        state = roll.state;
+      }
+    },
+  );
+
+  it('leaves out the floors the opened crate met, and hides once it met them all', () => {
+    const fresh = { rare: 0, exquisite: 6, legendary: 6 };
+    expect(pityOutlook(fresh, 'fine')).toEqual({ rarity: 'rare', within: rare.within });
+    expect(pityOutlook(fresh, 'rare')).toEqual({
+      rarity: 'exquisite',
+      within: exquisite.within - 6,
+    });
+    expect(pityOutlook({ rare: 0, exquisite: 0, legendary: 6 }, 'exquisite')).toEqual({
+      rarity: 'legendary',
+      within: (pityConfig.rules.at(-1)?.within ?? 0) - 6,
+    });
+    expect(pityOutlook({ rare: 0, exquisite: 0, legendary: 0 }, 'legendary')).toBeNull();
+    expect(pityOutlook({ rare: 0, exquisite: 0, legendary: 0 }, 'heirloom')).toBeNull();
+  });
+});
+
+describe('pity line', () => {
+  const i18n = createI18n({ language: 'en', resources: { en: {}, fr: {}, de: {} } });
+  registerCratesStrings(i18n);
+  const t: CratesT = (key, values) => i18n.t(cratesKey(key), values);
+  const lineIn = (language: (typeof LANGUAGES)[number], outlook: PityOutlook) => {
+    i18n.changeLanguage(language);
+    return pityLineCopy(outlook, t);
+  };
+
+  it('promises a crate, not an item, so a Fine crate with a Rare charm still reads true', () => {
+    const outlook = pityOutlook({ rare: 1, exquisite: 1, legendary: 1 }, 'fine');
+    if (outlook === null) throw new Error('Expected a pending Rare guarantee');
+    expect(lineIn('en', outlook)).toBe('A Rare crate or better within 9 opens');
+    expect(lineIn('fr', outlook)).toBe('Une caisse Rare ou mieux garantie d’ici 9 ouvertures');
+    expect(lineIn('de', outlook)).toBe(
+      'Eine seltene Kiste oder besser garantiert in höchstens 9 Öffnungen',
+    );
+  });
+
+  it('agrees the article and adjective with each guaranteed rarity', () => {
+    expect(lineIn('en', { rarity: 'exquisite', within: 34 })).toBe(
+      'An Exquisite crate or better within 34 opens',
+    );
+    expect(lineIn('fr', { rarity: 'legendary', within: 80 })).toBe(
+      'Une caisse Légendaire ou mieux garantie d’ici 80 ouvertures',
+    );
+    expect(lineIn('de', { rarity: 'exquisite', within: 34 })).toBe(
+      'Eine exquisite Kiste oder besser garantiert in höchstens 34 Öffnungen',
+    );
+  });
+
+  it('says next open when the guarantee is one open away', () => {
+    const next = { rarity: 'rare', within: 1 } as const;
+    expect(lineIn('en', next)).toBe('A Rare crate or better on your next open');
+    expect(lineIn('fr', next)).toBe(
+      'Une caisse Rare ou mieux garantie à votre prochaine ouverture',
+    );
+    expect(lineIn('de', next)).toBe(
+      'Eine seltene Kiste oder besser garantiert bei Ihrer nächsten Öffnung',
+    );
+  });
 });
 
 describe('reward lines', () => {
@@ -160,16 +306,25 @@ describe('reward lines', () => {
     {
       kind: 'charm',
       charmId: 'charm_AAAAAAAAAAAAAAAA' as never,
-      charmType: 'butler' as never,
+      charmType: 'captainsBellCharm' as never,
       level: 2,
       duplicate: true,
     },
     { kind: 'currency', currency: 'coins', amount: 12 },
+    { kind: 'collectible', collectibleId: 'navyLacquerCoin' as never },
   ];
 
   it('puts items first and merges currencies in wallet order', () => {
     expect(rewardLines(rewards)).toEqual([
-      { kind: 'charm', level: 2, duplicate: true },
+      {
+        kind: 'charm',
+        level: 2,
+        duplicate: true,
+        item: 'captainsBellCharm',
+        rarity: 'fine',
+        set: 'deckEssentials',
+      },
+      { kind: 'collectible', item: 'navyLacquerCoin', rarity: 'rare', set: 'captainsTable' },
       { kind: 'currency', currency: 'coins', amount: 42 },
       { kind: 'currency', currency: 'pearls', amount: 2 },
     ]);
@@ -201,17 +356,220 @@ describe('crate strings', () => {
       const strings = CRATES_STRINGS[language];
       expect(keys(strings).sort()).toEqual([...english].sort());
       for (const rarity of RARITIES) expect(strings.rarity[rarity].length).toBeGreaterThan(0);
+      for (const set of album) {
+        expect(strings.set[set.id].length).toBeGreaterThan(0);
+        for (const item of set.items) expect(strings.item[item.id].length).toBeGreaterThan(0);
+      }
     }
   });
 
   it('resolve through i18next with interpolation', () => {
     const i18n = createI18n({ language: 'fr', resources: { en: {}, fr: {}, de: {} } });
     registerCratesStrings(i18n);
-    expect(i18n.t(cratesKey('pity'), { rarity: 'Rare', count: 4 })).toBe(
-      'Rare ou mieux garanti d’ici 4 caisses',
+    expect(i18n.t(cratesKey('pity'), { crate: 'Une caisse Rare', count: 4 })).toBe(
+      'Une caisse Rare ou mieux garantie d’ici 4 ouvertures',
     );
     i18n.changeLanguage('de');
     expect(i18n.t(cratesKey('rarity.legendary'))).toBe('Legendär');
+  });
+});
+
+describe('album entries on reward lines', () => {
+  it('takes rarity and set from the economy album for every entry', () => {
+    for (const set of album) {
+      for (const item of set.items) {
+        expect(albumPlace(item.id)).toEqual({ item: item.id, rarity: item.rarity, set: set.id });
+      }
+    }
+  });
+
+  it('refuses an entry the economy album does not list instead of showing a nameless line', () => {
+    expect(() => albumPlace('butler')).toThrow(/does not list/);
+    expect(() =>
+      rewardLines([{ kind: 'collectible', collectibleId: 'ghostCoin' as never }]),
+    ).toThrow(/"ghostCoin"/);
+  });
+
+  const deck = album.find((set) => set.id === 'deckEssentials');
+  if (!deck) throw new Error('Expected the deckEssentials album set');
+  const response = (owned: number): AlbumResponse => ({
+    sets: album.map((set) => ({
+      id: set.id as never,
+      entries: set.items.map((item, index) => ({
+        id: item.id as never,
+        kind: 'coinSkin' as const,
+        owned: set.id === deck.id && index < owned,
+        count: set.id === deck.id && index < owned ? 1 : 0,
+      })),
+      completed: set.id === deck.id && owned === set.items.length,
+    })),
+  });
+  const card: Reward = { kind: 'collectible', collectibleId: 'teakDeckCoin' as never };
+
+  it('reads set progress from the server album, not from the roll', () => {
+    expect(albumProgress(response(3), [card])).toEqual({
+      teakDeckCoin: { owned: 3, total: deck.items.length },
+    });
+    expect(albumProgress(response(deck.items.length), [card]).teakDeckCoin).toEqual({
+      owned: deck.items.length,
+      total: deck.items.length,
+    });
+    expect(
+      albumProgress(response(3), [{ kind: 'currency', currency: 'coins', amount: 4 }]),
+    ).toEqual({});
+  });
+
+  it('refuses an album that has no set for a card the server just granted', () => {
+    expect(() => albumProgress({ sets: [] }, [card])).toThrow(/no set holding it/);
+  });
+
+  it('asks for the album only when the roll holds an album card', () => {
+    expect(rollHasAlbumCard([card])).toBe(true);
+    expect(
+      rollHasAlbumCard([
+        { kind: 'currency', currency: 'pearls', amount: 1 },
+        {
+          kind: 'charm',
+          charmId: 'charm_AAAAAAAAAAAAAAAA' as never,
+          charmType: 'captainsBellCharm' as never,
+          level: 1,
+          duplicate: false,
+        },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe('reward line copy', () => {
+  const i18n = createI18n({ language: 'en', resources: { en: {}, fr: {}, de: {} } });
+  registerCratesStrings(i18n);
+  const t: CratesT = (key, values) => i18n.t(cratesKey(key), values);
+  const copyIn = (
+    language: (typeof LANGUAGES)[number],
+    line: RewardLine,
+    progress = null as null | { owned: number; total: number },
+  ) => {
+    i18n.changeLanguage(language);
+    return rewardLineCopy(line, t, language, progress);
+  };
+  const gain = (language: (typeof LANGUAGES)[number], currency: Reward & { kind: 'currency' }) =>
+    copyIn(language, { kind: 'currency', currency: currency.currency, amount: currency.amount })
+      .name;
+  const pearls = (amount: number): Reward & { kind: 'currency' } => ({
+    kind: 'currency',
+    currency: 'pearls',
+    amount,
+  });
+
+  it('pluralises currencies through i18next at the one/other boundary in EN, FR and DE', () => {
+    expect(gain('en', pearls(1))).toBe('+1 Pearl');
+    expect(gain('fr', pearls(1))).toBe('+1 Perle');
+    expect(gain('de', pearls(1))).toBe('+1 Perle');
+    expect(gain('en', pearls(2))).toBe('+2 Pearls');
+    expect(gain('fr', pearls(2))).toBe('+2 Perles');
+    expect(gain('de', pearls(2))).toBe('+2 Perlen');
+    expect(gain('en', { kind: 'currency', currency: 'coins', amount: 1 })).toBe('+1 Coin');
+    expect(gain('de', { kind: 'currency', currency: 'coins', amount: 1_250 })).toBe(
+      '+1.250 Münzen',
+    );
+    expect(gain('en', { kind: 'currency', currency: 'keys', amount: 1 })).toBe('+1 Key');
+    expect(gain('de', { kind: 'currency', currency: 'keys', amount: 3 })).toBe('+3 Schlüssel');
+  });
+
+  it('keeps French round millions plural, where i18next picks the many form', () => {
+    const line = gain('fr', { kind: 'currency', currency: 'coins', amount: 2_000_000 });
+    expect(line.startsWith('+')).toBe(true);
+    expect(line.endsWith(' Pièces')).toBe(true);
+  });
+
+  it('has a singular and a plural for every currency in every language', () => {
+    for (const language of LANGUAGES) {
+      for (const currency of CURRENCIES) {
+        const one = gain(language, { kind: 'currency', currency, amount: 1 });
+        const other = gain(language, { kind: 'currency', currency, amount: 7 });
+        expect(one).toMatch(/^\+1 \S/);
+        expect(other).toMatch(/^\+7 \S/);
+        expect(one).not.toContain('gain.');
+      }
+    }
+  });
+
+  const charm = (duplicate: boolean, level: number): RewardLine => ({
+    kind: 'charm',
+    level,
+    duplicate,
+    ...albumPlace('captainsBellCharm'),
+  });
+
+  it('names a new charm and wears its rarity', () => {
+    expect(copyIn('en', charm(false, 1))).toEqual({
+      name: 'Captain’s Bell',
+      detail: 'New Charm',
+      rarity: 'fine',
+      chip: 'Fine',
+      completes: false,
+    });
+    expect(copyIn('fr', charm(false, 1)).name).toBe('Cloche du capitaine');
+    expect(copyIn('de', charm(true, 3))).toMatchObject({
+      name: 'Kapitänsglocke',
+      detail: 'Glücksbringer auf Stufe 3 verbessert',
+      rarity: 'fine',
+    });
+  });
+
+  const albumCard: RewardLine = { kind: 'collectible', ...albumPlace('teakDeckCoin') };
+
+  it('gives the French item chip a rarity that does not agree with « Caisse »', () => {
+    const bucket: RewardLine = {
+      kind: 'charm',
+      level: 1,
+      duplicate: false,
+      ...albumPlace('champagneBucketCharm'),
+    };
+    const copy = copyIn('fr', bucket);
+    expect(copy).toMatchObject({ name: 'Seau à champagne', rarity: 'fine', chip: 'De choix' });
+    expect(copy.chip).not.toBe('Raffinée');
+    expect(copyIn('fr', albumCard).chip).toBe('Ordinaire');
+    for (const rarity of RARITIES) {
+      expect(CRATES_STRINGS.fr.chip[rarity]).not.toMatch(/ée$|une$|ise$/);
+    }
+  });
+
+  it('names an album card and shows its set progress once the album answers', () => {
+    expect(copyIn('en', albumCard)).toEqual({
+      name: 'Teak Deck Coin',
+      detail: 'Album Card',
+      rarity: 'common',
+      chip: 'Common',
+      completes: false,
+    });
+    expect(copyIn('en', albumCard, { owned: 3, total: 8 }).detail).toBe('Deck Essentials · 3 / 8');
+    expect(copyIn('fr', albumCard, { owned: 3, total: 8 }).detail).toBe(
+      'L’essentiel du pont · 3 / 8',
+    );
+    expect(copyIn('de', albumCard, { owned: 7, total: 8 })).toMatchObject({
+      name: 'Teakdeck-Münze',
+      detail: 'Deck-Grundausstattung · 7 / 8',
+      completes: false,
+    });
+  });
+
+  it('celebrates the card that completes its set', () => {
+    expect(copyIn('en', albumCard, { owned: 8, total: 8 })).toMatchObject({
+      detail: 'Deck Essentials complete · 8 / 8',
+      completes: true,
+    });
+  });
+
+  it('keeps safes and scratch cards as plain lines', () => {
+    expect(copyIn('en', { kind: 'safe' })).toEqual({
+      name: 'Key-locked Safe',
+      detail: null,
+      rarity: null,
+      chip: null,
+      completes: false,
+    });
+    expect(copyIn('fr', { kind: 'scratchCard' }).name).toBe('Carte à gratter');
   });
 });
 
@@ -314,6 +672,336 @@ describe('arrival hint', () => {
   });
 });
 
+describe('arrival hint placement', () => {
+  const rect = (left: number, top: number, right: number, bottom: number): HintRect => ({
+    left,
+    top,
+    right,
+    bottom,
+  });
+  const intersects = (a: HintRect, b: HintRect) =>
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const hintBox = (at: ArrivalHintPlacement, viewportWidth: number) =>
+    rect(at.inset, at.top, viewportWidth - at.inset, at.top + HINT_HEIGHT);
+
+  /** Measured at 390x844 in Demo Mode: banner, plaque, crown rails, aim rail above the dock. */
+  const phone: ArrivalHintLayout = {
+    viewportWidth: 390,
+    ceiling: 164,
+    plaque: rect(97, 90, 293, 164),
+    floor: rect(15.6, 322.5, 374.4, 525.1),
+    base: 658,
+    rails: [rect(7, 186, 27, 300), rect(363, 186, 383, 300)],
+  };
+
+  it('sets the hint in the apron past the payout lip, clear of the balance and the rails', () => {
+    const at = placeArrivalHint(phone);
+    expect(at.zone).toBe('apron');
+    const box = hintBox(at, phone.viewportWidth);
+    expect(box.top).toBeGreaterThan(phone.floor.bottom);
+    expect(box.bottom).toBeLessThan(phone.base);
+    expect(intersects(box, phone.plaque ?? rect(0, 0, 0, 0))).toBe(false);
+    for (const rail of phone.rails) expect(intersects(box, rail)).toBe(false);
+    expect(at.inset).toBe(16);
+  });
+
+  it('narrows symmetrically for a rail that shares the apron', () => {
+    const at = placeArrivalHint({
+      ...phone,
+      rails: [rect(7, 540, 27, 640), rect(363, 540, 383, 640)],
+    });
+    expect(at.zone).toBe('apron');
+    expect(at.inset).toBe(35);
+    for (const rail of [rect(7, 540, 27, 640), rect(363, 540, 383, 640)]) {
+      expect(intersects(hintBox(at, phone.viewportWidth), rail)).toBe(false);
+    }
+  });
+
+  it('falls back under the HUD, clear of the plaque at the peak of its credit pop', () => {
+    const tight = { ...phone, base: phone.floor.bottom + 40 };
+    const at = placeArrivalHint(tight);
+    expect(at.zone).toBe('crown');
+    const plaque = rect(97, 90, 293, 164);
+    const swollen = 164 + ((164 - 90) * (PLAQUE_SWELL - 1)) / 2;
+    expect(at.top).toBeGreaterThan(swollen);
+    expect(intersects(hintBox(at, tight.viewportWidth), plaque)).toBe(false);
+    expect(at.inset).toBe(35);
+  });
+
+  it('leaves the apron when its rails leave too little width for the hint', () => {
+    const at = placeArrivalHint({
+      ...phone,
+      rails: [rect(6, 540, 100, 640), rect(290, 540, 384, 640)],
+    });
+    expect(at.zone).toBe('crown');
+  });
+
+  it('keeps under a HUD that grows below the plaque, such as the empty-Vault notice', () => {
+    const at = placeArrivalHint({ ...phone, base: 560, ceiling: 240 });
+    expect(at).toEqual({ zone: 'crown', top: 248, inset: 35 });
+  });
+
+  it('shrinks an overlong instruction only as far as it stays legible', () => {
+    expect(hintFontScale(200, 260)).toBe(1);
+    expect(hintFontScale(260, 260)).toBe(1);
+    expect(hintFontScale(280, 260)).toBe(0.92);
+    expect(hintFontScale(600, 260)).toBe(0.8);
+    expect(hintFontScale(100, 0)).toBe(1);
+  });
+
+  it('keeps the instruction short enough for one line on a 360 px phone in every language', () => {
+    for (const language of LANGUAGES) {
+      expect(CRATES_STRINGS[language].arrived.length).toBeLessThanOrEqual(34);
+      expect(CRATES_STRINGS[language].title.length).toBeLessThanOrEqual(20);
+    }
+  });
+});
+
+describe('crate reward card placement', () => {
+  const rect = (left: number, top: number, right: number, bottom: number): HintRect => ({
+    left,
+    top,
+    right,
+    bottom,
+  });
+  const intersects = (a: HintRect, b: HintRect) =>
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const cardBox = (at: CrateCardPlacement, layout: CrateCardLayout, width: number) =>
+    rect((width - 340) / 2, at.top, (width + 340) / 2, at.top + layout.cardHeight * at.scale);
+  const swollen = (plaque: HintRect) => {
+    const half = ((plaque.bottom - plaque.top) * PLAQUE_SWELL) / 2;
+    const centre = (plaque.top + plaque.bottom) / 2;
+    return rect(plaque.left, centre - half, plaque.right, centre + half);
+  };
+
+  /** Measured in seeded Demo Mode: the Vault plaque, the dock and a four-line card. */
+  const viewports = [
+    {
+      name: '390x844',
+      width: 390,
+      plaque: rect(97, 90.1, 293, 163.6),
+      dock: rect(16, 774, 374, 830),
+      layout: { viewportHeight: 844, base: 774, cardHeight: 338.9 },
+    },
+    {
+      name: '360x640',
+      width: 360,
+      plaque: rect(95, 90.1, 265, 153.6),
+      dock: rect(12, 574, 348, 626),
+      layout: { viewportHeight: 640, base: 574, cardHeight: 338.9 },
+    },
+  ];
+
+  for (const viewport of viewports) {
+    it(`rests the card above the dock and below the Vault at ${viewport.name}`, () => {
+      const layout = { ...viewport.layout, plaque: viewport.plaque };
+      const at = placeCrateCard(layout);
+      const box = cardBox(at, layout, viewport.width);
+      expect(at.scale).toBe(1);
+      expect(intersects(box, viewport.dock)).toBe(false);
+      expect(intersects(box, swollen(viewport.plaque))).toBe(false);
+      expect(viewport.dock.top - box.bottom).toBeGreaterThanOrEqual(CARD_CHROME_GAP);
+      expect(viewport.dock.top - box.bottom).toBeLessThan(CARD_CHROME_GAP + 1);
+    });
+
+    it(`keeps every card size at one spot for the whole reveal at ${viewport.name}`, () => {
+      for (const cardHeight of [180, 266, 338.9]) {
+        const layout = { ...viewport.layout, plaque: viewport.plaque, cardHeight };
+        expect(placeCrateCard(layout)).toEqual(placeCrateCard({ ...layout }));
+        const box = cardBox(placeCrateCard(layout), layout, viewport.width);
+        expect(intersects(box, viewport.dock)).toBe(false);
+      }
+    });
+
+    it(`shrinks a card too tall for the room rather than covering the HUD at ${viewport.name}`, () => {
+      const layout = { ...viewport.layout, plaque: viewport.plaque, cardHeight: 720 };
+      const at = placeCrateCard(layout);
+      expect(at.scale).toBeLessThan(1);
+      expect(at.scale).toBeGreaterThan(0.5);
+      const box = cardBox(at, layout, viewport.width);
+      expect(intersects(box, viewport.dock)).toBe(false);
+      expect(intersects(box, swollen(viewport.plaque))).toBe(false);
+    });
+  }
+
+  it('fits a landscape phone by shrinking between the plaque and the dock', () => {
+    const plaque = rect(325, 12, 519, 86);
+    const layout = { viewportHeight: 390, plaque, base: 322, cardHeight: 338.9 };
+    const at = placeCrateCard(layout);
+    const box = cardBox(at, layout, 844);
+    expect(at.scale).toBeGreaterThan(0.4);
+    expect(box.bottom).toBeLessThanOrEqual(322 - CARD_CHROME_GAP);
+    expect(intersects(box, swollen(plaque))).toBe(false);
+  });
+
+  it('uses the viewport floor when the plaque is missing or the dock is not laid out', () => {
+    expect(
+      placeCrateCard({ viewportHeight: 640, plaque: null, base: 574, cardHeight: 300 }),
+    ).toEqual({ top: 262, scale: 1 });
+    expect(placeCrateCard({ viewportHeight: 640, plaque: null, base: 0, cardHeight: 300 })).toEqual(
+      {
+        top: 328,
+        scale: 1,
+      },
+    );
+  });
+
+  it('keeps the card out of layout until the reveal, so it cannot show early and then jump', () => {
+    const css = readFileSync(new URL('./crates.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/\.cp-crate-card\[hidden\]\s*\{\s*display:\s*none;/);
+    expect(css).not.toMatch(/margin-top:\s*\d+vh/);
+    expect(css).not.toMatch(/\.cp-crate\.is-revealed\s*\{[^}]*place-items/);
+  });
+});
+
+describe('crate skip hint placement', () => {
+  const rect = (left: number, top: number, right: number, bottom: number): HintRect => ({
+    left,
+    top,
+    right,
+    bottom,
+  });
+  const intersects = (a: HintRect, b: HintRect) =>
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const swollen = (plaque: HintRect) => {
+    const half = ((plaque.bottom - plaque.top) * PLAQUE_SWELL) / 2;
+    const centre = (plaque.top + plaque.bottom) / 2;
+    return rect(plaque.left, centre - half, plaque.right, centre + half);
+  };
+  const HINT = { width: 150, height: 29 };
+  const hintBox = (top: number, viewportWidth: number) =>
+    rect(
+      (viewportWidth - HINT.width) / 2,
+      top,
+      (viewportWidth + HINT.width) / 2,
+      top + HINT.height,
+    );
+
+  /** Measured in seeded Demo Mode: the Vault plaque and the dock. */
+  const viewports = [
+    {
+      name: '390x844',
+      width: 390,
+      height: 844,
+      plaque: rect(97, 90.1, 293, 163.6),
+      dock: rect(16, 774, 374, 830),
+    },
+    {
+      name: '360x640',
+      width: 360,
+      height: 640,
+      plaque: rect(95, 90.1, 265, 153.6),
+      dock: rect(12, 574, 348, 626),
+    },
+    {
+      name: '844x390',
+      width: 844,
+      height: 390,
+      plaque: rect(325, 12, 519, 86),
+      dock: rect(198, 322, 646, 374),
+    },
+  ];
+
+  for (const viewport of viewports) {
+    it(`sits just above the dock and clear of the Vault at ${viewport.name}`, () => {
+      const top = placeSkipHint({
+        viewportHeight: viewport.height,
+        plaque: viewport.plaque,
+        base: viewport.dock.top,
+        hintHeight: HINT.height,
+      });
+      const box = hintBox(top, viewport.width);
+      expect(intersects(box, viewport.dock)).toBe(false);
+      expect(intersects(box, swollen(viewport.plaque))).toBe(false);
+      expect(viewport.dock.top - box.bottom).toBeGreaterThanOrEqual(SKIP_HINT_GAP);
+      expect(viewport.dock.top - box.bottom).toBeLessThan(SKIP_HINT_GAP + 1);
+    });
+  }
+
+  it('keeps clear of the dock even while the entrance lifts it into place', () => {
+    const top = placeSkipHint({ viewportHeight: 844, plaque: null, base: 774, hintHeight: 29 });
+    const entranceDrop = 8;
+    expect(top + 29 + entranceDrop).toBeLessThan(774);
+  });
+
+  it('never lands under the plaque when the dock leaves no room above it', () => {
+    const plaque = rect(325, 12, 519, 86);
+    const top = placeSkipHint({ viewportHeight: 390, plaque, base: 120, hintHeight: 29 });
+    expect(top).toBe(347);
+    expect(intersects(hintBox(top, 844), swollen(plaque))).toBe(false);
+  });
+
+  it('uses the viewport floor without a laid-out dock, and the top without a plaque', () => {
+    expect(placeSkipHint({ viewportHeight: 640, plaque: null, base: 0, hintHeight: 29 })).toBe(597);
+    expect(placeSkipHint({ viewportHeight: 640, plaque: null, base: 574, hintHeight: 29 })).toBe(
+      531,
+    );
+  });
+
+  it('dims the dock through the cinematic and breathes only with full motion', () => {
+    const css = readFileSync(new URL('./crates.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/\.cp-crate::before\s*\{[^}]*var\(--cp-crate-dock-top/);
+    expect(css).toMatch(/\.cp-crate-skip\s*\{[^}]*cp-crate-breathe/);
+    const reduced = /([^{}]*)\{\s*animation:\s*none;\s*\}/g;
+    const selectors = [...css.matchAll(reduced)].map((match) => match[1] ?? '').join(',');
+    expect(selectors).toContain(".cp-crate[data-motion='reduced'] .cp-crate-skip");
+  });
+
+  it('keeps the skip hint to one line on a 360 px phone in every language', () => {
+    for (const language of LANGUAGES) {
+      expect(CRATES_STRINGS[language].skip.length).toBeLessThanOrEqual(26);
+    }
+  });
+});
+
+describe('crateFlyOffset', () => {
+  const landedCentre = (
+    from: { left: number; top: number; width: number; height: number },
+    fly: { x: number; y: number },
+    scale: number,
+    originY: number,
+  ) => {
+    const untransformedHeight = from.height / scale;
+    const originX = from.left + from.width / 2;
+    const originTop = from.top + originY * from.height;
+    const centreFromOrigin = untransformedHeight / 2 - originY * untransformedHeight;
+    return {
+      x: originX + scale * fly.x,
+      y: originTop + scale * (fly.y + CARD_FLY_SCALE * centreFromOrigin),
+    };
+  };
+  const plaque = { left: 97, top: 90.1, width: 196, height: 73.5 };
+
+  for (const scale of [1, 0.6]) {
+    it(`lands the shrunken card centre on the target centre at scale ${scale}`, () => {
+      const from = { left: 25, top: 423, width: 340 * scale, height: 338.9 * scale };
+      const fly = crateFlyOffset(from, plaque, scale, 0);
+      const centre = landedCentre(from, fly, scale, 0);
+      expect(centre.x).toBeCloseTo(plaque.left + plaque.width / 2, 6);
+      expect(centre.y).toBeCloseTo(plaque.top + plaque.height / 2, 6);
+    });
+  }
+
+  it('lands on the target from a centre origin before the card is placed', () => {
+    const from = { left: 25, top: 200, width: 340, height: 338.9 };
+    const fly = crateFlyOffset(from, plaque, 1, 0.5);
+    const centre = landedCentre(from, fly, 1, 0.5);
+    expect(centre.x).toBeCloseTo(plaque.left + plaque.width / 2, 6);
+    expect(centre.y).toBeCloseTo(plaque.top + plaque.height / 2, 6);
+  });
+
+  it('treats a non-positive scale as unscaled', () => {
+    const from = { left: 0, top: 0, width: 100, height: 100 };
+    expect(crateFlyOffset(from, plaque, 0, 0)).toEqual(crateFlyOffset(from, plaque, 1, 0));
+  });
+
+  it('matches the shrink the fly keyframe ends on', () => {
+    const css = readFileSync(new URL('./crates.css', import.meta.url), 'utf8');
+    const fly = /@keyframes cp-crate-fly\s*\{[^@]*?scale\(([\d.]+)\)/.exec(css);
+    expect(Number(fly?.[1])).toBe(CARD_FLY_SCALE);
+  });
+});
+
 describe('UnboxDirector', () => {
   const FRAMING = { position: new Vector3(0, 0.5, 0.6), target: new Vector3(0, 0, -0.05), fov: 40 };
   const roll = (rarity: Roll['rarity']): Roll =>
@@ -378,6 +1066,7 @@ describe('UnboxDirector', () => {
     unbox.enqueue(opened('crate_AAAAAAAAAAAAAAAA'));
     expect(parent.children).toHaveLength(2);
     unbox.update(1.2);
+    unbox.update(0.1);
     unbox.collect();
     unbox.update(1);
     expect(unbox.active).toBeNull();
@@ -398,6 +1087,7 @@ describe('UnboxDirector', () => {
     unbox.enqueue(opened(BAD));
     unbox.enqueue(opened('crate_CCCCCCCCCCCCCCCC'));
     unbox.update(1.2);
+    unbox.update(0.1);
     unbox.collect();
     expect(() => {
       unbox.update(1);
@@ -424,7 +1114,7 @@ describe('crates against the Demo Mode server', () => {
     player = await connectPlayer(server, time);
   });
 
-  async function setup() {
+  async function setup(client: Pick<ApiClient, 'call'> = player.client) {
     const outbox = await Outbox.open(player.store, rethrow);
     const table = new TableSync({
       client: player.client,
@@ -469,7 +1159,7 @@ describe('crates against the Demo Mode server', () => {
       events.on(type, record(type));
     }
     events.on('crate:opened', ({ crateId, roll }) => opened.push({ crateId, roll }));
-    const controller = new CrateController({ table, client: player.client, sim, events });
+    const controller = new CrateController({ table, client, sim, events });
     let drops = 0;
     const falling: CoinId[] = [];
 
@@ -554,6 +1244,58 @@ describe('crates against the Demo Mode server', () => {
     expectConserved();
   });
 
+  async function openFtueCrate(game: Awaited<ReturnType<typeof setup>>) {
+    while (game.controller.riding.length === 0) await game.drop();
+    await game.play(CRATE_RIDE_SECONDS.max + 1);
+    const [first] = game.opened;
+    if (!first) throw new Error('Expected the FTUE crate to open');
+    return first;
+  }
+
+  it('reads the server album after an open with an album card and reports its set progress', async () => {
+    const game = await setup();
+    const albums: CrateEvents['crate:album'][] = [];
+    game.events.on('crate:album', (payload) => albums.push(payload));
+    game.events.on('crate:albumFailed', ({ error }) => rethrow(error));
+    const first = await openFtueCrate(game);
+    const cards = first.roll.rewards.flatMap((reward) =>
+      reward.kind === 'collectible' ? [reward.collectibleId] : [],
+    );
+    expect(cards.length).toBeGreaterThan(0);
+    expect(albums).toHaveLength(1);
+    const [report] = albums;
+    expect(report?.crateId).toBe(first.crateId);
+    const served = await player.client.call('album');
+    for (const id of cards) {
+      const set = served.sets.find((candidate) => candidate.entries.some((e) => e.id === id));
+      expect(report?.progress[id]).toEqual({
+        owned: set?.entries.filter((entry) => entry.owned).length,
+        total: set?.entries.length,
+      });
+      expect(report?.progress[id]?.owned).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('reports a failed album read without failing the crate', async () => {
+    const failure = new Error('album offline');
+    const client: Pick<ApiClient, 'call'> = {
+      call: ((...args: Parameters<ApiClient['call']>) =>
+        args[0] === 'album'
+          ? Promise.reject(failure)
+          : player.client.call(...args)) as ApiClient['call'],
+    };
+    const game = await setup(client);
+    const failed: unknown[] = [];
+    game.events.on('crate:albumFailed', ({ error }) => failed.push(error));
+    game.events.on('crate:album', () => {
+      throw new Error('Expected no album progress');
+    });
+    await openFtueCrate(game);
+    expect(failed).toEqual([failure]);
+    expect(game.log.some((entry) => entry.type === 'crate:failed')).toBe(false);
+    expectConserved();
+  });
+
   it('reports a crate the server already settled as rejected, and opens nothing', async () => {
     const game = await setup();
     while (game.controller.riding.length === 0) await game.drop();
@@ -605,7 +1347,7 @@ describe('crates against the Demo Mode server', () => {
     const rank = RARITIES.indexOf(forced.rarity);
     expect(forced.pity.exquisite).toBe(rank >= RARITIES.indexOf('exquisite') ? 0 : 4);
     expect(forced.pity.legendary).toBe(rank >= RARITIES.indexOf('legendary') ? 0 : 8);
-    expect(pityOutlook(forced.pity).within).toBeGreaterThan(0);
+    expect(pityOutlook(forced.pity)?.within).toBeGreaterThan(0);
 
     const next = await openNext();
     const nextRank = RARITIES.indexOf(next.rarity);
@@ -626,5 +1368,109 @@ describe('crates against the Demo Mode server', () => {
     for (let i = 0; i < crateSpawn.ftueScriptedDrop; i++) await game.drop();
     expect(game.log).toEqual([]);
     expect(game.controller.riding).toHaveLength(0);
+  });
+});
+
+describe('overlapping crate opens', () => {
+  const deck = album.find((set) => set.id === 'deckEssentials');
+  if (!deck) throw new Error('Expected the deckEssentials album set');
+  const albumWith = (owned: number): AlbumResponse => ({
+    sets: album.map((set) => ({
+      id: set.id as never,
+      entries: set.items.map((item, index) => ({
+        id: item.id as never,
+        kind: 'coinSkin' as const,
+        owned: set.id === deck.id && index < owned,
+        count: set.id === deck.id && index < owned ? 1 : 0,
+      })),
+      completed: false,
+    })),
+  });
+  const openedWithCard = () => ({
+    roll: RollSchema.parse({
+      rarity: 'fine',
+      rewards: [{ kind: 'collectible', collectibleId: 'teakDeckCoin' }],
+      proof: { serverSeedHash: 'a'.repeat(64), clientSeed: 'velvet', nonce: 1 },
+      pity: { rare: 0, exquisite: 0, legendary: 0 },
+    }),
+    wallet: WalletSchema.parse({
+      coins: 0,
+      bullion: 0,
+      goldBars: 0,
+      pearls: 0,
+      keys: 0,
+      tickets: 0,
+      stars: 0,
+    }),
+  });
+
+  interface Pending {
+    readonly endpoint: string;
+    readonly crateId: CrateId | undefined;
+    readonly resolve: (value: unknown) => void;
+  }
+
+  it('reads each crate’s album right after its own grant, in open order', async () => {
+    const pending: Pending[] = [];
+    const client: Pick<ApiClient, 'call'> = {
+      call: ((endpoint: string, options?: { body?: { crateId?: CrateId } }) =>
+        new Promise((resolve) => {
+          pending.push({ endpoint, crateId: options?.body?.crateId, resolve });
+        })) as unknown as ApiClient['call'],
+    };
+    const listeners: ((event: TableEvent) => void)[] = [];
+    const table = {
+      subscribe: (listener: (event: TableEvent) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      claimCrate: () => undefined,
+    };
+    const events = createBus<CrateEvents>();
+    const albums: { crateId: CrateId; owned: number | undefined }[] = [];
+    events.on('crate:album', ({ crateId, progress }) =>
+      albums.push({ crateId, owned: progress.teakDeckCoin?.owned }),
+    );
+    const controller = new CrateController({
+      table,
+      client,
+      sim: { stats: { tick: 0, pusherStroke: 0 } },
+      events,
+    });
+    const a = 'crate_AAAAAAAAAAAAAAAA' as CrateId;
+    const b = 'crate_BBBBBBBBBBBBBBBB' as CrateId;
+    controller.adopt([crate(a), crate(b)]);
+    for (let t = 0; t < CRATE_RIDE_SECONDS.max + 1; t += 1 / 30) controller.update(1 / 30);
+    expect(controller.riding).toHaveLength(0);
+    for (const crateId of [a, b]) {
+      const settled = {
+        type: 'claimSettled',
+        claim: { kind: 'crate', crateId, tick: 0, edge: 'front' },
+        result: { status: 'accepted' },
+      } as TableEvent;
+      for (const listener of listeners) listener(settled);
+    }
+    const flush = async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    };
+    const answer = async (endpoint: string, value: unknown) => {
+      await flush();
+      const next = pending.shift();
+      expect(next?.endpoint).toBe(endpoint);
+      next?.resolve(value);
+      await flush();
+      return next;
+    };
+
+    expect((await answer('cratesOpen', openedWithCard()))?.crateId).toBe(a);
+    expect(pending.map((call) => call.endpoint)).toEqual(['album']);
+    await answer('album', albumWith(3));
+    expect((await answer('cratesOpen', openedWithCard()))?.crateId).toBe(b);
+    await answer('album', albumWith(4));
+    await controller.settled();
+    expect(albums).toEqual([
+      { crateId: a, owned: 3 },
+      { crateId: b, owned: 4 },
+    ]);
   });
 });

@@ -85,20 +85,42 @@ async function unbox(page: Page, motion: 'full' | 'reduced'): Promise<Unboxed> {
   );
   await reviewShot(page, `crate-card-${motion}`);
 
+  const fair = reveal.getByTestId('crate-fair');
+  const commitment = (await fair.getAttribute('title')) ?? '';
+  expect(commitment, 'the seal shows the committed server seed hash').toMatch(/^[0-9a-f]{64}$/);
+  const nonce =
+    (await fair.locator('.cp-crate-fair-nonce').textContent())?.replace(/\D/g, '') ?? '';
+  expect(nonce, 'the seal shows the roll nonce').toMatch(/^\d+$/);
   const unboxed: Unboxed = {
     rarity: (await reveal.getAttribute('data-rarity')) ?? '',
-    fairness: (await reveal.locator('.cp-crate-fair').getAttribute('title')) ?? '',
+    fairness: `${commitment} · ${nonce}`,
   };
   expect(unboxed.rarity).not.toBe('');
-  expect(unboxed.fairness).toMatch(/^[0-9a-f]{16,} · \d+$/);
 
-  await collect.click();
-  await expect(reveal).toHaveClass(/is-collecting/);
-  const card = reveal.locator('.cp-crate-card');
-  const fly = await card.evaluate((el) => ({
-    x: el.style.getPropertyValue('--cp-crate-fly-x'),
-    y: el.style.getPropertyValue('--cp-crate-fly-y'),
-  }));
+  // The reduced-motion collect fade lasts 160 ms, shorter than a loaded runner's poll can
+  // reliably catch, so the collecting state is recorded the moment the class lands.
+  const [fly] = await Promise.all([
+    reveal.evaluate(
+      (root) =>
+        new Promise<{ x: string; y: string }>((resolve, reject) => {
+          const card = root.querySelector<HTMLElement>('.cp-crate-card');
+          if (!card) {
+            reject(new Error('The crate reveal has no .cp-crate-card to collect'));
+            return;
+          }
+          const observer = new MutationObserver(() => {
+            if (!root.classList.contains('is-collecting')) return;
+            observer.disconnect();
+            resolve({
+              x: card.style.getPropertyValue('--cp-crate-fly-x'),
+              y: card.style.getPropertyValue('--cp-crate-fly-y'),
+            });
+          });
+          observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+        }),
+    ),
+    collect.click(),
+  ]);
   if (motion === 'full') {
     expect(fly.x).toMatch(/^-?\d+px$/);
     expect(fly.y).toMatch(/^-?\d+px$/);

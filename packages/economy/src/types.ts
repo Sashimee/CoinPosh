@@ -219,6 +219,35 @@ export interface PacingTargetDef {
   readonly max?: number;
 }
 
+/** How a play style in the physics ladder fixture taps (sim/ladder.ts). */
+export const PLAY_STYLE_IDS = [
+  'casual',
+  'steady',
+  'aimed',
+  'aimedPinpoint',
+  'rapidScatter',
+  'rapid',
+  'rapidPinpoint',
+  'franticScatter',
+  'frantic',
+  'franticPinpoint',
+  'franticPour',
+  'overdrive',
+] as const;
+export type PlayStyleId = (typeof PLAY_STYLE_IDS)[number];
+
+/** Seconds until a play style first fuses a coin into `tier`, at `percentile` of seeds. */
+export interface LadderTargetDef {
+  readonly id: string;
+  readonly label: string;
+  readonly style: PlayStyleId;
+  readonly tier: CoinTierId;
+  readonly metric: 'activeSeconds';
+  readonly percentile: number;
+  readonly min?: number;
+  readonly max?: number;
+}
+
 export interface EconomyConfig {
   readonly currencies: readonly CurrencyDef[];
   readonly coinTiers: readonly CoinTierDef[];
@@ -308,4 +337,9 @@ export interface RateEnvelopeDerivation {
   readonly looseMaxCoins: number;
   /** A crate falls this many seconds after it spawns, uniformly. */
   readonly crateFallSeconds: { readonly min: number; readonly max: number };
+  /**
+   * Fastest sustained honest tapping. Physics-measured metrics (fusions) take the busiest
+   * window of every measured play style up to this cadence, Sommelier Pours included.
+   */
+  readonly honestTapsPerSecond: number;
 }

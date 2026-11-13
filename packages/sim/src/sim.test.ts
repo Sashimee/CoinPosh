@@ -1,9 +1,12 @@
+import { economyConfig, openingHeap } from '@coinposh/economy';
+import { COIN_TIERS } from '@coinposh/shared';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { COIN } from './coin.ts';
 import { FIXED_DT, SIM_VERSION, SOLVER, TICK_RATE_HZ } from './constants.ts';
 import type { SimInput } from './inputs.ts';
 import type { FusionEvent, FusionRules, MechanicsConfig } from './mechanics/index.ts';
 import { Sim, type SimEvents } from './sim.ts';
+import { FUSION_TUNING } from './mechanics/tuning.ts';
 import { DEFAULT_PUSHER_MOTION, type FallEvent, PUSHER, TABLE_SOLVER } from './table/index.ts';
 
 const TICKS = 3600;
@@ -188,8 +191,8 @@ describe('determinism', () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate SIM_VERSION bump.
-    expect(SIM_VERSION).toBe(4);
-    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"d715fa236eb0783f"`);
+    expect(SIM_VERSION).toBe(8);
+    expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"bdd732e82cbaab2c"`);
   });
 
   it('reports the same falls, at the same ticks, on both replays of the minute', async () => {
@@ -363,12 +366,24 @@ const MECHANICS: MechanicsConfig<string> = {
   tower: null,
 };
 
-/** What apps/web's sim worker runs (SIM_MECHANICS there): tiers, no fusion, no tower. */
+/** Tiers with no fusion and no tower: the table on its own, as the sim worker ran it before P-222. */
 const WORKER_MECHANICS: MechanicsConfig<string> = {
   tiers: ['copper', 'silver', 'gold', 'platinum', 'diamond', 'heirloom'],
   fusion: null,
   tower: null,
 };
+
+/** The Demo table as apps/web's sim worker runs it (SIM_MECHANICS there). */
+const DEMO_MECHANICS: MechanicsConfig<string> = {
+  tiers: COIN_TIERS,
+  fusion: {
+    inputCount: economyConfig.fusion.inputCount,
+    contactSeconds: economyConfig.fusion.contactSeconds,
+  },
+  tower: null,
+};
+const DEMO_SEED = 0xc0196051;
+const DEMO_DROPS = 30;
 
 /** A drop every 12 ticks, wandering across the middle 80 mm of the table. */
 function steadyDrops(tick: number): SimInput[] {
@@ -390,7 +405,7 @@ describe('nudge input', () => {
     expect(nudged[0]).toBe(plain[0]);
     expect(nudged[1]).not.toBe(plain[1]);
     // Changing this value breaks replay audits of every input log with a nudge in it.
-    expect(nudged[1]).toMatchInlineSnapshot(`"faccdb4d2e1e27ee"`);
+    expect(nudged[1]).toMatchInlineSnapshot(`"4df094d60c3198e0"`);
   });
 
   it('shoves the coins forward relative to a sim left alone', async () => {
@@ -483,15 +498,13 @@ describe('opening heap and mechanics', () => {
     expect(sim.step().mechanics).toEqual([]);
   });
 
-  it('lays a single-layer heap on a table that fuses, and a full one on a table that does not', () => {
+  it('lays the same full heap whether the table fuses or not, and keeps a tower pedestal bare', () => {
     const full = Sim.heapCapacity();
     expect(full).toBeGreaterThanOrEqual(110);
     expect(Sim.heapCapacity(WORKER_MECHANICS)).toBe(full);
-    expect(Sim.heapCapacity(MECHANICS)).toBeGreaterThan(50);
-    expect(Sim.heapCapacity(MECHANICS)).toBeLessThan(full);
-    expect(Sim.heapCapacity({ tiers: MECHANICS.tiers, fusion: FUSION })).toBeLessThan(
-      Sim.heapCapacity(MECHANICS),
-    );
+    expect(Sim.heapCapacity(MECHANICS)).toBe(full);
+    expect(Sim.heapCapacity({ tiers: MECHANICS.tiers, fusion: FUSION })).toBeLessThan(full);
+    expect(Sim.heapCapacity({ tiers: MECHANICS.tiers, fusion: FUSION })).toBeGreaterThan(50);
   });
 
   it('leaves a fresh heap on a table that fuses unfused until the pusher packs it', async () => {
@@ -558,6 +571,49 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"a7a02e90dd8c620f"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"78a2e6ac17f29895"`);
+  });
+
+  it('plays the Demo table with fusion: the heap holds until a silver wakes it, drops fuse, coins still fall', async () => {
+    const play = async (seed: number) => {
+      const sim = await Sim.create({ seed, mechanics: DEMO_MECHANICS, openingHeap });
+      live.push(sim);
+      const fusions: FusionEvent<string>[] = [];
+      const falls: FallEvent[] = [];
+      for (let tick = 0; tick < 60 * TICK_RATE_HZ; tick++) {
+        const second = tick / TICK_RATE_HZ;
+        const drop =
+          tick % TICK_RATE_HZ === 0 && second < DEMO_DROPS
+            ? [{ kind: 'dropCoin' as const, xMm: ((second * 17) % 41) - 20 }]
+            : [];
+        const events = sim.step(drop);
+        falls.push(...events.falls);
+        for (const event of events.mechanics) {
+          if (event.kind === 'fusion') {
+            fusions.push(event);
+          }
+        }
+      }
+      return { sim, fusions, falls };
+    };
+    for (const seed of [DEMO_SEED, 0x1234]) {
+      const { sim, fusions, falls } = await play(seed);
+      const heapFusions = fusions.filter((f) => f.ids.some((id) => id < openingHeap.coins));
+      expect(fusions.length, `seed ${seed}`).toBeGreaterThan(0);
+      const firstSilver = fusions.find((f) => f.into === 'silver')?.tick ?? 0;
+      for (const fusion of heapFusions) {
+        expect(fusion.tier, `seed ${seed}`).toBe(openingHeap.tier);
+        expect(fusion.tick, `seed ${seed}`).toBeGreaterThanOrEqual(
+          firstSilver + FUSION_TUNING.spawnGraceTicks,
+        );
+      }
+      expect(falls.filter((fall) => fall.edge === 'front').length, `seed ${seed}`).toBeGreaterThan(
+        0,
+      );
+      if (seed === DEMO_SEED) {
+        // Changing this value breaks replay audits of every Demo input log played with fusion.
+        expect(sim.hash()).toMatchInlineSnapshot(`"b38156d0f90afa3c"`);
+      }
+    }
   });
 });

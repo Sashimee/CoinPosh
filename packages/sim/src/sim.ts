@@ -7,6 +7,16 @@ import { TOWER_TUNING } from './mechanics/tuning.ts';
 import { Xoshiro128ss } from './prng.ts';
 import { loadRapier, type Rapier } from './rapier.ts';
 import {
+  type CoinPose,
+  dequantizePosition,
+  dequantizeRotation,
+  quantizePosition,
+  quantizeRotation,
+  SIM_SNAPSHOT_VERSION,
+  type SimTableSnapshot,
+} from './snapshot/snapshot.ts';
+import { validateSnapshot } from './snapshot/validate.ts';
+import {
   configureTableWorld,
   type ContactEvent,
   type FallEvent,
@@ -14,6 +24,7 @@ import {
   type HeapLayout,
   PusherTable,
   type PusherState,
+  type RestoreCoin,
   TABLE_SOLVER,
 } from './table/index.ts';
 
@@ -33,7 +44,38 @@ export interface SimOptions {
    * fuses. A config without `tower` stands one at TOWER_TUNING.placement; null for none.
    */
   readonly mechanics?: MechanicsConfig<string>;
+  /** Mutually exclusive with `restore`. */
   readonly openingHeap?: OpeningHeap;
+  /**
+   * A saved table to lay instead of an opening heap; see SimRestore. Refused on a Sim
+   * with a Champagne Tower.
+   */
+  readonly restore?: SimRestore;
+}
+
+/**
+ * One coin of a restored table. A `heapSlot` is a heap coin with no pose worth keeping:
+ * it is laid again at slot `slot` of the opening heap, as `openingHeap` lays it on a
+ * Sim with this seed and mechanics. `tier` is as for OpeningHeap.
+ */
+export type RestoreEntry =
+  | { readonly kind: 'pose'; readonly pose: CoinPose; readonly tier?: string }
+  | { readonly kind: 'heapSlot'; readonly slot: number; readonly tier?: string };
+
+/**
+ * A table to restore, from Sim.snapshot() and the heap. The Sim starts at tick 0 with a
+ * fresh PRNG, the pusher `pusherTickInCycle` ticks into its first cycle, and entry i as
+ * coin id i, every coin at rest velocity. Poses must pass validateSnapshot. A heap slot
+ * that overlaps a coin before it or the pusher is lifted clear and restores awake; an
+ * `asleep` pose restores asleep if something at rest below holds it (PusherTable.restore).
+ * Fusion streaks start over, and every restored coin is idle like the opening heap: it
+ * fuses only once a fresh coin of its tier wakes it (FUSION_TUNING.wakeFromTier).
+ * `restore` with every entry `heapSlot` 0..n − 1 lays the same table as
+ * `openingHeap: { coins: n }`.
+ */
+export interface SimRestore {
+  readonly pusherTickInCycle: number;
+  readonly coins: readonly RestoreEntry[];
 }
 
 /** What happened during one step, each event stamped with the tick after it. */
@@ -68,6 +110,10 @@ export interface CoinState {
   readonly id: number;
   readonly translation: Readonly<Vector>;
   readonly rotation: Readonly<Rotation>;
+  /**
+   * At rest (TableCoin.sleeping). A sleeping coin on the pusher top still rides the
+   * block, so its translation can change while it sleeps.
+   */
   readonly sleeping: boolean;
   /** Null on a Sim without mechanics. */
   readonly tier: string | null;
@@ -94,8 +140,10 @@ export class Sim {
   }
 
   /**
-   * The most coins `openingHeap` can ask for on a Sim made with `mechanics`. A Sim that
-   * fuses lays a single layer, and a tower keeps its pedestal bare, so both hold fewer.
+   * The most coins `openingHeap` can ask for on a Sim made with `mechanics`. A tower keeps
+   * its pedestal bare, so a Sim with one holds fewer. A Sim that fuses lays the same heap
+   * as one that does not: the heap is idle (FUSION_TUNING.freshTicks, wakeFromTier), so
+   * its second layer does not fuse with the coins it rests on until a fresh coin wakes it.
    */
   static heapCapacity(mechanics?: MechanicsConfig<string>): number {
     return PusherTable.heapCapacity(heapLayout(mechanics));
@@ -105,14 +153,53 @@ export class Sim {
     this.seed = options.seed;
     this.#rng = Xoshiro128ss.fromSeed(options.seed);
     this.#rapier = rapier;
-    this.#world = new rapier.World(GRAVITY);
-    configureTableWorld(this.#world);
-    this.#table = new PusherTable(rapier, this.#world);
     const config = options.mechanics;
-    this.#mechanics = config ? new TableMechanics(rapier, this.#world, this.#table, config) : null;
     this.#tiers = config ? config.tiers : null;
-    if (options.openingHeap) {
-      this.#placeHeap(options.openingHeap, config);
+    const { restore, openingHeap } = options;
+    if (restore && openingHeap) {
+      throw new RangeError('Sim: restore and openingHeap are mutually exclusive; pass one');
+    }
+    if (restore && config && config.tower !== null) {
+      throw new RangeError(
+        'Sim: restore refuses a Sim with a Champagne Tower; pass mechanics with tower: null',
+      );
+    }
+    const entries = restore
+      ? this.#restoreEntries(restore, config)
+      : openingHeap
+        ? this.#heapEntries(openingHeap)
+        : [];
+    const tiers = entries.map(({ tier }, i) =>
+      this.#ladderTier(tier, restore ? `restore.coins[${i}].tier` : 'openingHeap.tier'),
+    );
+    if (openingHeap) {
+      this.#ladderTier(openingHeap.tier, 'openingHeap.tier');
+    }
+    this.#world = new rapier.World(GRAVITY);
+    try {
+      configureTableWorld(this.#world);
+      this.#table = new PusherTable(rapier, this.#world, {
+        pusherTickInCycle: restore?.pusherTickInCycle ?? 0,
+      });
+      this.#mechanics = config
+        ? new TableMechanics(rapier, this.#world, this.#table, config)
+        : null;
+      const laid = this.#lay(entries, config);
+      const mechanics = this.#mechanics;
+      if (mechanics) {
+        mechanics.layCoins(
+          laid.map((id, i) => {
+            const tier = tiers[i];
+            if (tier === undefined || tier === null) {
+              throw new Error(`Sim: laid coin ${id} has no tier on a Sim with mechanics`);
+            }
+            return { id, tier };
+          }),
+        );
+      }
+    } catch (error) {
+      this.#world.free();
+      throw error;
     }
   }
 
@@ -158,6 +245,25 @@ export class Sim {
     return this.#table
       .coins()
       .map((coin) => ({ ...coin, tier: mechanics ? mechanics.tierOf(coin.id) : null }));
+  }
+
+  /**
+   * The table quantized for storage: the pusher's place in its cycle and every coin's
+   * pose and rest state, in ascending id order. Velocities are not kept; a restore
+   * starts every coin at rest. Tiers are the server's to keep.
+   */
+  snapshot(): SimTableSnapshot {
+    this.#assertLive();
+    return {
+      version: SIM_SNAPSHOT_VERSION,
+      pusherTickInCycle: this.#table.pusherTickInCycle,
+      coins: this.#table.coins().map((coin) => ({
+        id: coin.id,
+        p: quantizePosition(coin.translation),
+        q: quantizeRotation(coin.rotation),
+        rest: coin.sleeping ? 'asleep' : 'awake',
+      })),
+    };
   }
 
   /**
@@ -230,14 +336,107 @@ export class Sim {
     this.#world.free();
   }
 
-  #placeHeap(heap: OpeningHeap, config: MechanicsConfig<string> | undefined): void {
-    const tier = this.#resolveTier(heap.tier, 'openingHeap.tier');
-    if (tier !== null && !config?.tiers.includes(tier)) {
-      throw new RangeError(`Sim: openingHeap.tier "${tier}" is not in the tier ladder`);
+  #heapEntries(heap: OpeningHeap): RestoreEntry[] {
+    if (!Number.isInteger(heap.coins) || heap.coins < 0) {
+      throw new RangeError(
+        `Sim: openingHeap.coins must be a non-negative integer, got ${heap.coins}`,
+      );
     }
-    for (const id of this.#table.placeHeap(heap.coins, this.#rng, heapLayout(config))) {
-      this.#register(id, tier);
+    return Array.from({ length: heap.coins }, (_, slot) =>
+      heap.tier === undefined
+        ? { kind: 'heapSlot', slot }
+        : { kind: 'heapSlot', slot, tier: heap.tier },
+    );
+  }
+
+  /** Checks a restore before anything is built: any bad entry throws. */
+  #restoreEntries(
+    restore: SimRestore,
+    config: MechanicsConfig<string> | undefined,
+  ): readonly RestoreEntry[] {
+    if (!Array.isArray(restore.coins)) {
+      throw new TypeError('Sim: restore.coins must be an array of RestoreEntry');
     }
+    const entries: readonly RestoreEntry[] = restore.coins;
+    const poses = entries.flatMap((entry) => (entry.kind === 'pose' ? [entry.pose] : []));
+    const { dropped } = validateSnapshot({
+      version: SIM_SNAPSHOT_VERSION,
+      pusherTickInCycle: restore.pusherTickInCycle,
+      coins: poses,
+    });
+    if (dropped.length > 0) {
+      const reasons = dropped.map(({ id, reason }) => `${id}: ${reason}`).join(', ');
+      throw new RangeError(
+        `Sim: restore has poses validateSnapshot drops (${reasons}); filter them before restoring`,
+      );
+    }
+    const capacity = Sim.heapCapacity(config);
+    const slots = new Set<number>();
+    entries.forEach((entry, i) => {
+      if (entry.kind === 'pose') {
+        return;
+      }
+      const kind: unknown = entry.kind;
+      if (kind !== 'heapSlot') {
+        throw new TypeError(
+          `Sim: restore.coins[${i}].kind must be "pose" or "heapSlot", got ${JSON.stringify(kind)}`,
+        );
+      }
+      const { slot } = entry;
+      if (!Number.isInteger(slot) || slot < 0 || slot >= capacity) {
+        throw new RangeError(
+          `Sim: restore.coins[${i}].slot must be an integer in [0, ${capacity}), got ${slot}`,
+        );
+      }
+      if (slots.has(slot)) {
+        throw new RangeError(`Sim: restore.coins[${i}] repeats heap slot ${slot}`);
+      }
+      slots.add(slot);
+    });
+    return entries;
+  }
+
+  /** Lays `entries` on the empty table, heap slots from their own PRNG, and returns the ids. */
+  #lay(entries: readonly RestoreEntry[], config: MechanicsConfig<string> | undefined): number[] {
+    if (entries.length === 0) {
+      return [];
+    }
+    let slots = 0;
+    for (const entry of entries) {
+      if (entry.kind === 'heapSlot' && entry.slot >= slots) {
+        slots = entry.slot + 1;
+      }
+    }
+    const heap = this.#table.heapSlotPoses(
+      slots,
+      Xoshiro128ss.fromSeed(this.seed),
+      heapLayout(config),
+    );
+    const coins = entries.map((entry): RestoreCoin => {
+      if (entry.kind === 'pose') {
+        return {
+          translation: dequantizePosition(entry.pose.p),
+          rotation: dequantizeRotation(entry.pose.q),
+          asleep: entry.pose.rest === 'asleep',
+          lift: false,
+        };
+      }
+      const pose = heap[entry.slot];
+      if (!pose) {
+        throw new Error(`Sim: heap slot ${entry.slot} was not laid`);
+      }
+      return { ...pose, asleep: false, lift: true };
+    });
+    return this.#table.restore(coins);
+  }
+
+  /** The tier a coin is laid with: `tier`, or the lowest; it must be in the ladder. */
+  #ladderTier(tier: string | undefined, what: string): string | null {
+    const resolved = this.#resolveTier(tier, what);
+    if (resolved !== null && !this.#tiers?.includes(resolved)) {
+      throw new RangeError(`Sim: ${what} "${resolved}" is not in the tier ladder`);
+    }
+    return resolved;
   }
 
   #resolveTier(tier: string | undefined, what: string): string | null {
@@ -270,5 +469,5 @@ function heapLayout(config: MechanicsConfig<string> | undefined): HeapLayout {
     const { x, z } = config.tower ?? TOWER_TUNING.placement;
     keepClear.push({ x, z, radius: TOWER_TUNING.pedestalRadius });
   }
-  return { keepClear, secondLayer: !config?.fusion };
+  return { keepClear };
 }

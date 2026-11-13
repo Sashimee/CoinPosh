@@ -1,6 +1,10 @@
+import type { CrateId } from '@coinposh/shared';
 import type { Object3D, PerspectiveCamera } from 'three/webgpu';
 import type { UiApp } from '../../app/index.ts';
 import { createBus, type Bus } from '../../app/bus.ts';
+import type { UiState } from '../../app/state.ts';
+import { watch, type Store } from '../../app/store.ts';
+import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
 import type { CameraPreset } from '../../scene/venues/riviera/layout.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
@@ -11,7 +15,8 @@ import { CrateController, type CrateControllerOptions, type CrateSimPort } from 
 import type { CrateEvents } from './events.ts';
 import { bindArrivalHint, mountArrivalHint } from './hint.ts';
 import { registerCratesStrings } from './i18n.ts';
-import { mountCrateReveal } from './revealCard.ts';
+import type { AlbumProgressMap } from './loot.ts';
+import { mountCrateReveal, type CrateReveal } from './revealCard.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
 
 export interface CratesMountOptions {
@@ -39,6 +44,58 @@ export interface CratesMountOptions {
   readonly reducedMotion?: () => boolean;
 }
 
+const COLLECT = '[data-testid="crate-collect"]';
+
+/** Holds the unbox while any sheet is open and lets it go the moment the last one closes. */
+export function holdWhileSheetOpen(
+  store: Store<UiState>,
+  director: Pick<UnboxDirector, 'hold'>,
+): () => void {
+  return watch(
+    store,
+    (state) => state.panel !== null,
+    (open) => {
+      director.hold(open);
+    },
+  );
+}
+
+export interface KeyDocument {
+  addEventListener(type: 'keydown', listener: (event: KeyLike) => void): void;
+  removeEventListener(type: 'keydown', listener: (event: KeyLike) => void): void;
+}
+
+/** Escape while the reward card is up collects it, wherever focus sits. */
+export function bindEscapeCollect(
+  doc: KeyDocument,
+  options: { readonly ready: () => boolean; readonly collect: () => void },
+): () => void {
+  const onKeyDown = (event: KeyLike): void => {
+    if (event.key !== 'Escape' || event.defaultPrevented || !options.ready()) return;
+    event.preventDefault();
+    options.collect();
+  };
+  doc.addEventListener('keydown', onKeyDown);
+  return () => {
+    doc.removeEventListener('keydown', onKeyDown);
+  };
+}
+
+/** Presses the card's own Collect, so Escape gets the same fly, sound and haptic as a tap. */
+function pressCollect(reveal: CrateReveal): void {
+  const button = reveal.el.querySelector<HTMLElement>(COLLECT);
+  if (!button) throw new Error('CoinPosh crates: the reward card has no Collect button to press.');
+  button.click();
+}
+
+function holdReveal(reveal: CrateReveal, held: boolean): void {
+  reveal.el.inert = held;
+  reveal.el.style.visibility = held ? 'hidden' : '';
+  if (held) return;
+  const target = reveal.shown ? reveal.el.querySelector<HTMLElement>(COLLECT) : reveal.el;
+  target?.focus({ preventScroll: true });
+}
+
 export interface CratesModule {
   readonly events: Bus<CrateEvents>;
   readonly controller: CrateController;
@@ -58,6 +115,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   const reducedMotion = options.reducedMotion ?? isReducedMotion;
   const disposers: (() => void)[] = [];
   const table = new TableCrateView(options.stage.scene);
+  const albums = new Map<CrateId, AlbumProgressMap>();
+  const reveals = new Map<CrateId, CrateReveal>();
   const controller = new CrateController({
     table: options.net.table,
     client: options.net.client,
@@ -72,21 +131,47 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     reducedMotion,
     vfx: options.vfx ?? null,
     haptics: options.haptics ?? null,
-    card: (opened, controls) =>
-      mountCrateReveal({
+    card: (opened, controls) => {
+      const reveal = mountCrateReveal({
         ui: options.ui,
         host: options.host,
         rarity: opened.roll.rarity,
         roll: opened.roll,
+        album: albums.get(opened.crateId) ?? null,
         reducedMotion: reducedMotion(),
         inventoryTarget: options.inventoryTarget,
         onSkip: controls.skip,
         onCollect: controls.collect,
-      }),
+      });
+      reveals.set(opened.crateId, reveal);
+      const unbindEscape = bindEscapeCollect(reveal.el.ownerDocument, {
+        ready: () => reveal.shown && !director.held && reveals.get(opened.crateId) === reveal,
+        collect: () => {
+          pressCollect(reveal);
+        },
+      });
+      return {
+        get shown() {
+          return reveal.shown;
+        },
+        show: () => {
+          reveal.show();
+        },
+        hold: (held) => {
+          holdReveal(reveal, held);
+        },
+        dispose: () => {
+          unbindEscape();
+          reveal.dispose();
+        },
+      };
+    },
     onStart: (crateId) => {
       table.remove(crateId);
     },
   });
+
+  disposers.push(holdWhileSheetOpen(options.ui.store, director));
 
   const hint = mountArrivalHint({ ui: options.ui, host: options.host, reducedMotion });
   disposers.push(bindArrivalHint(events, hint), () => {
@@ -119,6 +204,14 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     events.on('crate:opened', ({ crateId, roll, wallet }) => {
       const at = table.landing(crateId) ?? trayLanding(0);
       director.enqueue({ crateId, roll, wallet, at });
+    }),
+    events.on('crate:album', ({ crateId, progress }) => {
+      albums.set(crateId, progress);
+      reveals.get(crateId)?.setAlbum(progress);
+    }),
+    events.on('crate:collected', ({ crateId }) => {
+      albums.delete(crateId);
+      reveals.delete(crateId);
     }),
     events.on('crate:rejected', ({ crateId }) => {
       table.remove(crateId);
@@ -153,6 +246,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       if (disposed) return;
       disposed = true;
       for (const off of disposers.splice(0)) off();
+      albums.clear();
+      reveals.clear();
       director.dispose();
       controller.dispose();
       table.dispose();

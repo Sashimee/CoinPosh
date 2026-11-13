@@ -3,6 +3,7 @@ import { COIN } from '../coin.ts';
 import { StateHasher } from '../hash.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { COIN_MATERIAL } from '../table/tuning.ts';
+import type { FusionRules } from './fusion.ts';
 import { type MechanicEvent, TableMechanics } from './mechanics.ts';
 import { MechanicsRig } from './rig.ts';
 import { FUSION_TUNING, TOWER_TUNING } from './tuning.ts';
@@ -14,11 +15,13 @@ const RESTING = 2 * (COIN.radius + COIN_MATERIAL.contactSkin);
 const LANE_Z = -0.17;
 const SEED = 0xf05e;
 /**
- * A pair is looked at on the ticks its lower id is due (FUSION_TUNING.sampleTicks), so
- * the contact of coins 0 and 1 starts on tick 3, the first tick due for id 0, and the
- * row fuses once it has lasted the fusion window from there.
+ * A coin registered before the first tick sits out FUSION_TUNING.spawnGraceTicks, and a
+ * pair is looked at on the ticks its lower id is due (FUSION_TUNING.sampleTicks). Grace
+ * 60 and period 3 put the first look at coins 0 and 1 on tick 60 and at coins 1 and 2 on
+ * tick 61, so the row's contact starts on tick 61 and it fuses once it has lasted the
+ * fusion window from there.
  */
-const FIRST_LOOK = FUSION_TUNING.sampleTicks;
+const FIRST_LOOK = FUSION_TUNING.spawnGraceTicks + 1;
 
 const live: MechanicsRig[] = [];
 
@@ -31,12 +34,13 @@ afterEach(() => {
 async function setUp(
   tower: boolean,
   moving = false,
+  fusion: FusionRules = FUSION,
 ): Promise<{ rig: MechanicsRig; mechanics: TableMechanics<Tier> }> {
   const rig = await MechanicsRig.create({ moving });
   live.push(rig);
   const mechanics = new TableMechanics(rig.rapier, rig.world, rig, {
     tiers: TIERS,
-    fusion: FUSION,
+    fusion,
     tower: tower ? TOWER_TUNING.placement : null,
   });
   return { rig, mechanics };
@@ -115,7 +119,7 @@ describe('Contact Fusion on the table', () => {
       tower: null,
     });
     placeRow(rig, mechanics, ['silver', 'silver', 'silver']);
-    const [fusion] = run(rig, mechanics, 60);
+    const [fusion] = run(rig, mechanics, FIRST_LOOK + 60);
     expect(mechanics.fusionTicks).toBe(36);
     expect(fusion).toMatchObject({
       kind: 'fusion',
@@ -133,6 +137,225 @@ describe('Contact Fusion on the table', () => {
     const first = run(rig, mechanics, FIRST_LOOK + ripeTicks(mechanics));
     expect(first.map((e) => e.kind === 'fusion' && e.into)).toEqual(['silver', 'silver', 'silver']);
     expect(rig.coins()).toHaveLength(3);
+  });
+
+  it('lets no coin fuse before its spawn grace is over', async () => {
+    const { rig, mechanics } = await setUp(false);
+    placeRow(rig, mechanics, ['copper', 'copper', 'copper']);
+    expect(run(rig, mechanics, FUSION_TUNING.spawnGraceTicks - 1)).toEqual([]);
+    expect(mechanics.fusionProgress()).toEqual([]);
+    run(rig, mechanics, FUSION_TUNING.sampleTicks + 1);
+    expect(mechanics.fusionProgress()).not.toEqual([]);
+  });
+
+  it('gives a fused coin a fresh spawn grace before it fuses again', async () => {
+    const { rig, mechanics } = await setUp(false);
+    placeRow(rig, mechanics, ['copper', 'copper', 'copper']);
+    for (const z of [LANE_Z - RESTING, LANE_Z + RESTING]) {
+      mechanics.registerCoin(rig.placeFlat(-0.05 + RESTING, z), 'silver');
+    }
+    const [first, ...none] = run(rig, mechanics, FIRST_LOOK + ripeTicks(mechanics));
+    expect(none).toEqual([]);
+    expect(first).toMatchObject({ kind: 'fusion', tier: 'copper', into: 'silver' });
+    const fusedAt = first?.tick ?? 0;
+    const [second, ...rest] = run(rig, mechanics, 3 * FUSION_TUNING.spawnGraceTicks);
+    expect(rest).toEqual([]);
+    expect(second).toMatchObject({ kind: 'fusion', tier: 'silver', into: 'gold' });
+    expect(second?.tick).toBeGreaterThanOrEqual(
+      fusedAt + FUSION_TUNING.spawnGraceTicks + ripeTicks(mechanics),
+    );
+  });
+
+  it('keeps laid coins settled while they stay on their level', async () => {
+    const { rig, mechanics } = await setUp(false);
+    const laid = [0, 1, 2].map((i) => ({
+      id: rig.placeFlat(-0.05 + i * RESTING, LANE_Z),
+      tier: 'copper' as const,
+    }));
+    mechanics.layCoins(laid);
+    expect(run(rig, mechanics, 5 * 60)).toEqual([]);
+    expect(rig.coins()).toHaveLength(3);
+    expect(laid.map(({ id }) => mechanics.tierOf(id))).toEqual(['copper', 'copper', 'copper']);
+  });
+
+  it('never fuses a laid coin, even once it drops a level', async () => {
+    const { rig, mechanics } = await setUp(false);
+    const ids = [0, 1, 2].map((i) => rig.placeFlat(-0.05 + i * RESTING, LANE_Z, 1));
+    mechanics.layCoins(ids.map((id) => ({ id, tier: 'copper' })));
+    expect(run(rig, mechanics, 10 * 60)).toEqual([]);
+    expect(rig.coins()).toHaveLength(3);
+    expect(mechanics.fusionProgress()).toEqual([]);
+  });
+
+  it('a third copper joins a fresh pair', async () => {
+    const { rig, mechanics } = await setUp(false);
+    const pair = placeRow(rig, mechanics, ['copper', 'copper']);
+    expect(
+      run(rig, mechanics, FUSION_TUNING.freshTicks - 2 * FUSION_TUNING.spawnGraceTicks),
+    ).toEqual([]);
+    const third = rig.placeFlat(-0.05 + 2 * RESTING, LANE_Z);
+    mechanics.registerCoin(third, 'copper');
+    const events = run(rig, mechanics, 3 * FUSION_TUNING.spawnGraceTicks + ripeTicks(mechanics));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'fusion', ids: [...pair, third], into: 'silver' });
+  });
+
+  it.each([
+    [1, false],
+    [1.5, true],
+  ])(
+    'keeps coins fresh for fusionWindow × %d: a copper placed as the base window shuts joins: %s',
+    async (fusionWindow, joins) => {
+      const { rig, mechanics } = await setUp(false, false, { ...FUSION, fusionWindow });
+      expect(mechanics.freshTicks).toBe(Math.ceil(FUSION_TUNING.freshTicks * fusionWindow));
+      expect(mechanics.fusionTicks).toBe(ripeTicks(mechanics));
+      const pair = placeRow(rig, mechanics, ['copper', 'copper']);
+      expect(run(rig, mechanics, FUSION_TUNING.freshTicks)).toEqual([]);
+      const third = rig.placeFlat(-0.05 + 2 * RESTING, LANE_Z);
+      mechanics.registerCoin(third, 'copper');
+      const events = run(rig, mechanics, 3 * FUSION_TUNING.spawnGraceTicks + ripeTicks(mechanics));
+      expect(events).toEqual(
+        joins ? [expect.objectContaining({ kind: 'fusion', ids: [...pair, third] })] : [],
+      );
+    },
+  );
+
+  it('rejects a fusionWindow that is not positive', async () => {
+    const rig = await MechanicsRig.create();
+    live.push(rig);
+    expect(
+      () =>
+        new TableMechanics(rig.rapier, rig.world, rig, {
+          tiers: TIERS,
+          fusion: { ...FUSION, fusionWindow: 0 },
+          tower: null,
+        }),
+    ).toThrow(/fusionWindow must be a positive number/);
+  });
+
+  /**
+   * A fresh coin at one end of a row of idle silvers. The row's coins get ids a multiple of
+   * FUSION_TUNING.sampleTicks apart, with laid golds (the top tier, which never touches
+   * anything) in between, so both of its contacts are looked at on the same tick and #wake
+   * sees them in one call, the fresh coin's first when it has the lowest id.
+   */
+  it.each([
+    ['lowest', true],
+    ['highest', false],
+  ])(
+    'wakes only the silver a fresh coin touches when the fresh coin has the %s id of the row',
+    async (_, freshFirst) => {
+      const { rig, mechanics } = await setUp(false);
+      const spots = [0, 1, 2].map((k) => -0.1 + k * RESTING);
+      const order = freshFirst ? spots : [...spots].reverse();
+      const row: number[] = [];
+      const golds: number[] = [];
+      order.forEach((x, k) => {
+        row.push(rig.placeFlat(x, LANE_Z));
+        if (k < order.length - 1) {
+          for (let j = 1; j < FUSION_TUNING.sampleTicks; j++) {
+            golds.push(rig.placeFlat(0.03 * golds.length, LANE_Z));
+          }
+        }
+      });
+      expect(row.map((id) => id % FUSION_TUNING.sampleTicks)).toEqual([0, 0, 0]);
+      const [fresh = -1, touched = -1, beyond = -1] = freshFirst ? row : [...row].reverse();
+      mechanics.registerCoin(fresh, 'silver');
+      mechanics.layCoins([
+        ...[touched, beyond].map((id) => ({ id, tier: 'silver' as const })),
+        ...golds.map((id) => ({ id, tier: 'gold' as const })),
+      ]);
+      const pairs = new Set<string>();
+      for (let i = 0; i < FUSION_TUNING.spawnGraceTicks + FUSION_TUNING.freshTicks; i++) {
+        expect(run(rig, mechanics, 1)).toEqual([]);
+        for (const { a, b } of mechanics.fusionProgress()) {
+          pairs.add(`${a}-${b}`);
+        }
+      }
+      expect([...pairs]).toEqual([`${Math.min(fresh, touched)}-${Math.max(fresh, touched)}`]);
+      expect(rig.coins().map(({ id }) => id)).toEqual(expect.arrayContaining(row));
+    },
+  );
+
+  /** Where a coin lies flat touching both coins of a pair laid by placeRow or nested. */
+  const NESTED = { x: -0.05 + RESTING / 2, z: LANE_Z + (RESTING * Math.sqrt(3)) / 2 };
+
+  /** An idle pair: laid before the first tick, or registered and left past its window. */
+  async function idlePair(tier: Tier, laid: boolean) {
+    const { rig, mechanics } = await setUp(false);
+    if (laid) {
+      const pair = [0, 1].map((i) => rig.placeFlat(-0.05 + i * RESTING, LANE_Z));
+      mechanics.layCoins(pair.map((id) => ({ id, tier })));
+      return { rig, mechanics, pair };
+    }
+    const pair = placeRow(rig, mechanics, [tier, tier]);
+    expect(run(rig, mechanics, FUSION_TUNING.spawnGraceTicks + FUSION_TUNING.freshTicks)).toEqual(
+      [],
+    );
+    return { rig, mechanics, pair };
+  }
+
+  it.each([
+    ['laid', true],
+    ['past its window', false],
+  ])('wakes an idle silver pair (%s) when a fresh silver lands on it', async (_, laid) => {
+    const { rig, mechanics, pair } = await idlePair('silver', laid);
+    expect(run(rig, mechanics, 10 * 60)).toEqual([]);
+    const placedOn = rig.tick + 1;
+    const third = rig.placeFlat(NESTED.x, NESTED.z);
+    mechanics.registerCoin(third, 'silver');
+    const events = run(
+      rig,
+      mechanics,
+      FUSION_TUNING.spawnGraceTicks + ripeTicks(mechanics) + 2 * FUSION_TUNING.sampleTicks,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'fusion', ids: [...pair, third], into: 'gold' });
+    expect(events[0]?.tick).toBeGreaterThanOrEqual(
+      placedOn + FUSION_TUNING.spawnGraceTicks + ripeTicks(mechanics),
+    );
+  });
+
+  it.each([
+    ['laid', true],
+    ['past its window', false],
+  ])('leaves an idle copper pair (%s) be when a fresh copper lands on it', async (_, laid) => {
+    const { rig, mechanics } = await idlePair('copper', laid);
+    const third = rig.placeFlat(NESTED.x, NESTED.z);
+    mechanics.registerCoin(third, 'copper');
+    expect(run(rig, mechanics, FUSION_TUNING.spawnGraceTicks + FUSION_TUNING.freshTicks)).toEqual(
+      [],
+    );
+    expect(rig.coins()).toHaveLength(3);
+  });
+
+  it('wakes only the coins a fresh coin touches, not the coins they touch', async () => {
+    const { rig, mechanics } = await setUp(false);
+    const row = [0, 1, 2, 3, 4].map((i) => rig.placeFlat(-0.05 + i * RESTING, LANE_Z));
+    mechanics.layCoins(row.map((id) => ({ id, tier: 'silver' })));
+    const fresh = rig.placeFlat(NESTED.x, NESTED.z);
+    mechanics.registerCoin(fresh, 'silver');
+    const events = run(rig, mechanics, 10 * 60);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'fusion', ids: [row[0], row[1], fresh], into: 'gold' });
+    expect(rig.coins().map(({ id }) => id)).toEqual(expect.arrayContaining(row.slice(2)));
+  });
+
+  it('lays coins only before the first step and only coins on the table', async () => {
+    const { rig, mechanics } = await setUp(false);
+    expect(() => {
+      mechanics.layCoins([{ id: 7, tier: 'copper' }]);
+    }).toThrow(/coin 7 is not on the table/);
+    const id = rig.placeFlat(0, LANE_Z);
+    mechanics.layCoins([{ id, tier: 'copper' }]);
+    expect(() => {
+      mechanics.layCoins([{ id, tier: 'copper' }]);
+    }).toThrow(/already registered/);
+    run(rig, mechanics, 1);
+    const late = rig.placeFlat(0.05, LANE_Z);
+    expect(() => {
+      mechanics.layCoins([{ id: late, tier: 'copper' }]);
+    }).toThrow(/use registerCoin/);
   });
 
   it('keeps every tier and fuses nothing without fusion rules', async () => {
@@ -213,8 +436,8 @@ class Session {
     this.#rng = Xoshiro128ss.fromSeed(seed);
   }
 
-  static async start(seed: number): Promise<Session> {
-    const { rig, mechanics } = await setUp(true, true);
+  static async start(seed: number, fusion: FusionRules = FUSION): Promise<Session> {
+    const { rig, mechanics } = await setUp(true, true, fusion);
     return new Session(rig, mechanics, seed);
   }
 
@@ -237,8 +460,12 @@ class Session {
   }
 }
 
-async function playSession(seed: number, ticks = 60 * 60): Promise<Session> {
-  const session = await Session.start(seed);
+async function playSession(
+  seed: number,
+  ticks = 60 * 60,
+  fusion: FusionRules = FUSION,
+): Promise<Session> {
+  const session = await Session.start(seed, fusion);
   for (let i = 0; i < ticks; i++) {
     session.step();
   }
@@ -279,6 +506,16 @@ describe('mechanics determinism', () => {
 
   it('pins the session state so a change to the mechanics is noticed', async () => {
     const { digests } = await playSession(SEED);
-    expect(digests.at(-1)).toMatchInlineSnapshot(`"5935d058d1943638"`);
+    expect(digests.at(-1)).toMatchInlineSnapshot(`"ea9d594fbf71f999"`);
+  });
+
+  it('replays and pins a session with the fusionWindow upgrade at its top level', async () => {
+    const upgraded = { ...FUSION, fusionWindow: 2 };
+    const a = await playSession(SEED, 60 * 60, upgraded);
+    const b = await playSession(SEED, 60 * 60, upgraded);
+    expect(b.digests).toEqual(a.digests);
+    expect(b.events).toEqual(a.events);
+    expect(a.digests.at(-1)).not.toBe('ea9d594fbf71f999');
+    expect(a.digests.at(-1)).toMatchInlineSnapshot(`"e03a2b8ca2026950"`);
   });
 });

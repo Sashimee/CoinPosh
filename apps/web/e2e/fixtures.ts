@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { test as base, expect, type Page } from '@playwright/test';
+import { test as base, expect, type Page, type TestInfo } from '@playwright/test';
 import { economyConfig } from '@coinposh/economy';
 import { GAME_URL, SCREENSHOT_DIR } from './env.ts';
 
@@ -87,6 +87,16 @@ const KNOWN_PAGE_ERRORS: readonly { readonly item: string; readonly message: str
   },
 ];
 
+/** `errors` minus the KNOWN_PAGE_ERRORS, each known one noted as an annotation on `testInfo`. */
+export function unexpectedErrors(errors: readonly string[], testInfo: TestInfo): string[] {
+  return errors.filter((error) => {
+    const known = KNOWN_PAGE_ERRORS.find((entry) => error.includes(entry.message));
+    if (!known) return true;
+    testInfo.annotations.push({ type: `known issue ${known.item}`, description: error });
+    return false;
+  });
+}
+
 interface Fixtures {
   /** Page errors and console errors, failing the test at teardown unless listed as known. */
   pageErrors: string[];
@@ -102,13 +112,7 @@ export const test = base.extend<Fixtures>({
       });
       await seedDemoMode(page, DEMO_SEED);
       await use(errors);
-      const unexpected = errors.filter((error) => {
-        const known = KNOWN_PAGE_ERRORS.find((entry) => error.includes(entry.message));
-        if (!known) return true;
-        testInfo.annotations.push({ type: `known issue ${known.item}`, description: error });
-        return false;
-      });
-      expect(unexpected, 'the page logged errors').toEqual([]);
+      expect(unexpectedErrors(errors, testInfo), 'the page logged errors').toEqual([]);
     },
     { auto: true },
   ],
@@ -127,9 +131,17 @@ export interface BootOptions {
   readonly query?: string;
 }
 
+/**
+ * The game URL for `query`. The game lands on WebGL2 here only because headless Chromium exposes
+ * no WebGPU adapter, so stage.ts falls back; boot.spec.ts asserts that fallback.
+ */
+export function gameUrl(query = ''): string {
+  return new URL(query, GAME_URL).href;
+}
+
 /** Opens the Demo Mode build and waits until the table takes drops. */
 export async function bootGame(page: Page, options: BootOptions = {}): Promise<void> {
-  await page.goto(GAME_URL + (options.query ?? ''));
+  await page.goto(gameUrl(options.query));
   await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
     timeout: 60_000,
   });

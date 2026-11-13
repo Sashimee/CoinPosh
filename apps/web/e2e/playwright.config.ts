@@ -14,9 +14,8 @@ const ci = Boolean(process.env.CI);
 
 /**
  * The suites run against the Demo Mode build (no `VITE_API_URL`) served by `vite preview`, the
- * same bundle GitHub Pages ships. `--base` repeats the Pages base because Vite resolves preview
- * with `command: 'serve'`, where vite.config.ts sets `/`. The crate harness is not part of the
- * build, so the dev server serves it from source.
+ * same bundle GitHub Pages ships, at the same root base `/`. The crate harness is not part of
+ * the build, so the dev server serves it from source.
  *
  * Chromium is pinned to WebGL2 on SwiftShader: CI runners have no GPU, and the perf budgets in
  * budgets.ts are calibrated for exactly that rasteriser.
@@ -53,7 +52,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `node node_modules/vite/bin/vite.js preview --base /CoinPosh/ --host 127.0.0.1 --port ${PREVIEW_PORT} --strictPort`,
+      command: `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${PREVIEW_PORT} --strictPort`,
       cwd: APP_DIR,
       url: GAME_URL,
       reuseExistingServer: false,

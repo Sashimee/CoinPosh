@@ -1,0 +1,60 @@
+P-333 rework · tuning evidence (economy sim + physics ladder, seed 1, 100 players, 7 casual days)
+Regenerate the shipped report with: pnpm --filter @coinposh/economy sim --ladder
+
+1. fusionShare: calibrated on aimed play (1/s, ±40 mm), not on whole-chute taps
+   Measured fusion bonus per drop (ladderRuns, 10 seeds × 300 s) and the fusionShare that
+   reproduces it (bonus / (baseReturnRatio 1.25 × (bonusMultiplier 1.25 − 1))):
+     0.8/s, whole chute   0.0175  -> 0.056
+     1/s,   whole chute   0.0307  -> 0.098
+     1/s,   ±40 mm        0.2417  -> 0.773   <- shipped (simModel.fusionShare 0.773)
+     1/s,   one spot      0.2027  -> 0.649
+   The reticle teaches aiming, so the pacing bands are judged on the most-fusing style at
+   the model's cadence; ladder.test.ts reruns the pacing targets for all four.
+
+2. Venue bullion thresholds: V1 2 800 -> 4 400, V2 20 000 -> 28 000 (V3+ × 1.4)
+   Pacing at each cadence style's fusionShare (Ascend V1 active p50 [p10..p90 casual day]):
+     thresholds 2 800 / 20 000
+       fs 0.056  V1 3.16 h  casual day 1.50          V2/V1 ×1.71  season 28.3 h
+       fs 0.098  V1 3.10 h  casual day 1.50          V2/V1 ×1.71  season 28.3 h
+       fs 0.649  V1 2.47 h MISS  casual day 1.50     V2/V1 ×1.68  season 28.2 h
+       fs 0.773  V1 2.36 h MISS  casual day 1.02 MISS V2/V1 ×1.69 season 28.2 h
+     thresholds 4 400 / 28 000 (shipped)
+       fs 0.056  V1 4.44 h  casual day 2.00          V2/V1 ×1.64  season 28.4 h
+       fs 0.098  V1 4.35 h  casual day 2.00          V2/V1 ×1.64  season 28.4 h
+       fs 0.649  V1 3.46 h  casual day 1.50          V2/V1 ×1.62  season 28.3 h
+       fs 0.773  V1 3.29 h  casual day 1.50          V2/V1 ×1.62  season 28.3 h
+   Targets: V1 active 3-5 h, casual day 1.5-2.5, V2/V1 ×1.4-1.8, season 25-35 h. Only the
+   new thresholds keep every honest cadence style in band (28/28 in P-333-sim-ladder.txt).
+   First album set stays ~15 min in all of them.
+
+3. Rate envelope base limits (rateEnvelope.test.ts derives them; config.ts ships them)
+   drops 110 -> 115, falls 300, fallValue 477 -> 1 252, fusions 127, crates 24 -> 28.
+   - The burst model now runs once per cadence style's fusionShare and keeps the highest
+     p99.9 × 1.25. Whole-chute play fuses least and drops the most separate coins, so it
+     keeps falls at 300 (aimed alone would give 164 and flag casual players). drops and
+     crates move only by sampling across four style cohorts.
+   - fallValue also takes the physics ladder's busiest 30 s for every style ≤ 3 taps/s:
+     3/s one spot peaks at 1 001 (rapidPinpoint 643), so 1 001 × 1.25 = 1 252. The old 517
+     and 477 flagged honest 2-3 taps/s play.
+   - fallValue fusionWindow elasticity 0.014 -> 0.162 = 0.773 × 0.25 / (1 + 0.773 × 0.25).
+
+4. Ladder fixture still matches packages/sim (SIM_VERSION 8, after P-332)
+   Independent rebuild, server-stored value (a fused coin = inputs × 1.25):
+     franticPinpoint s1  fusions 406 = 406  busiest 60 s 87 = 87  frontValue 1 435 = 1 435
+     franticPinpoint s2  fusions 416 = 416  busiest 60 s 89 = 89  frontValue 1 355 = 1 355
+     rapidPinpoint  s1   fusions 263 = 263  busiest 60 s 60 = 60  frontValue   864 =   864
+     rapidPinpoint  s2   fusions 269 = 269  busiest 60 s 62 = 62  frontValue 1 088 = 1 088
+     aimed          s1   identical counts, first silver 4.4 s vs 4.5 s
+   ladder.test.ts now fails when SIM_VERSION, FUSION_TUNING, the opening heap or the fusion
+   rule stop matching ladderMeasurement.
+
+5. fusionWindow 2 (the max fusionWindow stat) against the envelope's elasticities
+   busiest 60 s fusions, fusionWindow 1 max (10 seeds) -> fusionWindow 2 (seeds 1-3):
+     3/s whole chute 65 -> 86/85/84      3/s + Pours 101 -> 113/114/112
+     2/s whole chute 32 -> 51/51/50      3/s one spot  90 -> 92/90/91
+     2/s one spot    62 -> 61/64         1/s whole chute 9 -> 20/21/18
+     1/s ±40 mm      23 -> 31/30/30
+   Every one stays under the base limit 127, let alone 127 × 2 = 254, so fusions scaleBy
+   fusionWindow 1 has room. Busiest 30 s stored front value falls at fusionWindow 2
+   (3/s one spot 483/478 -> 314/240, 2/s one spot 302/589 -> 206/347): coins fuse
+   instead of falling, so the 0.162 fallValue elasticity is not exceeded.

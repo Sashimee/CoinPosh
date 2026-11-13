@@ -1,8 +1,11 @@
 import type { MintedCoin, StateResponse } from '@coinposh/shared';
+import type { Object3D } from 'three/webgpu';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
+import type * as CratesApi from './game/crates/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
+import { mountUpgrades, netUpgradeApi } from './game/upgrades/index.ts';
 import type * as SimWorkerModule from './game/simWorker/index.ts';
 import type {
   OpeningHeap,
@@ -13,21 +16,32 @@ import type {
 import { LANGUAGES, type I18n, type ResourceTree } from './i18n/index.ts';
 import {
   createNet,
+  currentNetMode,
   mountDemoBanner,
   NET_I18N_KEYS,
   NET_I18N_SOURCE,
+  openingTableCoins,
   type DemoBannerColors,
   type Net,
+  type NetMode,
 } from './net/index.ts';
+import { currentTurnstileSiteKey } from './net/env.ts';
 import type { CoinField, CoinTierId } from './scene/coins/index.ts';
 import { rivieraTokens } from './scene/venues/riviera/palette.ts';
 import type * as RivieraModule from './scene/venues/riviera/index.ts';
 import type { RivieraVenue } from './scene/venues/riviera/index.ts';
 import type { Stage } from './stage.ts';
+import {
+  announcementHoldFor,
+  holdTierVoice,
+  type AnnouncementHold,
+} from './ui/components/announcementHold.ts';
+import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
+import { Haptics } from './vfx/haptics.ts';
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
@@ -47,6 +61,9 @@ const COIN_CAPACITY: Readonly<Record<CoinTierId, number>> = {
  * TODO(lead-architect): seed the sim from the server table session once the API exposes one.
  */
 const TABLE_SEED = 0xc0196051;
+
+/** The longest the stage waits for the sim to be ready, so a slow worker download never blanks the table. */
+const SIM_HEAD_START_MS = 1500;
 
 /** Waits between attempts to load the player's table at boot, doubling up to the ceiling. */
 const STATE_RETRY = { firstDelayMs: 1000, maxDelayMs: 30_000 } as const;
@@ -109,6 +126,9 @@ interface ProbeCounts {
   creditedCoins: number;
   /** Fall claims the server refused, by reason; `unanswered` when the request itself failed. */
   refusedFalls: Record<string, number>;
+  cratesSpawned: number;
+  cratesOpened: number;
+  cratesCollected: number;
 }
 
 declare global {
@@ -129,6 +149,9 @@ const probe: { bridge: SimBridge | null; playable: boolean; counts: ProbeCounts 
     credits: 0,
     creditedCoins: 0,
     refusedFalls: {},
+    cratesSpawned: 0,
+    cratesOpened: 0,
+    cratesCollected: 0,
   },
 };
 window.__coinposh = {
@@ -179,7 +202,7 @@ const hydrated = netReady
     return null;
   });
 
-void bootScene(canvas, netReady, hydrated);
+void bootScene(canvas, hydrated);
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
 // unlock the context and the track starts without a render hitch.
@@ -202,14 +225,12 @@ async function bootAudio(app: UiApp): Promise<void> {
  */
 async function bootNet(app: UiApp): Promise<Net> {
   registerNetStrings(app.i18n);
+  const mode = currentNetMode();
+  const turnstileToken = await bootTurnstile(app, mode);
   const net = await createNet({
+    mode,
     locale: () => app.i18n.language,
-    turnstileToken: () =>
-      Promise.reject(
-        new Error(
-          'CoinPosh net: Cloudflare Turnstile is not wired into the web app yet, so live guest sign-up cannot run; build without VITE_API_URL for Demo Mode.',
-        ),
-      ),
+    turnstileToken,
     onError: (error) => {
       console.error('CoinPosh net error.', error);
     },
@@ -229,11 +250,50 @@ async function bootNet(app: UiApp): Promise<Net> {
   return net;
 }
 
+/**
+ * Demo Mode never asks for a Turnstile token, so the loader and its overlay are imported only in
+ * live mode and stay out of the Pages bundle.
+ */
+async function bootTurnstile(app: UiApp, mode: NetMode): Promise<() => Promise<string>> {
+  if (mode.kind !== 'live') {
+    return () =>
+      Promise.reject(
+        new Error(
+          'CoinPosh net: Turnstile was asked for a token in Demo Mode. Demo sign-up uses local tokens; this is a wiring bug.',
+        ),
+      );
+  }
+  const [{ createTurnstile }, { mountTurnstileOverlay }] = await Promise.all([
+    import('./net/turnstile.ts'),
+    import('./ui/turnstile/overlay.ts'),
+  ]);
+  const turnstile = createTurnstile({
+    mode,
+    siteKey: currentTurnstileSiteKey(),
+    language: () => app.i18n.language,
+    host: () =>
+      mountTurnstileOverlay({
+        document,
+        translate: (key) => app.i18n.t(key),
+        onLanguageChanged: (relabel) => app.i18n.onLanguageChanged(relabel),
+        feedback: (kind) => {
+          app.bus.emit('ui:feedback', { kind });
+        },
+      }),
+  });
+  teardown.push(() => {
+    turnstile.dispose();
+  });
+  return () => turnstile.token();
+}
+
 /** The net layer once the player's table snapshot has been adopted. */
 interface NetBoot {
   readonly net: Net;
   readonly state: StateResponse;
   readonly vault: VaultTracker;
+  /** Re-reads the table from the server, for a wallet change TableSync did not see. */
+  readonly resync: (reason: string) => void;
 }
 
 /**
@@ -245,22 +305,74 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   const vault = trackVault(app, net.table, state);
   net.table.hydrate(state);
   app.setUpgradeLevels(state.venue.upgrades);
-  const resyncWhenShown = (): void => {
-    if (document.visibilityState !== 'visible') return;
+  const resync = (reason: string): void => {
     net.table.resume().then(
       () => {
         vault.resumed();
       },
       (error: unknown) => {
-        console.error('CoinPosh net: the table did not resync after the tab came back.', error);
+        console.error(`CoinPosh net: the table did not resync after ${reason}.`, error);
       },
     );
+  };
+  mountUpgradePurchases(net, app, state, () => {
+    resync('an upgrade purchase');
+  });
+  const resyncWhenShown = (): void => {
+    if (document.visibilityState !== 'visible') return;
+    resync('the tab came back');
   };
   document.addEventListener('visibilitychange', resyncWhenShown);
   teardown.push(() => {
     document.removeEventListener('visibilitychange', resyncWhenShown);
   });
-  return { net, state, vault };
+  return { net, state, vault, resync };
+}
+
+/**
+ * Turns the upgrades panel's confirms into server purchases. The Vault plaque counts the drop
+ * buffer on top of the wallet, so a purchase re-reads the table instead of showing the bare
+ * wallet the purchase returns. Stale levels re-read the state without `hydrate=boot`, which
+ * would refund the coins in play.
+ */
+function mountUpgradePurchases(
+  net: Net,
+  app: UiApp,
+  state: StateResponse,
+  walletChanged: () => void,
+): void {
+  const upgrades = mountUpgrades({
+    ui: {
+      store: app.store,
+      bus: app.bus,
+      i18n: app.i18n,
+      bannerSlot: app.bannerSlot,
+      onUpgradeRequest: (handler) => app.onUpgradeRequest(handler),
+      resolveUpgrade: (levels) => {
+        app.resolveUpgrade(levels);
+      },
+      setWallet: walletChanged,
+    },
+    api: netUpgradeApi(net.client),
+    venueId: state.venue.id,
+    audio: () => audio,
+    refresh: () => {
+      net.client.call('state').then(
+        (fresh) => {
+          app.setUpgradeLevels(fresh.venue.upgrades);
+        },
+        (error: unknown) => {
+          console.error('CoinPosh net: the upgrade levels did not refresh.', error);
+        },
+      );
+    },
+    onError: (error) => {
+      console.error('CoinPosh net: an upgrade purchase failed.', error);
+    },
+  });
+  teardown.push(() => {
+    upgrades.dispose();
+  });
 }
 
 /**
@@ -276,7 +388,7 @@ async function loadState(net: Net, app: UiApp): Promise<StateResponse> {
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await net.client.call('state');
+        return await net.client.call('state', { query: { hydrate: 'boot' } });
       } catch (error) {
         if (stopped.signal.aborted) throw error;
         const delayMs = Math.min(STATE_RETRY.firstDelayMs * 2 ** attempt, STATE_RETRY.maxDelayMs);
@@ -430,40 +542,62 @@ function registerNetStrings(i18n: I18n): void {
 }
 
 /**
- * Play starts once the table is hydrated and the first frame is drawn. In Demo Mode the sim opens
- * on the heap the server minted, so it pays out from the first shove. Until play starts the
+ * Play starts once the table is hydrated and the first frame is drawn. The sim opens on the heap
+ * the server minted, so it pays out from the first shove. Until play starts the
  * bridge draws the coins and a tap on the table answers with the tap cue.
  */
 async function bootScene(
   target: HTMLCanvasElement,
-  netReady: Promise<Net | null>,
   hydrated: Promise<NetBoot | null>,
 ): Promise<void> {
   let stage: Stage;
   let riviera: typeof RivieraModule;
   let systemsModule: typeof SystemsModule;
   let vfxModule: typeof VfxModule;
+  let cratesApi: typeof CratesApi;
   let sim: StartedSim;
   let started: StartedSim | undefined;
   let built: Stage | undefined;
   const pending: Promise<unknown>[] = [];
   const stopEarlyTaps = answerEarlyTaps(target.id);
   try {
-    const [stageModule, venueModule, simModule, gameSystems, effects] = await Promise.all([
+    const simModuleLoaded = import('./game/simWorker/index.ts');
+    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
+    const simStarted = Promise.all([simModuleLoaded, openingTable(hydrated)]).then(
+      ([simModule, heap]) => {
+        started = startSim(simModule, heap);
+        return started;
+      },
+    );
+    pending.push(simStarted);
+    // A failed start is already logged and kept in `bridge.failure`; the mark only times success.
+    const simReady = simStarted
+      .then((early) => early.bridge.ready)
+      .then(
+        () => {
+          markBoot('sim-ready');
+        },
+        () => undefined,
+      );
+    const [stageModule, venueModule, simModule, gameSystems, effects, crates] = await Promise.all([
       import('./stage.ts'),
       import('./scene/venues/riviera/index.ts'),
-      import('./game/simWorker/index.ts'),
+      simModuleLoaded,
       import('./game/systems/index.ts'),
       import('./vfx/index.ts'),
+      import('./game/crates/index.ts'),
     ]);
+    markBoot('modules');
     riviera = venueModule;
     systemsModule = gameSystems;
     vfxModule = effects;
-    // The sim opens on the server's heap, so it waits for hydration; the GPU need not.
-    const simStarted = openingTable(netReady, hydrated).then((heap) => {
-      started = startSim(simModule, heap);
-      return started;
-    });
+    cratesApi = crates;
+    // On a software GPU the stage's first frames hold the main thread for seconds, and a worker's
+    // first messages wait for the main thread, so Rapier gets a bounded head start before them.
+    await Promise.race([
+      simReady,
+      new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
+    ]);
     const stageBuilt = stageModule
       .createStage(target, {
         look: riviera.RIVIERA_RENDER_LOOK,
@@ -471,10 +605,11 @@ async function bootScene(
         coins: { capacity: COIN_CAPACITY, radius: simModule.SIM_COIN_DIMENSIONS.radius },
       })
       .then((created) => {
+        markBoot('stage');
         built = created;
         return created;
       });
-    pending.push(simStarted, stageBuilt);
+    pending.push(stageBuilt);
     [stage, sim] = await Promise.all([stageBuilt, simStarted]);
     teardownStage(stage);
   } catch (error) {
@@ -499,9 +634,10 @@ async function bootScene(
     console.error('CoinPosh boot failed: the Riviera venue could not load.', error);
     return;
   }
+  markBoot('venue');
+  const revealVenue = holdBackVenue(venue.root);
   attachVenue(stage, venue, riviera.applyCameraPreset);
   stage.castCoinShadowsFrom(venue.lighting.key);
-  const table = attachTable(stage, venue, bridge);
   watchReducedMotion((reduced) => {
     venue.setReducedMotion(reduced);
     stage.coins.setReducedMotion(reduced);
@@ -512,23 +648,26 @@ async function bootScene(
   const vfx = attachVfx(stage, vfxModule);
   const boot = await hydrated;
   const simBacklog = takeEarlyEvents();
-  if (!boot || bridge.failure) return;
+  if (!boot || bridge.failure) {
+    revealVenue();
+    attachTable(stage, venue, bridge);
+    return;
+  }
   stopEarlyTaps();
-  table.use(startPlay(systemsModule, stage, bridge, boot, { heap, simBacklog, vfx }));
+  const systems = startPlay(systemsModule, stage, bridge, boot, { heap, simBacklog, vfx });
+  mountTableCrates(cratesApi, { stage, venue, bridge, boot, systems, vfx });
+  // Shown only now that crates have added the unbox light: a light added later changes every lit
+  // shader, so a venue drawn before it would have every program linked twice.
+  revealVenue();
+  attachTable(stage, venue, bridge).use(systems);
   probe.playable = true;
+  markBoot('playable');
 }
 
-/**
- * The coins the server says are already on the table. Demo Mode's server mints the opening heap
- * there; live mode opens on an empty sim table, since nothing seeds the sim from the server's.
- * TODO(lead-architect): lay the live table's coins too once the API hands out a table seed.
- */
-async function openingTable(
-  netReady: Promise<Net | null>,
-  hydrated: Promise<NetBoot | null>,
-): Promise<readonly MintedCoin[]> {
-  if ((await netReady)?.mode.kind !== 'demo') return [];
-  return (await hydrated)?.state.table.coins ?? [];
+/** The opening heap the server minted onto the table, in every net mode. */
+async function openingTable(hydrated: Promise<NetBoot | null>): Promise<readonly MintedCoin[]> {
+  const boot = await hydrated;
+  return boot === null ? [] : openingTableCoins(boot.state);
 }
 
 function openingHeapOf(coins: readonly MintedCoin[]): OpeningHeap | null {
@@ -667,17 +806,18 @@ function startPlay(
     net: { table: boot.net.table, clock: boot.net.clock },
     ui,
     canvas: () => stage.canvas,
-    upgradeLevels: boot.state.venue.upgrades,
     simBacklog: start.simBacklog,
     openingHeap: start.heap,
   });
   teardown.push(() => {
     systems.dispose();
   });
+  const comboAudio = holdComboFlourish(() => audio, announcementHoldFor(ui.store));
+  teardown.push(comboAudio.dispose);
   teardown.push(
     systemsModule.wireFeedback(systems.events, {
       vfx: () => start.vfx,
-      audio: () => audio,
+      audio: comboAudio.port,
       vault,
     }),
   );
@@ -710,6 +850,145 @@ function startPlay(
   return systems;
 }
 
+/**
+ * The audio the gameplay feedback plays through, with the cascade's tier flourish kept to the
+ * HUD's announcement hold.
+ */
+function holdComboFlourish(
+  audio: () => AudioEngine | null,
+  hold: AnnouncementHold,
+): { port: () => SystemsModule.FeedbackAudio | null; dispose: () => void } {
+  const tiers = holdTierVoice(audio, hold);
+  const port: SystemsModule.FeedbackAudio = {
+    playImpact(event) {
+      audio()?.playImpact(event);
+    },
+    comboStep(step) {
+      audio()?.comboStep(step);
+    },
+    setComboTier(tier) {
+      tiers.setComboTier(tier);
+    },
+    duckMusic(options) {
+      audio()?.duckMusic(options);
+    },
+  };
+  return {
+    port: () => (audio() ? port : null),
+    dispose: () => {
+      tiers.dispose();
+    },
+  };
+}
+
+const CRATE_REVEAL = '[data-testid="crate-reveal"]';
+/** The reveal leaves on the effect clock, which a hit-stop or a starved frame rate stretches. */
+const CRATE_REVEAL_EXIT_CAP_MS = 4000;
+
+/** Calls `done` once the crate reveal has left `host`, at once when none is up; returns a cancel. */
+function afterCrateRevealExit(host: HTMLElement, done: () => void): () => void {
+  const reveal = host.querySelector(CRATE_REVEAL);
+  if (!reveal) {
+    done();
+    return () => undefined;
+  }
+  const stop = (): void => {
+    observer.disconnect();
+    clearTimeout(cap);
+  };
+  const observer = new MutationObserver(() => {
+    if (reveal.isConnected) return;
+    stop();
+    done();
+  });
+  observer.observe(host, { childList: true });
+  const cap = setTimeout(() => {
+    console.warn(
+      `CoinPosh crates: the reveal stayed up ${CRATE_REVEAL_EXIT_CAP_MS} ms after collect; HUD announcements resume over it.`,
+    );
+    stop();
+    done();
+  }, CRATE_REVEAL_EXIT_CAP_MS);
+  return stop;
+}
+
+interface CrateWiring {
+  readonly stage: Stage;
+  readonly venue: RivieraVenue;
+  readonly bridge: SimBridge;
+  readonly boot: NetBoot;
+  readonly systems: GameSystems;
+  readonly vfx: Vfx | null;
+}
+
+/**
+ * Vault Crates on the table: the server spawns them with drops, they ride the pusher to the lip,
+ * and a fall is claimed, opened by the server and played as the unbox. Crates already on the
+ * table when the session loads ride from where the snapshot left them. The reward card flies
+ * into the Vault plaque, and the plaque re-reads the server wallet once the player collects.
+ * Crates are a bonus on top of play, so a failure to mount them is logged, not fatal.
+ */
+function mountTableCrates(cratesApi: typeof CratesApi, wiring: CrateWiring): void {
+  const { stage, venue, bridge, boot, systems, vfx } = wiring;
+  const haptics = new Haptics(typeof navigator === 'undefined' ? undefined : navigator, () =>
+    performance.now(),
+  );
+  haptics.enabled = ui.store.getState().settings.haptics;
+  let crates: CratesApi.CratesModule;
+  try {
+    crates = cratesApi.mountCrates({
+      game: systems.events,
+      net: { table: boot.net.table, client: boot.net.client },
+      sim: bridge,
+      stage,
+      framing: (aspect) => venue.cameraPreset(aspect),
+      ui,
+      host: uiRoot,
+      vfx,
+      haptics,
+      audio: () => audio,
+      inventoryTarget: () => uiRoot.querySelector<HTMLElement>('.cp-plaque'),
+    });
+  } catch (error) {
+    console.error(
+      'CoinPosh crates failed to mount; the game continues without Vault Crates.',
+      error,
+    );
+    return;
+  }
+  const { counts } = probe;
+  const offs = [
+    holdForCrateCinematics({
+      events: crates.events,
+      hold: announcementHoldFor(ui.store),
+      director: crates.director,
+      onFrame: (check) => stage.onFrame(check),
+      afterRevealExit: (done) => afterCrateRevealExit(uiRoot, done),
+    }),
+    ui.onSettingsChange((settings) => {
+      haptics.enabled = settings.haptics;
+    }),
+    crates.events.on('crate:spawned', () => {
+      counts.cratesSpawned += 1;
+    }),
+    crates.events.on('crate:opened', () => {
+      counts.cratesOpened += 1;
+    }),
+    crates.events.on('crate:collected', () => {
+      counts.cratesCollected += 1;
+      boot.resync('a Vault Crate was collected');
+    }),
+    crates.events.on('crate:failed', ({ crateId, error }) => {
+      console.error(`CoinPosh crates: crate ${crateId} could not be claimed or opened.`, error);
+    }),
+  ];
+  teardown.push(() => {
+    for (const off of offs) off();
+    crates.dispose();
+  });
+  crates.controller.adopt(boot.state.table.crates);
+}
+
 /** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */
 function teardownStage(stage: Stage): void {
   teardown.push(() => {
@@ -734,6 +1013,7 @@ function startSim(simModule: typeof SimWorkerModule, heap: readonly MintedCoin[]
     ...(openingHeap ? { openingHeap } : {}),
   });
   probe.bridge = bridge;
+  markBoot('sim-start');
   const stopCounting = bridge.onEvents(({ falls, fusions }) => {
     probe.counts.simFalls += falls.length;
     probe.counts.simFusions += fusions.length;
@@ -796,4 +1076,40 @@ function watchReducedMotion(apply: (reduced: boolean) => void): void {
   query.addEventListener('change', (event) => {
     apply(event.matches);
   });
+}
+
+function markBoot(step: string): void {
+  performance.mark(`coinposh:boot:${step}`);
+}
+
+/**
+ * Keeps the venue's meshes out of the frames drawn while play is still being set up, so their
+ * shaders are linked once, in the first frame after everything that adds a light has run. The
+ * lights keep their layers, so those frames already light the scene as it will be drawn.
+ * Returns the function that shows the venue again.
+ *
+ * Only what the hold itself changed is undone: layers enabled on a held object during the hold
+ * are kept, an object whose layers were replaced during the hold is left as it was set, and
+ * objects added during the hold were never held.
+ */
+function holdBackVenue(root: Object3D): () => void {
+  // A layer no camera sees.
+  const heldLayer = 31;
+  const heldBit = 1 << heldLayer;
+  const held: { readonly object: Object3D; readonly mask: number }[] = [];
+  root.traverse((object) => {
+    if ((object as { readonly isLight?: boolean }).isLight === true) return;
+    held.push({ object, mask: object.layers.mask });
+    object.layers.set(heldLayer);
+  });
+  let revealed = false;
+  return () => {
+    if (revealed) return;
+    revealed = true;
+    for (const { object, mask } of held) {
+      const now = object.layers.mask;
+      if ((now & heldBit) === 0) continue;
+      object.layers.mask = ((now & ~heldBit) | mask) >>> 0;
+    }
+  };
 }

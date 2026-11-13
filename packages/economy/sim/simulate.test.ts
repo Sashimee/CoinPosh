@@ -1,7 +1,8 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { economyConfig } from '../src/config/index.ts';
+import { economyConfig, ladderTargets } from '../src/config/index.ts';
 import { runCli } from './cli.ts';
+import { evaluateLadder, fusionShareFor } from './ladder.ts';
 import { dropsBeforeFirstFall, simModel, type TablePile } from './model.ts';
 import { formatMetric, formatSummary } from './report.ts';
 import { percentile, runSimulation } from './simulate.ts';
@@ -32,6 +33,10 @@ describe('percentile', () => {
 describe('runSimulation', () => {
   const options = { days: 3, players: 12, seed: 5 };
   const result = runSimulation(economyConfig, simModel, options);
+  // packages/sim measured 0.87 to 0.94 coins off the front per coin dropped (balance
+  // report T-1.16); the shipped tuning must hold across that whole range, not only at 1.25.
+  const measured = { ...simModel, baseReturnRatio: 0.9 };
+  const measuredResult = runSimulation(economyConfig, measured, options);
   // Seed handling is per player, so determinism and seed variance need only one player;
   // the full 12-player cohort above is reserved for the pacing assertions.
   const small = { days: 2, players: 1, seed: 5 };
@@ -65,10 +70,7 @@ describe('runSimulation', () => {
   });
 
   it('still hits every pacing target at the front-edge return measured on the physics table', () => {
-    // packages/sim measured 0.87 to 0.94 coins off the front per coin dropped (balance
-    // report T-1.16); the shipped tuning must hold across that whole range, not only at 1.25.
-    const measured = runSimulation(economyConfig, { ...simModel, baseReturnRatio: 0.9 }, options);
-    expect(misses(measured.targets)).toEqual([]);
+    expect(misses(measuredResult.targets)).toEqual([]);
   });
 
   it('never reaches the first upgrade from an empty table on 20 starting coins', () => {
@@ -96,16 +98,23 @@ describe('runSimulation', () => {
 
   it('needs a silver heap to make the first upgrade at the measured return', () => {
     // A copper heap pays no more than the pile it stands in for: at 0.9 coins per drop the
-    // trust fund barely grows (balance evidence for P-193).
-    const measured = { ...simModel, baseReturnRatio: 0.9 };
-    const firstUpgrade = (tier: 'copper' | 'silver') =>
-      runSimulation(
-        { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, tier } },
-        measured,
-        options,
-      ).targets.find((t) => t.target.id === 'firstUpgrade');
-    expect(firstUpgrade('copper')?.pass).toBe(false);
-    expect(firstUpgrade('silver')?.pass).toBe(true);
+    // trust fund barely grows (balance evidence for P-193). Aimed fusion bonus can carry a
+    // copper start, so the heap is judged for the player who fuses least (whole chute).
+    const firstUpgrade = (run: ReturnType<typeof runSimulation>) =>
+      run.targets.find((t) => t.target.id === 'firstUpgrade');
+    const wholeChute = {
+      ...measured,
+      fusionShare: fusionShareFor('casual', measured, economyConfig.fusion.bonusMultiplier),
+    };
+    const copper = runSimulation(
+      { ...economyConfig, openingHeap: { ...economyConfig.openingHeap, tier: 'copper' } },
+      wholeChute,
+      options,
+    );
+    expect(firstUpgrade(copper)?.pass).toBe(false);
+    expect(economyConfig.openingHeap.tier).toBe('silver');
+    expect(firstUpgrade(runSimulation(economyConfig, wholeChute, options))?.pass).toBe(true);
+    expect(firstUpgrade(measuredResult)?.pass).toBe(true);
   });
 
   it('reports one median snapshot per casual day with steady progress', () => {
@@ -238,6 +247,42 @@ describe('sim CLI', () => {
     expect(run.out).not.toEqual(shipped.out);
   });
 
+  it('applies the --fusion-share what-if', () => {
+    const run = cli('--days', '1', '--players', '1', '--fusion-share', '0.77', '--json');
+    const shipped = cli('--days', '1', '--players', '1', '--json');
+    expect(run.out).not.toEqual(shipped.out);
+    expect(
+      cli('--days', '1', '--players', '1', '--fusion-share', '0.77', '--ladder').out,
+    ).toContain('model fusion bonus per drop 0.241');
+  });
+
+  it('adds the fusion ladder under --ladder, in text and JSON', () => {
+    const run = cli('--days', '1', '--players', '1', '--ladder');
+    expect(run.code).toBe(0);
+    expect(run.out).toContain('Fusion ladder (packages/sim');
+    expect(run.out).toContain('First Diamond, 2 pinpoint taps/s');
+    expect(run.out).toContain("Pacing per play style at the model's cadence");
+    const json = JSON.parse(cli('--days', '1', '--players', '1', '--ladder', '--json').out) as {
+      ladder: { targets: unknown[]; styles: unknown[] };
+      pacing: { style: string; targets: unknown[] }[];
+    };
+    expect(json.ladder.targets).toHaveLength(ladderTargets.length);
+    expect(json.ladder.styles).toHaveLength(12);
+    expect(json.pacing.map((p) => p.style)).toEqual(['casual', 'steady', 'aimed', 'aimedPinpoint']);
+    const plain = cli('--days', '1', '--players', '1').out;
+    expect(plain).not.toContain('Fusion ladder');
+    expect(plain).not.toContain('Pacing per play style');
+  });
+
+  it('counts ladder misses under --strict only with --ladder', () => {
+    const ladderMissed = evaluateLadder(
+      simModel,
+      economyConfig.fusion.bonusMultiplier,
+    ).targets.some((t) => !t.pass);
+    expect(ladderMissed).toBe(true);
+    expect(cli('--days', '1', '--players', '1', '--ladder', '--strict').code).toBe(1);
+  });
+
   it('prints the rate-envelope table', () => {
     const run = cli('--envelope', '--seed', '3');
     const table = JSON.parse(run.out) as { seed: number; rows: { label: string }[] };
@@ -248,6 +293,8 @@ describe('sim CLI', () => {
   it.each([
     [['--days', 'seven'], '--days expects an integer, got "seven"'],
     [['--return-ratio', '0'], '--return-ratio expects a positive number, got "0"'],
+    [['--fusion-share', '1.5'], '--fusion-share expects a share in [0, 1], got "1.5"'],
+    [['--fusion-share', ''], '--fusion-share expects a share in [0, 1], got ""'],
     [['--heap-coins=-1'], '--heap-coins expects a whole number ≥ 0, got "-1"'],
     [['--heap-coins', '2.5'], '--heap-coins expects a whole number ≥ 0, got "2.5"'],
     [['--heap-tier', 'bronze'], '--heap-tier expects one of copper, silver, gold'],

@@ -8,6 +8,7 @@ export const ERROR_STATUS = {
   unauthorized: 401,
   invalid_signature: 401,
   token_expired: 401,
+  invalid_id_token: 401,
   forbidden: 403,
   feature_disabled: 403,
   not_found: 404,
@@ -16,11 +17,15 @@ export const ERROR_STATUS = {
   insufficient_funds: 409,
   not_ready: 409,
   table_frozen: 409,
+  session_superseded: 409,
+  stale_snapshot: 409,
+  identity_in_use: 409,
   payload_too_large: 413,
   idempotency_key_reused: 422,
   rate_limited: 429,
   internal: 500,
   unavailable: 503,
+  provider_unavailable: 503,
 } as const satisfies Record<string, number>;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

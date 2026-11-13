@@ -38,5 +38,40 @@ export const SOLVER = {
  *   in front creeps forward instead of riding the block. Pinned table hash
  *   ee25f4b04dd687a6 (was a4e6238cc93d4acc), sim hash d715fa236eb0783f (was
  *   c5b0aeb071b1065b), mechanics digest 5935d058d1943638 (was 729f6f15f07d6198).
+ * - 5: coins come to rest (COIN_REST, P-215): a coin still for half a second freezes
+ *   in place, riding the block when it lies on the pusher top, until something moving
+ *   wakes it; the separation pass moves and wakes frozen coins; the cam is a plain
+ *   smoothstep again (the knock is gone). Pinned table hash 71d877a1ccb423be (was
+ *   ee25f4b04dd687a6), sim hash 28d84a03ebbb1757 (was d715fa236eb0783f), mechanics
+ *   digest 729f6f15f07d6198 again: its rig steps its own world with only the cam from
+ *   the table, so it is back on the version 3 motion.
+ * - 6: a push wakes the frozen coins in its way before the tick's substeps, passing on
+ *   from coin to coin (COIN_REST cascade, P-215), so drops and the face move the pile
+ *   they press on; frozen coins on the lower tier are fixed bodies. Pinned table hash
+ *   8934f7ea73a155b0 (was 71d877a1ccb423be), sim hash bdd732e82cbaab2c (was
+ *   28d84a03ebbb1757), nudge hash 4df094d60c3198e0 (was 884d44f49d22eee9), fused heap
+ *   996bcdc84b3175fb (was cd8bafbb696a1667), opening heap 53ff5809aefa4642 (was
+ *   1408f3ec4741a856), Demo pour 10 strokes bb41e00c43e62270 (was 55447c368ba0736d).
+ *   The rest tests now run the Demo table through Sim (the economy's opening heap):
+ *   idle 10 minutes 2c475ed06fbdb4fb and 2 minutes of drops 30afd7256494fcfe, against
+ *   a044318612a6692b and d12afc06736517d7 for the 160-coin pour they replaced.
+ *   Mechanics digest 729f6f15f07d6198 is unchanged.
+ * - 7: tables restore from snapshots (Sim.create({ restore }), T-92.02), and the opening
+ *   heap is laid through the same path, as every heap slot in order. Restoring the
+ *   checked-in settled-table fixture (the poses validateSnapshot keeps, snapshot/
+ *   restore.test.ts) hashes 3b0c71dac53f6038, 0609e515127fb408 after a second of drops
+ *   and ae7e0b2e8272d895 after a minute. Fused heap 5659c314480b9ede (was
+ *   996bcdc84b3175fb), idle Demo table 3e6951ced226e46a (was 2c475ed06fbdb4fb), 2
+ *   minutes of drops b4f254b6bc329ea8 (was 30afd7256494fcfe); the scripted minute
+ *   bdd732e82cbaab2c, nudge 4df094d60c3198e0, opening heap 53ff5809aefa4642 and Demo
+ *   pour bb41e00c43e62270 are unchanged.
+ * - 8: a coin fuses only while it is fresh, for FUSION_TUNING.freshTicks after its spawn
+ *   grace, and only with other fresh coins; laid coins start idle (settledShift is gone,
+ *   #132), and an idle silver or above is woken by a fresh coin of its tier that entered
+ *   play (wakeFromTier). Fused heap 78a2e6ac17f29895 (was 982470c1506c0983), Demo table
+ *   with fusion b38156d0f90afa3c (was 8d8b89f4c3c645a5), mechanics digest
+ *   ea9d594fbf71f999 (was 5507fe238035656a), brink heap idle 072b5a62115e9410 (was
+ *   fdccb1a574c9357a) and after a drop 6175e869dcccfcba (was 819ef376edaf2fbe). Tables
+ *   without mechanics hash as before.
  */
-export const SIM_VERSION = 4;
+export const SIM_VERSION = 8;

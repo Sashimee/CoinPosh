@@ -23,12 +23,62 @@ import { DROP_ZONE } from '../table/layout.ts';
  *   the step budget. A contact is seen up to 2 ticks late (33 ms) and a fusion fires up
  *   to 2 ticks after its window, which no player can tell. The grace is stretched by
  *   the period, so a pair found apart on one look, however briefly, is forgiven.
+ *
+ * Which coins may fuse at all (P-222). Without a rule, the opening heap's second layer,
+ * which rests on the coins below it from the first tick, fused away 24 of 100 coins at
+ * 1.4 s, and fresh drops fused where they landed before they could add to the pile.
+ *
+ * - spawnGraceTicks 60 (1 s): a coin that enters the table during play (a drop, a
+ *   fused coin, a coin a topple releases) sits out of fusion for its first second. A
+ *   chute drop lands and settles in about half that, so it joins the heap first and
+ *   then charges up with its neighbours; a fused coin hops, lands and is seen before
+ *   it can chain. The 1 s also covers the server's minFusionMsAfterSpawn (250 ms).
+ * - freshTicks 315 (5.25 s): once its grace is over a coin may fuse for this long, and
+ *   only with coins that are fresh too; after that it is idle (#132). A coin laid before
+ *   the first tick (the opening heap, a restored table) starts idle, since the heap is
+ *   laid touching and its second layer rests on the first. The window is what makes a
+ *   copper fusion something the player aims for: the 1 s grace and the economy's 0.4 s
+ *   contact barely mattered, because coppers pile on the drop strip for far longer than
+ *   either (a 15 s contact still fused 17 a minute). Three coppers fuse only when they
+ *   were dropped close together in time and place: a pour, or four or five taps at one
+ *   aim. Before the window: 28 to 30 a minute, one drop in 2, the first at 4.5 to 8 s.
+ *   The rate climbs steeply with the window because the pusher packs the strip every 4 s
+ *   (240 ticks): 300 gives 3.1 a minute, 330 gives 5.3, 480 gives 7.1, 600 gives 10.8.
+ * - The fusionWindow upgrade (FusionRules.fusionWindow, the economy's stat, × 1.05 a level
+ *   up to × 2) stretches this window, not the contact time (freshTicks in fusion.ts, P-332):
+ *   331 ticks at level 1, 630 at level 20. On the fusionRate.test.ts runs (a copper a
+ *   second at a uniform aim, 8 seeds of 3 min) × 1 gives 3.8 fusions a minute, × 1.25 7.3,
+ *   × 1.5 8.3 and × 2 13.9, so every level is felt; two taps a second at the middle stay at
+ *   54 to 57 whatever the window, since that strip is always fresh.
+ * - Three taps a second apart at one aim do not fuse, and that stays (P-332): the strip
+ *   rides the pusher, which carries a landed coin about two widths (57 mm) a second, so the
+ *   taps land in a line along the stroke and the backboard folds them into a pair and a
+ *   straggler 45 mm off. A fourth or fifth tap, or a pour, fuses; fusing three would take a
+ *   contact gap the player can see, against touchGap.
+ * - wakeFromTier 1 (silver): an idle coin of this ladder tier or above becomes fresh
+ *   again, for a window of its own, when a fresh coin of its tier that entered play (a
+ *   drop, a fused coin, a released one) touches it; a coin woken so wakes no others. So
+ *   a new silver joins silvers fused minutes ago, or the silver heap it lands on, and the
+ *   ladder climbs. Coppers are the drop tier: the strip is always paved with idle
+ *   coppers, so waking them made nearly every drop land on a pair and fuse again, 15 to
+ *   18 a minute whatever freshTicks was (60 to 315), the #132 flicker back. Seeded runs
+ *   of a copper a second at a uniform aim over the chute onto the 100-coin silver heap
+ *   (fusionRate.test.ts), 16 seeds of 3 min: 3.8 copper and 0.2 silver fusions a minute,
+ *   one drop in 15 fused, the first fusion at 4 to 46 s (median 11 s), and a heap coin
+ *   fuses only once a silver made in play has touched it. Aimed at the middle, a copper a
+ *   second gives 15 to 17 copper, 1.3 to 3.3 silver and up to 0.3 gold fusions a minute;
+ *   two a second climb to platinum within the minute. An idle coin below this tier can
+ *   neither fuse nor be woken, so it is left out of the contact search (P-332): the paved
+ *   strip costs nothing, and the fusions are the same to the bit.
  */
 export const FUSION_TUNING = {
   touchGap: 0.001,
   graceTicks: 3,
   spawnLift: 0.0015,
   sampleTicks: 3,
+  spawnGraceTicks: 60,
+  freshTicks: 315,
+  wakeFromTier: 1,
 } as const;
 
 /** Where the Champagne Tower pedestal stands on the upper tier, in metres. */

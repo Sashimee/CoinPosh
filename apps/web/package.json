@@ -12,7 +12,8 @@
     "test": "vitest run",
     "e2e": "playwright test -c e2e/playwright.config.ts --project=e2e --trace off",
     "perf": "playwright test -c e2e/playwright.config.ts --project=perf --trace off",
-    "bundle:check": "node e2e/bundle-size.ts"
+    "bundle:check": "node e2e/bundle-size.ts",
+    "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "dependencies": {
     "@coinposh/economy": "workspace:*",

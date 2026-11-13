@@ -199,6 +199,9 @@ importers:
       '@coinposh/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@coinposh/sim':
+        specifier: workspace:*
+        version: link:../../packages/sim
       hono:
         specifier: 4.13.16
         version: 4.13.16
@@ -291,6 +294,12 @@ importers:
         specifier: 0.21.0
         version: 0.21.0
     devDependencies:
+      '@coinposh/economy':
+        specifier: workspace:*
+        version: link:../economy
+      '@coinposh/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2

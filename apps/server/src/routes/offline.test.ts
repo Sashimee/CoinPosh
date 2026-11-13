@@ -1,20 +1,34 @@
-import { offline, offlineEarnings } from '@coinposh/economy';
+import {
+  offline,
+  offlineEarnings,
+  offlineRate,
+  starterVaultCoins,
+  upgradeLines,
+  upgradeStat,
+  vaultRatePerHour,
+} from '@coinposh/economy';
 import { EpochMsSchema, type CoinId, type EpochMs } from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { HOME_VENUE } from '../do/entities.ts';
 import type { PlayerDO } from '../do/PlayerDO.ts';
 import { newSession, type Session } from '../test/client.ts';
-import { claims, drop, playerStub, state } from '../test/game.ts';
+import { claims, dropAsClient, playerStub, vaultCoins } from '../test/game.ts';
 import {
-  ACTIVE_RATE_MIN_SPAN_MS,
   measuredActiveRate,
   OFFLINE_MIN_AWAY_MS,
   OFFLINE_SETTLEMENTS_SQL,
   quoteOffline,
   recordOffline,
 } from './offline.ts';
+import { readUpgradeLevels, recordUpgrade } from './upgrades.ts';
 
 const MINUTE = 60_000;
+const OFFLINE_LINE = (() => {
+  const line = upgradeLines.find((candidate) => candidate.id === 'offlineHours');
+  if (line === undefined) throw new Error('Economy config has no offlineHours line.');
+  return line;
+})();
 const HOUR = 60 * MINUTE;
 
 type Edge = 'front' | 'left';
@@ -22,20 +36,14 @@ type Edge = 'front' | 'left';
 interface Played {
   /** Coins the wallet was paid for falls. */
   readonly won: number;
-  /** Coins the wallet paid for drops. */
+  /** Coins the Vault paid for drops. */
   readonly spent: number;
 }
 
 async function dropCoins(session: Session, count: number) {
-  const before = (await state(session)).wallet.coins;
-  let after = before;
-  const coins = [];
-  for (let i = 0; i < count; i++) {
-    const response = await drop(session, { tick: i });
-    coins.push(response.coin);
-    after = response.wallet.coins;
-  }
-  return { coins, spent: before - after };
+  const before = await vaultCoins(session);
+  const coins = (await dropAsClient(session, count, (i) => i)).map((response) => response.coin);
+  return { coins, spent: before - (await vaultCoins(session)) };
 }
 
 async function fuse(session: Session, coinIds: readonly CoinId[], tick: number): Promise<CoinId[]> {
@@ -118,24 +126,33 @@ function at(ms: number): EpochMs {
   return EpochMsSchema.parse(ms);
 }
 
-describe('Velvet Vault offline earnings', () => {
-  it('pays nothing to a player who never played, however long they were away', async () => {
+// A measured net rate needs real play, up to 72 signed drops and their fusions: over 3.5 s on CI.
+describe('Velvet Vault offline earnings', { timeout: 20_000 }, () => {
+  it('pays a player who never played only the starter floor, however long they were away', async () => {
     const session = await newSession();
     await inPlayer(session, (sql, last) => {
       expect(measuredActiveRate(sql)).toBe(0);
-      expect(quoteOffline(sql, at(last + 12 * HOUR), 2)).toBeNull();
+      const settlement = quoteOffline(sql, at(last + 12 * HOUR), {});
+      expect(settlement).toEqual({
+        awayMs: 12 * HOUR,
+        creditedMs: 2 * HOUR,
+        coins: starterVaultCoins(2),
+      });
+      expect(settlement?.coins).toBe(Math.floor(2 * 0.35 * offlineRate.starterRatePerHour));
+      expect(settlement?.coins).toBeLessThanOrEqual(42);
     });
   });
 
   it('pays 0.35 × the measured net winning rate for the capped hours away', async () => {
     const session = await newSession();
-    const net = await play(session, 4);
+    const net = await play(session, 8);
     expect(net).toBeGreaterThan(0);
     await inPlayer(session, (sql, last) => {
       const rate = measuredActiveRate(sql);
-      expect(rate).toBeCloseTo((net * HOUR) / ACTIVE_RATE_MIN_SPAN_MS);
+      expect(rate).toBeCloseTo((net * HOUR) / offlineRate.minSpanMs);
+      expect(rate).toBeGreaterThan(offlineRate.starterRatePerHour);
 
-      const settlement = quoteOffline(sql, at(last + 8 * HOUR), 2);
+      const settlement = quoteOffline(sql, at(last + 8 * HOUR), {});
       expect(settlement).toEqual({
         awayMs: 8 * HOUR,
         creditedMs: 2 * HOUR,
@@ -150,13 +167,33 @@ describe('Velvet Vault offline earnings', () => {
     await play(session, 4);
     await inPlayer(session, (sql, last) => {
       const away = at(last + 20 * HOUR);
-      const base = quoteOffline(sql, away, 2);
-      const upgraded = quoteOffline(sql, away, 5);
-      const beyond = quoteOffline(sql, away, 40);
-      expect(base?.creditedMs).toBe(2 * HOUR);
-      expect(upgraded?.creditedMs).toBe(5 * HOUR);
-      expect(beyond?.creditedMs).toBe(offline.maxCapHours * HOUR);
+      const base = quoteOffline(sql, away, {});
+      const upgraded = quoteOffline(sql, away, { offlineHours: 3 });
+      const top = quoteOffline(sql, away, { offlineHours: OFFLINE_LINE.maxLevel });
+      expect(base?.creditedMs).toBe(offline.baseCapHours * HOUR);
+      expect(upgraded?.creditedMs).toBe(upgradeStat(OFFLINE_LINE, 3) * HOUR);
+      expect(top?.creditedMs).toBe(offline.maxCapHours * HOUR);
       expect(upgraded?.coins ?? 0).toBeGreaterThan(base?.coins ?? 0);
+      expect(top?.coins ?? 0).toBeGreaterThan(upgraded?.coins ?? 0);
+    });
+  });
+
+  it('takes the cap from the stored offlineHours level as soon as it is bought', async () => {
+    const session = await newSession();
+    await play(session, 4);
+    await inPlayer(session, (sql, last) => {
+      const away = at(last + 20 * HOUR);
+      const before = quoteOffline(sql, away, readUpgradeLevels(sql, HOME_VENUE.id));
+      recordUpgrade(sql, {
+        venueId: HOME_VENUE.id,
+        lineId: 'offlineHours',
+        level: 4,
+        currency: 'coins',
+        cost: 0,
+      });
+      const after = quoteOffline(sql, away, readUpgradeLevels(sql, HOME_VENUE.id));
+      expect(before?.creditedMs).toBe(offline.baseCapHours * HOUR);
+      expect(after?.creditedMs).toBe(upgradeStat(OFFLINE_LINE, 4) * HOUR);
     });
   });
 
@@ -164,11 +201,11 @@ describe('Velvet Vault offline earnings', () => {
     const session = await newSession();
     await play(session, 4);
     await inPlayer(session, (sql, last) => {
-      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS - 1), 2)).toBeNull();
-      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS), 2)?.creditedMs).toBe(
+      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS - 1), {})).toBeNull();
+      expect(quoteOffline(sql, at(last + OFFLINE_MIN_AWAY_MS), {})?.creditedMs).toBe(
         OFFLINE_MIN_AWAY_MS,
       );
-      expect(quoteOffline(sql, at(last - HOUR), 2)).toBeNull();
+      expect(quoteOffline(sql, at(last - HOUR), {})).toBeNull();
     });
   });
 
@@ -181,29 +218,42 @@ describe('Velvet Vault offline earnings', () => {
     expect(spent).toBeGreaterThan(0);
     expect(won - spent).toBeGreaterThan(0);
     await inPlayer(session, (sql) => {
-      expect(measuredActiveRate(sql)).toBeCloseTo(((won - spent) * HOUR) / ACTIVE_RATE_MIN_SPAN_MS);
+      expect(measuredActiveRate(sql)).toBeCloseTo(((won - spent) * HOUR) / offlineRate.minSpanMs);
     });
   });
 
-  it('measures zero when drops cost more than falls return, so the vault pays nothing', async () => {
+  it('measures zero when drops cost more than falls return, so the vault pays only the starter floor', async () => {
     const session = await newSession();
     const { won, spent } = await playSingles(session, ['front', 'left', 'left']);
     expect(won).toBeGreaterThan(0);
     expect(spent).toBeGreaterThan(won);
     await inPlayer(session, (sql, last) => {
       expect(measuredActiveRate(sql)).toBe(0);
-      expect(quoteOffline(sql, at(last + 8 * HOUR), 2)).toBeNull();
+      expect(quoteOffline(sql, at(last + 8 * HOUR), {})?.coins).toBe(starterVaultCoins(2));
     });
   });
 
-  it('measures only coins actually won: side-gutter losses earn no vault', async () => {
+  it('measures only coins actually won: side-gutter losses earn no more than the starter floor', async () => {
     const session = await newSession();
     const { won, spent } = await playSingles(session, Array<Edge>(6).fill('left'));
     expect(won).toBe(0);
     expect(spent).toBeGreaterThan(0);
     await inPlayer(session, (sql, last) => {
       expect(measuredActiveRate(sql)).toBe(0);
-      expect(quoteOffline(sql, at(last + 8 * HOUR), 2)).toBeNull();
+      expect(quoteOffline(sql, at(last + 8 * HOUR), {})?.coins).toBe(starterVaultCoins(2));
+    });
+  });
+
+  it('pays on the measured rate or the starter floor, whichever is higher', async () => {
+    const session = await newSession();
+    const net = await play(session, 1);
+    expect(net).toBeGreaterThan(0);
+    await inPlayer(session, (sql, last) => {
+      const rate = measuredActiveRate(sql);
+      expect(rate).toBeCloseTo((net * HOUR) / offlineRate.minSpanMs);
+      const coins = quoteOffline(sql, at(last + 3 * HOUR), {})?.coins;
+      expect(coins).toBe(Math.floor(2 * offline.activeRateFactor * vaultRatePerHour(rate)));
+      expect(coins).toBeGreaterThanOrEqual(starterVaultCoins(2));
     });
   });
 
@@ -212,13 +262,13 @@ describe('Velvet Vault offline earnings', () => {
     await play(session, 4);
     await inPlayer(session, (sql, last) => {
       const returned = at(last + 8 * HOUR);
-      const first = quoteOffline(sql, returned, 2);
+      const first = quoteOffline(sql, returned, {});
       if (first === null) throw new Error('expected a settlement after 8 hours away');
       recordOffline(sql, returned, first);
 
-      expect(quoteOffline(sql, returned, 2)).toBeNull();
-      expect(quoteOffline(sql, at(returned + MINUTE), 2)).toBeNull();
-      const again = quoteOffline(sql, at(returned + 3 * HOUR), 2);
+      expect(quoteOffline(sql, returned, {})).toBeNull();
+      expect(quoteOffline(sql, at(returned + MINUTE), {})).toBeNull();
+      const again = quoteOffline(sql, at(returned + 3 * HOUR), {});
       expect(again).toEqual({ ...first, awayMs: 3 * HOUR });
     });
   });

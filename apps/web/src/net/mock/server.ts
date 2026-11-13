@@ -369,6 +369,23 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     return issueTokens(player);
   }
 
+  /** Mirrors the server: replay only inside the window, never a bundle whose session was revoked since. */
+  function replayRefresh(stored: StoredResponse, at: number): WireResponse {
+    const age = at - stored.at;
+    if (age > MOCK_RULES.authRefreshReplayWindowMs) {
+      return fail(
+        'idempotency_key_reused',
+        'This Idempotency-Key was already used for an auth request that expired.',
+      );
+    }
+    if (stored.response.status !== 200) return stored.response;
+    const tokens = endpoints.authRefresh.response.parse(stored.response.body);
+    if (refreshTokens.get(tokens.refreshToken)?.revoked !== false) {
+      return fail('unauthorized', 'The session this refresh issued was revoked since.');
+    }
+    return { status: 200, body: { ...tokens, accessTokenTtlMs: tokens.accessTokenTtlMs - age } };
+  }
+
   async function process(request: WireRequest): Promise<WireResponse> {
     const at = now();
     const found = route(request.method, request.path);
@@ -414,7 +431,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           'This Idempotency-Key was already used for a different request.',
         );
       }
-      return stored.response;
+      return found.name === 'authRefresh' ? replayRefresh(stored, at) : stored.response;
     }
 
     let response: WireResponse;
@@ -435,6 +452,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             status: errorStatus('validation_failed'),
             body: validationErrorEnvelope(params.error, 'Path parameters are invalid.'),
           };
+        }
+        if (found.endpoint.query !== undefined) {
+          const [, search = ''] = request.path.split('?');
+          const query = found.endpoint.query.safeParse(
+            Object.fromEntries(new URLSearchParams(search)),
+          );
+          if (!query.success) {
+            return {
+              status: errorStatus('validation_failed'),
+              body: validationErrorEnvelope(query.error, 'Query parameters are invalid.'),
+            };
+          }
         }
         result = await world.handle(player, found.name, body as never, params?.data as never, at);
         world.touch(player, at);

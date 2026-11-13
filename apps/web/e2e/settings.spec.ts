@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
-import { bootGame, expect, reviewShot, test } from './fixtures.ts';
+import { bootGame, expect, reviewShot, test, unexpectedErrors } from './fixtures.ts';
 
 const STORAGE_KEY = 'coinposh.settings.v1';
 
@@ -74,7 +74,7 @@ test.describe('settings (P-54)', () => {
   test('a corrupt saved blob falls back to defaults without breaking boot', async ({
     page,
     pageErrors,
-  }) => {
+  }, testInfo) => {
     await page.addInitScript((key) => {
       if (sessionStorage.getItem('seeded') === null) {
         localStorage.setItem(key, '{not json');
@@ -88,6 +88,6 @@ test.describe('settings (P-54)', () => {
       'true',
     );
     await expect(sheet.getByTestId('settings-mono')).toHaveAttribute('aria-checked', 'false');
-    expect(pageErrors).toEqual([]);
+    expect(unexpectedErrors(pageErrors, testInfo)).toEqual([]);
   });
 });

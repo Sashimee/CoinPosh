@@ -5,6 +5,7 @@ import type { CameraKickOptions } from '../../camera/cameraKick.ts';
 import type { ContactOptions } from '../../index.ts';
 import type { HapticPattern } from '../../haptics.ts';
 import {
+  burstFrameMs,
   burstStyle,
   unboxBeats,
   unboxPose,
@@ -13,6 +14,8 @@ import {
   type UnboxPose,
   type UnboxTimeline,
 } from './plan.ts';
+import { easeInCubic } from '../../easing.ts';
+import { pushIn, unboxShot, type UnboxShot } from './shot.ts';
 import { CRATE_SIZE, UnboxStage, type UnboxAssets, type UnboxHero } from './stage.ts';
 
 /** The slice of `Vfx` the unbox fires into; any of it may be missing (tests, a lost GPU). */
@@ -30,7 +33,11 @@ export interface UnboxCinematicOptions {
   readonly camera: PerspectiveCamera;
   /** The venue framing for an aspect ratio; the dolly leaves it and returns to it. */
   readonly framing: (aspect: number) => CameraPreset;
-  /** Where the crate lands: the catch tray floor, in world space. */
+  /**
+   * Where the table crate came to rest in the catch tray, in world space. The cabinet front
+   * hides the tray, so the unbox plays centre stage in front of the table and the crate sinks
+   * back here after Collect.
+   */
   readonly at: Vector3;
   readonly rarity: Rarity;
   readonly hero: UnboxHero;
@@ -41,9 +48,13 @@ export interface UnboxCinematicOptions {
   readonly onBeat?: (beat: UnboxBeat) => void;
 }
 
-/** How far along the line to the crate the dolly travels at its deepest. */
-const DOLLY_REACH = 0.42;
-const LOOK_LIFT = CRATE_SIZE * 0.9;
+/**
+ * Contact strengths kept at or under the facade's `CONTACT_ACCENT`, so the sparks come without
+ * its flash sprite: staged this close to the camera, that sprite's anamorphic streak would cross
+ * the whole frame. The stage's own round flare marks the burst instead.
+ */
+const LAND_SPARKS = 0.35;
+const BURST_SPARKS = 0.45;
 
 /**
  * One crate opening, driven by `update(dt)` in effect time (pass the delta `Vfx.update`
@@ -55,6 +66,8 @@ export class UnboxCinematic {
   readonly timeline: UnboxTimeline;
   private readonly options: UnboxCinematicOptions;
   private readonly beats: readonly UnboxBeat[];
+  private readonly burstFrameAt: number;
+  private burstPresented = false;
   private next = 0;
   private elapsedMs = 0;
   private flyMs: number | null = null;
@@ -64,16 +77,24 @@ export class UnboxCinematic {
   private readonly look = new Vector3();
   private framingAspect = Number.NaN;
   private framed: CameraPreset | null = null;
+  private shotOf: UnboxShot | null = null;
 
   constructor(options: UnboxCinematicOptions) {
     this.options = options;
     this.timeline = unboxTimeline(options.reducedMotion);
     this.beats = unboxBeats(this.timeline);
+    this.burstFrameAt = burstFrameMs(this.timeline);
     this.stage = new UnboxStage(options.rarity, options.hero, options.assets);
-    this.stage.root.position.copy(options.at);
     options.parent.add(this.stage.root);
     this.lastPose = unboxPose(0, this.timeline, options.reducedMotion);
-    this.stage.apply(this.lastPose);
+    this.render(0);
+  }
+
+  /** Where the crate is staged for the camera's current aspect. */
+  get shot(): UnboxShot {
+    this.framing();
+    if (!this.shotOf) throw new Error('Unbox shot was not framed');
+    return this.shotOf;
   }
 
   get pose(): UnboxPose {
@@ -95,7 +116,7 @@ export class UnboxCinematic {
   update(dt: number): void {
     if (this.disposed) return;
     const step = Number.isFinite(dt) ? Math.max(0, dt) * 1000 : 0;
-    this.elapsedMs += step;
+    this.elapsedMs = this.heldForBurst(this.elapsedMs + step);
     if (this.flyMs !== null) this.flyMs += step;
     this.fireBeats(false);
     this.render(step / 1000);
@@ -121,9 +142,18 @@ export class UnboxCinematic {
     if (this.disposed) return;
     this.disposed = true;
     const framing = this.framing();
-    this.options.camera.position.copy(framing.position);
-    this.options.camera.lookAt(framing.target);
+    this.writeCamera(framing.position, framing.target, framing.fov);
     this.stage.dispose();
+  }
+
+  /**
+   * Time only, never a frame count, drives the beats, so a slow frame could carry the timeline
+   * from before the burst straight past the reveal and the card would cover a lid that was
+   * never seen opening. Until a burst frame has been drawn, the timeline stops on it instead.
+   */
+  private heldForBurst(target: number): number {
+    if (this.burstPresented || target < this.timeline.revealAtMs) return target;
+    return this.burstFrameAt;
   }
 
   private fireBeats(skipped: boolean): void {
@@ -137,11 +167,12 @@ export class UnboxCinematic {
   }
 
   private juice(beat: UnboxBeat, skipped: boolean): void {
-    const { vfx, haptics, reducedMotion, at } = this.options;
+    const { vfx, haptics, reducedMotion } = this.options;
+    const { base } = this.shot;
     switch (beat.kind) {
       case 'land':
         haptics?.pulse('tap');
-        if (!skipped) vfx?.contactSparks(at, { strength: 0.7, surface: 'wood' });
+        if (!skipped) vfx?.contactSparks(base, { strength: LAND_SPARKS, surface: 'wood' });
         break;
       case 'shudder':
         haptics?.pulse(beat.step >= 3 ? 'tap' : 'tick');
@@ -152,9 +183,9 @@ export class UnboxCinematic {
       case 'burst': {
         const burst = burstStyle(this.options.rarity);
         haptics?.pulse(burst.haptic);
-        const top = at.clone();
+        const top = base.clone();
         top.y += CRATE_SIZE;
-        vfx?.contactSparks(top, { strength: 1, surface: 'metal' });
+        vfx?.contactSparks(top, { strength: BURST_SPARKS, surface: 'metal' });
         if (burst.confetti) vfx?.confetti();
         if (skipped) break;
         if (burst.hitStopMs > 0) vfx?.hitStop(burst.hitStopMs);
@@ -169,25 +200,36 @@ export class UnboxCinematic {
   private render(dtSeconds: number): void {
     const pose = unboxPose(this.elapsedMs, this.timeline, this.options.reducedMotion, this.flyMs);
     this.lastPose = pose;
+    if (this.elapsedMs >= this.burstFrameAt) this.burstPresented = true;
+    const framing = this.framing();
+    const shot = this.shot;
+    this.stage.face(shot.yaw, shot.toCamera);
+    this.stage.root.position.lerpVectors(shot.base, this.options.at, easeInCubic(pose.fly));
     this.stage.apply(pose, dtSeconds);
-    this.placeCamera(pose.dolly);
+    pushIn(framing, shot.center, pose.dolly, this.eye, this.look);
+    this.writeCamera(this.eye, this.look, framing.fov);
   }
 
-  private placeCamera(dolly: number): void {
-    const { camera, at } = this.options;
-    const framing = this.framing();
-    this.eye.copy(framing.position).lerp(at, DOLLY_REACH * dolly);
-    this.look.copy(at);
-    this.look.y += LOOK_LIFT;
-    this.look.lerpVectors(framing.target, this.look, dolly);
-    camera.position.copy(this.eye);
-    camera.lookAt(this.look);
+  /**
+   * Writes the whole camera, field of view included: the camera kick rebases on any write, and
+   * a pose-only write would hand it its own FOV punch as the new base, so the punch would never
+   * spring back and would stack burst after burst.
+   */
+  private writeCamera(eye: Vector3, look: Vector3, fov: number): void {
+    const { camera } = this.options;
+    camera.position.copy(eye);
+    camera.lookAt(look);
+    if (camera.fov !== fov) {
+      camera.fov = fov;
+      camera.updateProjectionMatrix();
+    }
   }
 
   private framing(): CameraPreset {
     const aspect = this.options.camera.aspect;
     if (this.framed === null || aspect !== this.framingAspect) {
       this.framed = this.options.framing(aspect);
+      this.shotOf = unboxShot(this.framed, aspect, this.options.reducedMotion);
       this.framingAspect = aspect;
     }
     return this.framed;

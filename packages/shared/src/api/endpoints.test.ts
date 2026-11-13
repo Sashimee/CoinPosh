@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { endpointFixtures } from '../test/fixtures.ts';
+import { z } from 'zod';
+import { endpointFixtures, ids } from '../test/fixtures.ts';
 import { roundTrip } from '../test/roundTrip.ts';
 import {
+  ACCOUNT_ENDPOINT_NAMES,
+  accountEndpoints,
   buildPath,
   ENDPOINT_NAMES,
   endpoints,
   requiresIdempotencyKey,
+  tableSnapshotEndpoint,
   type Endpoint,
   type EndpointName,
 } from './endpoints.ts';
@@ -139,6 +143,109 @@ describe.each(cases)('$name round-trip', ({ endpoint, fixture }) => {
       expect(reparsed).toEqual(parsed);
     });
   }
+});
+
+describe('tableSnapshotEndpoint', () => {
+  const endpoint: Endpoint = tableSnapshotEndpoint;
+  const body = {
+    session: 'session_K3p9Wz2QfL',
+    seq: 3,
+    tick: 7_200,
+    pusher: { tickInCycle: 15 },
+    coins: [[ids.coins[0], 1_250, 480, -32_000, 0, 0, 0, 32_767, 'asleep']],
+    crates: [[ids.crate, -4_100, 22_000, 1_850, 'riding']],
+  };
+  const response = { seq: 3, stored: 2, ignored: 0 };
+
+  it('is a signed bearer POST that requires an idempotency key', () => {
+    expect(`${endpoint.method} ${endpoint.path}`).toBe('POST /v1/table/snapshot');
+    expect(endpoint.auth).toBe('bearer');
+    expect(endpoint.params).toBeNull();
+    expect(requiresIdempotencyKey(endpoint)).toBe(true);
+  });
+
+  it('does not collide with a registered route', () => {
+    const routes = cases.map((c) => `${c.endpoint.method} ${c.endpoint.path}`);
+    expect(routes).not.toContain(`${endpoint.method} ${endpoint.path}`);
+  });
+
+  it('round-trips its request and response through JSON', () => {
+    expect(endpoint.body).not.toBeNull();
+    const request = roundTrip(tableSnapshotEndpoint.body, body);
+    expect(request.parsed).toEqual(body);
+    expect(request.reparsed).toEqual(request.parsed);
+    const answer = roundTrip(endpoint.response, response);
+    expect(answer.parsed).toEqual(response);
+    expect(answer.reparsed).toEqual(answer.parsed);
+  });
+
+  it('rejects a body with an extra key and ignores an extra response key', () => {
+    const result = tableSnapshotEndpoint.body.safeParse(withExtraKey(body));
+    expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
+    expect(endpoint.response.parse(withExtraKey(response))).toEqual(response);
+  });
+});
+
+describe('accountEndpoints', () => {
+  const accountCases: { name: string; endpoint: Endpoint }[] = ACCOUNT_ENDPOINT_NAMES.map(
+    (name) => ({ name, endpoint: accountEndpoints[name] }),
+  );
+  const routeOf = ({ endpoint }: { endpoint: Endpoint }) => `${endpoint.method} ${endpoint.path}`;
+
+  it('covers exactly the account link surface of T-10.01', () => {
+    expect(accountCases.map(routeOf).toSorted()).toEqual(
+      [
+        'POST /v1/account/nonce',
+        'POST /v1/account/link',
+        'POST /v1/auth/signin',
+        'POST /v1/account/unlink',
+        'GET /v1/account',
+      ].toSorted(),
+    );
+  });
+
+  it('does not collide with a registered route or the table snapshot', () => {
+    const taken = new Set([...cases.map(routeOf), routeOf({ endpoint: tableSnapshotEndpoint })]);
+    for (const accountCase of accountCases) {
+      expect(taken.has(routeOf(accountCase)), accountCase.name).toBe(false);
+    }
+  });
+
+  it('lets only a device without a session skip the bearer token', () => {
+    const unauthenticated = accountCases.filter(({ endpoint }) => endpoint.auth === 'none');
+    expect(unauthenticated.map(({ name }) => name).toSorted()).toEqual([
+      'accountNonce',
+      'authSignIn',
+    ]);
+  });
+
+  it('carries the signing key in the body of every route without a session', () => {
+    for (const { name, endpoint } of accountCases) {
+      if (endpoint.auth !== 'none') {
+        continue;
+      }
+      expect(endpoint.body, name).toBeInstanceOf(z.ZodObject);
+      const shape = (endpoint.body as z.ZodObject).shape as Record<string, z.ZodType>;
+      const key = shape.devicePublicKey;
+      expect(key, name).toBeDefined();
+      expect(key?.safeParse(undefined).success, name).toBe(false);
+    }
+  });
+
+  it('has a strict body and an idempotency key on every POST, and no body on the GET', () => {
+    for (const { name, endpoint } of accountCases) {
+      expect(endpoint.body === null, name).toBe(endpoint.method === 'GET');
+      expect(endpoint.params, name).toBeNull();
+      expect(requiresIdempotencyKey(endpoint), name).toBe(endpoint.method === 'POST');
+      if (endpoint.body !== null) {
+        const result = endpoint.body.safeParse({ value: 1_000_000 });
+        expect(
+          result.error?.issues.map((issue) => issue.code),
+          name,
+        ).toContain('unrecognized_keys');
+      }
+    }
+  });
 });
 
 describe('buildPath', () => {

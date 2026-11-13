@@ -6,6 +6,7 @@ import type { HapticPattern } from '../../haptics.ts';
 import type { ContactOptions } from '../../index.ts';
 import { UnboxCinematic, type UnboxVfx } from './cinematic.ts';
 import {
+  burstFrameMs,
   burstStyle,
   FULL_UNBOX,
   rayStyle,
@@ -221,7 +222,9 @@ describe('UnboxCinematic', () => {
       expect(parent.children.filter((child) => child === assets.light)).toHaveLength(1);
       play(unbox, 2);
       expect(assets.light.intensity).toBeGreaterThan(0);
-      expect(assets.light.position.x).toBeCloseTo(0.02);
+      const toLight = assets.light.position.clone().sub(unbox.stage.root.position);
+      expect(toLight.dot(unbox.shot.toCamera)).toBeGreaterThan(0);
+      expect(toLight.y).toBeGreaterThan(0);
       unbox.stage.root.traverse((object) => {
         if (!('material' in object) || !('geometry' in object)) return;
         materials.add(object.material);
@@ -240,17 +243,20 @@ describe('UnboxCinematic', () => {
       assets.seamMaterial,
       assets.heroMaterial,
       assets.rayMaterial,
+      assets.flareMaterial,
     ];
     expect([...materials].every((material) => shared.includes(material as never))).toBe(true);
-    expect(geometries.size).toBeLessThanOrEqual(10);
+    expect(geometries.size).toBeLessThanOrEqual(11);
     assets.dispose();
     expect(parent.children).toHaveLength(0);
   });
 
-  it('dollies toward the crate and gives the venue framing back on dispose', () => {
+  it('pushes in toward the staged crate and gives the venue framing back on dispose', () => {
     const { unbox, camera } = cinematic('rare', false);
+    const reach = unbox.shot.center.distanceTo(FRAMING.position);
     play(unbox, 1.5);
-    expect(camera.position.distanceTo(FRAMING.position)).toBeGreaterThan(0.05);
+    expect(unbox.pose.dolly).toBeGreaterThan(0.5);
+    expect(unbox.shot.center.distanceTo(camera.position)).toBeLessThan(reach * 0.95);
     unbox.dispose();
     expect(camera.position.distanceTo(FRAMING.position)).toBeLessThan(1e-9);
   });
@@ -291,5 +297,116 @@ describe('UnboxCinematic', () => {
     unbox.update(1);
     unbox.collect();
     expect(unbox.elapsed).toBe(0);
+  });
+
+  describe('on a slow device', () => {
+    const SLOW_FRAME_S = 5;
+
+    /** Steps a fake clock one frame at a time and records what each frame put on screen. */
+    function slowFrames(unbox: UnboxCinematic, beats: UnboxBeat[], frames: number) {
+      const shown = [{ pose: unbox.pose, beats: beats.map((beat) => beat.kind) }];
+      for (let frame = 1; frame <= frames; frame++) {
+        const before = beats.length;
+        unbox.update(SLOW_FRAME_S);
+        shown.push({ pose: unbox.pose, beats: beats.slice(before).map((beat) => beat.kind) });
+      }
+      return shown;
+    }
+
+    for (const reducedMotion of [false, true]) {
+      const timeline = reducedMotion ? REDUCED_UNBOX : FULL_UNBOX;
+      it(`presents the lid burst on its own frame before the card${reducedMotion ? ' (reduced motion)' : ''}`, () => {
+        const { unbox, beats, calls } = cinematic('legendary', reducedMotion);
+        const shown = slowFrames(unbox, beats, 3);
+        const burstFrame = shown.findIndex((frame) => frame.beats.includes('burst'));
+        const cardFrame = shown.findIndex((frame) => frame.beats.includes('reveal'));
+        expect(burstFrame).toBe(1);
+        expect(cardFrame).toBe(2);
+        const burst = shown[burstFrame]?.pose;
+        expect(burst?.lidOpen).toBeGreaterThan(0.6);
+        expect(burst?.burst).toBeGreaterThan(0.5);
+        expect(burst?.rays).toBeGreaterThan(0.8);
+        if (!reducedMotion) expect(burst?.flareScale).toBeGreaterThan(1);
+        expect(beats.map((beat) => beat.kind)).toEqual(unboxBeats(timeline).map((b) => b.kind));
+        expect(calls.confetti).toBe(1);
+        expect(unbox.revealed).toBe(true);
+        unbox.dispose();
+      });
+    }
+
+    it('holds for at most one extra frame and keeps the reveal and flight timings', () => {
+      const { unbox, beats } = cinematic('rare', false);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.elapsed).toBe(burstFrameMs(FULL_UNBOX));
+      expect(unbox.revealed).toBe(false);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.revealed).toBe(true);
+      expect(beats.at(-1)?.atMs).toBe(FULL_UNBOX.revealAtMs);
+      unbox.collect();
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.done).toBe(true);
+      unbox.dispose();
+    });
+
+    it('holds even when the last frame drawn was only the first instant of the burst', () => {
+      const { unbox, beats } = cinematic('fine', false);
+      unbox.update((FULL_UNBOX.burstAtMs + 1) / 1000);
+      expect(beats.at(-1)?.kind).toBe('burst');
+      expect(unbox.pose.lidOpen).toBeLessThan(0.1);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.revealed).toBe(false);
+      expect(unbox.pose.lidOpen).toBeGreaterThan(0.6);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.revealed).toBe(true);
+      unbox.dispose();
+    });
+
+    it('holds on the burst with reduced motion when frames do not line up with the beats', () => {
+      const { unbox, beats } = cinematic('exquisite', true);
+      const frameS = (REDUCED_UNBOX.burstAtMs + 37) / 1000;
+      unbox.update(frameS);
+      expect(beats.at(-1)?.kind).toBe('burst');
+      expect(unbox.revealed).toBe(false);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.revealed).toBe(false);
+      expect(unbox.elapsed).toBe(burstFrameMs(REDUCED_UNBOX));
+      expect(unbox.pose.lidOpen).toBeGreaterThan(0.6);
+      unbox.update(SLOW_FRAME_S);
+      expect(unbox.revealed).toBe(true);
+      expect(beats.map((beat) => beat.kind)).toEqual(unboxBeats(REDUCED_UNBOX).map((b) => b.kind));
+      unbox.dispose();
+    });
+
+    it('still lets a tap skip straight to the card', () => {
+      const { unbox, beats } = cinematic('heirloom', false);
+      unbox.skip();
+      expect(unbox.revealed).toBe(true);
+      expect(beats.map((beat) => beat.kind)).toEqual(unboxBeats(FULL_UNBOX).map((b) => b.kind));
+      unbox.dispose();
+    });
+
+    it('never holds at 60 fps or 10 fps, with or without reduced motion', () => {
+      for (const reducedMotion of [false, true]) {
+        for (const fps of [60, 10]) {
+          const { unbox } = cinematic('exquisite', reducedMotion);
+          let clock = 0;
+          for (let frame = 0; frame < fps * 3; frame++) {
+            unbox.update(1 / fps);
+            clock += 1000 / fps;
+            expect(unbox.elapsed).toBeCloseTo(clock, 6);
+          }
+          expect(unbox.revealed).toBe(true);
+          unbox.dispose();
+        }
+      }
+    });
+
+    it('frames the burst inside its own window, between the burst and the card', () => {
+      for (const timeline of [FULL_UNBOX, REDUCED_UNBOX]) {
+        const at = burstFrameMs(timeline);
+        expect(at).toBeGreaterThan(timeline.burstAtMs);
+        expect(at).toBeLessThan(timeline.revealAtMs);
+      }
+    });
   });
 });

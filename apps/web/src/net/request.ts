@@ -11,6 +11,7 @@ import {
   type EndpointBodyInput,
   type EndpointName,
   type EndpointParamsInput,
+  type EndpointQueryInput,
   type EndpointResponse,
   type IdempotencyKey,
 } from '@coinposh/shared';
@@ -26,8 +27,12 @@ type ParamsField<N extends EndpointName> = [EndpointParamsInput<N>] extends [nev
   ? { readonly params?: never }
   : { readonly params: EndpointParamsInput<N> };
 
-/** What a caller may put on the wire for endpoint `N`: its body, its path params, nothing else. */
-export type CallInput<N extends EndpointName> = BodyField<N> & ParamsField<N>;
+type QueryField<N extends EndpointName> = [EndpointQueryInput<N>] extends [never]
+  ? { readonly query?: never }
+  : { readonly query?: EndpointQueryInput<N> };
+
+/** What a caller may put on the wire for endpoint `N`: its body, path params and query, nothing else. */
+export type CallInput<N extends EndpointName> = BodyField<N> & ParamsField<N> & QueryField<N>;
 
 export interface SignedRequestInput {
   readonly idempotencyKey: IdempotencyKey | null;
@@ -44,6 +49,27 @@ export class ContractViolationError extends Error {
 
 export function newIdempotencyKey(): IdempotencyKey {
   return crypto.randomUUID() as IdempotencyKey;
+}
+
+function encodeQuery(name: EndpointName, endpoint: Endpoint, query: unknown): string {
+  if (endpoint.query === undefined) {
+    if (query !== undefined) {
+      throw new ContractViolationError(`${name} takes no query, so refusing to send one.`);
+    }
+    return '';
+  }
+  const parsed = endpoint.query.safeParse(query ?? {});
+  if (!parsed.success) {
+    throw new ContractViolationError(
+      `Refusing to send an invalid ${name} query: ${parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`,
+      { cause: parsed.error },
+    );
+  }
+  const fields = Object.entries(parsed.data as Record<string, string | undefined>).filter(
+    (field): field is [string, string] => field[1] !== undefined,
+  );
+  const search = new URLSearchParams(fields).toString();
+  return search === '' ? '' : `?${search}`;
 }
 
 function encodeBody(name: EndpointName, endpoint: Endpoint, body: unknown): string | null {
@@ -66,7 +92,9 @@ export async function signRequest<N extends EndpointName>(
   device: DeviceKey,
 ): Promise<WireRequest> {
   const endpoint: Endpoint = endpoints[name];
-  const path = (buildPath as (n: EndpointName, params?: unknown) => string)(name, input.params);
+  const path =
+    (buildPath as (n: EndpointName, params?: unknown) => string)(name, input.params) +
+    encodeQuery(name, endpoint, input.query);
   const body = encodeBody(name, endpoint, input.body);
   const idempotencyKey = requiresIdempotencyKey(endpoint) ? signed.idempotencyKey : null;
   if (requiresIdempotencyKey(endpoint) && idempotencyKey === null) {

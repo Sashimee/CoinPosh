@@ -1,8 +1,16 @@
-import { coinTiers, coinValue, venues } from '@coinposh/economy';
+import {
+  coinTiers,
+  MINT_MICROS_PER_COIN,
+  mintedCoinMicros,
+  mintedCoinValue,
+  venues,
+  type UpgradeLevelMap,
+} from '@coinposh/economy';
 import {
   CoinIdSchema,
   CrateIdSchema,
   ENTITY_ID_PREFIXES,
+  TableSessionIdSchema,
   type ClaimRejection,
   type CoinId,
   type CoinTier,
@@ -11,6 +19,7 @@ import {
   type EpochMs,
   type MintedCoin,
   type TableCrate,
+  type TableSessionId,
   type Tick,
 } from '@coinposh/shared';
 import { randomBase62 } from '../crypto.ts';
@@ -18,7 +27,7 @@ import { randomBase62 } from '../crypto.ts';
 /** 20 base62 characters ≈ 119 bits, so a forged ID cannot hit a real coin by guessing. */
 const ENTITY_ID_LENGTH = 20;
 
-export type CoinState = 'buffer' | 'table' | 'claimed' | 'lost' | 'fused';
+export type CoinState = 'buffer' | 'table' | 'claimed' | 'lost' | 'fused' | 'refunded';
 export type CrateState = 'table' | 'claimed' | 'lost';
 
 interface CoinRow extends Record<string, SqlStorageValue> {
@@ -27,6 +36,9 @@ interface CoinRow extends Record<string, SqlStorageValue> {
   value: number;
   state: CoinState;
   dropped_tick: number | null;
+  paid: number;
+  mint_micros: number | null;
+  heap_slot: number | null;
 }
 
 interface CrateRow extends Record<string, SqlStorageValue> {
@@ -34,16 +46,27 @@ interface CrateRow extends Record<string, SqlStorageValue> {
   kind: CrateKind;
   state: CrateState;
   spawned_tick: number;
+  spawned_at: number;
 }
 
 export interface StoredCoin extends MintedCoin {
   readonly state: CoinState;
   readonly droppedTick: Tick | null;
+  /** What the wallet prepaid to reserve this coin in the buffer; 0 for every other coin. */
+  readonly paid: number;
+  /**
+   * The millionths of a coin this coin drew from the player's mint carry, or null when it was
+   * not minted from the carry (a fusion, or a coin stored before the carry existed).
+   */
+  readonly mintMicros: number | null;
+  /** Where the opening heap laid this coin, kept for life; null for every other coin. */
+  readonly heapSlot: number | null;
 }
 
 export interface StoredCrate extends TableCrate {
   readonly state: CrateState;
   readonly spawnedTick: Tick;
+  readonly spawnedAt: EpochMs;
 }
 
 export function newCoinId(): CoinId {
@@ -54,6 +77,12 @@ export function newCrateId(): CrateId {
   return CrateIdSchema.parse(`${ENTITY_ID_PREFIXES.crate}_${randomBase62(ENTITY_ID_LENGTH)}`);
 }
 
+export function newTableSessionId(): TableSessionId {
+  return TableSessionIdSchema.parse(
+    `${ENTITY_ID_PREFIXES.tableSession}_${randomBase62(ENTITY_ID_LENGTH)}`,
+  );
+}
+
 export const HOME_VENUE = venues[0];
 
 export function tierDef(tier: CoinTier) {
@@ -62,9 +91,19 @@ export function tierDef(tier: CoinTier) {
   return def;
 }
 
-/** The value the server stores, and later credits, for a freshly minted coin of `tier`. */
-export function mintedValue(tier: CoinTier): number {
-  return Math.floor(coinValue(tierDef(tier), HOME_VENUE.coinValueMultiplier));
+/** What one coin of `tier` minted at `levels` is worth on its own, before the mint carry. */
+export function mintedValue(tier: CoinTier, levels: UpgradeLevelMap): number {
+  return mintedCoinValue(tierDef(tier), HOME_VENUE, levels);
+}
+
+/** The millionths of a coin a coin of `tier` minted at `levels` adds to the mint carry. */
+export function mintedMicros(tier: CoinTier, levels: UpgradeLevelMap): number {
+  return mintedCoinMicros(tierDef(tier), HOME_VENUE, levels);
+}
+
+/** The millionths a stored coin was minted at; a coin from before the carry held its whole value. */
+export function storedMicros(coin: StoredCoin): number {
+  return coin.mintMicros ?? coin.value * MINT_MICROS_PER_COIN;
 }
 
 function toStoredCoin(row: CoinRow): StoredCoin {
@@ -74,6 +113,9 @@ function toStoredCoin(row: CoinRow): StoredCoin {
     value: row.value,
     state: row.state,
     droppedTick: row.dropped_tick,
+    paid: row.paid,
+    mintMicros: row.mint_micros,
+    heapSlot: row.heap_slot,
   };
 }
 
@@ -83,6 +125,7 @@ function toStoredCrate(row: CrateRow): StoredCrate {
     kind: row.kind,
     state: row.state,
     spawnedTick: row.spawned_tick,
+    spawnedAt: row.spawned_at,
   };
 }
 
@@ -99,7 +142,10 @@ export class Entities {
 
   coin(id: CoinId): StoredCoin | null {
     const row = this.sql
-      .exec<CoinRow>('SELECT id, tier, value, state, dropped_tick FROM coins WHERE id = ?', id)
+      .exec<CoinRow>(
+        'SELECT id, tier, value, state, dropped_tick, paid, mint_micros, heap_slot FROM coins WHERE id = ?',
+        id,
+      )
       .toArray()[0];
     return row === undefined ? null : toStoredCoin(row);
   }
@@ -107,7 +153,7 @@ export class Entities {
   coinsIn(state: CoinState): StoredCoin[] {
     return this.sql
       .exec<CoinRow>(
-        'SELECT id, tier, value, state, dropped_tick FROM coins WHERE state = ? ORDER BY rowid',
+        'SELECT id, tier, value, state, dropped_tick, paid, mint_micros, heap_slot FROM coins WHERE state = ? ORDER BY rowid',
         state,
       )
       .toArray()
@@ -123,21 +169,69 @@ export class Entities {
   mintCoin(
     tier: CoinTier,
     value: number,
+    mintMicros: number | null,
     state: 'buffer' | 'table',
     droppedTick: Tick | null,
     at: EpochMs,
   ): StoredCoin {
-    const coin: StoredCoin = { id: newCoinId(), tier, value, state, droppedTick };
+    const coin: StoredCoin = {
+      id: newCoinId(),
+      tier,
+      value,
+      state,
+      droppedTick,
+      paid: 0,
+      mintMicros,
+      heapSlot: null,
+    };
     this.sql.exec(
-      'INSERT INTO coins (id, tier, value, state, dropped_tick, minted_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO coins (id, tier, value, mint_micros, state, dropped_tick, minted_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       coin.id,
       tier,
       value,
+      mintMicros,
       state,
       droppedTick,
       at,
     );
     return coin;
+  }
+
+  setHeapSlot(id: CoinId, slot: number): void {
+    this.sql.exec('UPDATE coins SET heap_slot = ? WHERE id = ?', slot, id);
+  }
+
+  /**
+   * A boot restarts the client's tick clock at 0, so every coin and crate that stays on the
+   * table is stamped as if it arrived at tick 0; otherwise a claim in the new session would be
+   * refused as earlier than the drop.
+   */
+  rebaseTableTicks(): void {
+    this.sql.exec("UPDATE coins SET dropped_tick = 0 WHERE state = 'table'");
+    this.sql.exec("UPDATE crates SET spawned_tick = 0 WHERE state = 'table'");
+  }
+
+  markPaid(id: CoinId, paid: number): void {
+    this.sql.exec("UPDATE coins SET paid = ? WHERE id = ? AND state = 'buffer'", paid, id);
+  }
+
+  /**
+   * Re-mints a reserved coin at `value`. A buffered coin's value is not on the ledger until it
+   * is dropped (the buffer account holds only what was paid), so this moves nothing; the drop
+   * then mints the difference.
+   */
+  repriceBuffered(id: CoinId, value: number, mintMicros: number): void {
+    this.sql.exec(
+      "UPDATE coins SET value = ?, mint_micros = ? WHERE id = ? AND state = 'buffer'",
+      value,
+      mintMicros,
+      id,
+    );
+  }
+
+  /** Only for a reservation nothing paid for: it holds no value and has no ledger legs. */
+  discardUnpaid(id: CoinId): void {
+    this.sql.exec("DELETE FROM coins WHERE id = ? AND state = 'buffer' AND paid = 0", id);
   }
 
   placeOnTable(id: CoinId, tick: Tick): void {
@@ -148,7 +242,7 @@ export class Entities {
     );
   }
 
-  settleCoin(id: CoinId, state: 'claimed' | 'lost' | 'fused', at: EpochMs): void {
+  settleCoin(id: CoinId, state: 'claimed' | 'lost' | 'fused' | 'refunded', at: EpochMs): void {
     this.sql.exec(
       "UPDATE coins SET state = ?, settled_at = ? WHERE id = ? AND state = 'table'",
       state,
@@ -169,7 +263,10 @@ export class Entities {
 
   crate(id: CrateId): StoredCrate | null {
     const row = this.sql
-      .exec<CrateRow>('SELECT id, kind, state, spawned_tick FROM crates WHERE id = ?', id)
+      .exec<CrateRow>(
+        'SELECT id, kind, state, spawned_tick, spawned_at FROM crates WHERE id = ?',
+        id,
+      )
       .toArray()[0];
     return row === undefined ? null : toStoredCrate(row);
   }
@@ -177,14 +274,20 @@ export class Entities {
   cratesOnTable(): StoredCrate[] {
     return this.sql
       .exec<CrateRow>(
-        "SELECT id, kind, state, spawned_tick FROM crates WHERE state = 'table' ORDER BY rowid",
+        "SELECT id, kind, state, spawned_tick, spawned_at FROM crates WHERE state = 'table' ORDER BY rowid",
       )
       .toArray()
       .map(toStoredCrate);
   }
 
   spawnCrate(kind: CrateKind, tick: Tick, at: EpochMs): StoredCrate {
-    const crate: StoredCrate = { id: newCrateId(), kind, state: 'table', spawnedTick: tick };
+    const crate: StoredCrate = {
+      id: newCrateId(),
+      kind,
+      state: 'table',
+      spawnedTick: tick,
+      spawnedAt: at,
+    };
     this.sql.exec(
       'INSERT INTO crates (id, kind, state, spawned_tick, spawned_at) VALUES (?, ?, ?, ?, ?)',
       crate.id,

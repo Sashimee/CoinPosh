@@ -127,28 +127,14 @@
   width: 100%;
 }
 
-.cp-hud-middle {
-  position: relative;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: 0;
+.cp-hud > .cp-dock {
+  grid-row: 3;
 }
 
-.cp-hud-middle.is-waiting {
-  visibility: hidden;
-}
-
-.cp-hud-middle > .cp-side-meter {
-  opacity: clamp(0, var(--cp-meters-in, 1), 1);
-}
-
-.cp-hud-middle > .cp-side-meter:first-child {
-  translate: calc((1 - var(--cp-meters-in, 1)) * -64px) 0;
-}
-
-.cp-hud-middle > .cp-side-meter:last-child {
-  translate: calc((1 - var(--cp-meters-in, 1)) * 64px) 0;
+.cp-meters {
+  position: absolute;
+  inset: var(--cp-safe-top) var(--cp-safe-right) var(--cp-safe-bottom) var(--cp-safe-left);
+  pointer-events: none;
 }
 
 .cp-plaque-wrap {
@@ -343,6 +329,150 @@
   }
 }
 
+.cp-upgrade-hint {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px 8px 8px;
+  max-width: min(100%, 340px);
+  overflow: hidden;
+  text-align: left;
+  border-radius: var(--cp-radius-md);
+  border-color: var(--cp-gold-brushed);
+  box-shadow:
+    var(--cp-shadow),
+    var(--cp-glow-inner),
+    0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.35);
+}
+
+.cp-upgrade-hint[hidden] {
+  display: none;
+}
+
+.cp-upgrade-hint.is-glinting .cp-glint {
+  animation: cp-glint 900ms ease-out 260ms both;
+}
+
+.cp-upgrade-hint-seal {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  color: var(--cp-navy-lacquer);
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--cp-ivory),
+    var(--cp-champagne) 35%,
+    var(--cp-gold-brushed) 75%
+  );
+  box-shadow:
+    0 0 0 1px rgb(var(--cp-ivory-rgb) / 0.4),
+    0 2px 8px rgb(0 0 0 / 0.35);
+}
+
+.cp-upgrade-hint-seal .cp-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.cp-upgrade-hint-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.cp-upgrade-hint-title {
+  font-family: var(--cp-font-display);
+  font-size: 18px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1.15;
+  color: var(--cp-champagne);
+}
+
+.cp-upgrade-hint-hint {
+  font-size: 12px;
+  color: var(--cp-ink-muted);
+}
+
+.cp-upgrade-hint-go {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-hairline);
+  color: var(--cp-gold-brushed);
+}
+
+.cp-upgrade-hint-go .cp-icon {
+  width: 16px;
+  height: 16px;
+  animation: cp-hint-go 1400ms ease-in-out infinite;
+}
+
+@keyframes cp-hint-go {
+  50% {
+    translate: 3px 0;
+  }
+}
+
+.cp-dock-primary.is-hinted {
+  border-color: var(--cp-champagne);
+  background:
+    linear-gradient(
+      180deg,
+      rgb(var(--cp-gold-brushed-rgb) / 0.5),
+      rgb(var(--cp-gold-brushed-rgb) / 0.2)
+    ),
+    var(--cp-lacquer-deep);
+  box-shadow:
+    0 0 0 2px rgb(var(--cp-gold-brushed-rgb) / 0.7),
+    0 0 30px 6px rgb(var(--cp-gold-brushed-rgb) / 0.5),
+    var(--cp-shadow),
+    inset 0 0 18px rgb(var(--cp-champagne-rgb) / 0.22);
+}
+
+.cp-dock-primary.is-beckoning {
+  animation: cp-beckon-glow 1200ms ease-out;
+}
+
+.cp-dock-primary.is-beckoning::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid var(--cp-champagne);
+  pointer-events: none;
+  animation: cp-beckon-ring 1200ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes cp-beckon-glow {
+  30% {
+    box-shadow:
+      0 0 0 3px rgb(var(--cp-gold-brushed-rgb) / 0.7),
+      0 0 40px rgb(var(--cp-gold-brushed-rgb) / 0.85),
+      var(--cp-shadow),
+      var(--cp-glow-inner);
+  }
+}
+
+@keyframes cp-beckon-ring {
+  from {
+    opacity: 0.95;
+    scale: 1;
+  }
+  to {
+    opacity: 0;
+    scale: 1.18 1.5;
+  }
+}
+
 .cp-chip {
   pointer-events: auto;
   display: inline-flex;
@@ -420,18 +550,156 @@
   }
 }
 
-.cp-side-meter {
-  pointer-events: auto;
+/* A side meter at rest is a slim lacquer rail on the screen edge; with news it widens inward
+   into a card. Its box is set from the rail plan, so it never covers the coin floor. */
+.cp-rail {
+  --cp-rail-w: 22px;
+  position: absolute;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.07), transparent 46%), var(--cp-lacquer);
+  border: 1px solid var(--cp-hairline-soft);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 0.3),
+    var(--cp-glow-inner);
+  transition:
+    opacity 260ms ease,
+    scale 560ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 260ms ease,
+    box-shadow 260ms ease;
+}
+
+.cp-rail[data-side='right'] {
+  flex-direction: row-reverse;
+}
+
+/* The rails draw in from their centre, never from off-screen, once the table is playable. */
+.cp-meters.is-waiting .cp-rail {
+  opacity: 0;
+  scale: 1 0.4;
+}
+
+.cp-rail.is-swapping {
+  opacity: 0;
+  transition: none;
+}
+
+.cp-rail.is-open {
+  border-color: var(--cp-hairline);
+}
+
+.cp-rail::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgb(var(--cp-champagne-rgb) / 0.32) 48%,
+    transparent 66%
+  );
+  translate: -120% 0;
+  opacity: 0;
+}
+
+.cp-rail.is-open::after {
+  animation: cp-rail-shine 900ms ease-out 120ms;
+}
+
+.cp-rail[data-side='right'].is-open::after {
+  animation-name: cp-rail-shine-in;
+}
+
+@keyframes cp-rail-shine {
+  from {
+    translate: -120% 0;
+    opacity: 1;
+  }
+  to {
+    translate: 120% 0;
+    opacity: 1;
+  }
+}
+
+@keyframes cp-rail-shine-in {
+  from {
+    translate: 120% 0;
+    opacity: 1;
+  }
+  to {
+    translate: -120% 0;
+    opacity: 1;
+  }
+}
+
+.cp-rail-spine {
+  position: relative;
+  flex: none;
+  width: calc(var(--cp-rail-w) - 2px);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 76px;
-  padding: 10px 6px 12px;
-  border-radius: var(--cp-radius-lg);
-  background:
-    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.06), transparent 42%), var(--cp-lacquer);
-  border: 1px solid var(--cp-hairline-soft);
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 0;
+}
+
+/* The card's opacity follows the morph (meterRail), so its text never shows half-uncovered; it
+   clips to its own box so nothing it holds can stray over the spine's gauge. */
+.cp-rail-card {
+  flex: none;
+  display: flex;
+  align-items: center;
+  width: calc(var(--cp-card-w, var(--cp-rail-w)) - var(--cp-rail-w));
+  padding: 8px 12px 8px 6px;
+  overflow: clip;
+  opacity: 0;
+}
+
+.cp-rail[data-side='right'] .cp-rail-card {
+  justify-content: flex-end;
+  padding: 8px 6px 8px 12px;
+  text-align: right;
+}
+
+/* A gold hairline parts the gauge from the card, so the flute reads on its own. */
+.cp-rail-spine::after {
+  content: '';
+  position: absolute;
+  inset: 12px auto 12px 100%;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--cp-hairline), transparent);
+  opacity: 0;
+  transition: opacity 260ms ease;
+}
+
+.cp-rail[data-side='right'] .cp-rail-spine::after {
+  inset: 12px 100% 12px auto;
+}
+
+.cp-rail.is-open .cp-rail-spine::after {
+  opacity: 1;
+}
+
+.cp-rail-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cp-rail[data-side='right'] .cp-rail-text {
+  align-items: flex-end;
+}
+
+.cp-rail[data-compact='true'] .cp-combo-hint,
+.cp-rail[data-compact='true'] .cp-decorum-percent {
+  display: none;
 }
 
 .cp-side-label {
@@ -443,8 +711,8 @@
 }
 
 .cp-flute {
-  width: 44px;
-  height: 154px;
+  width: 100%;
+  height: 100%;
   overflow: visible;
 }
 
@@ -509,14 +777,25 @@
 
 .cp-combo-caption {
   display: flex;
+  align-items: baseline;
+  gap: 0 6px;
+}
+
+/* A rank name too long to share its line with the multiplier sets the multiplier beneath it. */
+.cp-combo-caption.is-stacked {
   flex-direction: column;
-  align-items: center;
-  min-height: 38px;
+  align-items: flex-end;
+}
+
+/* Flush against the gauge, the rank-up swell grows away from it rather than into the clip. */
+.cp-combo-caption.is-stacked .cp-combo-tier {
+  transform-origin: right center;
 }
 
 .cp-combo-tier {
   font-family: var(--cp-font-display);
-  font-size: 17px;
+  font-size: 20px;
+  line-height: 1.1;
   font-weight: 700;
   color: var(--cp-champagne);
   white-space: nowrap;
@@ -531,10 +810,9 @@
 }
 
 .cp-combo-hint {
-  font-size: 10px;
-  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.3;
   color: var(--cp-ink-muted);
-  max-width: 70px;
 }
 
 .cp-combo.is-active[data-rank='5'] .cp-combo-tier {
@@ -552,9 +830,23 @@
   animation: cp-shimmer 1.6s linear infinite;
 }
 
+.cp-combo.is-spent .cp-combo-caption {
+  opacity: 0.6;
+  transition: opacity 300ms ease;
+}
+
+.cp-combo.is-active {
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 0.3),
+    0 0 calc(4px + var(--cp-fill, 0) * 18px) rgb(var(--cp-gold-brushed-rgb) / 0.3),
+    var(--cp-glow-inner);
+}
+
 .cp-combo[data-rank='5'] {
   border-color: var(--cp-gold-brushed);
-  box-shadow: 0 0 24px rgb(var(--cp-gold-brushed-rgb) / 0.35);
+  box-shadow:
+    0 0 24px rgb(var(--cp-gold-brushed-rgb) / 0.4),
+    var(--cp-glow-inner);
 }
 
 @keyframes cp-shimmer {
@@ -563,15 +855,28 @@
   }
 }
 
+.cp-decorum-spine {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+}
+
 .cp-decorum-bell {
   display: grid;
   color: var(--cp-champagne);
 }
 
+.cp-decorum-bell .cp-icon {
+  width: 13px;
+  height: 13px;
+}
+
 .cp-decorum-track {
   position: relative;
-  width: 12px;
-  height: 128px;
+  flex: 1;
+  width: 6px;
   border-radius: 999px;
   border: 1px solid var(--cp-hairline);
   background: rgb(var(--cp-navy-lacquer-rgb) / 0.75);
@@ -597,11 +902,33 @@
   );
 }
 
+.cp-decorum-percent {
+  font-family: var(--cp-font-display);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.05;
+  color: var(--cp-champagne);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
 .cp-decorum-status {
-  font-size: 10px;
-  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.3;
   color: var(--cp-ink-muted);
-  max-width: 70px;
+}
+
+.cp-meters[data-zone='edge'] .cp-decorum-bell {
+  display: none;
+}
+
+.cp-meters[data-zone='edge'] .cp-decorum-track {
+  width: 4px;
+}
+
+.cp-decorum[data-level='warning'] .cp-decorum-status,
+.cp-decorum[data-level='critical'] .cp-decorum-status,
+.cp-decorum[data-level='frozen'] .cp-decorum-status {
+  color: var(--cp-coral-sunset);
 }
 
 .cp-decorum[data-level='warning'] .cp-decorum-fill {
@@ -983,8 +1310,12 @@
 
 .cp-upgrade {
   --cp-glow: 0;
+  /* Fixed outer columns: a wider price or the pending label must never steal width from the
+     text and rewrap the description mid-purchase. */
+  --cp-upgrade-buy-width: 106px;
+  position: relative;
   display: grid;
-  grid-template-columns: 40px 1fr auto;
+  grid-template-columns: 40px minmax(0, 1fr) var(--cp-upgrade-buy-width);
   align-items: center;
   gap: 12px;
   padding: 10px 10px 10px 12px;
@@ -999,14 +1330,150 @@
   border-color: var(--cp-hairline);
 }
 
-.cp-upgrade.is-levelled .cp-medallion {
-  animation: cp-medal 600ms cubic-bezier(0.2, 1.6, 0.4, 1);
+.cp-upgrade-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-@keyframes cp-medal {
-  40% {
-    scale: 1.25;
-    rotate: 12deg;
+.cp-upgrade-glint {
+  background: linear-gradient(
+    105deg,
+    transparent 28%,
+    rgb(var(--cp-gold-brushed-rgb) / 0.22) 40%,
+    rgb(var(--cp-champagne-rgb) / 0.5) 48%,
+    rgb(var(--cp-ivory-rgb) / 0.62) 50%,
+    rgb(var(--cp-champagne-rgb) / 0.5) 52%,
+    rgb(var(--cp-gold-brushed-rgb) / 0.22) 60%,
+    transparent 72%
+  );
+  mix-blend-mode: screen;
+}
+
+.cp-upgrade.is-celebrating {
+  animation: cp-upgrade-flare 1100ms ease-out;
+}
+
+.cp-upgrade.is-celebrating .cp-upgrade-glint {
+  animation: cp-upgrade-glint 950ms cubic-bezier(0.25, 0.6, 0.35, 1) both;
+}
+
+.cp-upgrade.is-celebrating .cp-medallion {
+  animation: cp-medal-ring 900ms ease-out;
+}
+
+.cp-upgrade.is-celebrating .cp-upgrade-effect {
+  animation: cp-effect-flash 1000ms ease-out;
+}
+
+.cp-upgrade.is-celebrating .cp-upgrade-pop {
+  animation: cp-upgrade-pop 1150ms cubic-bezier(0.2, 1.3, 0.4, 1) both;
+}
+
+@keyframes cp-upgrade-glint {
+  from {
+    translate: -62% 0;
+  }
+  to {
+    translate: 72% 0;
+  }
+}
+
+@keyframes cp-upgrade-flare {
+  0%,
+  20% {
+    border-color: var(--cp-gold-brushed);
+    background-color: rgb(var(--cp-gold-brushed-rgb) / 0.16);
+  }
+}
+
+@keyframes cp-medal-ring {
+  0%,
+  30% {
+    border-color: var(--cp-champagne);
+    box-shadow:
+      0 0 0 3px rgb(var(--cp-gold-brushed-rgb) / 0.35),
+      0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.6);
+  }
+}
+
+@keyframes cp-effect-flash {
+  0%,
+  35% {
+    color: var(--cp-champagne);
+  }
+}
+
+@keyframes cp-upgrade-pop {
+  0% {
+    opacity: 0;
+    translate: -50% -50%;
+    scale: 0.4;
+  }
+  14% {
+    opacity: 1;
+    translate: -50% -150%;
+    scale: 1.16;
+  }
+  30% {
+    translate: -50% -170%;
+    scale: 1;
+  }
+  74% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    translate: -50% -210%;
+    scale: 1;
+  }
+}
+
+/* Reduced motion keeps the row still: it washes gold and the new effect fades in and out in
+   place. These outrank the host's blanket 1ms animation rule on purpose. */
+.cp-upgrade.is-celebrating.is-calm {
+  animation: cp-upgrade-flare 900ms ease-out !important;
+}
+
+.cp-upgrade.is-celebrating.is-calm .cp-upgrade-glint {
+  animation: none !important;
+}
+
+.cp-upgrade.is-celebrating.is-calm .cp-medallion {
+  animation: cp-medal-ring 900ms ease-out !important;
+}
+
+.cp-upgrade.is-celebrating.is-calm .cp-upgrade-pop {
+  translate: -50% -170%;
+  animation: cp-upgrade-pop-calm 1100ms ease-out both !important;
+}
+
+@keyframes cp-upgrade-pop-calm {
+  0% {
+    opacity: 0;
+  }
+  15%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.cp-upgrade.is-spotlit {
+  border-color: var(--cp-gold-brushed);
+  background: rgb(var(--cp-gold-brushed-rgb) / 0.08);
+  animation: cp-spotlight 1800ms ease-out;
+}
+
+@keyframes cp-spotlight {
+  0%,
+  25% {
+    background-color: rgb(var(--cp-gold-brushed-rgb) / 0.24);
   }
 }
 
@@ -1045,32 +1512,78 @@
 }
 
 .cp-upgrade-meta {
-  display: flex;
-  flex-wrap: wrap;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 16px 14px;
+  row-gap: 3px;
   align-items: center;
-  gap: 4px 10px;
   margin-top: 3px;
 }
 
 .cp-upgrade-effect {
+  overflow: hidden;
   font-size: 12px;
   font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--cp-sea-glass);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
+.cp-upgrade-pop {
+  position: absolute;
+  z-index: 2;
+  left: 33px;
+  top: 50%;
+  padding: 4px 10px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-gold-brushed);
+  background: linear-gradient(
+    180deg,
+    rgb(var(--cp-navy-lacquer-rgb) / 0.96),
+    rgb(var(--cp-navy-lacquer-rgb) / 0.88)
+  );
+  box-shadow:
+    0 6px 16px rgb(0 0 0 / 0.45),
+    0 0 16px rgb(var(--cp-gold-brushed-rgb) / 0.45),
+    inset 0 1px 0 rgb(var(--cp-champagne-rgb) / 0.3);
+  font-family: var(--cp-font-display);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--cp-champagne);
+  font-variant-numeric: tabular-nums lining-nums;
+  text-shadow: 0 0 10px rgb(var(--cp-gold-brushed-rgb) / 0.6);
+  translate: -50% -50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .cp-upgrade-progress {
-  display: inline-flex;
+  display: flex;
+  overflow: hidden;
+  height: 14px;
   white-space: nowrap;
   align-items: center;
   gap: 6px;
   font-size: 11px;
+  line-height: 14px;
   color: var(--cp-ink-muted);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
+/* Wide enough for "Niv. 100", so the meter does not slide when the level gains a digit. */
+.cp-upgrade-level {
+  flex: none;
+  min-width: 7.5ch;
+}
+
 .cp-level-bar {
   position: relative;
+  flex: none;
   width: 56px;
   height: 4px;
   border-radius: 999px;
@@ -1157,6 +1670,22 @@
 
 .cp-upgrade.is-maxed .cp-buy {
   border-style: dashed;
+}
+
+.cp-upgrade > .cp-buy {
+  width: 100%;
+  min-width: 0;
+  padding-inline: 6px;
+}
+
+.cp-upgrade .cp-buy-label,
+.cp-upgrade .cp-buy-cost {
+  white-space: nowrap;
+}
+
+/* "Wird bestätigt…" outgrows the column even tightly tracked; upgradesPanel scales it to fit. */
+.cp-upgrade .cp-buy.is-pending .cp-buy-label {
+  letter-spacing: 0.06em;
 }
 
 .cp-upgrade.is-maxed .cp-medallion {
@@ -1352,6 +1881,16 @@
   display: none;
 }
 
+/* Reduced motion: the rail does not slide open or grow in; it cross-fades into its card. */
+.cp-ui-host[data-motion='reduced'] .cp-rail,
+.cp-ui-host[data-motion='reduced'] .cp-meters.is-waiting .cp-rail {
+  scale: none;
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-rail-card {
+  translate: none !important;
+}
+
 .cp-ui-host[data-motion='reduced'] .cp-sheet {
   transition: opacity 180ms ease;
 }
@@ -1366,7 +1905,8 @@
 }
 
 .cp-ui-host[data-motion='reduced'] .cp-vault-empty,
-.cp-ui-host[data-motion='reduced'] .cp-vault-empty-pointer .cp-icon {
+.cp-ui-host[data-motion='reduced'] .cp-vault-empty-pointer .cp-icon,
+.cp-ui-host[data-motion='reduced'] .cp-upgrade-hint-go .cp-icon {
   animation: none;
   translate: none;
 }
@@ -1374,6 +1914,11 @@
 .cp-stamp.is-reduced .cp-stamp-card {
   scale: 1 !important;
   rotate: 0deg !important;
+  transition: opacity 260ms ease;
+}
+
+.cp-stamp.is-reduced.is-leaving .cp-stamp-card {
+  translate: none;
 }
 
 @media (max-width: 374px), (max-height: 680px) {
@@ -1389,18 +1934,6 @@
   .cp-plaque {
     min-width: 170px;
     padding: 6px 18px 8px;
-  }
-
-  .cp-side-meter {
-    width: 68px;
-  }
-
-  .cp-flute {
-    height: 128px;
-  }
-
-  .cp-decorum-track {
-    height: 104px;
   }
 
   .cp-stamp-name {

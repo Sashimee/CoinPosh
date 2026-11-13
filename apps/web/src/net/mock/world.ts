@@ -5,30 +5,51 @@ import {
   bullion,
   bullionFromValue,
   cascade,
+  cascadeCreditMicros,
   cascadeTierFor,
+  cascadeWindowTicks,
   coinTiers,
   crateRewards,
+  crateIncomeCoins,
   crateSpawn,
   currencies,
+  dropBufferTarget,
+  dropSpacingTicks,
+  dropSpawnsCrate,
   dropTables,
+  extendCascade,
   fusion,
   fusionValue,
   initialPityState,
+  creditMintMicros,
+  measuredActiveRatePerHour,
+  mintedCoinMicros,
   offline,
-  offlineEarnings,
+  offlineCapHours,
+  offlineRate,
+  offlineVaultCoins,
   openingHeap,
   pity,
+  pushTravelTicks,
+  playStretchOf,
+  repriceReserved,
+  rateEnvelope,
+  rateEnvelopeScale,
+  playWindowStart,
   rollDrop,
   season,
   upgradeCost,
   upgradeLines,
-  upgradeStat,
+  upgradeStatAt,
   venues,
+  type CascadeChain,
   type CrateRewardDef,
   type DropSourceId,
   type PityState,
+  type PlayEntry,
   type RarityId,
   type Rng,
+  type UpgradeLevelMap,
   type UpgradeLineDef,
   type UpgradeStatId,
   type VenueDef,
@@ -105,6 +126,8 @@ interface CoinRecord {
   place: 'buffer' | 'table';
   spawnTick: number | null;
   origin: 'drop' | 'fusion' | 'heap';
+  /** Millionths of a coin this coin drew from the mint carry; null for a fused coin. */
+  mintMicros: number | null;
 }
 
 interface TickAnchor {
@@ -165,10 +188,18 @@ export interface MockPlayer {
   /** Ticks of recently accepted falls (any edge) and fusions, oldest first. */
   recentFalls: number[];
   recentFusions: number[];
-  cascadeChain: { lastTick: number; count: number } | null;
+  cascadeChain: CascadeChain | null;
+  /** The fraction of a coin, in millionths, the cascade bonus carries to the next front fall. */
+  cascadeCarry: number;
+  /** The fraction of a coin, in millionths, the next minted coin starts from (as the server). */
+  mintCarry: number;
   lifetimeValue: number;
   lifetimeBullion: number;
-  creditedTotal: number;
+  /**
+   * Wallet coin movements from play (drops paid, falls won) inside the active-rate window, the
+   * same ledger kinds the server measures the Velvet Vault's rate from.
+   */
+  playLog: PlayEntry[];
   lastActiveAt: number;
   fair: FairSeedState;
   revealed: RevealedSeed[];
@@ -176,13 +207,15 @@ export interface MockPlayer {
 }
 
 const DROP_TIER = coinTiers[0];
+/** Ledger reasons that move wallet coins through play, matching the server's play kinds. */
+const PLAY_REASONS: ReadonlySet<string> = new Set(['drop.debit', 'drop.prepay', 'claim.fall']);
 const MS_PER_TICK = 1000 / MOCK_RULES.ticksPerSecond;
 
 function ticksFor(ms: number): number {
   return Math.ceil(ms / MS_PER_TICK);
 }
 
-const CASCADE_WINDOW_TICKS = ticksFor(cascade.windowMs);
+const CASCADE_WINDOW_TICKS = cascadeWindowTicks(MOCK_RULES.ticksPerSecond);
 const MIN_FALL_TICKS = {
   drop: ticksFor(MOCK_RULES.minFallMsAfterDrop),
   fusion: ticksFor(MOCK_RULES.minFallMsAfterFusion),
@@ -254,16 +287,30 @@ function levelKey(player: MockPlayer, def: UpgradeLineDef): string {
   return def.scope === 'global' ? def.id : `${player.venueId}:${def.id}`;
 }
 
+/** The levels in play at the player's current venue, global lines included. */
+function levelMap(player: MockPlayer): UpgradeLevelMap {
+  const levels: Record<string, number> = {};
+  for (const def of upgradeLines) levels[def.id] = player.levels.get(levelKey(player, def)) ?? 0;
+  return levels;
+}
+
 function stat(player: MockPlayer, statId: UpgradeStatId): number {
-  let value = 1;
-  let found = false;
-  for (const def of upgradeLines) {
-    if (def.effect.stat !== statId) continue;
-    const level = player.levels.get(levelKey(player, def)) ?? 0;
-    value = found ? value * upgradeStat(def, level) : upgradeStat(def, level);
-    found = true;
-  }
-  return value;
+  return upgradeStatAt(levelMap(player), statId);
+}
+
+/** The base envelope `max` stretched by the player's upgrades, as the server's envelope does. */
+function envelopeMax(
+  player: MockPlayer,
+  base: number,
+  metric: (typeof rateEnvelope)['falls' | 'fusions'],
+): number {
+  const scale = rateEnvelopeScale(metric, {
+    levels: levelMap(player),
+    venue: player.venueId,
+    charms: 0,
+    albumBonus: 0,
+  });
+  return Math.ceil(base * scale - 1e-9);
 }
 
 function emptyWallet(): Wallet {
@@ -338,9 +385,11 @@ export class MockWorld {
       recentFalls: [],
       recentFusions: [],
       cascadeChain: null,
+      cascadeCarry: 0,
+      mintCarry: 0,
       lifetimeValue: 0,
       lifetimeBullion: 0,
-      creditedTotal: 0,
+      playLog: [],
       lastActiveAt: now,
       fair: await newSeed(),
       revealed: [],
@@ -382,6 +431,8 @@ export class MockWorld {
     ) as Partial<Record<Currency, number>>;
     if (Object.keys(moved).length === 0) return;
     player.wallet = next;
+    const playCoins = moved.coins;
+    if (playCoins !== undefined && PLAY_REASONS.has(reason)) this.#logPlay(player, now, playCoins);
     this.#ledger.push({
       seq: this.#nextSeq++,
       at: now,
@@ -402,21 +453,18 @@ export class MockWorld {
     this.#checkpoints.set(entry.playerId, totals);
   }
 
-  #coinValue(player: MockPlayer, tier: CoinTier): number {
+  #coinMicros(player: MockPlayer, tier: CoinTier): number {
     const def = coinTiers.find((candidate) => candidate.id === tier);
     if (def === undefined)
       throw new Error(`Mock: coin tier "${tier}" missing from economy config.`);
-    const multiplier =
-      venueDef(player.venueId).coinValueMultiplier *
-      stat(player, 'coinValue') *
-      stat(player, 'globalCoinValue');
-    return Math.floor(def.value * multiplier);
+    return mintedCoinMicros(def, venueDef(player.venueId), levelMap(player));
   }
 
   #mint(
     player: MockPlayer,
     tier: CoinTier,
     value: number,
+    mintMicros: number | null,
     place: CoinRecord['place'],
     spawnTick: number | null,
     origin: CoinRecord['origin'] = 'drop',
@@ -426,8 +474,22 @@ export class MockWorld {
       tier,
       value,
     };
-    player.coins.set(coin.id, { coin, place, spawnTick, origin });
+    player.coins.set(coin.id, { coin, place, spawnTick, origin, mintMicros });
     return coin;
+  }
+
+  /** Mints a coin worth its share of the multiplier: the fraction a floor drops is carried on. */
+  #mintFromCarry(
+    player: MockPlayer,
+    tier: CoinTier,
+    place: CoinRecord['place'],
+    spawnTick: number | null,
+    origin: CoinRecord['origin'] = 'drop',
+  ) {
+    const micros = this.#coinMicros(player, tier);
+    const credit = creditMintMicros(micros, player.mintCarry);
+    player.mintCarry = credit.carry;
+    return this.#mint(player, tier, credit.value, micros, place, spawnTick, origin);
   }
 
   #buffer(player: MockPlayer): MintedCoin[] {
@@ -447,23 +509,44 @@ export class MockWorld {
    * may fall from tick 0. The sim lays them first, so they hold sim ids 0..n-1.
    */
   #seedOpeningHeap(player: MockPlayer): void {
-    const value = this.#coinValue(player, openingHeap.tier);
     for (let i = 0; i < openingHeap.coins; i++) {
-      this.#mint(player, openingHeap.tier, value, 'table', 0, 'heap');
+      this.#mintFromCarry(player, openingHeap.tier, 'table', 0, 'heap');
     }
+  }
+
+  /**
+   * Buffered coins are paid for but their value is minted on drop, so a coinValue purchase
+   * reprices them and the very next drop carries the bought level, as on the server. Each is
+   * credited only the raise, through the carry, so what was already minted is not counted twice.
+   */
+  #revalueBuffer(player: MockPlayer): void {
+    const reserved = [...player.coins.values()].filter(
+      (record) => record.place === 'buffer' && record.coin.tier === DROP_TIER.id,
+    );
+    const repriced = repriceReserved(
+      reserved.map((record) => {
+        if (record.mintMicros === null)
+          throw new Error('Mock: a buffered coin has no mint micros.');
+        return { value: record.coin.value, micros: record.mintMicros };
+      }),
+      this.#coinMicros(player, DROP_TIER.id),
+      player.mintCarry,
+    );
+    reserved.forEach((record, i) => {
+      const next = repriced.reserved[i];
+      if (next === undefined) throw new Error('Mock: repriceReserved returned fewer coins.');
+      record.coin = { ...record.coin, value: next.value };
+      record.mintMicros = next.micros;
+    });
+    player.mintCarry = repriced.carry;
   }
 
   /** Tops the buffer up with coins paid for now, so an offline drop never creates value later. */
   #refillBuffer(player: MockPlayer, now: number): void {
     let buffered = this.#buffer(player).length;
-    while (buffered < MOCK_RULES.bufferSize && player.wallet.coins >= DROP_TIER.value) {
-      const coin = this.#mint(
-        player,
-        DROP_TIER.id,
-        this.#coinValue(player, DROP_TIER.id),
-        'buffer',
-        null,
-      );
+    const target = dropBufferTarget(MOCK_RULES.bufferSize, levelMap(player));
+    while (buffered < target && player.wallet.coins >= DROP_TIER.value) {
+      const coin = this.#mintFromCarry(player, DROP_TIER.id, 'buffer', null);
       this.#credit(player, now, 'drop.prepay', { coins: -DROP_TIER.value }, coin.id);
       buffered++;
     }
@@ -559,21 +642,29 @@ export class MockWorld {
     return this.#loadout(player, venueId).map((charmId, socket) => ({ socket, charmId }));
   }
 
-  #activeRatePerSecond(player: MockPlayer, now: number): number {
-    const seconds = Math.max(60, (now - player.createdAt) / 1000);
-    return Math.max(DROP_TIER.value, player.creditedTotal / seconds);
+  #logPlay(player: MockPlayer, now: number, coins: number): void {
+    player.playLog.push({ at: now, coins });
+    const start = playWindowStart(now, offlineRate);
+    const stale = player.playLog.findIndex((entry) => entry.at >= start);
+    if (stale > 0) player.playLog.splice(0, stale);
+  }
+
+  /** Net coins per active hour over the last stretch of play, as the server measures it. */
+  #measuredActiveRate(player: MockPlayer): number {
+    return measuredActiveRatePerHour(playStretchOf(player.playLog, offlineRate), offlineRate);
   }
 
   #settleOffline(player: MockPlayer, awayMs: number, now: number) {
-    const capHours = stat(player, 'offlineHours');
-    const ratePerHour = this.#activeRatePerSecond(player, now) * 3600;
-    const coins = Math.floor(offlineEarnings(awayMs / 3_600_000, capHours, ratePerHour, offline));
-    const creditedMs = Math.min(
-      awayMs,
-      Math.round(
-        Math.min(Math.max(capHours, offline.baseCapHours), offline.maxCapHours) * 3_600_000,
-      ),
+    const capHours = offlineCapHours(levelMap(player));
+    const coins = offlineVaultCoins(
+      awayMs / 3_600_000,
+      capHours,
+      this.#measuredActiveRate(player),
+      offlineRate,
+      offline,
     );
+    if (coins < 1) return null;
+    const creditedMs = Math.min(awayMs, Math.round(capHours * 3_600_000));
     this.#credit(player, now, 'offline.vault', { coins });
     return { awayMs, creditedMs, coins };
   }
@@ -581,7 +672,6 @@ export class MockWorld {
   #earn(player: MockPlayer, now: number, reason: string, coins: number, ref: string): void {
     const before = bullionFromValue(player.lifetimeValue, bullion);
     player.lifetimeValue += coins;
-    player.creditedTotal += coins;
     const minted = bullionFromValue(player.lifetimeValue, bullion) - before;
     player.lifetimeBullion += minted;
     this.#credit(player, now, reason, { coins, bullion: minted }, ref);
@@ -670,20 +760,15 @@ export class MockWorld {
       this.#checkActionTick(player, 'Drop', body.tick, now);
       if (
         player.lastDropTick !== null &&
-        body.tick < player.lastDropTick + MOCK_RULES.minTicksBetweenDrops
+        body.tick <
+          player.lastDropTick + dropSpacingTicks(MOCK_RULES.minTicksBetweenDrops, levelMap(player))
       ) {
         throw new MockFailure('bad_request', 'Drops arrive faster than the table allows.');
       }
       let coin: MintedCoin;
       if (body.coinId === undefined) {
         this.#credit(player, now, 'drop.debit', { coins: -DROP_TIER.value });
-        coin = this.#mint(
-          player,
-          DROP_TIER.id,
-          this.#coinValue(player, DROP_TIER.id),
-          'table',
-          body.tick,
-        );
+        coin = this.#mintFromCarry(player, DROP_TIER.id, 'table', body.tick);
       } else {
         const record = player.coins.get(body.coinId);
         if (record === undefined) {
@@ -707,14 +792,7 @@ export class MockWorld {
       }
       const spawnedCrates: TableCrate[] = [];
       const ftue = player.drops === crateSpawn.ftueScriptedDrop;
-      const every = Math.max(
-        1,
-        Math.round(
-          crateSpawn.dropsPerCrate /
-            (stat(player, 'crateChance') * stat(player, 'globalCrateChance')),
-        ),
-      );
-      if (ftue || player.drops % every === 0) {
+      if (dropSpawnsCrate(player.drops, levelMap(player))) {
         const crate: TableCrate = {
           id: CrateIdSchema.parse(entityId(ENTITY_ID_PREFIXES.crate)),
           kind: 'vault',
@@ -781,6 +859,8 @@ export class MockWorld {
         `${body.level}`,
       );
       player.levels.set(key, body.level);
+      this.#revalueBuffer(player);
+      this.#refillBuffer(player, now);
       return {
         venueId: body.venueId,
         lineId: body.lineId,
@@ -1015,10 +1095,10 @@ export class MockWorld {
         ) {
           return reject('not_on_table');
         }
-        if (claim.tick < record.spawnTick + MIN_FALL_TICKS[record.origin]) {
-          return reject('over_envelope');
-        }
-        const { max, maxPerTick } = MOCK_RULES.fallEnvelope;
+        const travel = pushTravelTicks(MIN_FALL_TICKS[record.origin], levelMap(player));
+        if (claim.tick < record.spawnTick + travel) return reject('over_envelope');
+        const { maxPerTick } = MOCK_RULES.fallEnvelope;
+        const max = envelopeMax(player, MOCK_RULES.fallEnvelope.max, rateEnvelope.falls);
         const sameTick = player.recentFalls.filter((tick) => tick === claim.tick).length;
         if (
           sameTick >= maxPerTick ||
@@ -1031,14 +1111,15 @@ export class MockWorld {
         this.#forget(player, claim.coinId, now);
         if (claim.edge !== 'front')
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
-        const chain = player.cascadeChain;
-        const count =
-          chain !== null && claim.tick - chain.lastTick <= CASCADE_WINDOW_TICKS
-            ? chain.count + 1
-            : 1;
-        player.cascadeChain = { lastTick: claim.tick, count };
-        const tier = cascadeTierFor(count, cascade);
-        const credited = Math.floor(record.coin.value * (tier?.multiplier ?? 1));
+        const chain = extendCascade(player.cascadeChain, claim.tick, CASCADE_WINDOW_TICKS);
+        player.cascadeChain = chain;
+        const tier = cascadeTierFor(chain.count, cascade);
+        const credit = creditMintMicros(
+          cascadeCreditMicros(record.coin.value, chain.count),
+          player.cascadeCarry,
+        );
+        player.cascadeCarry = credit.carry;
+        const credited = credit.value;
         this.#earn(player, now, 'claim.fall', credited, claim.coinId);
         return { status: 'accepted', credited, cascade: tier?.id ?? null, minted: null };
       }
@@ -1070,7 +1151,7 @@ export class MockWorld {
             player.recentFusions,
             claim.tick,
             FUSION_WINDOW_TICKS,
-            MOCK_RULES.fusionEnvelope.max,
+            envelopeMax(player, MOCK_RULES.fusionEnvelope.max, rateEnvelope.fusions),
           )
         ) {
           return reject('over_envelope');
@@ -1084,7 +1165,7 @@ export class MockWorld {
             fusion,
           ),
         );
-        const minted = this.#mint(player, next, value, 'table', claim.tick, 'fusion');
+        const minted = this.#mint(player, next, value, null, 'table', claim.tick, 'fusion');
         return { status: 'accepted', credited: 0, cascade: null, minted };
       }
       case 'crate': {
@@ -1168,9 +1249,10 @@ export class MockWorld {
   ): Reward[] {
     const def: CrateRewardDef = crateRewards[rarity];
     const rewards: Reward[] = [];
-    const coins = Math.max(
-      DROP_TIER.value,
-      Math.round(def.incomeSeconds * this.#activeRatePerSecond(player, now)),
+    const coins = crateIncomeCoins(
+      def.incomeSeconds,
+      this.#measuredActiveRate(player),
+      offlineRate,
     );
     const currencyRewards: [Currency, number][] = [
       ['coins', coins],

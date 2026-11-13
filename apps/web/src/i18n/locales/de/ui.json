@@ -20,6 +20,11 @@
     "vaultEmpty": {
       "title": "Tresor leer",
       "hint": "Ihre Münzen an der Kante sind noch im Spiel. Sehen Sie zu, wie sie fallen."
+    },
+    "upgradeHint": {
+      "title": "{{name}} ist bereit",
+      "hint": "Tippen Sie, um Ihr erstes Upgrade zu kaufen.",
+      "aria": "{{name}} ist jetzt kaufbar. Upgrades öffnen"
     }
   },
   "combo": {

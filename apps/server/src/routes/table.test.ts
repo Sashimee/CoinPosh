@@ -1,18 +1,41 @@
-import { coinTiers, crateSpawn, fusion, fusionValue } from '@coinposh/economy';
-import { endpoints, MAX_CLAIMS_PER_BATCH, type MintedCoin } from '@coinposh/shared';
+import { coinTiers, crateSpawn, fusion, fusionValue, openingHeap } from '@coinposh/economy';
+import {
+  endpoints,
+  MAX_CLAIMS_PER_BATCH,
+  tableSnapshotEndpoint,
+  type MintedCoin,
+} from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { mintedValue } from '../do/entities.ts';
 import { PREMINT_BUFFER_TARGET, type PlayerDO } from '../do/PlayerDO.ts';
 import { newIdempotencyKey, newSession, signParts, type Session } from '../test/client.ts';
-import { claims, drop, expectConserved, expectError, playerStub, state } from '../test/game.ts';
+import {
+  claims,
+  drop,
+  dropAsClient,
+  expectConserved,
+  expectError,
+  playerStub,
+  reload,
+  state,
+  vaultCoins,
+} from '../test/game.ts';
 
 const COPPER = coinTiers[0];
 const FORGED_COIN_ID = 'coin_AAAAAAAAAAAAAAAAAAAA';
 
 async function dropMany(session: Session, count: number, tick = 0): Promise<MintedCoin[]> {
-  const coins: MintedCoin[] = [];
-  for (let i = 0; i < count; i++) coins.push((await drop(session, { tick })).coin);
-  return coins;
+  return (await dropAsClient(session, count, () => tick)).map((response) => response.coin);
+}
+
+/** The table's coins other than the opening heap, which every new player starts on. */
+async function droppedOnTable(session: Session): Promise<MintedCoin[]> {
+  const coins = (await state(session)).table.coins;
+  expect(coins.slice(0, openingHeap.coins).every((coin) => coin.tier === openingHeap.tier)).toBe(
+    true,
+  );
+  return coins.slice(openingHeap.coins);
 }
 
 function fall(coin: { id: string }, edge: 'front' | 'left' | 'right' = 'front', tick = 10) {
@@ -29,8 +52,7 @@ describe('POST /v1/table/drop', () => {
     expect(result.coin.tier).toBe(COPPER.id);
     expect(result.coin.value).toBe(COPPER.value);
     expect(result.wallet.coins).toBe(before.wallet.coins - COPPER.value);
-    const after = await state(session);
-    expect(after.table.coins.map((coin) => coin.id)).toEqual([result.coin.id]);
+    expect((await droppedOnTable(session)).map((coin) => coin.id)).toEqual([result.coin.id]);
     await expectConserved(session);
   });
 
@@ -56,20 +78,20 @@ describe('POST /v1/table/drop', () => {
     expect(after.table).toEqual(before.table);
   });
 
-  it('spends a reserved buffer coin once, debiting the wallet only when it is dropped', async () => {
+  it('spends a prepaid buffer coin once, costing the Vault one drop and no more', async () => {
     const session = await newSession();
     const before = await state(session);
+    const vaultBefore = await vaultCoins(session);
     const buffered = before.table.buffer[0];
     if (buffered === undefined) throw new Error('A new player should have a buffer.');
 
     const result = await drop(session, { coinId: buffered.id, tick: 1 });
     expect(result.coin).toEqual(buffered);
-    expect(result.buffer).toHaveLength(
-      Math.min(PREMINT_BUFFER_TARGET, result.wallet.coins / COPPER.value),
-    );
+    expect(result.buffer).toHaveLength(PREMINT_BUFFER_TARGET);
     expect(result.buffer.map((coin) => coin.id)).not.toContain(buffered.id);
     expect(result.wallet.coins).toBe(before.wallet.coins - COPPER.value);
-    expect((await state(session)).table.coins.map((coin) => coin.id)).toEqual([buffered.id]);
+    expect(await vaultCoins(session)).toBe(vaultBefore - COPPER.value);
+    expect((await droppedOnTable(session)).map((coin) => coin.id)).toEqual([buffered.id]);
 
     await expectError(
       await session.call(endpoints.tableDrop.path, {
@@ -104,19 +126,24 @@ describe('POST /v1/table/drop', () => {
     expect((await state(other)).table.buffer.map((coin) => coin.id)).toContain(foreign.id);
   });
 
-  it('keeps the whole starting grant spendable: reservations lock no wallet value', async () => {
+  it('prepays each reservation from the wallet, so wallet plus buffer is the starting grant', async () => {
     const session = await newSession();
     const { wallet, table } = await state(session);
-    expect(table.buffer).toHaveLength(Math.min(PREMINT_BUFFER_TARGET, wallet.coins / COPPER.value));
     const report = await playerStub(session.tokens.playerId).conservation();
     expect(report.walletCoins).toBe(wallet.coins);
     expect(report.ledger.wallet).toBe(wallet.coins);
+    expect(report.bufferCoins).toBe(table.buffer.length);
+    expect(report.ledger.buffer).toBe(table.buffer.length * COPPER.value);
+    expect(report.bufferPaid).toBe(report.ledger.buffer);
+    expect(table.buffer).toHaveLength(PREMINT_BUFFER_TARGET);
+    await expectConserved(session);
   });
 
   it('never spends a reserved coin for a drop without coinId, and refuses one nothing pays for', async () => {
     const session = await newSession();
     const { wallet, table } = await state(session);
-    const fresh = await dropMany(session, wallet.coins / COPPER.value);
+    const fresh: MintedCoin[] = [];
+    for (let i = 0; i < wallet.coins / COPPER.value; i++) fresh.push((await drop(session)).coin);
     expect(fresh.every((coin) => !table.buffer.some((b) => b.id === coin.id))).toBe(true);
     const after = await state(session);
     expect(after.wallet.coins).toBe(0);
@@ -127,19 +154,26 @@ describe('POST /v1/table/drop', () => {
       409,
       'insufficient_funds',
     );
-    const reserved = after.table.buffer[0];
-    if (reserved === undefined) throw new Error('A new player should have a buffer.');
+    const [reserved, next] = after.table.buffer;
+    if (reserved === undefined || next === undefined) {
+      throw new Error('A new player should have a buffer.');
+    }
+    const spent = await drop(session, { coinId: reserved.id });
+    expect(spent.wallet.coins).toBe(0);
+    expect(spent.buffer.map((coin) => coin.id)).toEqual(
+      after.table.buffer.slice(1).map((coin) => coin.id),
+    );
     await expectError(
       await session.call(endpoints.tableDrop.path, {
         body: { x: 0, tick: 0, coinId: reserved.id },
       }),
       409,
-      'insufficient_funds',
+      'conflict',
     );
     const final = await state(session);
     expect(final.wallet.coins).toBe(0);
-    expect(final.table.buffer.map((coin) => coin.id)).toContain(reserved.id);
-    expect(final.table.coins).toHaveLength(fresh.length);
+    expect(final.table.buffer.map((coin) => coin.id)).toContain(next.id);
+    expect(await droppedOnTable(session)).toHaveLength(fresh.length + 1);
     await expectConserved(session);
   });
 
@@ -154,11 +188,8 @@ describe('POST /v1/table/drop', () => {
 
   it('spawns the scripted FTUE crate on the scripted drop and only then', async () => {
     const session = await newSession();
-    const spawned: number[] = [];
-    for (let n = 1; n <= crateSpawn.ftueScriptedDrop; n++) {
-      const result = await drop(session);
-      if (result.spawnedCrates.length > 0) spawned.push(n);
-    }
+    const drops = await dropAsClient(session, crateSpawn.ftueScriptedDrop);
+    const spawned = drops.flatMap((result, i) => (result.spawnedCrates.length > 0 ? [i + 1] : []));
     expect(spawned).toEqual([crateSpawn.ftueScriptedDrop]);
     expect((await state(session)).table.crates).toHaveLength(1);
     await expectConserved(session);
@@ -287,9 +318,10 @@ describe('POST /v1/table/claims', () => {
       { status: 'accepted', credited: 0, cascade: null, minted: null },
     ]);
     expect(result.wallet).toEqual(before.wallet);
-    expect((await state(session)).table.coins).toEqual([]);
+    expect(await droppedOnTable(session)).toEqual([]);
     const report = await playerStub(session.tokens.playerId).conservation();
-    expect(report.ledger.house).toBe(left.value + right.value);
+    const heapStake = openingHeap.coins * mintedValue(openingHeap.tier, {});
+    expect(report.ledger.house).toBe(left.value + right.value - heapStake);
     await expectConserved(session);
   });
 
@@ -310,7 +342,7 @@ describe('POST /v1/table/claims', () => {
       credited: 0,
       minted: { tier: COPPER.fusesInto, value: expectedValue },
     });
-    const table = (await state(session)).table.coins;
+    const table = await droppedOnTable(session);
     expect(table).toHaveLength(1);
     expect(table[0]?.tier).toBe(COPPER.fusesInto);
 
@@ -332,7 +364,7 @@ describe('POST /v1/table/claims', () => {
       { kind: 'fusion', coinIds: [silver.id, ...coppers.slice(3).map((coin) => coin.id)], tick: 6 },
     ]);
     expect(mixed.results).toEqual([{ status: 'rejected', reason: 'tier_mismatch' }]);
-    expect((await state(session)).table.coins).toHaveLength(3);
+    expect(await droppedOnTable(session)).toHaveLength(3);
 
     const rest = await claims(session, [
       fall(silver),
@@ -452,7 +484,7 @@ describe('idempotency', () => {
     const retry = await session.call(endpoints.tableDrop.path, { body, idempotencyKey });
     expect(await retry.json()).toEqual(await first.json());
     const after = await state(session);
-    expect(after.table.coins).toHaveLength(1);
+    expect(await droppedOnTable(session)).toHaveLength(1);
     expect(after.wallet.coins).toBe(before.wallet.coins - COPPER.value);
   });
 
@@ -522,6 +554,79 @@ describe('idempotency', () => {
       }),
       401,
       'invalid_signature',
+    );
+  });
+});
+
+describe('POST /v1/table/snapshot', () => {
+  async function snapshotBody(session: Session) {
+    const { table } = await reload(session);
+    const coin = table.coins[0];
+    if (table.session === undefined || coin === undefined) {
+      throw new Error('A boot should return a session and the opening heap.');
+    }
+    return {
+      session: table.session,
+      seq: 1,
+      tick: 60,
+      pusher: { tickInCycle: 0 },
+      coins: [[coin.id, 0, 160, -9_000, 0, 0, 0, 32_767, 'asleep']],
+      crates: [],
+    };
+  }
+
+  it('stores a signed snapshot and answers with the contract response', async () => {
+    const session = await newSession();
+    const body = await snapshotBody(session);
+    const response = await session.call(tableSnapshotEndpoint.path, { body });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(tableSnapshotEndpoint.response.parse(await response.json())).toEqual({
+      seq: 1,
+      stored: 1,
+      ignored: 0,
+    });
+  });
+
+  it('requires a sign-in, a device signature over the body and an Idempotency-Key', async () => {
+    const session = await newSession();
+    const body = await snapshotBody(session);
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body, accessToken: 'forged.token.value' }),
+      401,
+      'unauthorized',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body, signature: null }),
+      401,
+      'invalid_signature',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, {
+        body,
+        signBody: JSON.stringify({ ...body, seq: 2 }),
+      }),
+      401,
+      'invalid_signature',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body, idempotencyKey: null }),
+      400,
+      'idempotency_key_missing',
+    );
+    expect((await session.call(tableSnapshotEndpoint.path, { body })).status).toBe(200);
+  });
+
+  it('refuses a body that is not JSON or not a snapshot', async () => {
+    const session = await newSession();
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body: '{"session":' }),
+      400,
+      'bad_request',
+    );
+    await expectError(
+      await session.call(tableSnapshotEndpoint.path, { body: { coins: [] } }),
+      400,
+      'validation_failed',
     );
   });
 });
