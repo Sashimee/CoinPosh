@@ -69,6 +69,11 @@ export interface MockServerOptions {
   readonly onPersistWarning?: PersistWarn;
   /** How long after the last request the world is written; every request in a burst restarts it. */
   readonly persistDelayMs?: number;
+  /**
+   * The longest a changed world waits for its write while requests keep coming, which is also
+   * the most a mid-request pagehide can lose. Defaults to four times `persistDelayMs`.
+   */
+  readonly persistMaxWaitMs?: number;
   /** Whose `pagehide` and `visibilitychange` flush the world at once. Defaults to `window`. */
   readonly lifecycle?: EventTarget | null;
 }
@@ -89,10 +94,15 @@ export interface MockServer {
   ledger(): readonly LedgerEntry[];
   /** Responses currently held for replay, to show the store stays bounded. */
   retainedReplays(): number;
+  /** Single-use sign-in and nonce keys still remembered, to show that set stays bounded too. */
+  retainedBurnedKeys(): number;
   setNetwork(network: MockNetwork): void;
   /** Whether this server picked up a world an earlier page in this tab left in storage. */
   readonly restored: boolean;
-  /** Writes the world now, or right after the request running at the moment finishes. */
+  /**
+   * Writes the world now. Mid-request it retries the last encoded state if its write failed,
+   * then stores the newer one right after the running request finishes.
+   */
   flush(): void;
 }
 
@@ -110,8 +120,13 @@ interface Persistence {
   readonly world: MockWorld;
   readonly accounts: () => Promise<DemoAccounts>;
   readonly restored: boolean;
-  /** Called between requests only, so a write never catches a handler between two awaits. */
-  readonly save: () => void;
+  /**
+   * Encodes the world as it stands; called between requests only, so it never catches a
+   * handler between two awaits.
+   */
+  readonly capture: () => void;
+  /** Writes the last captured blob if it is not stored yet, without touching the live world. */
+  readonly writeCaptured: () => void;
 }
 
 /**
@@ -126,11 +141,13 @@ function openPersistence(
 ): Persistence {
   if (storage === null) {
     const world = new MockWorld();
+    const noop = () => undefined;
     return {
       world,
       accounts: once(() => loadAccounts(null, warn, world, now, { restore: null, held: null })),
       restored: false,
-      save: () => undefined,
+      capture: noop,
+      writeCaptured: noop,
     };
   }
   let world: MockWorld | null = null;
@@ -175,30 +192,34 @@ function openPersistence(
     return opened;
   });
   let failing = false;
-  return {
-    world: live,
-    accounts,
-    restored,
-    save() {
-      try {
-        storage.setItem(DEMO_STORAGE_KEY, encodeDemoBlob(live.serialize()));
-        if (loaded !== null) {
-          const blob = loaded.encode();
-          if (blob !== accountsWritten) {
-            storage.setItem(DEMO_ACCOUNT_STORAGE_KEY, blob);
-            accountsWritten = blob;
-          }
-        }
-        failing = false;
-      } catch (error) {
-        // One warning per run of failures: a full quota fails every write until space frees up.
-        if (!failing) {
-          warn('CoinPosh demo: this session could not be saved, so a reload may lose it.', error);
-        }
-        failing = true;
-      }
-    },
+  let captured: string | null = null;
+  let unwritten = false;
+  let capturedAccounts: string | null = null;
+  const capture = (): void => {
+    captured = encodeDemoBlob(live.serialize());
+    unwritten = true;
+    if (loaded !== null) capturedAccounts = loaded.encode();
   };
+  const writeCaptured = (): void => {
+    const accountsDue = capturedAccounts === accountsWritten ? null : capturedAccounts;
+    if (captured === null || (!unwritten && accountsDue === null)) return;
+    try {
+      if (unwritten) storage.setItem(DEMO_STORAGE_KEY, captured);
+      unwritten = false;
+      if (accountsDue !== null) {
+        storage.setItem(DEMO_ACCOUNT_STORAGE_KEY, accountsDue);
+        accountsWritten = accountsDue;
+      }
+      failing = false;
+    } catch (error) {
+      // One warning per run of failures: a full quota fails every write until space frees up.
+      if (!failing) {
+        warn('CoinPosh demo: this session could not be saved, so a reload may lose it.', error);
+      }
+      failing = true;
+    }
+  };
+  return { world: live, accounts, restored, capture, writeCaptured };
 }
 
 /** One shared load; a failed one is tried again by the next caller. */
@@ -369,6 +390,35 @@ class ReplayStore {
   }
 }
 
+/**
+ * Single-use keys, oldest first. A key is forgotten `idempotencyTtlMs` after it was burned: by
+ * then the nonce and ID token it carried expired long ago (`nonceTtlMs`, `idTokenTtlMs`), so a
+ * replay is still refused, and the set stays bounded by the request envelope.
+ */
+class BurnedKeys {
+  readonly #burnedAt = new Map<IdempotencyKey, number>();
+  readonly #ttlMs: number;
+
+  constructor(ttlMs: number) {
+    this.#ttlMs = ttlMs;
+  }
+
+  get size(): number {
+    return this.#burnedAt.size;
+  }
+
+  /** Burns the key; false when it was already burned and is still remembered. */
+  burn(key: IdempotencyKey, now: number): boolean {
+    for (const [burned, at] of this.#burnedAt) {
+      if (at > now - this.#ttlMs) break;
+      this.#burnedAt.delete(burned);
+    }
+    if (this.#burnedAt.has(key)) return false;
+    this.#burnedAt.set(key, now);
+    return true;
+  }
+}
+
 /** A session handed to one device key: tokens are bound to the key they were issued to. */
 interface DeviceGrant {
   readonly playerId: PlayerId;
@@ -486,7 +536,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const world = persistence.world;
   const accessTokens = new Map<string, AccessRecord>();
   const refreshTokens = new Map<string, RefreshRecord>();
-  const burnedKeys = new Set<IdempotencyKey>();
+  const burnedKeys = new BurnedKeys(MOCK_RULES.idempotencyTtlMs);
   const tableReplays = new ReplayStore(MOCK_RULES.claimExpiryMs, Infinity);
   const otherReplays = new ReplayStore(MOCK_RULES.idempotencyTtlMs, MOCK_RULES.idempotencyRetained);
   const usedTurnstile = new Set<string>();
@@ -785,14 +835,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     enforceEnvelope(auth.scope, at);
 
     const burnsKey = BURNS_KEY.has(found.name);
-    if (burnsKey && idempotencyKey !== null) {
-      if (burnedKeys.has(idempotencyKey)) {
-        return fail(
-          'idempotency_key_reused',
-          'This Idempotency-Key was already used to sign in. Sign the request again with a new key.',
-        );
-      }
-      burnedKeys.add(idempotencyKey);
+    if (burnsKey && idempotencyKey !== null && !burnedKeys.burn(idempotencyKey, at)) {
+      return fail(
+        'idempotency_key_reused',
+        'This Idempotency-Key was already used to sign in. Sign the request again with a new key.',
+      );
     }
 
     tableReplays.prune(at);
@@ -882,31 +929,43 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   }
 
   /*
-   * Writes are debounced and only ever run between requests. Tokens, replay stores, Turnstile
+   * Encoding the whole world costs real main-thread time once the ledger is full, so it runs
+   * only when a write is due: debounced after a burst, or every `persistMaxWaitMs` while play
+   * keeps the queue busy, and only ever between requests. Tokens, replay stores, Turnstile
    * tokens and rate windows are deliberately not stored: the client's tokens and outbox live in
    * page memory and die with the reload, and a seeded page would replay the same idempotency
    * keys. Every guard against spending a coin or crate twice lives in the world, which is stored.
    */
   const persistDelayMs = options.persistDelayMs ?? DEFAULT_PERSIST_DELAY_MS;
+  const persistMaxWaitMs = options.persistMaxWaitMs ?? persistDelayMs * 4;
   let inFlight = 0;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let saveWhenIdle = false;
+  let unsaved = false;
 
   function saveNow(): void {
     if (saveTimer !== null) clearTimeout(saveTimer);
+    if (maxWaitTimer !== null) clearTimeout(maxWaitTimer);
     saveTimer = null;
+    maxWaitTimer = null;
     if (inFlight > 0) {
+      // A hidden page may never run again, and the running handler may sit between two awaits.
+      persistence.writeCaptured();
       saveWhenIdle = true;
       return;
     }
     saveWhenIdle = false;
-    persistence.save();
+    if (unsaved) persistence.capture();
+    unsaved = false;
+    persistence.writeCaptured();
   }
 
   function scheduleSave(): void {
     if (storage === null) return;
     if (saveTimer !== null) clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, persistDelayMs);
+    maxWaitTimer ??= setTimeout(saveNow, persistMaxWaitMs);
   }
 
   const lifecycle =
@@ -931,6 +990,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return fail('internal', `Mock server bug: ${message}`);
     } finally {
       inFlight -= 1;
+      unsaved = true;
       if (saveWhenIdle) saveNow();
       else scheduleSave();
     }
@@ -958,6 +1018,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     identity: async () => (await persistence.accounts()).identity,
     ledger: () => world.ledger,
     retainedReplays: () => tableReplays.size + otherReplays.size,
+    retainedBurnedKeys: () => burnedKeys.size,
     setNetwork(next) {
       network = next;
     },

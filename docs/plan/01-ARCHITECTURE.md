@@ -168,5 +168,6 @@ GET  /v1/leaderboard/:board    GET  /v1/events/current
 - `.github/workflows/deploy-server.yml` runs wrangler deploy (requires repo
   secret `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, a **human step**).
 - `VITE_API_URL` points at the Worker. Without it, the client runs in clearly
-  labelled **Demo Mode** (local mock server, unranked, no persistence), so
+  labelled **Demo Mode** (local mock server, unranked, progress kept in the tab's
+  sessionStorage: a same-tab reload keeps Demo progress, closing the tab resets it), so
   agents can build everything before Cloudflare is configured.

@@ -1,7 +1,15 @@
 import type { MintedCoin, Roll, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
+import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
+import {
+  mountAscension,
+  mountAscensionHud,
+  netAscensionApi,
+  type AscensionHud,
+} from './game/ascension/index.ts';
+import { createTableRelay, type TableRelay } from './game/ascension/relay.ts';
 import type * as CratesApi from './game/crates/index.ts';
 import type * as SessionModule from './game/session/index.ts';
 import type { ElsewhereOverlay, PagePort, SnapshotTriggers } from './game/session/index.ts';
@@ -212,6 +220,8 @@ document.body.append(uiRoot);
 const ui = mountUi(uiRoot);
 
 let audio: AudioEngine | null = null;
+/** Mounted once play starts; until then the boot state's venue is the one played. */
+let ascensionHud: AscensionHud | null = null;
 
 const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
@@ -394,7 +404,7 @@ function mountUpgradePurchases(
       setWallet: walletChanged,
     },
     api: netUpgradeApi(net.client),
-    venueId: state.venue.id,
+    venueId: () => ascensionHud?.state.venue.id ?? state.venue.id,
     audio: () => audio,
     refresh: () => {
       net.client.call('state').then(
@@ -717,7 +727,11 @@ async function bootScene(
   stopEarlyTaps();
 
   const play = (started: StartedSim, state: StateResponse, laid: OpeningLayout): GameSystems => {
-    const { scope } = run;
+    const scope = createScope();
+    run.scope.add(() => {
+      scope.dispose();
+    });
+    playing = { sim: started, layout: laid, scope };
     const payouts = orderCratePayouts(walletPayoutFor(ui.store));
     scope.add(() => {
       payouts.dispose();
@@ -754,34 +768,47 @@ async function bootScene(
     readonly scope: Scope;
   }
 
+  let playing: { readonly sim: StartedSim; readonly layout: OpeningLayout; readonly scope: Scope };
+
+  const layFrom = async (state: StateResponse): Promise<Laid> => {
+    const laid = openingLayout(state);
+    const scope = createScope();
+    try {
+      const next = startSim(simApi, laid, scope);
+      await next.bridge.ready;
+      return { state, layout: laid, sim: next, scope };
+    } catch (error) {
+      scope.dispose();
+      throw error;
+    }
+  };
+
+  const adoptState = (state: StateResponse): void => {
+    boot.net.table.hydrate(state);
+    ui.setUpgradeLevels(state.venue.upgrades);
+    boot.vault.adopted(state);
+  };
+
+  /** The new sim is ready before the old run goes, so the table never blanks. */
+  const playOn = ({ state, layout: laid, sim: next, scope }: Laid): void => {
+    run.scope.dispose();
+    run.scope = scope;
+    view.use(next.bridge, next.bridge);
+    adoptState(state);
+    view.use(play(next, state, laid), next.bridge);
+  };
+
   /**
    * "Play here": a fresh `hydrate=boot` takes the lease back and lays the table as the other
-   * tab left it. The new sim is ready before the old run goes, so the table never blanks.
+   * tab left it.
    */
   const retake = sessionModule.createRetake<StateResponse, Laid>({
     simReady: () => warmSim(simApi),
     boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
-    lay: async (state) => {
-      const laid = openingLayout(state);
-      const scope = createScope();
-      try {
-        const next = startSim(simApi, laid, scope);
-        await next.bridge.ready;
-        return { state, layout: laid, sim: next, scope };
-      } catch (error) {
-        scope.dispose();
-        throw error;
-      }
-    },
-    play: ({ state, layout: laid, sim: next, scope }) => {
-      run.scope.dispose();
-      run.scope = scope;
-      view.use(next.bridge, next.bridge);
+    lay: layFrom,
+    play: (laid) => {
       probe.superseded = false;
-      boot.net.table.hydrate(state);
-      ui.setUpgradeLevels(state.venue.upgrades);
-      boot.vault.adopted(state);
-      view.use(play(next, state, laid), next.bridge);
+      playOn(laid);
       markBoot('retaken');
     },
     discard: ({ scope }) => {
@@ -797,6 +824,81 @@ async function bootScene(
   const view = attachTable(stage, venue, bridge);
   view.use(systems, bridge);
   markBoot('playable');
+
+  const relay = createTableRelay<Laid>({
+    state: boot.state,
+    hold: () => {
+      probe.playable = false;
+      playing.scope.dispose();
+      view.use(playing.sim.bridge, playing.sim.bridge);
+    },
+    boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
+    lay: layFrom,
+    play: (laid) => {
+      playOn(laid);
+      markBoot('ascended');
+    },
+    discard: ({ scope }) => {
+      scope.dispose();
+    },
+    // The held sim's coins and crates are gone on the server, so play resumes on it with no
+    // crates riding; every coin dropped from here on is one the server will pay.
+    resume: (state, booted) => {
+      const { sim: held, layout: heldLayout } = playing;
+      if (booted) adoptState(state);
+      view.use(play(held, state, { ...heldLayout, crates: [] }), held.bridge);
+    },
+    onError: (error) => {
+      console.error(
+        'CoinPosh ascension: the new venue could not be laid; play goes on on the old table.',
+        error,
+      );
+    },
+  });
+  mountAscensionDoor(stage, boot, relay);
+}
+
+/** The HUD laurel and the prestige loop behind it; an ascension re-lays the new venue in place. */
+function mountAscensionDoor(stage: Stage, boot: NetBoot, relay: TableRelay): void {
+  const dock = uiRoot.querySelector<HTMLElement>('[data-testid="hud-dock"]');
+  if (!dock) {
+    throw new Error(
+      'CoinPosh boot: the HUD dock ([data-testid="hud-dock"]) is missing, so the ascension entry has nowhere to sit; mount the UI before the scene.',
+    );
+  }
+  const hud = mountAscensionHud({
+    ui: {
+      store: ui.store,
+      bus: ui.bus,
+      i18n: ui.i18n,
+      setWallet: () => {
+        boot.resync('an ascension');
+      },
+    },
+    host: uiRoot,
+    dock,
+    api: netAscensionApi(boot.net.client),
+    state: boot.state,
+    readState: () => boot.net.client.call('state'),
+    bootState: () => relay.bootState(),
+    layTable: (fresh) => relay.layTable(fresh),
+    onRelayFailed: (error) => {
+      relay.failed(error);
+    },
+    audio: () => audio,
+    vibrate: browserVibrate(),
+    stage: () => stage.canvas,
+    mount: mountAscension,
+    onError: (error) => {
+      console.error('CoinPosh net: the ascension could not reach the server.', error);
+    },
+  });
+  ascensionHud = hud;
+  teardown.push(() => {
+    ascensionHud = null;
+    relay.dispose();
+    hud.dispose();
+  });
 }
 
 interface Scope {

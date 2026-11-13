@@ -640,6 +640,44 @@ describe('attacks on the account routes', () => {
     );
   });
 
+  it('forgets a burned key only once the nonce and token it carried are long dead', async () => {
+    const alice = await device('alice');
+    await alice.account.link('google');
+    const phone = await device('alice');
+    const nonce = await nonceFor(phone, 'google', 'signin');
+    const idToken = await issue('google', nonce, { persona: 'alice' });
+    const key = newIdempotencyKey();
+    expect((await forgeSignIn(phone, { provider: 'google', idToken, nonce }, key)).status).toBe(
+      200,
+    );
+    const burned = server.retainedBurnedKeys();
+    expect(burned).toBeGreaterThanOrEqual(2);
+
+    time.advance(MOCK_RULES.idempotencyTtlMs - 1);
+    expect(errorCode(await forgeSignIn(phone, { provider: 'google', idToken, nonce }, key))).toBe(
+      'idempotency_key_reused',
+    );
+    expect(server.retainedBurnedKeys()).toBe(burned);
+
+    time.advance(1);
+    const late = await forgeSignIn(phone, { provider: 'google', idToken, nonce }, key);
+    expect(errorCode(late)).toBe('invalid_id_token');
+    expect(JSON.stringify(late.body)).not.toMatch(/refreshToken|accessToken/);
+    expect(server.retainedBurnedKeys()).toBe(1);
+  });
+
+  it('keeps the burned key set bounded under a long stream of sign-in attempts', async () => {
+    const bot = await device('bot');
+    const perWindow = 5;
+    for (let window = 0; window < 4; window++) {
+      for (let i = 0; i < perWindow; i++) {
+        expect((await requestNonce(bot, 'google', 'signin')).status).toBe(200);
+      }
+      expect(server.retainedBurnedKeys()).toBe(perWindow);
+      time.advance(MOCK_RULES.idempotencyTtlMs);
+    }
+  });
+
   it('caps open nonces per device and says when to retry', async () => {
     const bot = await device('bot');
     for (let i = 0; i < MOCK_ACCOUNT_RULES.maxOpenNoncesPerDevice; i++) {
@@ -1050,6 +1088,9 @@ describe('Demo account persistence', () => {
     server.flush();
     expect(storage.items.has(DEMO_ACCOUNT_STORAGE_KEY)).toBe(true);
     const writes = storage.writes;
+    server.flush();
+    expect(storage.writes).toBe(writes);
+    await alice.account.get();
     server.flush();
     expect(storage.writes).toBe(writes + 1);
 
