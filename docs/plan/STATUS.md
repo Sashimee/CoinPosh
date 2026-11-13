@@ -127,7 +127,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.01 | todo | | Waits on T-2.05. Charm Board (sockets, 6 charms, synergy tags) |
 | T-3.02 | todo | | Waits on T-2.05. Charm models & effects |
 | T-3.03 | todo | | Waits on T-2.05. Collection Album + Heirloom coins |
-| T-3.04 | todo | | Waits on T-2.05. Venue Ascension (prestige) + Family Office; founder wants next, gated by T-1.18 (open question: relax deps) |
+| T-3.04 | todo | | Deps relaxed by founder decision 2026-11-13 (dev speed first): schedulable now. Venue Ascension (prestige) + Family Office |
 | T-3.05 | todo | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag) |
 | T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
