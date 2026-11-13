@@ -72,6 +72,7 @@ import {
   type CharmId,
   type CharmSlot,
   type Claim,
+  type ClientSeed,
   type ClaimResult,
   type CoinId,
   type CoinTier,
@@ -105,9 +106,15 @@ import {
   type VenueId,
   type Wallet,
 } from '@coinposh/shared';
-import { checkCratePose, DEFAULT_PUSHER_MOTION } from '@coinposh/sim/snapshot';
+import {
+  checkCratePose,
+  CRATE_RIDE,
+  DEFAULT_PUSHER_MOTION,
+  POSITION_UNIT,
+} from '@coinposh/sim/snapshot';
 import { randomBase62 } from '../encoding.ts';
 import { newSeed, nextRoll, reveal, type FairSeedState } from './fair.ts';
+import type { PersistedPlayer, PersistedWorld } from './persist.ts';
 import { MOCK_RULES } from './rules.ts';
 import {
   CHUTE_POSE,
@@ -134,6 +141,14 @@ export class MockFailure extends Error {
     this.name = 'MockFailure';
     this.code = code;
     this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** A stored world that does not hold together; the caller drops it for a fresh session. */
+export class RestoreError extends Error {
+  constructor(reason: string) {
+    super(`Mock: the stored Demo world is inconsistent: ${reason}.`);
+    this.name = 'RestoreError';
   }
 }
 
@@ -176,12 +191,18 @@ interface CrateRecord {
   state: 'table' | 'openable';
   spawnTick: number;
   spawnedAt: number;
+  /**
+   * The table session a boot laid this openable crate back at the lip in: its claim never
+   * reached an open, so that session may claim it once more, and only that session.
+   */
+  relaidIn: TableSessionId | null;
 }
 
 export interface MockPlayer {
   readonly id: PlayerId;
-  readonly deviceKey: CryptoKey;
-  readonly deviceThumbprint: string;
+  /** Null for a player restored from the tab's storage until a device signs in as them. */
+  deviceKey: CryptoKey | null;
+  deviceThumbprint: string;
   readonly createdAt: number;
   displayName: string;
   locale: Locale;
@@ -304,8 +325,132 @@ interface AlbumItem {
 
 export type WorldEndpoint = Exclude<EndpointName, 'authGuest' | 'authRefresh'>;
 
-function entityId(prefix: string): string {
-  return `${prefix}_${randomBase62(16)}`;
+/**
+ * Where a boot lays an openable crate: on the teeter line, so it rocks at the lip for a beat
+ * and goes over again, with its ride clock near the cap so it cannot hang there.
+ */
+const LIP_POSE_Z = Math.ceil(CRATE_RIDE.teeterZ / POSITION_UNIT);
+const LIP_POSE_ELAPSED_MS = CRATE_MAX_RIDE_SECONDS * 1000 - 1_500;
+
+export function lipPose(id: CrateId): CratePoseTuple {
+  return [id, 0, LIP_POSE_Z, LIP_POSE_ELAPSED_MS, 'teeter'];
+}
+
+function persistPlayer(player: MockPlayer): PersistedPlayer {
+  return {
+    id: player.id,
+    deviceThumbprint: player.deviceThumbprint,
+    createdAt: player.createdAt,
+    displayName: player.displayName,
+    locale: player.locale,
+    wallet: { ...player.wallet },
+    venueId: VenueIdSchema.parse(player.venueId),
+    unlocked: player.unlocked.map((id) => VenueIdSchema.parse(id)),
+    levels: [...player.levels],
+    loadouts: [...player.loadouts].map(([id, slots]) => [VenueIdSchema.parse(id), [...slots]]),
+    charms: player.charms.map((charm) => ({ ...charm })),
+    safes: player.safes.map((safe) => ({ ...safe })),
+    scratchCards: [...player.scratchCards],
+    album: [...player.album],
+    coins: [...player.coins.values()].map((record) => ({ ...record, coin: { ...record.coin } })),
+    gone: [...player.gone],
+    crates: [...player.crates.values()].map((record) => ({
+      ...record,
+      crate: { ...record.crate },
+    })),
+    openedCrates: [...player.openedCrates],
+    decorumPoints: player.decorumPoints,
+    decorumAt: player.decorumAt,
+    frozenUntil: player.frozenUntil,
+    drops: player.drops,
+    dropHighWater: player.dropHighWater,
+    lastDropTick: player.lastDropTick,
+    tickAnchor: player.tickAnchor === null ? null : { ...player.tickAnchor },
+    previousAnchor: player.previousAnchor === null ? null : { ...player.previousAnchor },
+    resumedAt: player.resumedAt,
+    bootedAt: player.bootedAt,
+    tableSession: player.tableSession,
+    tableSessionStartedAt: player.tableSessionStartedAt,
+    tableSessionMaxTick: player.tableSessionMaxTick,
+    tableSnapshot:
+      player.tableSnapshot === null
+        ? null
+        : {
+            ...player.tableSnapshot,
+            poses: player.tableSnapshot.poses.map((pose) => [...pose] as PoseTuple),
+            cratePoses: player.tableSnapshot.cratePoses.map((pose) => [...pose] as CratePoseTuple),
+          },
+    snapshotBucket: player.snapshotBucket === null ? null : { ...player.snapshotBucket },
+    snapshotFlags: { ...player.snapshotFlags },
+    absence: player.absence === null ? null : { ...player.absence },
+    lastClaimTick: player.lastClaimTick,
+    recentFalls: [...player.recentFalls],
+    recentFusions: [...player.recentFusions],
+    cascadeChain: player.cascadeChain === null ? null : { ...player.cascadeChain },
+    cascadeCarry: player.cascadeCarry,
+    mintCarry: player.mintCarry,
+    lifetimeValue: player.lifetimeValue,
+    lifetimeBullion: player.lifetimeBullion,
+    playLog: player.playLog.map((entry) => ({ ...entry })),
+    lastActiveAt: player.lastActiveAt,
+    fair: { ...player.fair },
+    revealed: player.revealed.map((seed) => ({ ...seed })),
+    pity: [...player.pity].map(([source, state]) => [source, { ...state }]),
+  };
+}
+
+function restorePlayer(saved: PersistedPlayer): MockPlayer {
+  const coins = new Map<CoinId, CoinRecord>();
+  for (const record of saved.coins) {
+    if (coins.has(record.coin.id)) throw new RestoreError(`coin ${record.coin.id} is stored twice`);
+    if (record.place === 'buffer' && record.mintMicros === null) {
+      throw new RestoreError(`buffered coin ${record.coin.id} has no mint micros`);
+    }
+    coins.set(record.coin.id, { ...record, coin: { ...record.coin } });
+  }
+  const crates = new Map<CrateId, CrateRecord>();
+  for (const record of saved.crates) {
+    if (crates.has(record.crate.id)) {
+      throw new RestoreError(`crate ${record.crate.id} is stored twice`);
+    }
+    crates.set(record.crate.id, { ...record, crate: { ...record.crate } });
+  }
+  const openedCrates = new Set(saved.openedCrates);
+  for (const id of crates.keys()) {
+    if (openedCrates.has(id)) throw new RestoreError(`crate ${id} is both pending and opened`);
+  }
+  if (!saved.unlocked.includes(saved.venueId)) {
+    throw new RestoreError(
+      `player ${saved.id} stands at venue ${saved.venueId} without unlocking it`,
+    );
+  }
+  return {
+    ...saved,
+    deviceKey: null,
+    wallet: { ...saved.wallet },
+    unlocked: [...saved.unlocked],
+    levels: new Map(saved.levels),
+    loadouts: new Map(saved.loadouts.map(([id, slots]) => [id, [...slots]])),
+    charms: saved.charms.map((charm) => ({ ...charm })),
+    safes: saved.safes.map((safe) => ({ ...safe })),
+    scratchCards: [...saved.scratchCards],
+    album: new Map(saved.album),
+    coins,
+    gone: new Map(saved.gone),
+    crates,
+    openedCrates,
+    snapshotFlags: {
+      'snapshot.foreign': saved.snapshotFlags['snapshot.foreign'],
+      'snapshot.teleport': saved.snapshotFlags['snapshot.teleport'],
+      'snapshot.implausible': saved.snapshotFlags['snapshot.implausible'],
+    },
+    recentFalls: [...saved.recentFalls],
+    recentFusions: [...saved.recentFusions],
+    playLog: saved.playLog.map((entry) => ({ ...entry })),
+    fair: { ...saved.fair },
+    revealed: saved.revealed.map((seed) => ({ ...seed })),
+    pity: new Map(saved.pity.map(([source, state]) => [source, { ...state }])),
+  };
 }
 
 function venueDef(id: VenueDef['id']): VenueDef {
@@ -367,6 +512,118 @@ export class MockWorld {
   #nextSeq = 0;
   readonly #players = new Map<PlayerId, MockPlayer>();
   readonly #byDevice = new Map<string, PlayerId>();
+  /** Page lives this world was restored through; 0 for a world that started in this page. */
+  #epoch = 0;
+
+  /**
+   * A seeded Demo page replays the same `crypto` stream after every reload, so ids minted in a
+   * restored world carry its epoch: none can repeat one minted before the reload.
+   */
+  #entityId(prefix: string): string {
+    const epoch = this.#epoch === 0 ? '' : this.#epoch.toString(36).padStart(3, '0');
+    return `${prefix}_${randomBase62(16)}${epoch}`;
+  }
+
+  /** Everything the rules own, as plain data for the tab's storage. Device keys never leave WebCrypto. */
+  serialize(): PersistedWorld {
+    return {
+      epoch: this.#epoch,
+      nextSeq: this.#nextSeq,
+      ledger: this.#ledger.map((entry) => ({ ...entry, delta: { ...entry.delta } })),
+      checkpoints: [...this.#checkpoints].map(([id, wallet]) => [id, { ...wallet }]),
+      players: [...this.#players.values()].map(persistPlayer),
+    };
+  }
+
+  /**
+   * Rebuilds a world from {@link serialize}. The blob sits in storage the page can edit, so it
+   * must also add up: every wallet has to equal its checkpoint plus its ledger entries, or the
+   * whole blob is refused. Restored players are unbound until {@link bindDevice}.
+   */
+  static restore(data: PersistedWorld): MockWorld {
+    const world = new MockWorld();
+    world.#epoch = data.epoch + 1;
+    world.#nextSeq = data.nextSeq;
+    for (const [id, wallet] of data.checkpoints) world.#checkpoints.set(id, { ...wallet });
+    for (const saved of data.players) {
+      if (world.#players.has(saved.id)) {
+        throw new RestoreError(`player ${saved.id} is stored twice`);
+      }
+      if (world.#byDevice.has(saved.deviceThumbprint)) {
+        throw new RestoreError(`two players share the device ${saved.deviceThumbprint}`);
+      }
+      world.#players.set(saved.id, restorePlayer(saved));
+      world.#byDevice.set(saved.deviceThumbprint, saved.id);
+    }
+    let lastSeq = -1;
+    for (const entry of data.ledger) {
+      if (entry.seq <= lastSeq || entry.seq >= data.nextSeq) {
+        throw new RestoreError(`ledger entry ${entry.seq} is out of sequence`);
+      }
+      if (!world.#players.has(entry.playerId)) {
+        throw new RestoreError(`ledger entry ${entry.seq} names an unknown player`);
+      }
+      lastSeq = entry.seq;
+      world.#ledger.push({ ...entry, delta: { ...entry.delta } });
+    }
+    for (const player of world.#players.values()) {
+      const replayed = world.ledgerCheckpoint(player.id);
+      for (const entry of world.#ledger) {
+        if (entry.playerId !== player.id) continue;
+        for (const [currency, amount] of Object.entries(entry.delta) as [Currency, number][]) {
+          replayed[currency] += amount;
+        }
+      }
+      for (const currency of Object.keys(replayed) as Currency[]) {
+        if (replayed[currency] !== player.wallet[currency]) {
+          throw new RestoreError(
+            `player ${player.id} holds ${player.wallet[currency]} ${currency} but the ledger adds up to ${replayed[currency]}`,
+          );
+        }
+      }
+    }
+    return world;
+  }
+
+  /**
+   * Signs `key` in as a player. A device the world knows gets its own player back. In a
+   * restored world the tab's first new device takes over the most recently active player that
+   * no device holds yet: the client's key lived in page memory and died with the reload, and
+   * sessionStorage scopes this world to the one tab that played it.
+   */
+  bindDevice(publicKey: DevicePublicKey, key: CryptoKey): MockPlayer | undefined {
+    const thumbprint = deviceThumbprint(publicKey);
+    const known = this.playerByDevice(thumbprint);
+    const player =
+      known ??
+      [...this.#players.values()]
+        .filter((candidate) => candidate.deviceKey === null)
+        .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
+    if (player === undefined) return undefined;
+    this.#byDevice.delete(player.deviceThumbprint);
+    player.deviceKey = key;
+    player.deviceThumbprint = thumbprint;
+    this.#byDevice.set(thumbprint, player.id);
+    return player;
+  }
+
+  /**
+   * A seed pair no player of this world has used. A seeded Demo source restarts its sequence
+   * on reload and would otherwise hand back a server seed that was already revealed.
+   */
+  async #freshSeed(player: MockPlayer, clientSeed: ClientSeed): Promise<FairSeedState> {
+    const used = new Set([
+      player.fair.serverSeedHash,
+      ...player.revealed.map((seed) => seed.serverSeedHash),
+    ]);
+    for (let attempt = 0; attempt <= used.size; attempt++) {
+      const seed = await newSeed(clientSeed);
+      if (!used.has(seed.serverSeedHash)) return seed;
+    }
+    throw new Error(
+      `Mock: the seed source returned only used server seeds in ${used.size + 1} tries; check the Demo seed fixture.`,
+    );
+  }
 
   /** The most recent `ledgerRetained` entries; older ones live on in {@link ledgerCheckpoint}. */
   get ledger(): readonly LedgerEntry[] {
@@ -521,7 +778,7 @@ export class MockWorld {
     origin: CoinRecord['origin'] = 'drop',
   ) {
     const coin: MintedCoin = {
-      id: CoinIdSchema.parse(entityId(ENTITY_ID_PREFIXES.coin)),
+      id: CoinIdSchema.parse(this.#entityId(ENTITY_ID_PREFIXES.coin)),
       tier,
       value,
     };
@@ -918,7 +1175,7 @@ export class MockWorld {
   }
 
   #startTableSession(player: MockPlayer, now: number): TableSessionId {
-    const session = TableSessionIdSchema.parse(entityId(ENTITY_ID_PREFIXES.tableSession));
+    const session = TableSessionIdSchema.parse(this.#entityId(ENTITY_ID_PREFIXES.tableSession));
     player.tableSession = session;
     player.tableSessionStartedAt = now;
     player.tableSessionMaxTick = 0;
@@ -937,7 +1194,7 @@ export class MockWorld {
    * bootTable: a coin from its stored pose when the sim's checks still pass it, a heap coin
    * without one at its heap slot, any other coin refunded at most what was paid for it.
    */
-  #bootTable(player: MockPlayer, now: number): TableLayout {
+  #bootTable(player: MockPlayer, now: number): { layout: TableLayout; crates: TableCrate[] } {
     const stored = player.tableSnapshot;
     const usable =
       stored !== null && stored.pusherTick < DEFAULT_PUSHER_MOTION.periodTicks ? stored : null;
@@ -962,6 +1219,8 @@ export class MockWorld {
 
     const coins = this.#tableCoins(player);
     const crates = this.#tableCrates(player);
+    const relaid = this.#openableCrates(player);
+    for (const record of relaid) record.relaidIn = session;
     const cratePoses = new Map(
       (usable?.cratePoses ?? [])
         .filter((tuple) => checkCratePose(toCratePose(tuple), CRATE_MAX_RIDE_SECONDS).ok)
@@ -976,7 +1235,7 @@ export class MockWorld {
       cratePoses: present(crates.map((record) => cratePoses.get(record.crate.id))),
       receivedAt: now,
     };
-    return {
+    const layout: TableLayout = {
       pusher: { tickInCycle: pusherTick },
       coins: coins.map((coin) => {
         const pose = poses.get(coin.id);
@@ -985,11 +1244,20 @@ export class MockWorld {
         if (slot !== null) return { kind: 'heapSlot', slot };
         throw new Error(`Mock: table coin ${coin.id} has neither a pose nor a heap slot.`);
       }),
-      crates: crates.map((record) => {
-        const pose = cratePoses.get(record.crate.id);
-        return pose === undefined ? { kind: 'chute' } : { kind: 'pose', pose };
-      }),
+      crates: [
+        ...crates.map((record) => {
+          const pose = cratePoses.get(record.crate.id);
+          return pose === undefined ? { kind: 'chute' as const } : { kind: 'pose' as const, pose };
+        }),
+        ...relaid.map((record) => ({ kind: 'pose' as const, pose: lipPose(record.crate.id) })),
+      ],
     };
+    return { layout, crates: [...crates, ...relaid].map((record) => record.crate) };
+  }
+
+  /** Crates won over the lip whose open never reached the server, oldest first. */
+  #openableCrates(player: MockPlayer): CrateRecord[] {
+    return [...player.crates.values()].filter((record) => record.state === 'openable');
   }
 
   /**
@@ -1026,8 +1294,9 @@ export class MockWorld {
       const settlement =
         absence === null ? null : this.#settleOffline(player, absence.until - absence.since, now);
       let layout: TableLayout | null = null;
+      let crates = this.#tableCrates(player).map((record) => record.crate);
       if (query.hydrate === 'boot') {
-        layout = this.#bootTable(player, now);
+        ({ layout, crates } = this.#bootTable(player, now));
       } else {
         if (player.tableSession === null) this.#startTableSession(player, now);
         this.#refillBuffer(player, now);
@@ -1053,7 +1322,7 @@ export class MockWorld {
         table: {
           session,
           coins: this.#tableCoins(player),
-          crates: this.#tableCrates(player).map((record) => record.crate),
+          crates,
           buffer: this.#buffer(player),
           decorum: this.#decorum(player, now),
           frozenUntil: player.frozenUntil,
@@ -1116,7 +1385,7 @@ export class MockWorld {
         const ftue = player.drops === crateSpawn.ftueScriptedDrop;
         if (dropSpawnsCrate(player.drops, levelMap(player))) {
           const crate: TableCrate = {
-            id: CrateIdSchema.parse(entityId(ENTITY_ID_PREFIXES.crate)),
+            id: CrateIdSchema.parse(this.#entityId(ENTITY_ID_PREFIXES.crate)),
             kind: 'vault',
           };
           player.crates.set(crate.id, {
@@ -1125,6 +1394,7 @@ export class MockWorld {
             state: 'table',
             spawnTick: body.tick,
             spawnedAt: now,
+            relaidIn: null,
           });
           spawnedCrates.push(crate);
         }
@@ -1352,7 +1622,7 @@ export class MockWorld {
     fairRotate: async (player, body, _params, now) => {
       const revealed = reveal(player.fair, now);
       player.revealed.push(revealed);
-      player.fair = await newSeed(body.clientSeed ?? player.fair.clientSeed);
+      player.fair = await this.#freshSeed(player, body.clientSeed ?? player.fair.clientSeed);
       return {
         active: {
           serverSeedHash: player.fair.serverSeedHash,
@@ -1513,7 +1783,15 @@ export class MockWorld {
             player.openedCrates.has(claim.crateId) ? 'already_claimed' : 'unknown_entity',
           );
         }
-        if (record.state !== 'table') return reject('already_claimed');
+        if (record.state === 'openable') {
+          if (record.relaidIn === null || record.relaidIn !== player.tableSession) {
+            return reject('already_claimed');
+          }
+          if (claim.tick < record.spawnTick) return reject('not_on_table');
+          record.relaidIn = null;
+          player.lastClaimTick = claim.tick;
+          return { status: 'accepted', credited: 0, cascade: null, minted: null };
+        }
         if (claim.tick < record.spawnTick) return reject('not_on_table');
         player.lastClaimTick = claim.tick;
         if (claim.edge === 'front') {
@@ -1628,7 +1906,7 @@ export class MockWorld {
       return { kind: 'charm', charmId: owned.id, charmType, level: owned.level, duplicate: true };
     }
     const charm: OwnedCharm = {
-      id: CharmIdSchema.parse(entityId(ENTITY_ID_PREFIXES.charm)),
+      id: CharmIdSchema.parse(this.#entityId(ENTITY_ID_PREFIXES.charm)),
       type: charmType,
       level: 1,
     };
