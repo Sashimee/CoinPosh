@@ -1,6 +1,5 @@
 import type { CoinId, CratePoseTuple, PlayerId, PoseTuple, Wallet } from '@coinposh/shared';
 import { POSITION_UNIT } from '@coinposh/sim/snapshot';
-import type { ApiClient } from '../../net/index.ts';
 import type { MockServer } from '../../net/mock/server.ts';
 import type { SimBridgeSnapshot } from '../simWorker/index.ts';
 
@@ -38,8 +37,8 @@ export interface DemoHandle {
   /** Boots the table again in this page, as "Play here" does, without the overlay. */
   reboot(): Promise<void>;
   /**
-   * Boots the table from a second client of this player. The mock fences snapshot uploads by
-   * table session, so this page's next upload is refused and the overlay shows.
+   * Boots the table as a second tab of this player would. The mock fences drops, claims and
+   * snapshot uploads by table session, so this page's next one is refused and the overlay shows.
    */
   bootElsewhere(): Promise<void>;
   snapshots(): DemoSnapshots;
@@ -52,11 +51,9 @@ export interface DemoHandle {
 }
 
 export interface DemoHandleDeps {
-  readonly mock: Pick<MockServer, 'world' | 'ledger'>;
+  readonly mock: Pick<MockServer, 'world' | 'ledger' | 'bootElsewhere'>;
   /** The player this page signed in as. */
   readonly player: () => PlayerId | null;
-  /** Makes the second client; called once, on the first `bootElsewhere`. */
-  readonly peer: () => Pick<ApiClient, 'call'>;
   /** The "Play here" retake: a ready sim, `hydrate=boot`, lay, play. */
   readonly retake: () => Promise<void>;
   /** True while another client holds the table and the overlay is up. */
@@ -68,7 +65,6 @@ export interface DemoHandleDeps {
 
 export function createDemoHandle(deps: DemoHandleDeps): DemoHandle {
   let rebooting: Promise<void> | null = null;
-  let peer: Pick<ApiClient, 'call'> | null = null;
 
   const playerId = (): PlayerId => {
     const id = deps.player();
@@ -105,8 +101,7 @@ export function createDemoHandle(deps: DemoHandleDeps): DemoHandle {
       return rebooting;
     },
     async bootElsewhere() {
-      peer ??= deps.peer();
-      await peer.call('state', { query: { hydrate: 'boot' } });
+      await deps.mock.bootElsewhere(playerId());
     },
     snapshots() {
       const stored = mockPlayer().tableSnapshot;

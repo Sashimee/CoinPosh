@@ -97,6 +97,12 @@ export interface MockServer {
   /** Single-use sign-in and nonce keys still remembered, to show that set stays bounded too. */
   retainedBurnedKeys(): number;
   setNetwork(network: MockNetwork): void;
+  /**
+   * Boots this player's table as a second tab of the same player would (`hydrate=boot`),
+   * queued behind every request in flight. The table session the page holds is replaced, so
+   * its next drop, claim or snapshot is refused with `session_superseded`.
+   */
+  bootElsewhere(playerId: PlayerId): Promise<void>;
   /** Whether this server picked up a world an earlier page in this tab left in storage. */
   readonly restored: boolean;
   /**
@@ -996,6 +1002,28 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   }
 
+  async function bootSecondTab(playerId: PlayerId): Promise<void> {
+    inFlight += 1;
+    try {
+      const player = world.player(playerId);
+      if (player === undefined) {
+        throw new Error(
+          `Demo Mode has no player ${playerId} to boot elsewhere. Sign in before booting a second tab.`,
+        );
+      }
+      const at = now();
+      await world.handle(player, 'state', undefined as never, undefined as never, at, {
+        hydrate: 'boot',
+      });
+      world.touch(player, at);
+    } finally {
+      inFlight -= 1;
+      unsaved = true;
+      if (saveWhenIdle) saveNow();
+      else scheduleSave();
+    }
+  }
+
   const transport: Transport = (request) => {
     if (network === 'down') {
       return Promise.reject(
@@ -1021,6 +1049,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     retainedBurnedKeys: () => burnedKeys.size,
     setNetwork(next) {
       network = next;
+    },
+    bootElsewhere(playerId) {
+      const run = queue.then(() => bootSecondTab(playerId));
+      queue = run.catch(() => undefined);
+      return run;
     },
     restored: persistence.restored,
     flush: () => {

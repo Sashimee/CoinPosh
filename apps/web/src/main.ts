@@ -840,12 +840,11 @@ async function bootScene(
   const view = attachTable(stage, venue, bridge);
   view.use(systems, bridge);
   markBoot('playable');
-  const { mock, demoPeer } = boot.net;
-  if (mock !== null && demoPeer !== null) {
+  const { mock } = boot.net;
+  if (mock !== null) {
     probe.demo = sessionModule.createDemoHandle({
       mock,
       player: () => boot.net.session.playerId,
-      peer: demoPeer,
       retake,
       superseded: () => probe.superseded,
       sample: () => playing.sim.bridge.snapshot(),

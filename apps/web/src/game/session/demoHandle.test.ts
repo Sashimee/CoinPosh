@@ -1,8 +1,6 @@
 import type { CoinId, DropResponse, StateResponse, TableSessionId } from '@coinposh/shared';
 import { POSITION_UNIT, SIM_SNAPSHOT_VERSION } from '@coinposh/sim/snapshot';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ApiClient } from '../../net/client.ts';
-import { ServerClock } from '../../net/clock.ts';
 import { contractGrid } from '../../net/contract/tableSnapshot.contract.ts';
 import { ApiRequestError } from '../../net/errors.ts';
 import { createNet } from '../../net/index.ts';
@@ -28,7 +26,6 @@ let simStartedAt: number;
 let state: StateResponse;
 let superseded: boolean;
 let retakes: number;
-let peers: number;
 
 function simTick(): number {
   return Math.floor(((time.now() - simStartedAt) / 1000) * 60);
@@ -83,15 +80,6 @@ function handle(overrides: Partial<DemoHandleDeps> = {}): DemoHandle {
   return createDemoHandle({
     mock: server,
     player: () => page.session.playerId,
-    peer: () => {
-      peers += 1;
-      return new ApiClient({
-        transport: server.transport,
-        device: page.device,
-        session: page.session,
-        clock: new ServerClock(time.now),
-      });
-    },
     retake: pageBoot,
     superseded: () => superseded,
     sample: () => Promise.reject(new Error('This test samples no sim.')),
@@ -106,7 +94,6 @@ beforeEach(async () => {
   page = await connectPlayer(server, time);
   superseded = false;
   retakes = 0;
-  peers = 0;
   await pageBoot();
   retakes = 0;
 });
@@ -231,25 +218,43 @@ describe('demo handle: reboot()', () => {
 });
 
 describe('demo handle: bootElsewhere()', () => {
-  it("supersedes this page's table session, so its next snapshot upload is refused", async () => {
+  it("supersedes this page's table session, so its next drop and upload are refused", async () => {
     const demo = handle();
     const [first] = await drop(1);
     if (first === undefined) throw new Error('No drop.');
     await demo.bootElsewhere();
-    const refused = await upload(1, [first.coin.id]).then(
+    const wallet = demo.wallet();
+    const ledger = server.ledger().length;
+    const refusedDrop = await drop(1).then(
       () => null,
       (error: unknown) => error,
     );
-    expect(refused).toBeInstanceOf(ApiRequestError);
-    expect((refused as ApiRequestError).code).toBe('session_superseded');
+    expect(refusedDrop).toBeInstanceOf(ApiRequestError);
+    expect((refusedDrop as ApiRequestError).code).toBe('session_superseded');
+    const refusedUpload = await upload(1, [first.coin.id]).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect((refusedUpload as ApiRequestError).code).toBe('session_superseded');
+    expect(demo.wallet()).toEqual(wallet);
+    expect(server.ledger()).toHaveLength(ledger);
+    expect(retakes).toBe(0);
   });
 
-  it('boots through one second client, however often it is called', async () => {
+  it('starts a fresh table session on every call', async () => {
     const demo = handle();
     await demo.bootElsewhere();
+    const once = server.world.player(requirePlayerId(page))?.tableSession;
     await demo.bootElsewhere();
-    expect(peers).toBe(1);
-    expect(retakes).toBe(0);
+    const twice = server.world.player(requirePlayerId(page))?.tableSession;
+    expect(once).not.toBe(session(state));
+    expect(twice).not.toBe(once);
+  });
+
+  it('says to wait for play when the page has not signed in', async () => {
+    await expect(handle({ player: () => null }).bootElsewhere()).rejects.toThrow(
+      /has not signed in/,
+    );
   });
 
   it('leaves the table to a reboot afterwards', async () => {
@@ -293,28 +298,8 @@ describe('demo handle: before sign-in', () => {
   });
 });
 
-describe('createNet demoPeer', () => {
-  it('exists only in Demo Mode', async () => {
-    const options = {
-      locale: () => 'en' as const,
-      turnstileToken: () => Promise.reject(new Error('No Turnstile in this test.')),
-      onError: () => undefined,
-      store: memoryStore(),
-    };
-    const demo = await createNet({ ...options, mode: { kind: 'demo' } });
-    const live = await createNet({
-      ...options,
-      store: memoryStore(),
-      mode: { kind: 'live', apiUrl: 'https://api.coinposh.test' },
-    });
-    expect(demo.demoPeer).not.toBeNull();
-    expect(live.mock).toBeNull();
-    expect(live.demoPeer).toBeNull();
-    demo.table.close();
-    live.table.close();
-  });
-
-  it("boots the same Demo player from a second client and supersedes this page's table", async () => {
+describe('demo handle against createNet', () => {
+  it("boots the Demo player elsewhere and TableSync marks this page's table superseded", async () => {
     const net = await createNet({
       mode: { kind: 'demo' },
       locale: () => 'en',
@@ -323,8 +308,7 @@ describe('createNet demoPeer', () => {
       store: memoryStore(),
     });
     const mock = net.mock;
-    const peer = net.demoPeer;
-    if (mock === null || peer === null) throw new Error('Demo Mode built no mock.');
+    if (mock === null) throw new Error('Demo Mode built no mock.');
     const booted = await net.client.call('state', { query: { hydrate: 'boot' } });
     net.table.hydrate(booted);
     const events: string[] = [];
@@ -332,7 +316,6 @@ describe('createNet demoPeer', () => {
     const demo = createDemoHandle({
       mock,
       player: () => net.session.playerId,
-      peer,
       retake: () => Promise.resolve(),
       superseded: () => net.table.superseded,
       sample: () => Promise.reject(new Error('No sim here.')),

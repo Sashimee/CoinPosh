@@ -1226,10 +1226,22 @@ export class MockWorld {
     return session;
   }
 
-  /** A table op naming another session leaves the mark alone. */
-  #raiseSessionTick(player: MockPlayer, session: TableSessionId | undefined, tick: number): void {
+  /**
+   * The table's lease, as the server's requireLease: a drop or claim from a session another
+   * boot replaced is refused before any value moves. Unlike the server, an op naming no
+   * session still passes, because the mock's own suites and the outbox tests drive the table
+   * without booting it first.
+   */
+  #requireLease(player: MockPlayer, session: TableSessionId | undefined): void {
+    if (session === undefined || session === player.tableSession) return;
+    throw new MockFailure(
+      'session_superseded',
+      'Another tab or device has booted this table since. Reload to play here.',
+    );
+  }
+
+  #raiseSessionTick(player: MockPlayer, tick: number): void {
     if (player.tableSession === null) return;
-    if (session !== undefined && session !== player.tableSession) return;
     player.tableSessionMaxTick = Math.max(player.tableSessionMaxTick, tick);
   }
 
@@ -1394,6 +1406,7 @@ export class MockWorld {
     },
 
     tableDrop: (player, body, _params, now) => {
+      this.#requireLease(player, body.session);
       this.#checkActionTick(player, 'Drop', body.tick, now);
       if (
         player.lastDropTick !== null &&
@@ -1425,7 +1438,7 @@ export class MockWorld {
       }
       this.#record(player, coin.id).dropsBehind = 1;
       player.lastDropTick = body.tick;
-      this.#raiseSessionTick(player, body.session, body.tick);
+      this.#raiseSessionTick(player, body.tick);
       player.drops += 1;
       const spawnedCrates: TableCrate[] = [];
       if (player.drops > player.dropHighWater) {
@@ -1455,9 +1468,10 @@ export class MockWorld {
     },
 
     tableClaims: (player, body, _params, now) => {
+      this.#requireLease(player, body.session);
       const results = body.claims.map((claim) => {
         const result = this.#claim(player, claim, now);
-        if (result.status === 'accepted') this.#raiseSessionTick(player, body.session, claim.tick);
+        if (result.status === 'accepted') this.#raiseSessionTick(player, claim.tick);
         return result;
       });
       return { results, wallet: player.wallet };
