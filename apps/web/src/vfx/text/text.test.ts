@@ -55,21 +55,32 @@ describe('number pop arc', () => {
     const end = popFrame(path, path.duration);
     expect(end.x).toBeCloseTo(to.x, 6);
     expect(end.y).toBeCloseTo(to.y, 6);
-    expect(end.scale).toBeCloseTo(0.5, 6);
+    expect(end.scale).toBeCloseTo(POP_TIMING.landScale, 6);
     expect(end.opacity).toBe(0);
   });
 
-  it('pulls back before it flies (anticipation) and arcs above the straight line', () => {
+  it('pulls back before it flies (anticipation), then sweeps into the target from below', () => {
     const path = createPopPath(from, to, false);
     const flightStart = path.popIn + path.hang;
     const early = popFrame(path, flightStart + path.flight * 0.1);
     expect(early.y).toBeGreaterThan(from.y - POP_TIMING.rise);
-    const mid = popFrame(path, flightStart + path.flight * 0.7);
-    const straightY =
-      from.y -
-      POP_TIMING.rise +
-      (to.y - from.y + POP_TIMING.rise) * ((mid.x - from.x) / (to.x - from.x));
-    expect(mid.y).toBeLessThan(straightY);
+    expect(early.y - (from.y - POP_TIMING.rise)).toBeLessThan(16);
+    let lastY = Number.POSITIVE_INFINITY;
+    for (let k = 0.4; k <= 1; k += 0.02) {
+      const f = popFrame(path, flightStart + path.flight * k);
+      expect(f.y).toBeGreaterThanOrEqual(to.y - 1e-6);
+      expect(f.y).toBeLessThanOrEqual(lastY);
+      lastY = f.y;
+    }
+  });
+
+  it('has dissolved most of the way before it reaches a plaque label above the target', () => {
+    const path = createPopPath(from, to, false);
+    const flightStart = path.popIn + path.hang;
+    for (let k = 0; k <= 1; k += 0.01) {
+      const f = popFrame(path, flightStart + path.flight * k);
+      if (f.y < to.y + 20) expect(f.opacity).toBeLessThan(0.5);
+    }
   });
 
   it('flies longer for longer distances, within bounds', () => {
