@@ -11,6 +11,7 @@ import {
 } from '../../ui/components/balancePlaque.ts';
 import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
+import type { CoinField } from '../../scene/coins/coin-field.ts';
 import type { CameraPreset } from '../../scene/venues/riviera/layout.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
 import type { UnboxVfx } from '../../vfx/cinematics/unbox/index.ts';
@@ -35,6 +36,8 @@ export interface CratesMountOptions {
     readonly scene: Object3D;
     readonly camera: PerspectiveCamera;
     onFrame(listener: (deltaSeconds: number) => void): () => void;
+    /** The table's coins, whose baked faces the unbox hero borrows. */
+    readonly coins?: Pick<CoinField, 'faceTexture'>;
   };
   /** The venue framing per aspect (`venue.cameraPreset`); the unbox dolly returns to it. */
   readonly framing: (aspect: number) => CameraPreset;
@@ -194,9 +197,11 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     sim: options.sim,
     events,
   });
+  const coins = options.stage.coins;
   const director = new UnboxDirector({
     parent: options.stage.scene,
     camera: options.stage.camera,
+    faces: coins ? (tier) => coins.faceTexture(tier) : null,
     framing: options.framing,
     events,
     reducedMotion,
@@ -271,6 +276,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   disposers.push(
     events.on('crate:spawned', ({ crateId }) => {
       table.spawn(crateId);
+      director.prime();
       events.emit('crate:stinger', { cue: 'arrive', rarity: null, step: 1, duckSeconds: 0 });
       options.haptics?.pulse('tap');
     }),

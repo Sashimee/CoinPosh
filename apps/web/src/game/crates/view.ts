@@ -25,6 +25,7 @@ import { HEIRLOOM_PRISM, RARITY_COLORS, VFX_COLORS } from '../../vfx/palette.ts'
 import {
   UnboxAssets,
   UnboxCinematic,
+  type UnboxAssetsOptions,
   type UnboxBeat,
   type UnboxVfx,
 } from '../../vfx/cinematics/unbox/index.ts';
@@ -520,6 +521,8 @@ export interface UnboxDirectorOptions {
   ) => UnboxCard;
   /** The table crate is handed over to the cinematic and should leave the table view. */
   readonly onStart?: (crateId: CrateId) => void;
+  /** Where the hero's coins find their struck faces: the table's own bakes. */
+  readonly faces?: UnboxAssetsOptions['faces'];
 }
 
 interface Playing {
@@ -549,7 +552,12 @@ export class UnboxDirector {
 
   constructor(options: UnboxDirectorOptions) {
     this.options = options;
-    this.assets = new UnboxAssets(options.parent);
+    this.assets = new UnboxAssets(options.parent, { faces: options.faces ?? null });
+  }
+
+  /** Starts compiling the unbox props; call it ahead of the first crate. */
+  prime(): void {
+    if (!this.disposed) this.assets.prime();
   }
 
   get active(): CrateId | null {
@@ -570,6 +578,7 @@ export class UnboxDirector {
 
   enqueue(opened: OpenedCrate): void {
     if (this.disposed) return;
+    this.assets.prime();
     this.queue.push(opened);
     if (this.isHeld) this.announceWaiting();
     else if (this.playing === null) this.startNext();
