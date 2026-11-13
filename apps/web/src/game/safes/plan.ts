@@ -9,6 +9,8 @@ export interface SafeActionInput {
   readonly keys: number | null;
   /** The open in flight for this safe, if any. */
   readonly pending: SafeOpenMethod | null;
+  /** Another safe is opening or playing; one safe opens at a time. */
+  readonly busy?: boolean;
 }
 
 export interface SafeKeyAction {
@@ -34,13 +36,13 @@ export interface SafeActions {
 /**
  * Which buttons a safe's row shows. A locked (or not yet synced) safe offers "Open with N Keys";
  * once its timer has run out on the server clock it offers a free "Open" instead. Both wait
- * while an open is in flight. The server checks the Keys and the timer again either way.
+ * while any open is in flight. The server checks the Keys and the timer again either way.
  */
 export function safeActions(input: SafeActionInput): SafeActions {
   const countdown = safeCountdown(input.safe, input.serverNow);
   const cost = safeTypeDef(input.safe.type).keysPerSafe;
   const ready = countdown.state === 'ready';
-  const pending = input.pending !== null;
+  const pending = input.pending !== null || input.busy === true;
   const short = input.keys !== null && input.keys < cost;
   const blocked = ready ? null : pending ? 'pending' : short ? 'noKeys' : null;
   return {

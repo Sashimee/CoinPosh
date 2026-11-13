@@ -34,6 +34,8 @@ export interface SafesPanelOptions {
   /** Keys still to be confirmed by the server: the balance is marked provisional. */
   readonly keysProvisional: () => boolean;
   readonly pending: (safeId: SafeId) => SafeOpenMethod | null;
+  /** Any safe is opening; every row waits. */
+  readonly busy: () => boolean;
   readonly onOpen: (safe: Safe, method: SafeOpenMethod) => void;
   readonly onClose: () => void;
   readonly audio?: () => { playImpact(event: ImpactEvent): void } | null;
@@ -204,6 +206,7 @@ export function showSafesPanel(options: SafesPanelOptions): SafesPanel {
         serverNow: options.serverNow(),
         keys: options.keys(),
         pending: options.pending(next.id),
+        busy: options.busy(),
       });
       actions = view;
       const safeName = typeName(next.type);

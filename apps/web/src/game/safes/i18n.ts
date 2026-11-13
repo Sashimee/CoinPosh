@@ -92,7 +92,8 @@ export const SAFES_STRINGS: Readonly<Record<Language, SafesStrings>> = {
       noKeys: 'Not enough Keys for this safe.',
       gone: 'This safe is no longer in your vault.',
       unavailable: 'Safes cannot be opened right now.',
-      offline: 'You are offline. The safe is untouched; try again when you are back.',
+      offline:
+        'You are offline. If the open went through, it will not be charged twice; try again when you are back.',
       error: 'The house could not open this safe. Please try again.',
     },
   },
@@ -133,7 +134,8 @@ export const SAFES_STRINGS: Readonly<Record<Language, SafesStrings>> = {
       noKeys: 'Pas assez de clés pour ce coffre.',
       gone: 'Ce coffre n’est plus dans votre chambre forte.',
       unavailable: 'Les coffres ne peuvent pas être ouverts pour le moment.',
-      offline: 'Vous êtes hors ligne. Le coffre est intact ; réessayez une fois reconnecté.',
+      offline:
+        'Vous êtes hors ligne. Si l’ouverture est passée, elle ne sera pas facturée deux fois ; réessayez une fois reconnecté.',
       error: 'La maison n’a pas pu ouvrir ce coffre. Veuillez réessayer.',
     },
   },
@@ -175,7 +177,7 @@ export const SAFES_STRINGS: Readonly<Record<Language, SafesStrings>> = {
       gone: 'Dieser Tresor ist nicht mehr in Ihrem Gewölbe.',
       unavailable: 'Tresore können gerade nicht geöffnet werden.',
       offline:
-        'Sie sind offline. Der Tresor bleibt unberührt; versuchen Sie es erneut, sobald Sie wieder online sind.',
+        'Sie sind offline. Falls die Öffnung durchging, wird sie nicht doppelt berechnet; versuchen Sie es erneut, sobald Sie wieder online sind.',
       error: 'Das Haus konnte diesen Tresor nicht öffnen. Bitte versuchen Sie es erneut.',
     },
   },

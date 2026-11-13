@@ -13,18 +13,17 @@ import {
 } from '../../vfx/cinematics/safe/index.ts';
 import { cratesKey, registerCratesStrings } from '../crates/i18n.ts';
 import { rewardLines } from '../crates/loot.ts';
-import { rollCredit } from '../crates/mount.ts';
 import { rewardLineCopy, type CratesT } from '../crates/revealCard.ts';
 import { msToFirstReady, readyCount, safeCountdown } from './countdown.ts';
 import { createSafesController, type SafesApi, type SafesController } from './controller.ts';
-import type { SafeEvents, SafeRejection } from './events.ts';
+import type { SafeEvents } from './events.ts';
 import { registerSafesStrings, safesKey, safeTypeKey, type SafesKey } from './i18n.ts';
+import { createSafeOpener, type OpenedSafe, type SafePlayHooks } from './opener.ts';
 import { showSafesPanel, type SafesPanel } from './panel.ts';
 import { provisionalKeys } from './plan.ts';
 
 const SYNC_RETRY_MS = 1_000;
 const READY_SLACK_MS = 20;
-const REFRESH_ON: ReadonlySet<SafeRejection> = new Set(['gone', 'notReady']);
 
 export interface SafesMountOptions {
   readonly ui: Pick<UiApp, 'store' | 'bus' | 'i18n'>;
@@ -66,12 +65,6 @@ export interface SafesModule {
   dispose(): void;
 }
 
-interface Playing {
-  readonly safeId: SafeId;
-  readonly cinematic: SafeCinematic;
-  readonly offs: readonly (() => void)[];
-}
-
 /** The safes a roll grants, so a safe found in a safe is on the list without a resync. */
 function grantedSafes(roll: Roll): readonly Safe[] {
   return roll.rewards.flatMap((reward) => (reward.kind === 'safe' ? [reward.safe] : []));
@@ -91,12 +84,10 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
   const reducedMotion = options.reducedMotion ?? isReducedMotion;
   const controller = createSafesController({ api: options.api, events });
   const payout = walletPayoutFor(ui.store);
-  const unpaid = new Set<string>();
-  const pendingTypes = new Map<SafeId, { type: string; method: SafeOpenMethod }>();
   let owned: readonly Safe[] = [...options.safes];
   let keys: number | null = options.wallet?.keys ?? null;
   let panel: SafesPanel | null = null;
-  let playing: Playing | null = null;
+  let unsaid: { readonly message: string; readonly safeId?: SafeId } | null = null;
   let readyTimer: ReturnType<typeof setTimeout> | null = null;
   let locked = new Set<SafeId>();
   let announced: { count: number; ready: number } | null = null;
@@ -107,7 +98,16 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
   const haptic = (pattern: HapticPattern) => {
     if (ui.store.getState().settings.haptics) options.vibrate?.(pattern);
   };
-  const shownKeys = () => provisionalKeys(keys, [...pendingTypes.values()]);
+  const shownKeys = () => provisionalKeys(keys, opener.pendingOpens());
+
+  const say = (message: string, safeId?: SafeId) => {
+    if (panel === null) {
+      if (safeId !== undefined) unsaid = { message, safeId };
+      else if (unsaid?.safeId === undefined) unsaid = { message };
+      return;
+    }
+    panel.say(message, safeId);
+  };
 
   const announceReady = () => {
     if (disposed) return;
@@ -116,7 +116,9 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
     const now = options.clock.now();
     const states = owned.map((safe) => ({ safe, state: safeCountdown(safe, now).state }));
     for (const { safe, state } of states) {
-      if (state === 'ready' && locked.has(safe.id)) events.emit('safe:ready', { safeId: safe.id });
+      if (state !== 'ready' || !locked.has(safe.id)) continue;
+      events.emit('safe:ready', { safeId: safe.id });
+      say(t('readyNotice', { safe: ui.i18n.t(safeTypeKey(safe.type)) }));
     }
     locked = new Set(states.filter(({ state }) => state === 'locked').map(({ safe }) => safe.id));
     const ready = states.filter(({ state }) => state === 'ready').length;
@@ -139,7 +141,7 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
     panel = null;
   };
 
-  const play = (safe: Safe, method: SafeOpenMethod, roll: Roll, wallet: Wallet) => {
+  const play = ({ safe, safeId, method, roll, wallet }: OpenedSafe, hooks: SafePlayHooks) => {
     const lines = rewardLines(roll.rewards);
     const copies = lines.map((line) => rewardLineCopy(line, cratesT, ui.i18n.language));
     const cinematicLines: SafeCinematicLine[] = lines.map((line, index) => {
@@ -184,78 +186,70 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
           amount: line.amount,
           source: sources[index] ?? null,
         }));
-        unpaid.delete(safe.id);
-        payout.collect(safe.id, { wallet, lines: payoutLines });
-        events.emit('safe:collected', { safeId: safe.id, roll, wallet });
+        hooks.collect({ wallet, lines: payoutLines });
+        events.emit('safe:collected', { safeId, roll, wallet });
       },
     });
-    const offs = [
-      cinematicEvents.on('safeCinematic:beat', ({ beat }) => {
-        if (beat.kind === 'reveal')
-          events.emit('safe:revealed', { safeId: safe.id, rarity: roll.rarity });
-        if (beat.kind === 'settled' && unpaid.has(safe.id)) payout.arm(safe.id);
-      }),
-    ];
-    playing = { safeId: safe.id, cinematic, offs };
-    void cinematic.done.then(() => {
-      if (playing?.cinematic !== cinematic) return;
-      endPlaying();
-      if (!disposed && owned.length > 0) openPanel();
+    const off = cinematicEvents.on('safeCinematic:beat', ({ beat }) => {
+      if (beat.kind === 'reveal') events.emit('safe:revealed', { safeId, rarity: roll.rarity });
+      if (beat.kind === 'settled') hooks.settled();
     });
+    return {
+      done: cinematic.done,
+      dispose() {
+        off();
+        cinematic.dispose();
+      },
+    };
   };
 
-  const endPlaying = () => {
-    const current = playing;
-    if (current === null) return;
-    playing = null;
-    for (const off of current.offs) off();
-    current.cinematic.dispose();
-    if (unpaid.delete(current.safeId)) payout.release(current.safeId);
-  };
+  const opener = createSafeOpener({
+    controller,
+    payout,
+    play,
+    onPending: () => panel?.render(),
+    onOpened: ({ safeId, roll, wallet }) => {
+      keys = wallet.keys;
+      setOwned([...owned.filter((kept) => kept.id !== safeId), ...grantedSafes(roll)]);
+      closePanel();
+    },
+    onRejected: (safe, reason) => {
+      panel?.render();
+      say(t(`rejected.${reason}`), safe.id);
+      ui.bus.emit('ui:feedback', { kind: 'deny' });
+    },
+    onDone: () => {
+      if (owned.length > 0) openPanel();
+    },
+    ...(options.onPity ? { onPity: options.onPity } : {}),
+    ...(options.refresh ? { refresh: options.refresh } : {}),
+  });
 
   const request = (safe: Safe, method: SafeOpenMethod) => {
-    if (playing !== null) return;
-    pendingTypes.set(safe.id, { type: safe.type, method });
-    panel?.render();
-    void controller.open(safe.id, method).then((outcome) => {
-      pendingTypes.delete(safe.id);
-      if (disposed) return;
-      if (outcome.ok) {
-        const { response } = outcome;
-        keys = response.wallet.keys;
-        options.onPity?.(response.safeId, outcome.pity);
-        unpaid.add(response.safeId);
-        payout.hold(response.safeId, rollCredit(response.roll));
-        setOwned([
-          ...owned.filter((kept) => kept.id !== response.safeId),
-          ...grantedSafes(response.roll),
-        ]);
-        closePanel();
-        play(safe, method, response.roll, response.wallet);
-        return;
-      }
-      panel?.render();
-      panel?.say(t(`rejected.${outcome.reason}`), safe.id);
-      ui.bus.emit('ui:feedback', { kind: 'deny' });
-      if (REFRESH_ON.has(outcome.reason)) options.refresh?.();
-    });
+    if (!opener.request(safe, method)) ui.bus.emit('ui:feedback', { kind: 'deny' });
   };
 
   const openPanel = () => {
-    if (disposed || panel !== null || playing !== null) return;
+    if (disposed || panel !== null || opener.playing !== null) return;
     panel = showSafesPanel({
       ui,
       host: options.host,
       serverNow: () => options.clock.now(),
       safes: () => owned,
       keys: shownKeys,
-      keysProvisional: () => [...pendingTypes.values()].some((pending) => pending.method === 'key'),
+      keysProvisional: () => opener.pendingOpens().some((pending) => pending.method === 'key'),
       pending: (safeId) => controller.pending(safeId),
+      busy: () => opener.busy,
       onOpen: request,
       onClose: closePanel,
       reducedMotion: reducedMotion(),
       ...(options.audio ? { audio: options.audio } : {}),
     });
+    if (unsaid !== null) {
+      const { message, safeId } = unsaid;
+      unsaid = null;
+      panel.say(message, safeId);
+    }
   };
 
   announceReady();
@@ -284,9 +278,7 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
       disposed = true;
       if (readyTimer !== null) clearTimeout(readyTimer);
       closePanel();
-      endPlaying();
-      for (const safeId of [...unpaid]) payout.release(safeId);
-      unpaid.clear();
+      opener.dispose();
     },
   };
 }

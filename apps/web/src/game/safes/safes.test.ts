@@ -190,6 +190,15 @@ describe('safe buttons', () => {
     ).toBe(false);
   });
 
+  it('waits on every row while another safe is opening', () => {
+    const view = { serverNow: NOW, keys: 5, pending: null, busy: true } as const;
+    expect(safeActions({ safe: locked, ...view }).key).toMatchObject({
+      enabled: false,
+      blocked: 'pending',
+    });
+    expect(safeActions({ safe: ready, ...view }).timer.enabled).toBe(false);
+  });
+
   it('takes in-flight Key opens off the shown balance, never below zero', () => {
     expect(provisionalKeys(3, [{ type: 'gold', method: 'key' }])).toBe(3 - GOLD.keysPerSafe);
     expect(provisionalKeys(3, [{ type: 'gold', method: 'timer' }])).toBe(3);
