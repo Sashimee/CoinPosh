@@ -55,11 +55,11 @@ export const BUNDLE_BUDGETS = {
   initialJs: 350 * 1024,
   /** The three.webgpu chunk: lazy by rule, and capped so a three upgrade is a visible decision. */
   threeChunk: 235 * 1024,
-  /** The sim worker without its inlined Rapier wasm (P-121 aims for 80 kB). */
+  /** The sim worker JS alone; Rapier's wasm is a separate asset (64.1 kB gzip on 2026-11-13). */
   workerJs: 92 * 1024,
   /**
-   * Rapier's wasm as it ships: today inlined as base64 in the worker (1,572 kB gzip on
-   * 2026-11-08), which a separate .wasm asset would cut to about 1,152 kB.
+   * Rapier's wasm as it ships: a separate `rapier_wasm3d_bg-*.wasm` asset streamed by the
+   * sim worker since P-121 (1,151.9 kB gzip on 2026-11-13).
    */
   wasm: 1_600 * 1024,
   /** Every other lazy JS chunk together. */

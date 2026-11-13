@@ -26,7 +26,7 @@ New third-party versions must be at least two weeks old when they are pinned.
 | globals | 17.14.0 | root | |
 | Prettier | 3.9.10 | root | `.prettierrc.json` |
 | Vitest | 4.1.12 | `apps/web`, `apps/server`, `packages/shared`, `packages/sim`, `packages/economy` | `@cloudflare/vitest-plugin` 1.6.0 (`apps/server`) peers on `vitest ^4.1.0 \|\| ^5.0.0` |
-| @types/node | 24.19.2 | `packages/shared`, `packages/sim`, `packages/economy`, `apps/web` (e2e suite) | Node 24 line, matches `.nvmrc`; also the version vite, vitest and wrangler resolve against |
+| @types/node | 24.19.2 | `packages/shared`, `packages/sim`, `packages/economy` | Node 24 line, matches `.nvmrc`; also the version vite, vitest and wrangler resolve against |
 
 ## Shared types (`packages/shared`)
 
@@ -78,7 +78,6 @@ With the figures above (factor 1.3, limit 5.2 ms) P-215 `ad0db6e` passes: 4.38-4
 | zod | 4.6.7 | Same version as `packages/shared`, so wire schemas validated in the client (T-1.09 `src/net`) are the shared ones |
 | @coinposh/shared | `workspace:*` | Wire types and schemas (T-1.09) |
 | @coinposh/economy | `workspace:*` | Economy numbers for the Demo Mode mock server (T-1.09) |
-| @playwright/test | 1.64.1 | E2E and perf gates (T-1.17), `apps/web/e2e`. Drives Chromium 1248 (Chrome for Testing 156.0.8078.4) pinned to WebGL2 on SwiftShader. 1.65.0 (2026-11-05) was under two weeks old on 2026-11-08 |
 
 T-1.04 (`src/scene`) and T-1.13 (`src/audio`) added no packages: the scene uses `three/webgpu`,
 `three/tsl` and `three/addons` from `three` 0.187.0, and all audio is synthesized with the Web
@@ -87,7 +86,7 @@ CC0), pinned by SHA-256 in `src/scene/env/hdri/SOURCES.md`; audio provenance liv
 `public/audio/CREDITS.md`.
 
 Planned, added by the owning task through lead-architect: React 19, @react-three/fiber 9,
-drei, Tailwind v4, Motion, zustand. Physics is not planned here: Rapier
+drei, Tailwind v4, Motion, zustand, Playwright. Physics is not planned here: Rapier
 lives in `packages/sim` (above), and the client will reach it only through `@coinposh/sim`.
 
 ## Server (`apps/server`)
@@ -113,12 +112,11 @@ Bump the SHA and the comment together, and update this table in the same commit.
 
 | Action | Version | Commit | Used in |
 |---|---|---|---|
-| actions/checkout | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | `ci.yml`, `perf.yml`, `deploy-web.yml`, `deploy-server.yml` |
-| pnpm/action-setup | v6.1.0 | `ea17c68df8912ef543352723c149a84f56e3d413` | `ci.yml`, `perf.yml`, `deploy-web.yml`, `deploy-server.yml` |
-| actions/setup-node | v7.1.0 | `949feb2413d6458794dcd2491c4babbbce0c15c1` | `ci.yml`, `perf.yml`, `deploy-web.yml`, `deploy-server.yml` |
+| actions/checkout | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | `ci.yml`, `deploy-web.yml`, `deploy-server.yml` |
+| pnpm/action-setup | v6.1.0 | `ea17c68df8912ef543352723c149a84f56e3d413` | `ci.yml`, `deploy-web.yml`, `deploy-server.yml` |
+| actions/setup-node | v7.1.0 | `949feb2413d6458794dcd2491c4babbbce0c15c1` | `ci.yml`, `deploy-web.yml`, `deploy-server.yml` |
 | actions/configure-pages | v6.0.0 | `45bfe0192ca1faeb007ade9deae92b16b8254a0d` | `deploy-web.yml` |
 | actions/upload-pages-artifact | v5.0.0 | `fc324d3547104276b827a68afc52ff2a11cc49c9` | `deploy-web.yml` |
 | actions/deploy-pages | v5.0.1 | `368f82528645a54fb793d4d04e342629a3f51346` | `deploy-web.yml` |
-| actions/upload-artifact | v7.0.2 | `cf430e030ddbb5b0abf93d22962f4752f3646cd9` | `ci.yml`, `perf.yml` (screenshots, perf report, Playwright report) |
 
 `actions/cache` is not in use yet. P-31 adds it; its SHA is recorded here when P-31 integrates.
