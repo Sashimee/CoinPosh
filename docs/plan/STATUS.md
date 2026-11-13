@@ -147,7 +147,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-2.01 | todo | | Waits on T-1.18. Key-locked Safes (server + client + cinematic) |
 | T-2.02 | todo | | Waits on T-1.18. Scratch Cards (GPU scratch mask) |
 | T-2.03 | todo | | Waits on T-1.18. Gacha Capsule Machine |
-| T-2.04 | blocked(review: Web Crypto failure shown as an invalid server seed; FR odds aria labels hardcode the colon outside i18next) | task/T-2.04 (d273147, not merged) | Waits on T-1.18. Odds & "Certified Fair" UI. Fix: distinct verify "unavailable" state with EN/FR/DE copy and a throwing crypto.subtle test (mount.ts:917-920); interpolated odds.rowLabel/odds.totalLabel keys (mount.ts:343, :354); main.ts mount and pity log queued in POLISH; branch kept |
+| T-2.04 | done | task/T-2.04 (merge d411f01) | Odds & "Certified Fair" UI (apps/web/src/ui/fair, EN/FR/DE fair.json). Fix round (c196d1f): Web Crypto failure shows a distinct verify "unavailable" state with a throwing crypto.subtle test; odds row/total aria labels interpolated via i18next; main.ts mount and pity log stay queued in POLISH; pnpm check green after merge |
 | T-2.05 | done | task/T-2.05 (merge c45f2f6) | Inventory & item cards: apps/web/src/ui/inventory/** (rarity-framed 3D cards, sort/filter, duplicate level-up view) (d41904f); shared contract, fuse route, duplicatesPerLevel and main.ts mount queued as P-455..P-458, WebGPU card art check as P-459 (H); pnpm check green after merge |
 | T-3.01 | todo | | Waits on T-2.05. Charm Board (sockets, 6 charms, synergy tags) |
 | T-3.02 | todo | | Waits on T-2.05. Charm models & effects |
