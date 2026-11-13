@@ -66,8 +66,9 @@ const IMPL_SCHEMA = {
     checksPassed: { type: 'boolean' },
     summary: { type: 'string' },
     outOfScopeRequests: { type: 'array', items: { type: 'string' } },
+    delivered: { type: 'boolean', description: 'false when you committed nothing because the work needs edits outside your owns paths or a design decision' },
   },
-  required: ['branch', 'commit', 'checksPassed', 'summary'],
+  required: ['branch', 'commit', 'checksPassed', 'summary', 'delivered'],
 }
 
 const FIX_SCHEMA = {
@@ -116,6 +117,10 @@ Split big tasks so they build in parallel: when a task spans several areas (e.g.
 or would take one agent much more than ~15 minutes, replace it with parts "<id>-p1", "<id>-p2", ... (set parent to the original id), each with
 disjoint owns, its own acceptance slice and a brief that states the shared contract (types, event names, API shape) every part codes against.
 If a contract must land first (e.g. packages/shared types), make it its own small part and list it in the other parts' "after". Don't split small tasks.
+Size owns to the whole change, not just the file the item names: read the code the fix touches and include every file it must edit, including
+the tests and e2e specs that assert the behaviour it changes (e.g. apps/web/e2e/full-loop.spec.ts when a flow changes) and a prerequisite another
+item asks for (fold that item in, as P-375 folded P-402). An owns list too narrow to finish the task wastes a slot on a guaranteed rejection.
+Skip items that need a product or design decision the docs don't settle (e.g. retarget a pacing goal, choose between mechanics): list them in humanBlocked-style notes instead of scheduling them.
 Priority order: first, tasks that make the game playable on the dev site (coins dropping on the table and pushed off by the pusher,
 the coin physics T-1.01, wiring coins into the scene P-19, the HUD P-28, and whatever directly unblocks those);
 then tasks on the critical path to the current milestone; then everything else.
@@ -153,7 +158,9 @@ Never switch to or create a task/* branch: other worktrees may hold it. Install 
 Write ONLY within the owns paths: ${t.owns.join(', ')}.
 Meet every acceptance criterion at the highest polish level — this game must feel premium and addictive.
 Run pnpm check (or filtered equivalents) until green. Commit with message "${t.id}: <summary>".
-Do NOT push and do NOT merge. Return branch "task/${t.id}", the full sha from git rev-parse HEAD as commit, whether checks passed, and a summary.`
+If you find the task cannot be finished inside those owns paths, or it needs a design decision, stop early: commit nothing, return delivered false,
+and put the exact cross-owner edits needed in outOfScopeRequests. Don't spend time on a partial version a reviewer must reject.
+Do NOT push and do NOT merge. Return branch "task/${t.id}", the full sha from git rev-parse HEAD as commit, whether checks passed, delivered, and a summary that matches the commit.`
 
 const reviewPrompt = (t, impl, tip) => `Review commit ${tip} (task ${t.id}, base ${plan.base}) for roadmap task ${t.id} · ${t.title}.
 
@@ -265,6 +272,10 @@ Commit "playtest: polish items" and git push origin ${plan.base} (git pull --reb
 const runTask = async t => {
   const impl = await agent(implPrompt(t), { label: `build:${t.id}`, phase: 'Build', agentType: t.agent, isolation: 'worktree', schema: IMPL_SCHEMA, ...effortFor(t) })
   if (!impl) return { id: t.id, approved: false, issues: ['implementation agent failed'], requests: [] }
+  if (impl.delivered === false) {
+    log(`${t.id}: not delivered, skipping review (${(impl.outOfScopeRequests || []).length} cross-owner requests)`)
+    return { id: t.id, title: t.title, parent: t.parent, branch: `task/${t.id}`, approved: false, issues: [`not delivered: ${impl.summary}`], requests: impl.outOfScopeRequests || [] }
+  }
   let tip = impl.commit
   let verdict = await agent(reviewPrompt(t, impl, tip), { label: `review:${t.id}`, phase: 'Review', agentType: 'reviewer', isolation: 'worktree', schema: VERDICT_SCHEMA, ...effortFor(t) })
   for (let round = 1; verdict && !verdict.approved && round <= FIX_ROUNDS; round++) {
