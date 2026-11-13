@@ -19,6 +19,8 @@ import {
   type NudgeDirection,
   type OpeningHeap,
   type SimInput,
+  type SimRestore,
+  type SimTableSnapshot,
 } from './sim-api.ts';
 
 /** The sim's coin, in metres, for sizing the coin field and anything placed against coins. */
@@ -51,8 +53,13 @@ export interface SimBridgeOptions {
   readonly transport?: TransportKind | 'auto';
   /** Look for coins whose drop named no tier. */
   readonly defaultTier?: CoinTierId;
-  /** Coins the sim lays at the brink of the lip before its first tick. */
+  /** Coins the sim lays at the brink of the lip before its first tick. Not with `restore`. */
   readonly openingHeap?: OpeningHeap;
+  /**
+   * A saved table the sim lays instead of an opening heap, entry i as sim id i; the worker
+   * stops with an error naming the entry at fault when it is not one the Sim can restore.
+   */
+  readonly restore?: SimRestore;
   /** Render-thread clock in ms; defaults to performance.now. */
   readonly now?: () => number;
 }
@@ -89,7 +96,19 @@ export interface SimBridgeStats {
   readonly pusherPhase: number;
 }
 
+/** The worker's table between two ticks, for the server to store. */
+export interface SimBridgeSnapshot {
+  /** The sim tick it was read at. */
+  readonly tick: number;
+  readonly table: SimTableSnapshot;
+}
+
 export type SimEventListener = (events: SimEventBatch) => void;
+
+interface PendingSnapshot {
+  readonly resolve: (snapshot: SimBridgeSnapshot) => void;
+  readonly reject: (error: Error) => void;
+}
 
 type MutableStats = { -readonly [K in keyof SimBridgeStats]: SimBridgeStats[K] };
 
@@ -145,6 +164,8 @@ export class SimBridge {
   #disposed = false;
   #settleReady: ((info: SimReadyInfo) => void) | null = null;
   #rejectReady: ((error: Error) => void) | null = null;
+  readonly #snapshots = new Map<number, PendingSnapshot>();
+  #nextSnapshot = 0;
   readonly #onDispose: (() => void) | undefined;
 
   /** `onDispose` runs after the dispose message is posted, for the owner to end the worker. */
@@ -176,7 +197,11 @@ export class SimBridge {
       pusherStroke: 0,
       pusherPhase: 0,
     };
-    const openingHeap = options.openingHeap;
+    const { openingHeap, restore } = options;
+    if (openingHeap && restore) {
+      throw new RangeError('SimBridge: openingHeap and restore are mutually exclusive; pass one');
+    }
+    const table = openingHeap ? { openingHeap } : restore ? { restore } : {};
     this.ready = new Promise<SimReadyInfo>((resolve, reject) => {
       this.#settleReady = resolve;
       this.#rejectReady = reject;
@@ -204,7 +229,7 @@ export class SimBridge {
         seed: options.seed,
         capacity: this.capacity,
         transport: { kind: 'shared', buffer: this.#ring.buffer, slots: SHARED_SLOTS },
-        ...(openingHeap ? { openingHeap } : {}),
+        ...table,
       });
     } else {
       this.#ring = null;
@@ -218,7 +243,7 @@ export class SimBridge {
           seed: options.seed,
           capacity: this.capacity,
           transport: { kind: 'transfer', buffers },
-          ...(openingHeap ? { openingHeap } : {}),
+          ...table,
         },
         buffers,
       );
@@ -314,6 +339,28 @@ export class SimBridge {
     stats.syncMs = this.#now() - start;
   }
 
+  /**
+   * Reads the worker's table between two ticks: the pose and rest state of every coin and
+   * the pusher's place in its cycle, quantized as the server stores them, with the tick they
+   * were read at. Works while paused, so a hidden page can still save; a request made before
+   * the sim is ready waits for it. Rejects if the sim fails or the bridge is disposed first.
+   */
+  snapshot(): Promise<SimBridgeSnapshot> {
+    if (this.#disposed) {
+      return Promise.reject(new Error('SimBridge.snapshot: the bridge has been disposed'));
+    }
+    if (this.#failure) {
+      return Promise.reject(new Error(`SimBridge.snapshot: ${this.#failure.message}`));
+    }
+    const requestId = this.#nextSnapshot;
+    this.#nextSnapshot += 1;
+    const reply = new Promise<SimBridgeSnapshot>((resolve, reject) => {
+      this.#snapshots.set(requestId, { resolve, reject });
+    });
+    this.#post({ type: 'snapshot', requestId });
+    return reply;
+  }
+
   /** Stops ticking, as when the page is hidden; `resume` carries on from the same tick. */
   pause(): void {
     if (!this.#failure && !this.#disposed) this.#post({ type: 'pause' });
@@ -330,6 +377,9 @@ export class SimBridge {
     this.#rejectReady?.(new Error('SimBridge was disposed before the sim was ready'));
     this.#settleReady = null;
     this.#rejectReady = null;
+    this.#rejectSnapshots(
+      new Error('SimBridge.snapshot: the bridge was disposed before the reply'),
+    );
     this.#onDispose?.();
   }
 
@@ -351,6 +401,18 @@ export class SimBridge {
       case 'frame':
         this.#acceptTransferred(message.buffer);
         return;
+      case 'snapshot': {
+        const pending = this.#snapshots.get(message.requestId);
+        if (!pending) {
+          this.#fail(
+            `the worker answered snapshot request ${message.requestId}, which was never made`,
+          );
+          return;
+        }
+        this.#snapshots.delete(message.requestId);
+        pending.resolve({ tick: message.tick, table: message.table });
+        return;
+      }
       case 'events': {
         const batch: SimEventBatch = {
           falls: message.falls,
@@ -441,6 +503,13 @@ export class SimBridge {
     this.#rejectReady?.(this.#failure);
     this.#settleReady = null;
     this.#rejectReady = null;
+    this.#rejectSnapshots(new Error(`SimBridge.snapshot: ${this.#failure.message}`));
+  }
+
+  #rejectSnapshots(error: Error): void {
+    const pending = [...this.#snapshots.values()];
+    this.#snapshots.clear();
+    for (const { reject } of pending) reject(error);
   }
 
   #assertRunning(action: string): void {
