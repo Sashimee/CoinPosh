@@ -4,9 +4,11 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { PerspectiveCamera, Scene, Vector3, type Mesh, type WebGPURenderer } from 'three/webgpu';
 import { HAPTIC_PATTERNS } from './haptics.ts';
 import {
+  COMPACT_FUSION,
   CONTACT_ACCENT,
   createVfx,
   EFFECT_JUICE,
+  FULL_FUSION,
   FUSION_TIMING,
   type JuiceItem,
   type Vfx,
@@ -405,6 +407,50 @@ describe('fusion tiers on the facade', () => {
     const rested = gold(1);
     expect(rested.swing).toBeGreaterThan(1);
     expect(rested.froze).toBe(true);
+  });
+
+  it('plays the full set piece smaller, lighter and shorter than before #182', () => {
+    expect(FULL_FUSION.hitStopMs).toBeLessThan(60);
+    expect(FULL_FUSION.flash.core).toBeLessThan(0.18);
+    expect(FULL_FUSION.flash.halo).toBeLessThan(0.34);
+    expect(FULL_FUSION.rings.first).toBeLessThan(0.16);
+    expect(FULL_FUSION.rings.second).toBeLessThan(0.12);
+    expect(FULL_FUSION.kick.shake).toBeLessThan(0.32);
+    expect(FULL_FUSION.kick.fov).toBeLessThan(2.4);
+    const r = rig();
+    const rest = r.camera.fov;
+    r.vfx.fusion({ sources, center: at, tier: 'heirloom' });
+    let glow = 0;
+    let swing = 0;
+    let frozenFrames = 0;
+    let glowUntil = 0;
+    for (let t = 0; t < 2; t += FRAME) {
+      if (frame(r) === 0) frozenFrames++;
+      glow = Math.max(glow, r.vfx.glow);
+      swing = Math.max(swing, Math.abs(r.camera.fov - rest));
+      if (r.vfx.glow > 0.05) glowUntil = t;
+    }
+    expect(glow).toBeGreaterThan(0.3);
+    expect(glow).toBeLessThan(0.8);
+    expect(swing).toBeGreaterThan(0.3);
+    expect(swing).toBeLessThan(2);
+    expect(frozenFrames).toBeLessThanOrEqual(Math.ceil(FULL_FUSION.hitStopMs / 1000 / FRAME) + 1);
+    expect(glowUntil).toBeLessThan(FUSION_TIMING.implode + 0.6);
+  });
+
+  it('keeps the compact flash and bloom smaller than before #182', () => {
+    expect(COMPACT_FUSION.flash.core).toBeLessThan(0.042);
+    expect(COMPACT_FUSION.flash.halo).toBeLessThan(0.056);
+    expect(COMPACT_FUSION.ringRadius).toBeLessThan(0.036);
+    const r = rig();
+    routine(r.vfx);
+    let glow = 0;
+    for (let t = 0; t < 1; t += FRAME) {
+      frame(r);
+      glow = Math.max(glow, r.vfx.glow);
+    }
+    expect(glow).toBeGreaterThan(0);
+    expect(glow).toBeLessThan(0.14);
   });
 
   it('keeps reduced motion in spirit: bloom in place, no shake, no hit-stop on routine ones', () => {

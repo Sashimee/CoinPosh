@@ -7,8 +7,8 @@ import { EFFECT_JUICE } from './juice.ts';
 import { createParticleBuffers, writeParticle, type ParticleSpawn } from './particles/layout.ts';
 import { createAttractors, stepParticles } from './particles/physics.ts';
 
-const COMPACT = { treatment: 'compact', hitStop: false, cameraKick: false } as const;
-const FULL = { treatment: 'full', hitStop: true, cameraKick: true } as const;
+const COMPACT = { treatment: 'compact', hitStop: false } as const;
+const FULL = { treatment: 'full', hitStop: true } as const;
 
 const HIGH_TIERS = COIN_TIERS.slice(COIN_TIERS.indexOf(FUSION_FULL_FROM));
 const LOW_TIERS = COIN_TIERS.slice(0, COIN_TIERS.indexOf(FUSION_FULL_FROM));

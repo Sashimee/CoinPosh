@@ -289,19 +289,25 @@ export function fusionImplosion(
   }
 }
 
+/** Spark and glint counts at high quality for each fusion treatment. */
+export const FUSION_SPARKS = {
+  full: { sparks: 54, glints: 10 },
+  compact: { sparks: 18, glints: 4 },
+} as const;
+
 /** The burst at the moment of fusion: a corona of sparks and big slow glints. */
 export function fusionImpact(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
-  const sparks = scaledCount(ctx, 90);
+  const sparks = scaledCount(ctx, FUSION_SPARKS.full.sparks);
   const hot = toLinear(VFX_COLORS.whiteGold);
   const speed = ctx.reducedMotion ? 0.25 : 1;
   for (let i = 0; i < sparks; i++) {
     const a = ctx.rng() * Math.PI * 2;
     const up = range(ctx.rng, 0.05, 0.9);
-    const v = range(ctx.rng, 0.8, 2.1) * speed;
+    const v = range(ctx.rng, 0.6, 1.5) * speed;
     emitOne(ctx, {
       at,
       velocity: [Math.cos(a) * v, up * v, Math.sin(a) * v],
-      life: range(ctx.rng, 0.3, 0.7),
+      life: range(ctx.rng, 0.25, 0.55),
       color: mixLinear(hot, tierAccent(ctx.rng, tier), ctx.rng() * 0.7),
       intensity: HOT,
       size: range(ctx.rng, 0.003, 0.005),
@@ -310,7 +316,7 @@ export function fusionImpact(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
       kind: ctx.reducedMotion ? ParticleKind.Glint : ParticleKind.Spark,
     });
   }
-  const glints = scaledCount(ctx, 16);
+  const glints = scaledCount(ctx, FUSION_SPARKS.full.glints);
   for (let i = 0; i < glints; i++) {
     const d = direction(ctx.rng, [0, 1, 0]);
     emitOne(ctx, {
@@ -341,7 +347,7 @@ export function fusionSpark(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
   const drag = 9;
   const maxSpeed = COMPACT_FUSION_REACH * drag * 0.9;
   const speed = ctx.reducedMotion ? 0.3 : 1;
-  const sparks = scaledCount(ctx, 28);
+  const sparks = scaledCount(ctx, FUSION_SPARKS.compact.sparks);
   for (let i = 0; i < sparks; i++) {
     const a = (i / sparks) * Math.PI * 2 + range(ctx.rng, -0.2, 0.2);
     const v = range(ctx.rng, 0.45, 1) * maxSpeed * speed;
@@ -358,7 +364,7 @@ export function fusionSpark(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
       kind: ctx.reducedMotion ? ParticleKind.Glint : ParticleKind.Spark,
     });
   }
-  const glints = scaledCount(ctx, 6);
+  const glints = scaledCount(ctx, FUSION_SPARKS.compact.glints);
   for (let i = 0; i < glints; i++) {
     const d = direction(ctx.rng, [0, 1, 0]);
     emitOne(ctx, {

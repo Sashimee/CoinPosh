@@ -10,8 +10,6 @@ export type FusionTreatment = 'full' | 'compact';
 export interface FusionJuice {
   readonly treatment: FusionTreatment;
   readonly hitStop: boolean;
-  /** FOV tighten on the implosion and the shake + FOV kick on impact. */
-  readonly cameraKick: boolean;
 }
 
 /** Only results from this tier up can get the full treatment. */
@@ -20,8 +18,8 @@ export const FUSION_FULL_FROM: CoinTier = 'gold';
 export const FUSION_KICK_GAP_MS = 3000;
 
 const FULL_FROM_RANK = COIN_TIERS.indexOf(FUSION_FULL_FROM);
-const COMPACT: FusionJuice = { treatment: 'compact', hitStop: false, cameraKick: false };
-const FULL: FusionJuice = { treatment: 'full', hitStop: true, cameraKick: true };
+const COMPACT: FusionJuice = { treatment: 'compact', hitStop: false };
+const FULL: FusionJuice = { treatment: 'full', hitStop: true };
 
 /**
  * Picks each fusion's treatment. Copper and silver results, the bulk of a busy table, are
