@@ -1,4 +1,4 @@
-import type { MintedCoin, StateResponse } from '@coinposh/shared';
+import type { CoinId, MintedCoin, StateResponse } from '@coinposh/shared';
 import type { Bus } from '../../app/bus.ts';
 import type { UiApp } from '../../app/index.ts';
 import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
@@ -27,8 +27,8 @@ export interface GameSystemsOptions {
   readonly bridge: SimPort;
   /** Sim event batches the bridge delivered before the systems existed, oldest first. */
   readonly simBacklog?: readonly SimEventBatch[];
-  /** The server's coins for the sim's opening heap, in sim id order from 0. */
-  readonly openingHeap?: readonly MintedCoin[];
+  /** The server's coins the sim laid from the boot layout, in sim id order from 0. */
+  readonly tableCoins?: readonly MintedCoin[];
   readonly net: { readonly table: TablePort; readonly clock: ClockPort };
   /** Its store's `upgradeLevels` are the levels the systems play by, followed live. */
   readonly ui: Pick<UiApp, 'setCascade' | 'setDecorum' | 'bus' | 'i18n' | 'bannerSlot' | 'store'>;
@@ -60,6 +60,13 @@ export interface GameSystems {
   reportContact(contact: ContactReport): void;
   /** A fusion from outside the sim's own stream, which the systems already hear. */
   reportFusion(fusion: FusionReport): void;
+  /** The server coin a sim body is, or null when it is not one the table still holds. */
+  coinOf(simId: number): CoinId | null;
+  /**
+   * Lets go of the canvas for good: input stops, a pour in progress is dropped and the aim
+   * reticle leaves, while `sync` keeps drawing the table. For a table another tab took over.
+   */
+  suspend(): void;
   dispose(): void;
 }
 
@@ -94,7 +101,7 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     bounds: options.bounds ?? RIVIERA_TABLE,
     now,
     ...(options.simBacklog ? { simBacklog: options.simBacklog } : {}),
-    ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
+    ...(options.tableCoins ? { tableCoins: options.tableCoins } : {}),
   });
 
   const overlay = createSystemsOverlay(host, { aim: t('aim.label'), gauge: t('pour.gauge') });
@@ -173,10 +180,19 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
   ];
 
   let disposed = false;
+  let suspended = false;
+  const letGo = (): void => {
+    surface.dispose();
+    overlay.dispose();
+  };
   return {
     events: core.events,
     sync(field) {
       if (disposed) return;
+      if (suspended) {
+        core.sync(field);
+        return;
+      }
       if (surface.follow()) {
         core.cancelPour();
         if (document.activeElement === null || document.activeElement === document.body) {
@@ -198,12 +214,18 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
     reportFusion: (fusion) => {
       core.reportFusion(fusion);
     },
+    coinOf: (simId) => core.coinOf(simId),
+    suspend() {
+      if (disposed || suspended) return;
+      suspended = true;
+      core.cancelPour();
+      letGo();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
       for (const off of offs) off();
-      surface.dispose();
-      overlay.dispose();
+      if (!suspended) letGo();
       core.dispose();
     },
   };

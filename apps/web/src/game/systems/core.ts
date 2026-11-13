@@ -81,9 +81,9 @@ export interface SystemsCoreOptions {
   readonly simBacklog?: readonly SimEventBatch[];
   /**
    * The coins already on the table, in the order the server lists them, which the sim laid
-   * first as its opening heap, so they hold sim ids 0..n-1. Bound before the backlog is read.
+   * first from the boot layout, so they hold sim ids 0..n-1. Bound before the backlog is read.
    */
-  readonly openingHeap?: readonly MintedCoin[];
+  readonly tableCoins?: readonly MintedCoin[];
 }
 
 export interface ContactReport {
@@ -140,6 +140,8 @@ export interface SystemsCore {
   setUpgradeLevels(levels: Readonly<Record<string, number>>): void;
   reportContact(contact: ContactReport): void;
   reportFusion(fusion: FusionReport): void;
+  /** The server coin a sim body is, or null once it fell, fused away or was never one. */
+  coinOf(simId: number): CoinId | null;
   dispose(): void;
 }
 
@@ -551,7 +553,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     if (disposed) throw new Error(`GameSystems.${method}: the systems were disposed`);
   };
 
-  options.openingHeap?.forEach((coin, simId) => {
+  options.tableCoins?.forEach((coin, simId) => {
     ledger.bind(simId, coin);
   });
   for (const batch of options.simBacklog ?? []) intake(batch);
@@ -699,6 +701,9 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     reportContact: contact,
     reportFusion(fusion) {
       fuse(fusion, null);
+    },
+    coinOf(simId) {
+      return ledger.claimable(simId)?.id ?? null;
     },
     dispose() {
       if (disposed) return;
