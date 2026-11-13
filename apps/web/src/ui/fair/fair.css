@@ -220,6 +220,26 @@
   color: var(--cp-coral-sunset);
 }
 
+.cp-fair-hint.is-pending {
+  color: var(--cp-champagne);
+}
+
+.cp-fair-button.is-beckoning {
+  outline: 1px solid rgb(var(--cp-gold-brushed-rgb) / 0.8);
+  outline-offset: 3px;
+  animation: cp-fair-beckon 1600ms ease-in-out infinite;
+}
+
+.cp-fair-button.is-lit {
+  animation: cp-fair-beckon 420ms ease-out;
+}
+
+@keyframes cp-fair-beckon {
+  50% {
+    box-shadow: 0 0 22px rgb(var(--cp-gold-brushed-rgb) / 0.65);
+  }
+}
+
 .cp-fair-odds,
 .cp-fair-pity,
 .cp-fair-revealed {
@@ -645,6 +665,12 @@
   background: color-mix(in srgb, var(--cp-sea-glass) 12%, transparent);
 }
 
+.cp-fair-verdict[data-state='consistent'] {
+  border-style: solid;
+  border-color: var(--cp-hairline-soft);
+  background: color-mix(in srgb, var(--cp-ivory) 4%, transparent);
+}
+
 .cp-fair-verdict[data-state='mismatch'],
 .cp-fair-verdict[data-state='invalid'] {
   border-style: solid;
@@ -857,7 +883,9 @@
 .cp-fair-root.is-reduced .cp-fair-button.is-busy,
 .cp-fair-root.is-reduced .cp-fair-pill.is-gleaming,
 .cp-fair-root.is-reduced .cp-fair-input.is-rolled,
-.cp-fair-root.is-reduced .cp-fair-active.is-rotated {
+.cp-fair-root.is-reduced .cp-fair-active.is-rotated,
+.cp-fair-root.is-reduced .cp-fair-button.is-beckoning,
+.cp-fair-root.is-reduced .cp-fair-button.is-lit {
   animation: none;
 }
 
@@ -883,7 +911,9 @@
   }
 
   .cp-fair-shimmer,
-  .cp-fair-button.is-busy {
+  .cp-fair-button.is-busy,
+  .cp-fair-button.is-beckoning,
+  .cp-fair-button.is-lit {
     animation: none;
   }
 }

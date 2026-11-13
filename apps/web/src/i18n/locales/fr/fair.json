@@ -54,6 +54,7 @@
     "rotating": "Révélation…",
     "rotated": "Graine révélée. Une nouvelle est en jeu.",
     "rotateFailed": "La graine n’a pas pu être révélée. Rien n’a changé ; réessayez.",
+    "pendingActive": "La graine de ce tirage est toujours en jeu ; révélez-la et renouvelez-la pour le vérifier.",
     "revealedHeading": "Graines révélées",
     "revealedEmpty": "Rien n’est encore révélé. Révélez la graine en jeu pour vérifier ses tirages.",
     "revealedAt": "Révélée le {{date}}",
@@ -66,6 +67,8 @@
     "idle": "Choisissez une graine révélée, ou collez-en une, puis vérifiez.",
     "matchTitle": "Certifié",
     "match": "Concordance : c’est bien la graine sur laquelle le serveur s’était engagé, et voici le tirage qu’elle a produit.",
+    "consistentTitle": "Cohérent",
+    "consistent": "La graine correspond bien à cet engagement, mais cet engagement ne figure pas parmi vos graines révélées : le serveur ne l’a jamais garanti.",
     "mismatchTitle": "Discordance",
     "mismatch": {
       "commitment": "Cette graine ne donne pas l’engagement une fois hachée : ce n’est pas la graine promise par le serveur.",

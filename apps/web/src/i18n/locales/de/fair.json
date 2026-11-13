@@ -51,6 +51,7 @@
     "rotating": "Wird aufgedeckt …",
     "rotated": "Seed aufgedeckt. Ein frischer ist im Spiel.",
     "rotateFailed": "Der Seed konnte nicht aufgedeckt werden. Nichts hat sich geändert; versuch es erneut.",
+    "pendingActive": "Der Seed dieses Wurfs ist noch im Spiel; deck ihn auf und wechsle ihn, um den Wurf zu prüfen.",
     "revealedHeading": "Aufgedeckte Seeds",
     "revealedEmpty": "Noch nichts aufgedeckt. Deck den Seed im Spiel auf, um seine Würfe zu prüfen.",
     "revealedAt": "Aufgedeckt am {{date}}",
@@ -63,6 +64,8 @@
     "idle": "Wähle einen aufgedeckten Seed oder füge einen ein, dann prüfe.",
     "matchTitle": "Zertifiziert",
     "match": "Treffer: Das ist der Seed, auf den sich der Server festgelegt hat, und das ist sein Wurf.",
+    "consistentTitle": "Stimmig",
+    "consistent": "Der Seed ergibt diese Verpflichtung, aber sie steht nicht unter deinen aufgedeckten Seeds, also hat der Server sie nie bestätigt.",
     "mismatchTitle": "Abweichung",
     "mismatch": {
       "commitment": "Dieser Seed ergibt gehasht nicht die Festlegung, also ist er nicht der versprochene Seed.",

@@ -51,6 +51,7 @@
     "rotating": "Revealing…",
     "rotated": "Seed revealed. A fresh one is in play.",
     "rotateFailed": "The seed could not be revealed. Nothing changed; try again.",
+    "pendingActive": "This roll's seed is still in play; reveal and rotate to check it.",
     "revealedHeading": "Revealed seeds",
     "revealedEmpty": "Nothing revealed yet. Reveal the seed in play to check its rolls.",
     "revealedAt": "Revealed {{date}}",
@@ -63,6 +64,8 @@
     "idle": "Pick a revealed seed, or paste one, then verify.",
     "matchTitle": "Certified",
     "match": "Match: this seed is the one the server committed to, and this is the roll it made.",
+    "consistentTitle": "Consistent",
+    "consistent": "The seed hashes to this commitment, but this commitment is not in your revealed seeds, so the server never vouched for it.",
     "mismatchTitle": "Mismatch",
     "mismatch": {
       "commitment": "This seed does not hash to the commitment, so it is not the seed the server committed to.",

@@ -509,6 +509,11 @@ export function mountFair(options: FairMountOptions): FairPanel {
     },
   });
   const clientSeedHint = h('p', { class: 'cp-fair-hint', attrs: { id: `${clientSeedId}-hint` } });
+  const pendingHint = h('p', {
+    class: 'cp-fair-hint is-pending',
+    attrs: { 'data-testid': 'fair-pending-hint' },
+  });
+  loc.text(pendingHint, () => t('verify.pendingActive'));
   const rotateLabel = h('span');
   const rotateButton = h(
     'button',
@@ -524,6 +529,7 @@ export function mountFair(options: FairMountOptions): FairPanel {
     clientSeedLabel,
     clientSeedInput,
     clientSeedHint,
+    pendingHint,
     rotateButton,
   );
 
@@ -757,6 +763,15 @@ export function mountFair(options: FairMountOptions): FairPanel {
     );
   }
 
+  /** The roll a crate reveal opened the panel on was spent under the seed still in play. */
+  function proofAwaitsReveal(): boolean {
+    return (
+      pendingProof !== null &&
+      active !== null &&
+      pendingProof.serverSeedHash === active.serverSeedHash
+    );
+  }
+
   function paintActive(fromZero: boolean): void {
     const rolls = active?.nonce ?? 0;
     const text = t('verify.rolls', { count: rolls });
@@ -771,6 +786,9 @@ export function mountFair(options: FairMountOptions): FairPanel {
     clientSeedHint.hidden = rotateButton.hidden;
     rotateButton.setAttribute('aria-disabled', String(rotating || active === null));
     rotateButton.classList.toggle('is-busy', rotating);
+    const awaiting = proofAwaitsReveal() && !rotateButton.hidden;
+    pendingHint.hidden = !awaiting;
+    rotateButton.classList.toggle('is-beckoning', awaiting && !rotating);
     rotateLabel.textContent = rotating ? t('verify.rotating') : t('verify.rotate');
     const clientSeed = nextClientSeed(clientSeedInput.value);
     clientSeedHint.classList.toggle('is-error', !clientSeed.ok || rotateError);
@@ -801,7 +819,10 @@ export function mountFair(options: FairMountOptions): FairPanel {
   function verdictCopy(state: VerifyState): { title: string; text: string } {
     switch (state.status) {
       case 'idle':
-        return { title: '', text: t('verify.idle') };
+        return {
+          title: '',
+          text: proofAwaitsReveal() ? t('verify.pendingActive') : t('verify.idle'),
+        };
       case 'checking':
         return { title: '', text: t('verify.checking') };
       case 'invalid':
@@ -816,6 +837,8 @@ export function mountFair(options: FairMountOptions): FairPanel {
         };
       case 'match':
         return { title: t('verify.matchTitle'), text: t('verify.match') };
+      case 'consistent':
+        return { title: t('verify.consistentTitle'), text: t('verify.consistent') };
     }
   }
 
@@ -831,7 +854,10 @@ export function mountFair(options: FairMountOptions): FairPanel {
       verdictSeal.dataset.state = state.status;
       verdictSeal.replaceChildren(state.status === 'mismatch' ? icon('close') : sealIcon());
     }
-    const digest = state.status === 'match' || state.status === 'mismatch' ? state.digest : null;
+    const digest =
+      state.status === 'match' || state.status === 'mismatch' || state.status === 'consistent'
+        ? state.digest
+        : null;
     digestBlock.hidden = digest === null;
     const words = digest === null ? [] : digestWords(digest);
     if (digestGrid.dataset.digest !== (digest ?? '')) {
@@ -865,6 +891,17 @@ export function mountFair(options: FairMountOptions): FairPanel {
 
   /** `cue` plays the stamp's full juice; a quiet re-check (stepping a nonce) only lights it. */
   async function runVerify(cue: boolean): Promise<void> {
+    if (proofAwaitsReveal() && inputs.serverSeed.value.trim() === '') {
+      verifyToken++;
+      verifyState = { status: 'idle' };
+      paintVerdict();
+      status.textContent = t('verify.pendingActive');
+      if (cue) {
+        play('step', true);
+        restartAnimation(rotateButton, 'is-lit');
+      }
+      return;
+    }
     const token = ++verifyToken;
     verifyState = { status: 'checking' };
     paintVerdict();
@@ -892,7 +929,8 @@ export function mountFair(options: FairMountOptions): FairPanel {
       status.textContent = verdictCopy(result).text;
       if (result.status === 'match' && plan.sparks > 0) sparks(sparkHost, plan.sparks);
     };
-    const kind: FairCue = result.status === 'match' ? 'match' : 'mismatch';
+    const kind: FairCue =
+      result.status === 'match' ? 'match' : result.status === 'consistent' ? 'step' : 'mismatch';
     const plan = cue ? play(kind, true) : fairCuePlan(kind, isReducedMotion());
     if (!cue) {
       land();

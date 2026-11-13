@@ -105,7 +105,8 @@ export type VerifyResult =
       readonly computed: Sha256Hex;
       readonly digest: Sha256Hex;
     }
-  | { readonly status: 'match'; readonly computed: Sha256Hex; readonly digest: Sha256Hex };
+  | { readonly status: 'match'; readonly computed: Sha256Hex; readonly digest: Sha256Hex }
+  | { readonly status: 'consistent'; readonly computed: Sha256Hex; readonly digest: Sha256Hex };
 
 interface ParsedInput {
   readonly serverSeed: Sha256Hex;
@@ -138,7 +139,8 @@ function parseInput(input: VerifyInput): ParsedInput | VerifyField {
  * Recomputes one roll on this device with Web Crypto: SHA-256 of the server seed must equal the
  * commitment, and the roll is `HMAC_SHA256(serverSeed, clientSeed:nonce)`. Checked against
  * `published` too when given, so a proof whose client seed or nonce was edited after the reveal
- * cannot pass.
+ * cannot pass. Without `published` the best it can say is `consistent`: any made-up seed hashes
+ * to its own SHA-256, so only a seed from the server's ledger earns a `match`.
  */
 export async function verifyRoll(
   input: VerifyInput,
@@ -155,11 +157,10 @@ export async function verifyRoll(
     digest,
   });
   if (computed !== parsed.commitment) return mismatch('commitment');
-  if (published !== null) {
-    if (published.serverSeedHash !== parsed.commitment) return mismatch('commitment');
-    if (published.clientSeed !== parsed.clientSeed) return mismatch('clientSeed');
-    if (parsed.nonce >= published.finalNonce) return mismatch('unspent');
-  }
+  if (published === null) return { status: 'consistent', computed, digest };
+  if (published.serverSeedHash !== parsed.commitment) return mismatch('commitment');
+  if (published.clientSeed !== parsed.clientSeed) return mismatch('clientSeed');
+  if (parsed.nonce >= published.finalNonce) return mismatch('unspent');
   return { status: 'match', computed, digest };
 }
 

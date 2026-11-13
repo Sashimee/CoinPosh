@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { dropTables, ODDS_SCALE, pity } from '@coinposh/economy';
-import { fairDigest, type RevealedSeed } from '@coinposh/shared';
+import { commitmentOf, fairDigest, type RevealedSeed } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import {
   digestWords,
@@ -69,9 +69,34 @@ describe('verifyRoll', () => {
         commitment: `${COMMITMENT} `,
         nonce: ' 42',
       },
-      null,
+      REVEALED,
     );
     expect(result.status).toBe('match');
+  });
+
+  it('never certifies a self-consistent seed that is not in the revealed ledger', async () => {
+    const madeUp = await commitmentOf(SEED.replace(/^f/, 'e'));
+    const forged: VerifyInput = {
+      serverSeed: SEED.replace(/^f/, 'e'),
+      commitment: madeUp,
+      clientSeed: 'lucky-7',
+      nonce: '42',
+    };
+    const result = await verifyRoll(forged, null);
+    expect(result.status).not.toBe('match');
+    expect(result).toEqual({
+      status: 'consistent',
+      computed: madeUp,
+      digest: await fairDigest(forged.serverSeed, 'lucky-7', 42),
+    });
+  });
+
+  it('calls the known vector consistent, not certified, when no published seed backs it', async () => {
+    expect(await verifyRoll(KNOWN, null)).toEqual({
+      status: 'consistent',
+      computed: COMMITMENT,
+      digest: DIGEST,
+    });
   });
 
   it('flags a tampered commitment and shows what the seed really hashes to', async () => {
