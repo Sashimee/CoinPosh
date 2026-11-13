@@ -375,12 +375,12 @@ export class Vfx {
 
   /**
    * Three coins sucked into a white-gold flash, tiered by how rare the moment is (see
-   * `FusionDirector`). Full, for the first fusion and gold-or-better results: the frame
+   * `FusionDirector`). Full, for at most one gold-or-better result per 3 s: the frame
    * tightens (FOV in) as streaks spiral to the centre, then hit-stop, a flash, a double
    * shockwave ring, a spark corona, shake + FOV kick, a bloom surge and a haptic thud.
-   * Compact, for the routine copper and silver ones: the same spiral, then a warm flash and
-   * a crown of sparks about three coins wide, a small ring, a bloom nudge and a tap; no
-   * hit-stop or camera, so a busy table does not wash out or judder.
+   * Compact, for every copper and silver one and the rest: the same spiral, then a warm
+   * flash and a crown of sparks about three coins wide, a small ring, a bloom nudge and a
+   * tap; no hit-stop or camera, so a busy table does not wash out or judder.
    */
   fusion(options: FusionOptions): void {
     this.assertLive();

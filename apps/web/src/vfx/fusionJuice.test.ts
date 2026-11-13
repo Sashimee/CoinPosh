@@ -2,7 +2,7 @@ import { COIN_TIERS, type CoinTier } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../audio/rng.ts';
 import { COMPACT_FUSION_REACH, fusionSpark, type EmitContext } from './emitters.ts';
-import { FUSION_KICK_GAP_MS, FusionDirector } from './fusionJuice.ts';
+import { FUSION_FULL_FROM, FUSION_KICK_GAP_MS, FusionDirector } from './fusionJuice.ts';
 import { EFFECT_JUICE } from './juice.ts';
 import { createParticleBuffers, writeParticle, type ParticleSpawn } from './particles/layout.ts';
 import { createAttractors, stepParticles } from './particles/physics.ts';
@@ -10,58 +10,74 @@ import { createAttractors, stepParticles } from './particles/physics.ts';
 const COMPACT = { treatment: 'compact', hitStop: false, cameraKick: false } as const;
 const FULL = { treatment: 'full', hitStop: true, cameraKick: true } as const;
 
-/** A director that has already shown the session's first fusion, 10 s ago. */
-function warmed(): FusionDirector {
-  const director = new FusionDirector();
-  director.select('copper', -10_000);
-  return director;
-}
+const HIGH_TIERS = COIN_TIERS.slice(COIN_TIERS.indexOf(FUSION_FULL_FROM));
+const LOW_TIERS = COIN_TIERS.slice(0, COIN_TIERS.indexOf(FUSION_FULL_FROM));
 
 describe('fusion juice selection', () => {
-  it('gives the first fusion of the session the full treatment, whatever it makes', () => {
-    for (const tier of COIN_TIERS) {
-      expect(new FusionDirector().select(tier, 0)).toEqual(FULL);
+  it('splits the tiers at gold: copper and silver below, gold to heirloom above', () => {
+    expect(LOW_TIERS).toEqual(['copper', 'silver']);
+    expect(HIGH_TIERS).toEqual(['gold', 'platinum', 'diamond', 'heirloom']);
+  });
+
+  it('keeps even the first fusion of the session compact when it makes copper or silver', () => {
+    for (const tier of LOW_TIERS) {
+      expect(new FusionDirector().select(tier, 0)).toEqual(COMPACT);
     }
   });
 
   it('keeps routine copper and silver fusions compact, with no camera or hit-stop', () => {
-    const director = warmed();
+    const director = new FusionDirector();
     for (let i = 0; i < 40; i++) {
-      expect(director.select(i % 2 === 0 ? 'silver' : 'copper', i * 900)).toEqual(COMPACT);
+      expect(director.select(i % 2 === 0 ? 'silver' : 'copper', i * 4000)).toEqual(COMPACT);
     }
   });
 
-  it.each(['gold', 'platinum', 'diamond', 'heirloom'] as const)(
-    'gives a %s result the full treatment',
-    (tier) => {
-      expect(warmed().select(tier, 0)).toEqual(FULL);
-    },
-  );
+  it.each(HIGH_TIERS)('gives a rested %s result the full treatment', (tier) => {
+    expect(new FusionDirector().select(tier, 0)).toEqual(FULL);
+  });
 
-  it('kicks the camera for at most one fusion per 3 s, keeping the hit-stop and ring', () => {
+  it('plays at most one full fusion per 3 s; the gold ones in between go compact', () => {
     const director = new FusionDirector();
-    const kicks: number[] = [];
+    const full: number[] = [];
     for (let ms = 0; ms <= 10_000; ms += 500) {
       const juice = director.select('gold', ms);
-      expect(juice.treatment).toBe('full');
-      expect(juice.hitStop).toBe(true);
-      if (juice.cameraKick) kicks.push(ms);
+      expect(juice).toEqual(juice.treatment === 'full' ? FULL : COMPACT);
+      if (juice.treatment === 'full') full.push(ms);
     }
-    expect(kicks).toEqual([0, 3000, 6000, 9000]);
+    expect(full).toEqual([0, 3000, 6000, 9000]);
+  });
+
+  it('shares the window across tiers, so a diamond right after a gold stays compact', () => {
+    const director = new FusionDirector();
+    expect(director.select('gold', 0)).toEqual(FULL);
+    expect(director.select('diamond', 1200)).toEqual(COMPACT);
+    expect(director.select('heirloom', 2999)).toEqual(COMPACT);
+    expect(director.select('platinum', 3000)).toEqual(FULL);
   });
 
   it('opens the window exactly at the gap, not a millisecond before', () => {
     const director = new FusionDirector();
     director.select('gold', 1000);
-    expect(director.select('gold', 1000 + FUSION_KICK_GAP_MS - 1).cameraKick).toBe(false);
-    expect(director.select('gold', 1000 + FUSION_KICK_GAP_MS).cameraKick).toBe(true);
+    expect(director.select('gold', 1000 + FUSION_KICK_GAP_MS - 1)).toEqual(COMPACT);
+    expect(director.select('gold', 1000 + FUSION_KICK_GAP_MS)).toEqual(FULL);
   });
 
-  it('does not let compact fusions use up or reset the kick window', () => {
+  it('does not let compact fusions use up or reset the window', () => {
     const director = new FusionDirector();
     director.select('gold', 0);
-    for (let ms = 100; ms < 3000; ms += 100) director.select('silver', ms);
-    expect(director.select('diamond', 3000).cameraKick).toBe(true);
+    for (let ms = 100; ms < 3000; ms += 100) director.select(ms % 200 ? 'silver' : 'gold', ms);
+    expect(director.select('diamond', 3000)).toEqual(FULL);
+  });
+
+  it('keeps a pour of mostly silver with the odd gold to a few full beats a minute', () => {
+    const director = new FusionDirector();
+    let full = 0;
+    for (let ms = 0; ms < 60_000; ms += 400) {
+      const tier = ms % 2000 === 0 ? 'gold' : 'silver';
+      if (director.select(tier, ms).treatment === 'full') full++;
+    }
+    expect(full).toBeLessThanOrEqual(60_000 / FUSION_KICK_GAP_MS);
+    expect(full).toBeGreaterThan(0);
   });
 
   it('rejects an unknown tier or a broken clock', () => {

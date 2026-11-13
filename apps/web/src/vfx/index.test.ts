@@ -192,7 +192,7 @@ const EFFECTS: Readonly<Record<VfxEffect, (vfx: Vfx) => void>> = {
     vfx.contactSparks(at, { strength: 0.6, surface: 'coin' });
   },
   fusion: (vfx) => {
-    vfx.fusion({ sources, center: at, tier: 'silver' });
+    vfx.fusion({ sources, center: at, tier: 'gold' });
   },
   fusionCompact: (vfx) => {
     vfx.fusion({ sources, center: at, tier: 'silver' });
@@ -208,24 +208,11 @@ const EFFECTS: Readonly<Record<VfxEffect, (vfx: Vfx) => void>> = {
   },
 };
 
-/** Shows the session's first fusion and lets it settle, so the next one is routine. */
-function pastFirstFusion(r: Rig): Rig {
-  r.vfx.fusion({ sources, center: at, tier: 'silver' });
-  run(r, 2);
-  r.vfx.clear();
-  run(r, 0.1);
-  return r;
-}
-
-/** Effects whose variant only shows once something else has happened this session. */
-const PRIME: Partial<Record<VfxEffect, (r: Rig) => Rig>> = { fusionCompact: pastFirstFusion };
-
 describe('juice checklist, measured on the facade', () => {
   it.each(Object.keys(EFFECTS) as VfxEffect[])(
     '%s delivers every item it claims, and at least 4 without sound',
     (effect) => {
-      const fresh = rig();
-      const { items } = observe(PRIME[effect]?.(fresh) ?? fresh, EFFECTS[effect]);
+      const { items } = observe(rig(), EFFECTS[effect]);
       const claimed = EFFECT_JUICE[effect].items;
       expect([...items].sort()).toEqual(expect.arrayContaining([...claimed].sort()));
       expect(items.has('sound')).toBe(false);
@@ -314,18 +301,34 @@ describe('fusion tiers on the facade', () => {
     return { flashes, rings };
   };
 
-  it('plays the first fusion of the session in full: hit-stop, camera and the double ring', () => {
-    const r = rig();
-    const trace = observe(r, routine);
+  it('plays a gold fusion in full: hit-stop, camera and the double ring', () => {
+    const trace = observe(rig(), (vfx) => {
+      vfx.fusion({ sources, center: at, tier: 'gold' });
+    });
     expect(trace.items.has('timeManipulation')).toBe(true);
     expect(trace.cameraMoved).toBe(true);
     const again = rig();
-    routine(again.vfx);
+    again.vfx.fusion({ sources, center: at, tier: 'gold' });
     expect(peakFlashes(again).rings).toBe(2);
   });
 
+  it.each(['copper', 'silver'] as const)(
+    'keeps even the first %s fusion of the session compact',
+    (tier) => {
+      const r = rig();
+      const trace = observe(r, (vfx) => {
+        vfx.fusion({ sources, center: at, tier });
+      });
+      expect(trace.cameraMoved).toBe(false);
+      expect(trace.items.has('timeManipulation')).toBe(false);
+      const next = rig();
+      next.vfx.fusion({ sources, center: at, tier });
+      expect(peakFlashes(next).rings).toBe(1);
+    },
+  );
+
   it('keeps a routine fusion compact: no hit-stop, no camera, one small ring', () => {
-    const r = pastFirstFusion(rig());
+    const r = rig();
     const onImpact = vi.fn();
     const trace = observe(r, (vfx) => {
       vfx.fusion({ sources, center: at, tier: 'silver', onImpact });
@@ -334,13 +337,13 @@ describe('fusion tiers on the facade', () => {
     expect(trace.cameraMoved).toBe(false);
     expect(trace.items.has('timeManipulation')).toBe(false);
     expect(trace.items.size).toBeGreaterThanOrEqual(4);
-    const next = pastFirstFusion(rig());
+    const next = rig();
     routine(next.vfx);
     expect(peakFlashes(next).rings).toBe(1);
   });
 
   it('lands a routine fusion on the same beat, without freezing the world', () => {
-    const r = pastFirstFusion(rig());
+    const r = rig();
     const onImpact = vi.fn();
     r.vfx.fusion({ sources, center: at, tier: 'silver', onImpact });
     const impactFrame = Math.ceil(FUSION_TIMING.implode / FRAME - 1e-9);
@@ -350,7 +353,7 @@ describe('fusion tiers on the facade', () => {
     expect(r.vfx.timeScale).toBe(1);
   });
 
-  it('blooms far less for a routine fusion than for the first', () => {
+  it('blooms far less for a routine fusion than for a gold one', () => {
     const peakGlow = (r: Rig): number => {
       let glow = 0;
       for (let t = 0; t < 1; t += FRAME) {
@@ -359,17 +362,18 @@ describe('fusion tiers on the facade', () => {
       }
       return glow;
     };
-    const first = rig();
-    routine(first.vfx);
-    const later = pastFirstFusion(rig());
-    routine(later.vfx);
-    expect(peakGlow(later)).toBeLessThan(peakGlow(first) * 0.3);
+    const gold = rig();
+    gold.vfx.fusion({ sources, center: at, tier: 'gold' });
+    const routineRig = rig();
+    routine(routineRig.vfx);
+    expect(peakGlow(routineRig)).toBeLessThan(peakGlow(gold) * 0.3);
   });
 
-  it('plays gold and up in full after the first', () => {
+  it('plays gold and up in full after routine fusions', () => {
     for (const tier of ['gold', 'platinum', 'diamond', 'heirloom'] as const) {
-      const r = pastFirstFusion(rig());
-      run(r, 3);
+      const r = rig();
+      routine(r.vfx);
+      run(r, 1);
       const trace = observe(r, (vfx) => {
         vfx.fusion({ sources, center: at, tier });
       });
@@ -378,7 +382,7 @@ describe('fusion tiers on the facade', () => {
     }
   });
 
-  it('kicks the camera for one fusion per 3 s; the others keep their hit-stop', () => {
+  it('plays one gold fusion per 3 s in full; the others go compact, no kick or freeze', () => {
     const r = rig();
     const rest = r.camera.fov;
     const gold = (seconds: number): { swing: number; froze: boolean } => {
@@ -397,12 +401,14 @@ describe('fusion tiers on the facade', () => {
     expect(kicked.froze).toBe(true);
     const muted = gold(1.6);
     expect(muted.swing).toBeLessThan(0.01);
-    expect(muted.froze).toBe(true);
-    expect(gold(1).swing).toBeGreaterThan(1);
+    expect(muted.froze).toBe(false);
+    const rested = gold(1);
+    expect(rested.swing).toBeGreaterThan(1);
+    expect(rested.froze).toBe(true);
   });
 
   it('keeps reduced motion in spirit: bloom in place, no shake, no hit-stop on routine ones', () => {
-    const r = pastFirstFusion(rig({ reducedMotion: true }));
+    const r = rig({ reducedMotion: true });
     const trace = observe(r, routine);
     expect(trace.cameraMoved).toBe(false);
     expect(trace.items.has('timeManipulation')).toBe(false);

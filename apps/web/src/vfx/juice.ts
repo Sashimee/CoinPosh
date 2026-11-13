@@ -51,14 +51,14 @@ export const EFFECT_JUICE: Readonly<Record<VfxEffect, EffectJuice>> = {
       'hapticOrShake',
     ],
     scope:
-      'The full treatment: the first fusion of the session and results of gold and up. The camera kicks for at most one fusion every 3 s; the others keep the rest.',
+      'The full treatment, for gold-or-better results only and at most one fusion every 3 s; gold-or-better fusions inside that window, and every copper and silver one, play the compact variant.',
     reduced:
       'Particles drift in instead of spiralling, the ring blooms in place, no shake or FOV kick; the hit-stop stays.',
   },
   fusionCompact: {
     items: ['particles', 'lightResponse', 'squashOvershoot', 'hapticOrShake'],
     scope:
-      'Routine copper and silver fusions after the first: a warm white-gold flash about three coins wide with a tap, no hit-stop or camera. The tier-up chime is the audio half.',
+      'Every copper and silver fusion, and gold-or-better ones inside the 3 s rest: a warm white-gold flash about three coins wide with a tap, no hit-stop or camera. The tier-up chime is the audio half.',
     reduced:
       'Fewer sparks as slow glints, the flash brightens without its pop, the small ring blooms in place.',
   },
