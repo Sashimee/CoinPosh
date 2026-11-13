@@ -13,6 +13,7 @@ import {
   serverWallet,
   type Player,
 } from '../test/harness.ts';
+import { MOCK_RULES } from './rules.ts';
 import type { MockServer } from './server.ts';
 
 let time: FakeTime;
@@ -161,6 +162,26 @@ describe('Demo Mode boot (hydrate=boot)', () => {
     const refunded = entries('refund.table').map((entry) => entry.ref);
     expect(refunded.filter((ref) => ref !== null && posed.has(ref))).toEqual([]);
     expect(posed.has(first.coin.id)).toBe(true);
+    expectConserved();
+  });
+
+  it('writes the ledger entry for an unposed coin it takes back even when nothing was paid', async () => {
+    const state = await boot();
+    const [a, b, c] = state.table.coins;
+    if (a === undefined || b === undefined || c === undefined) throw new Error('No opening heap.');
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
+    const { results } = await alice.client.call('tableClaims', {
+      body: { claims: [{ kind: 'fusion', coinIds: [a.id, b.id, c.id], tick: simTick() }] },
+    });
+    const fused = results[0]?.status === 'accepted' ? results[0].minted : null;
+    if (fused === null) throw new Error('The heap coins did not fuse.');
+    const before = wallet().coins;
+    const after = await boot();
+    expect(after.table.coins.map((coin) => coin.id)).not.toContain(fused.id);
+    const refunds = entries('refund.table');
+    expect(refunds.map((entry) => entry.ref)).toEqual([fused.id]);
+    expect(refunds[0]?.delta.coins ?? 0).toBe(0);
+    expect(wallet().coins).toBe(before);
     expectConserved();
   });
 

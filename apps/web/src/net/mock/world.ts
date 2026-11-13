@@ -747,12 +747,22 @@ export class MockWorld {
     player.wallet = next;
     const playCoins = moved.coins;
     if (playCoins !== undefined && PLAY_REASONS.has(reason)) this.#logPlay(player, now, playCoins);
+    this.#append(player, now, reason, moved, ref);
+  }
+
+  #append(
+    player: MockPlayer,
+    now: number,
+    reason: string,
+    delta: Partial<Record<Currency, number>>,
+    ref: string | null,
+  ): void {
     this.#ledger.push({
       seq: this.#nextSeq++,
       at: now,
       playerId: player.id,
       reason,
-      delta: moved,
+      delta,
       ref,
     });
     const excess = this.#ledger.length - MOCK_RULES.ledgerRetained;
@@ -1237,7 +1247,10 @@ export class MockWorld {
       if (player.drops < 0) {
         throw new Error('Mock: a boot refunded more drops than were ever made.');
       }
-      this.#credit(player, now, 'refund.table', { coins: refund }, id);
+      // The live server books the house's share too, so a coin nothing was paid for still
+      // leaves a ledger entry instead of vanishing from the table unrecorded.
+      if (refund > 0) this.#credit(player, now, 'refund.table', { coins: refund }, id);
+      else this.#append(player, now, 'refund.table', {}, id);
     }
     player.cascadeChain = null;
     this.#rebaseTicks(player, now);
