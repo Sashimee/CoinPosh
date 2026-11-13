@@ -5,11 +5,9 @@ import {
   rateEnvelope,
   rateEnvelopeDerivation,
 } from '@coinposh/economy';
+import { evaluateLadder, playStyles, simModel } from '@coinposh/economy/sim';
 import { COIN_TIERS } from '@coinposh/shared';
 import { afterAll, describe, expect, it } from 'vitest';
-// The economy's measured ladder lives in its sim/ folder, which its package exports leave out.
-import { evaluateLadder, playStyles } from '../../../economy/sim/ladder.ts';
-import { simModel } from '../../../economy/sim/model.ts';
 import { COIN } from '../coin.ts';
 import { TICK_RATE_HZ } from '../constants.ts';
 import { MAX_DROP_OFFSET_MM, type SimInput } from '../inputs.ts';

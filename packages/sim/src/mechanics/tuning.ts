@@ -75,7 +75,7 @@ import { DROP_ZONE } from '../table/layout.ts';
  * second, the server's drops envelope), and every one of them landed fresh in the same
  * spot: seeded 60 s pours fused 266 to 274 times a minute, one drop in 2.2, with
  * platinum at 6 to 11 s and diamond at 20 to 55 s. That is twice the server's
- * rateEnvelope fusions max (127), so an honest pour was flagged, and a pour mostly fused
+ * rateEnvelope fusions max (127 then), so an honest pour was flagged, and a pour mostly fused
  * coins on the shelf instead of pushing them off.
  *
  * - streamTicks 15, streamBurst 4: a drop is fresh only while the chute keeps to one

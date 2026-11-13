@@ -114,7 +114,9 @@ function clumps(model: SimModel, derivation: RateEnvelopeDerivation): Clump[] {
  * One honest session through the sim's mean rates plus the burst model: Sommelier Pours
  * bunch drops, the pusher turns them into falls after a lag, falls arrive as cascade
  * clumps, a share of falling coins are fused Silvers, and crates fall some time after
- * they spawn. Returns each metric's busiest window.
+ * they spawn. A falling coin counts as fused only while the session's merges so far stay
+ * within what its drops and the opening heap could feed. Returns each metric's busiest
+ * window.
  */
 function honestSession(
   rng: Rng,
@@ -164,10 +166,13 @@ function honestSession(
 
   let pouring = false;
   let intensity = sim.dropsPerSecond;
+  let dropped = 0;
+  let merged = 0;
   for (let s = 0; s < slots; s++) {
     pouring = pouring ? rng.nextFloat() >= pourEnd : rng.nextFloat() < pourStart;
     const drops = poisson(rng, (pouring ? pourRate : tapRate) * dt);
     series.drops[s] = drops;
+    dropped += drops;
     for (let d = 0; d < drops; d++) {
       if (rng.nextFloat() < sim.crateChancePerDrop) {
         const fall =
@@ -195,7 +200,13 @@ function honestSession(
       if (clump === undefined) throw new Error('No cascade clump shape');
       const size = clump.min + rng.nextInt(clump.max - clump.min + 1);
       for (let c = 0; c < size; c++) {
-        const fused = rng.nextFloat() < fusedCoinChance;
+        // Each merge consumes inputCount − 1 coins for good, so a faster pusher cannot
+        // fuse more than the drops and the heap feed (P-375: at pusherSpeed 10 the
+        // uncapped model fused up to 156 times a minute at base dropRate, Pours included).
+        const fused =
+          rng.nextFloat() < fusedCoinChance &&
+          merged < (dropped + economyConfig.openingHeap.coins) / (inputCount - 1);
+        if (fused) merged += 1;
         series.falls[s] = (series.falls[s] ?? 0) + 1;
         if (fused) series.fusions[s] = (series.fusions[s] ?? 0) + 1;
         series.fallValue[s] =
