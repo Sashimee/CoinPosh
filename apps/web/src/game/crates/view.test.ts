@@ -35,6 +35,7 @@ import { createBus } from '../../app/bus.ts';
 import type { CrateEvents } from './events.ts';
 import { UnboxAssets, UnboxStage } from '../../vfx/cinematics/unbox/index.ts';
 import { RARITY_COLORS, VFX_COLORS } from '../../vfx/palette.ts';
+import { CRATE_RIDE, POSITION_UNIT } from '@coinposh/sim/snapshot';
 import { CrateRide } from './ride.ts';
 import {
   crateShine,
@@ -287,6 +288,26 @@ describe('TableCrateView', () => {
     expect(box(seam).max.x).toBeGreaterThan(bodyBox.max.x);
     expect(box(seam).min.y).toBeGreaterThan(bodyBox.min.y + (bodyBox.max.y - bodyBox.min.y) / 2);
     expect((body?.geometry.getAttribute('position').count ?? 0) > 24).toBe(true);
+    view.dispose();
+  });
+
+  it('drops a new crate in from above but draws a resumed one resting on its ride', () => {
+    const parent = new Group();
+    const view = new TableCrateView(parent);
+    const ride = new CrateRide(crate(1), 0);
+    const z = Math.round(CRATE_RIDE.spawnZ / POSITION_UNIT) + 1000;
+    const resumed = CrateRide.restore(crate(2), { x: 0, z, elapsedMs: 5000, phase: 'riding' }, 0);
+    view.spawn(crateId(1));
+    view.spawn(crateId(2), true);
+    view.update(FRAME, [ride, resumed], false);
+    const drawn = (n: number) => parent.getObjectByName(`crate:${crateId(n)}`);
+    expect(drawn(1)?.position.y).toBeGreaterThan(ride.position.y);
+    expect(drawn(2)?.position.toArray()).toEqual([
+      resumed.position.x,
+      resumed.position.y,
+      resumed.position.z,
+    ]);
+    expect(drawn(2)?.scale.toArray()).toEqual([1, 1, 1]);
     view.dispose();
   });
 

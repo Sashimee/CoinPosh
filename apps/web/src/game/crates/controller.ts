@@ -1,16 +1,21 @@
-import type {
-  CrateId,
-  NudgeDirection,
-  PityCounters,
-  Reward,
-  TableCrate,
-  Tick,
+import {
+  MAX_SNAPSHOT_CRATES,
+  type CrateId,
+  type CratePlacement,
+  type CratePoseTuple,
+  type NudgeDirection,
+  type PityCounters,
+  type Reward,
+  type TableCrate,
+  type Tick,
 } from '@coinposh/shared';
 import type { Bus } from '../../app/bus.ts';
 import type { ApiClient, TableEvent, TableSync } from '../../net/index.ts';
 import type { CrateEvents } from './events.ts';
 import { albumProgress, rollHasAlbumCard, type AlbumProgressMap } from './loot.ts';
 import { CrateRide } from './ride.ts';
+
+const CHUTE: CratePlacement = { kind: 'chute' };
 
 /** The slice of `SimBridge` crates read: the sim clock for claims and the pusher for the ride. */
 export interface CrateSimPort {
@@ -61,9 +66,39 @@ export class CrateController {
     await Promise.all([...this.opening.values()]);
   }
 
-  /** Crates already on the table when the session loads (`state.table.crates`). */
-  adopt(crates: readonly TableCrate[]): void {
-    for (const crate of crates) this.spawn(crate);
+  /**
+   * Crates already on the table when the session loads (`state.table.crates`), each laid by the
+   * placement at its index (`layout.crates`): a `pose` resumes its ride exactly where the server
+   * stored it, a `chute` starts it again from the chute. Without placements every crate starts
+   * from the chute. Throws when the placements do not lay these crates one for one, in order.
+   */
+  adopt(crates: readonly TableCrate[], placements?: readonly CratePlacement[]): void {
+    if (placements && placements.length !== crates.length) {
+      throw new RangeError(
+        `CrateController.adopt: got ${placements.length} placements for ${crates.length} crates; pass layout.crates alongside table.crates`,
+      );
+    }
+    for (const [i, crate] of crates.entries()) {
+      const placement = placements?.[i] ?? CHUTE;
+      if (placement.kind === 'chute') this.spawn(crate);
+      else this.resume(crate, placement.pose);
+    }
+  }
+
+  /**
+   * Where every crate riding the table is, for the table snapshot: crates adopted at boot and
+   * crates spawned since alike, in spawn order and at most MAX_SNAPSHOT_CRATES. Each ride also
+   * takes its pose as its own state (CrateRide.snapshot), so a reload resumes the same path.
+   */
+  snapshot(): CratePoseTuple[] {
+    const tuples: CratePoseTuple[] = [];
+    if (this.disposed) return tuples;
+    for (const ride of this.rides.values()) {
+      if (tuples.length >= MAX_SNAPSHOT_CRATES) break;
+      const { x, z, elapsedMs, phase } = ride.snapshot();
+      tuples.push([ride.crate.id, x, z, elapsedMs, phase]);
+    }
+    return tuples;
   }
 
   update(dt: number): void {
@@ -124,14 +159,45 @@ export class CrateController {
     }
   }
 
+  private known(crateId: CrateId): boolean {
+    return this.rides.has(crateId) || this.awaitingClaim.has(crateId);
+  }
+
   private spawn(crate: TableCrate): void {
-    if (this.rides.has(crate.id) || this.awaitingClaim.has(crate.id)) return;
-    const ride = new CrateRide(crate, this.options.sim.stats.pusherStroke);
-    this.rides.set(crate.id, ride);
+    if (this.known(crate.id)) return;
+    this.place(new CrateRide(crate, this.options.sim.stats.pusherStroke), false);
+  }
+
+  /** A pose the ride cannot take stays off the table: the server settles that crate itself. */
+  private resume(crate: TableCrate, tuple: CratePoseTuple): void {
+    const [id, x, z, elapsedMs, phase] = tuple;
+    if (id !== crate.id) {
+      throw new RangeError(
+        `CrateController.adopt: the pose for crate ${crate.id} names crate ${id}; placements must follow table.crates in order`,
+      );
+    }
+    if (this.known(crate.id)) return;
+    let ride: CrateRide;
+    try {
+      ride = CrateRide.restore(
+        crate,
+        { x, z, elapsedMs, phase },
+        this.options.sim.stats.pusherStroke,
+      );
+    } catch (error) {
+      this.options.events.emit('crate:failed', { crateId: crate.id, error });
+      return;
+    }
+    this.place(ride, true);
+  }
+
+  private place(ride: CrateRide, resumed: boolean): void {
+    this.rides.set(ride.crate.id, ride);
     this.options.events.emit('crate:spawned', {
-      crateId: crate.id,
-      kind: crate.kind,
+      crateId: ride.crate.id,
+      kind: ride.crate.kind,
       position: ride.position,
+      resumed,
     });
   }
 
