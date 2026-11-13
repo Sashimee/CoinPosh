@@ -34,13 +34,7 @@ import {
 import { fromBase64Url, randomBase62, sha256Hex, utf8Bytes } from '../encoding.ts';
 import { NetworkError, type ApiOperation } from '../errors.ts';
 import type { Transport, WireRequest, WireResponse } from '../wire.ts';
-import {
-  DEMO_ACCOUNT_STORAGE_KEY,
-  MockAccounts,
-  MockIdentityProvider,
-  decodeAccountsBlob,
-  encodeAccountsBlob,
-} from './account.ts';
+import type { MockAccounts, MockIdentityProvider } from './account.ts';
 import {
   DEMO_STORAGE_KEY,
   browserSessionStorage,
@@ -79,13 +73,19 @@ export interface MockServerOptions {
   readonly lifecycle?: EventTarget | null;
 }
 
+/** The sessionStorage key the Demo account links live under, next to the world they point into. */
+export const DEMO_ACCOUNT_STORAGE_KEY = 'coinposh.demo.account';
+
 export interface MockServer {
   readonly transport: Transport;
   readonly world: MockWorld;
-  /** Google and Apple links in this Demo world, kept and checked as the server keeps them. */
-  readonly accounts: MockAccounts;
+  /**
+   * Google and Apple links in this Demo world, kept and checked as the server keeps them. They
+   * load with the first account request, so guest play never downloads them.
+   */
+  accounts(): Promise<MockAccounts>;
   /** The clearly fake provider whose tokens the Demo sign-in buttons hand back. */
-  readonly identity: MockIdentityProvider;
+  identity(): Promise<MockIdentityProvider>;
   ledger(): readonly LedgerEntry[];
   /** Responses currently held for replay, to show the store stays bounded. */
   retainedReplays(): number;
@@ -98,9 +98,17 @@ export interface MockServer {
 
 const DEFAULT_PERSIST_DELAY_MS = 250;
 
+interface DemoAccounts {
+  readonly accounts: MockAccounts;
+  readonly identity: MockIdentityProvider;
+  /** The blob storage now holds for these links, so an unchanged set is not rewritten. */
+  readonly stored: string;
+  readonly encode: () => string;
+}
+
 interface Persistence {
   readonly world: MockWorld;
-  readonly accounts: MockAccounts;
+  readonly accounts: () => Promise<DemoAccounts>;
   readonly restored: boolean;
   /** Called between requests only, so a write never catches a handler between two awaits. */
   readonly save: () => void;
@@ -114,13 +122,13 @@ interface Persistence {
 function openPersistence(
   storage: MockStorage | null,
   warn: PersistWarn,
-  identity: MockIdentityProvider,
+  now: () => number,
 ): Persistence {
   if (storage === null) {
     const world = new MockWorld();
     return {
       world,
-      accounts: new MockAccounts(world, identity),
+      accounts: once(() => loadAccounts(null, warn, world, now, { restore: null, held: null })),
       restored: false,
       save: () => undefined,
     };
@@ -157,9 +165,15 @@ function openPersistence(
   }
   const restored = world !== null;
   const live = world ?? new MockWorld();
-  const opened = openAccounts(storage, warn, live, identity, restored, storageFailed);
-  const accounts = opened.accounts;
-  let accountsWritten = opened.stored;
+  const held = storedAccounts(storage, warn, restored, storageFailed);
+  let loaded: DemoAccounts | null = null;
+  let accountsWritten = '';
+  const accounts = once(async () => {
+    const opened = await loadAccounts(storage, warn, live, now, held);
+    loaded = opened;
+    accountsWritten = opened.stored;
+    return opened;
+  });
   let failing = false;
   return {
     world: live,
@@ -168,10 +182,12 @@ function openPersistence(
     save() {
       try {
         storage.setItem(DEMO_STORAGE_KEY, encodeDemoBlob(live.serialize()));
-        const blob = encodeAccountsBlob(accounts.serialize());
-        if (blob !== accountsWritten) {
-          storage.setItem(DEMO_ACCOUNT_STORAGE_KEY, blob);
-          accountsWritten = blob;
+        if (loaded !== null) {
+          const blob = loaded.encode();
+          if (blob !== accountsWritten) {
+            storage.setItem(DEMO_ACCOUNT_STORAGE_KEY, blob);
+            accountsWritten = blob;
+          }
         }
         failing = false;
       } catch (error) {
@@ -185,23 +201,38 @@ function openPersistence(
   };
 }
 
+/** One shared load; a failed one is tried again by the next caller. */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => {
+    pending ??= load().catch((error: unknown) => {
+      pending = null;
+      throw error;
+    });
+    return pending;
+  };
+}
+
+interface HeldAccounts {
+  /** The stored links to restore into the world once the account code loads. */
+  readonly restore: string | null;
+  /** What storage still holds after links that could not be kept failed to clear. */
+  readonly held: string | null;
+}
+
 /**
  * Links only mean something in the world they were made in, so they load with it or not at all.
- * `stored` is the blob storage now holds for them, so an unchanged set of links is not rewritten.
+ * Only the blob is read here; it is decoded and checked when the account code loads.
  */
-function openAccounts(
+function storedAccounts(
   storage: MockStorage,
   warn: PersistWarn,
-  world: MockWorld,
-  identity: MockIdentityProvider,
   restored: boolean,
   storageFailed: boolean,
-): { readonly accounts: MockAccounts; readonly stored: string } {
-  const fresh = new MockAccounts(world, identity);
-  const none = encodeAccountsBlob(fresh.serialize());
+): HeldAccounts {
   // Storage already refused this page and said so; the links of a dropped world are left for
   // the next restore to refuse against the world that replaces it.
-  if (storageFailed) return { accounts: fresh, stored: none };
+  if (storageFailed) return { restore: null, held: null };
   let raw: string | null;
   try {
     raw = storage.getItem(DEMO_ACCOUNT_STORAGE_KEY);
@@ -210,30 +241,55 @@ function openAccounts(
       'CoinPosh demo: the saved account links could not be read, so this session starts unlinked.',
       error,
     );
-    return { accounts: fresh, stored: none };
+    return { restore: null, held: null };
   }
-  if (raw === null) return { accounts: fresh, stored: none };
-  if (restored) {
-    const decoded = decodeAccountsBlob(raw);
-    if (decoded.ok) {
-      try {
-        return { accounts: MockAccounts.restore(decoded.accounts, world, identity), stored: raw };
-      } catch (error) {
-        if (!(error instanceof RestoreError)) throw error;
-        warn(`CoinPosh demo: the saved account links were dropped. ${error.message}`);
-      }
-    } else {
-      warn(`CoinPosh demo: the saved account links were dropped: ${decoded.reason}.`);
-    }
-  }
+  if (raw === null) return { restore: null, held: null };
+  if (restored) return { restore: raw, held: null };
+  return { restore: null, held: dropAccounts(storage, warn, raw) };
+}
+
+/** Clears stored links; returns what storage still holds when that failed. */
+function dropAccounts(storage: MockStorage, warn: PersistWarn, raw: string): string | null {
   try {
     storage.removeItem(DEMO_ACCOUNT_STORAGE_KEY);
+    return null;
   } catch (error) {
     warn('CoinPosh demo: the dropped account links could not be cleared from storage.', error);
-    return { accounts: fresh, stored: raw };
+    return raw;
   }
-  return { accounts: fresh, stored: none };
 }
+
+async function loadAccounts(
+  storage: MockStorage | null,
+  warn: PersistWarn,
+  world: MockWorld,
+  now: () => number,
+  stored: HeldAccounts,
+): Promise<DemoAccounts> {
+  const { MockAccounts, MockIdentityProvider, decodeAccountsBlob, encodeAccountsBlob } =
+    await import('./account.ts');
+  const identity = new MockIdentityProvider(now);
+  const opened = (accounts: MockAccounts, blob: string | null): DemoAccounts => {
+    const encode = () => encodeAccountsBlob(accounts.serialize());
+    return { accounts, identity, stored: blob ?? encode(), encode };
+  };
+  const raw = stored.restore;
+  if (raw === null || storage === null)
+    return opened(new MockAccounts(world, identity), stored.held);
+  const decoded = decodeAccountsBlob(raw);
+  if (decoded.ok) {
+    try {
+      return opened(MockAccounts.restore(decoded.accounts, world, identity), raw);
+    } catch (error) {
+      if (!(error instanceof RestoreError)) throw error;
+      warn(`CoinPosh demo: the saved account links were dropped. ${error.message}`);
+    }
+  } else {
+    warn(`CoinPosh demo: the saved account links were dropped: ${decoded.reason}.`);
+  }
+  return opened(new MockAccounts(world, identity), dropAccounts(storage, warn, raw));
+}
+
 interface StoredResponse {
   readonly fingerprint: string;
   readonly response: WireResponse;
@@ -426,10 +482,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const now = options.now ?? (() => Date.now());
   const warn = options.onPersistWarning ?? consoleWarn;
   const storage = options.storage === undefined ? browserSessionStorage(warn) : options.storage;
-  const identity = new MockIdentityProvider(now);
-  const persistence = openPersistence(storage, warn, identity);
+  const persistence = openPersistence(storage, warn, now);
   const world = persistence.world;
-  const accounts = persistence.accounts;
   const accessTokens = new Map<string, AccessRecord>();
   const refreshTokens = new Map<string, RefreshRecord>();
   const burnedKeys = new Set<IdempotencyKey>();
@@ -642,6 +696,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     body: unknown,
     at: number,
   ): Promise<unknown> {
+    const { accounts } = await persistence.accounts();
     switch (name) {
       case 'accountNonce': {
         const { provider, purpose } = body as AccountNonceRequest;
@@ -899,8 +954,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   return {
     transport,
     world,
-    accounts,
-    identity,
+    accounts: async () => (await persistence.accounts()).accounts,
+    identity: async () => (await persistence.accounts()).identity,
     ledger: () => world.ledger,
     retainedReplays: () => tableReplays.size + otherReplays.size,
     setNetwork(next) {

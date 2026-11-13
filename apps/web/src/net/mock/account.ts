@@ -23,8 +23,6 @@ import { z } from 'zod';
 import { fromBase64Url, toBase64Url, utf8Bytes } from '../encoding.ts';
 import { MockFailure, RestoreError, type MockPlayer, type MockWorld } from './world.ts';
 
-/** The sessionStorage key the Demo account links live under, next to the world they point into. */
-export const DEMO_ACCOUNT_STORAGE_KEY = 'coinposh.demo.account';
 export const DEMO_ACCOUNT_SCHEMA_VERSION = 1;
 
 /** Mirrors apps/server/src/auth/link/nonces.ts, so Demo play trips the same limits. */

@@ -1,11 +1,5 @@
 import type { Locale } from '@coinposh/shared';
-import {
-  AccountClient,
-  currentIdentityConfig,
-  demoIdentityDrivers,
-  liveIdentityDrivers,
-  type IdentityDrivers,
-} from './account.ts';
+import type { AccountClient, AccountClientDeps, IdentityDrivers } from './account.ts';
 import { ApiClient } from './client.ts';
 import { ServerClock, monotonicNow, type Monotonic } from './clock.ts';
 import {
@@ -29,18 +23,20 @@ export { NET_I18N_KEYS, NET_I18N_SOURCE, type NetI18nKey } from './i18nKeys.ts';
 export { resolveNetMode, currentNetMode, type NetMode } from './env.ts';
 export { ApiRequestError, NetworkError } from './errors.ts';
 export { ContractViolationError } from './request.ts';
-export {
+// Types only: a value export would pull the account code into the boot bundle. These errors
+// carry their class name in `name`, which is what a caller outside the loaded module checks.
+export type {
   AccountRequestError,
   IdentityProviderError,
   SignInCancelledError,
   SessionSwapError,
-  type AccountClient,
-  type CompleteOptions,
-  type IdentityDrivers,
-  type PreparedFlow,
-  type ProviderOffer,
-  type SessionSwap,
-  type SignInOutcome,
+  AccountClient,
+  CompleteOptions,
+  IdentityDrivers,
+  PreparedFlow,
+  ProviderOffer,
+  SessionSwap,
+  SignInOutcome,
 } from './account.ts';
 export { openingLayout, openingTableCoins, type OpeningLayout } from './openingTable.ts';
 export { SNAPSHOT_CADENCE, SnapshotCadence, type SnapshotCadenceDeps } from './snapshotCadence.ts';
@@ -79,8 +75,11 @@ export interface Net {
   readonly session: Session;
   readonly table: TableSync;
   readonly clock: ServerClock;
-  /** Optional Google and Apple account link; guest play never waits on it. */
-  readonly account: AccountClient;
+  /**
+   * Optional Google and Apple account link. Its code loads on the first call, so guest play
+   * never downloads or waits on it; later calls share the same client.
+   */
+  readonly account: () => Promise<AccountClient>;
   /** The in-browser server behind Demo Mode; `null` when talking to the real API. */
   readonly mock: MockServer | null;
 }
@@ -127,21 +126,33 @@ export async function createNet(options: NetOptions): Promise<Net> {
     locks,
   });
   client.setBootGate(() => table.drainBeforeBoot());
-  const account = new AccountClient({
-    transport,
-    device,
-    session,
-    store,
-    client,
-    table,
+  const deps = { transport, device, session, store, client, table, onError: options.onError };
+  let account: Promise<AccountClient> | null = null;
+  const loadAccount = () => {
+    account ??= openAccount(deps, options.identityDrivers, mock).catch((error: unknown) => {
+      account = null;
+      throw error;
+    });
+    return account;
+  };
+  return { mode, client, session, table, clock, account: loadAccount, mock };
+}
+
+async function openAccount(
+  deps: Omit<AccountClientDeps, 'drivers'>,
+  drivers: IdentityDrivers | undefined,
+  mock: MockServer | null,
+): Promise<AccountClient> {
+  const { AccountClient, currentIdentityConfig, demoIdentityDrivers, liveIdentityDrivers } =
+    await import('./account.ts');
+  return new AccountClient({
+    ...deps,
     drivers:
-      options.identityDrivers ??
+      drivers ??
       (mock === null
         ? liveIdentityDrivers(currentIdentityConfig())
-        : demoIdentityDrivers(mock.identity)),
-    onError: options.onError,
+        : demoIdentityDrivers(await mock.identity())),
   });
-  return { mode, client, session, table, clock, account, mock };
 }
 
 /** Demo Mode keeps its queue in memory, so only live tabs can trip over each other's partitions. */

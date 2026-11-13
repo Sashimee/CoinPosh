@@ -232,6 +232,13 @@ function fallbackError(status: number): ApiError {
   return { code: 'bad_request', message: `HTTP ${status} without an error envelope.` };
 }
 
+interface Handoff {
+  /** The sign-in's refresh token is in the store; from then on only `Session` sends it. */
+  written: boolean;
+  /** Wait for a refresh under way before writing; off when the sign-in revoked its token. */
+  readonly settle: boolean;
+}
+
 interface CallPlan {
   /** Send the session's bearer token, also on a `none` route such as a link nonce. */
   readonly bearer: boolean;
@@ -290,6 +297,9 @@ export class AccountClient {
 
   prepareSignIn(provider: IdentityProvider): Promise<PreparedFlow<SignInOutcome>> {
     return this.#prepare(provider, 'signin', async (idToken, nonce) => {
+      // The sign-in rotates this device's refresh token when it lands on the save this device
+      // plays, so a refresh still under way would then send a revoked token and read as a leak.
+      if (this.#deps.session.playerId !== null) await this.#deps.session.accessToken();
       // A lost answer cannot be replayed: the server burned the key and spent the nonce.
       const response = await this.#call(
         'authSignIn',
@@ -394,7 +404,7 @@ export class AccountClient {
     }
     if (response.playerId === this.#deps.session.playerId) {
       // The sign-in rotated this device's refresh token for the same save; keep the new one.
-      await this.#adopt(response);
+      await this.#adopt(response, { written: false, settle: false });
       return { kind: 'signedIn', account, swap: null };
     }
     return { kind: 'signedIn', account, swap: await this.#swap(response) };
@@ -402,6 +412,7 @@ export class AccountClient {
 
   async #swap(response: SignInResponse): Promise<SessionSwap> {
     const from = this.#deps.session.playerId;
+    const handoff: Handoff = { written: false, settle: true };
     const run = async (stage: SessionSwapStage): Promise<SessionSwap> => {
       let current = stage;
       try {
@@ -411,7 +422,7 @@ export class AccountClient {
           current = 'session';
         }
         if (current === 'session') {
-          await this.#adopt(response);
+          await this.#adopt(response, handoff);
           current = 'boot';
         }
         const state = await this.#deps.client.call('state', { query: { hydrate: 'boot' } });
@@ -439,16 +450,24 @@ export class AccountClient {
     return run('drain');
   }
 
-  /** Hands `Session` the new refresh token and has it refresh onto the signed-in save. */
-  async #adopt(tokens: SignInResponse): Promise<void> {
+  /**
+   * Hands `Session` the new refresh token, once, and has it refresh onto the signed-in save.
+   * Once written, the token belongs to `Session`: a retry only asks it for an access token, so
+   * it resends a refresh whose answer was lost under its saved key instead of rotating twice.
+   */
+  async #adopt(tokens: SignInResponse, handoff: Handoff): Promise<void> {
     const session = this.#deps.session;
-    // A refresh under way must land before the store is overwritten; its outcome is moot.
-    if (session.playerId !== null) await session.accessToken().catch(() => undefined);
-    await this.#deps.store.set(SESSION_STORE_KEY, {
-      refreshToken: tokens.refreshToken,
-      pendingKey: null,
-    });
-    session.expireAccessToken();
+    if (!handoff.written) {
+      // A refresh under way saves its own token when it lands, so it must land first. The
+      // guest's refresh token is still good; on the same save the sign-in just revoked it.
+      if (handoff.settle && session.playerId !== null) await session.accessToken();
+      await this.#deps.store.set(SESSION_STORE_KEY, {
+        refreshToken: tokens.refreshToken,
+        pendingKey: null,
+      });
+      handoff.written = true;
+      session.expireAccessToken();
+    }
     await session.accessToken();
     if (session.playerId !== tokens.playerId) {
       throw new ContractViolationError(
@@ -771,9 +790,11 @@ function googleDriver(
         });
         if (host === undefined) {
           google.prompt((moment) => {
-            if (moment.isSkippedMoment() || moment.isDismissedMoment()) {
-              reject(new SignInCancelledError(provider));
-            }
+            // GIS also reports a successful pick as a dismissed moment, in either order with
+            // the credential callback.
+            const dismissed =
+              moment.isDismissedMoment() && moment.getDismissedReason?.() !== 'credential_returned';
+            if (moment.isSkippedMoment() || dismissed) reject(new SignInCancelledError(provider));
           });
         } else {
           google.renderButton(host, { type: 'standard', theme: 'filled_black', size: 'large' });

@@ -1,5 +1,6 @@
 import {
   AccountNonceResponseSchema,
+  AccountNonceSchema,
   type AccountNonce,
   type IdentityProvider,
   type NoncePurpose,
@@ -25,15 +26,11 @@ import {
   type SignInOutcome,
 } from './account.ts';
 import { fromBase64Url } from './encoding.ts';
-import {
-  DEMO_ACCOUNT_STORAGE_KEY,
-  DEMO_IDENTITY,
-  MOCK_ACCOUNT_RULES,
-  MockIdentityProvider,
-} from './mock/account.ts';
+import { createNet } from './index.ts';
+import { DEMO_IDENTITY, MOCK_ACCOUNT_RULES, MockIdentityProvider } from './mock/account.ts';
 import type { MockStorage } from './mock/persist.ts';
 import { MOCK_RULES } from './mock/rules.ts';
-import type { MockServer } from './mock/server.ts';
+import { DEMO_ACCOUNT_STORAGE_KEY, type MockServer } from './mock/server.ts';
 import { newIdempotencyKey } from './request.ts';
 import {
   FakeTime,
@@ -54,10 +51,16 @@ beforeEach(() => {
   server = createMockServer({ now: time.now, storage: null, lifecycle: null });
 });
 
+/** Mints a Demo ID token as the current page's fake provider does. */
+async function issue(...args: Parameters<MockIdentityProvider['issue']>) {
+  return (await server.identity()).issue(...args);
+}
+
 interface FakeTable {
   readonly order: string[];
   readonly hydrated: StateResponse[];
   failDrain: number;
+  onDrain: (() => void) | null;
   drainBeforeBoot(): Promise<void>;
   hydrate(state: StateResponse): void;
 }
@@ -67,8 +70,10 @@ function fakeTable(): FakeTable {
     order: [],
     hydrated: [],
     failDrain: 0,
+    onDrain: null,
     drainBeforeBoot() {
       table.order.push('drain');
+      table.onDrain?.();
       if (table.failDrain > 0) {
         table.failDrain -= 1;
         return Promise.reject(new Error('Queued table ops are still offline.'));
@@ -123,7 +128,8 @@ async function device(persona: string, options: DeviceOptions = {}): Promise<Dev
     client: player.client,
     table,
     drivers:
-      options.drivers ?? demoIdentityDrivers(server.identity, { persona: () => self.persona }),
+      options.drivers ??
+      demoIdentityDrivers(await server.identity(), { persona: () => self.persona }),
     onError: (error) => errors.push(error),
     sleep: () => Promise.resolve(),
     jitter: () => 0,
@@ -241,13 +247,34 @@ describe('Demo provider', () => {
     ]);
     const prepared = await alice.account.prepareLink('apple');
     expect(prepared.demo).toBe(true);
-    const token = await server.identity.issue('apple', 'n'.repeat(43), { persona: 'alice' });
+    const token = await issue('apple', 'n'.repeat(43), { persona: 'alice' });
     expect(claims(token)).toMatchObject({
       iss: 'https://demo-identity.coinposh.invalid/apple',
       aud: DEMO_IDENTITY.audience,
       sub: 'demo-apple-alice',
       email: 'alice.apple@demo.coinposh.invalid',
     });
+  });
+});
+
+describe('createNet', () => {
+  it('loads one account client on first use and links through the Demo provider', async () => {
+    const errors: unknown[] = [];
+    const net = await createNet({
+      mode: { kind: 'demo' },
+      locale: () => 'en',
+      turnstileToken: () => Promise.reject(new Error('Demo Mode must not ask for Turnstile.')),
+      onError: (error) => errors.push(error),
+    });
+    await net.client.call('state');
+    const [first, second] = await Promise.all([net.account(), net.account()]);
+    expect(second).toBe(first);
+    expect(await net.account()).toBe(first);
+    expect(first.offers().every((offer) => offer.available && offer.demo)).toBe(true);
+    const account = await first.link('google');
+    expect(account.playerId).toBe(net.session.playerId);
+    expect(account.identities.map((identity) => identity.provider)).toEqual(['google']);
+    expect(errors).toEqual([]);
   });
 });
 
@@ -278,7 +305,9 @@ describe('linking a guest save', () => {
     await alice.account.link('google');
     const again = await alice.account.link('google');
     expect(again.identities).toHaveLength(1);
-    expect(server.accounts.events.filter((event) => event.kind === 'link')).toHaveLength(1);
+    expect((await server.accounts()).events.filter((event) => event.kind === 'link')).toHaveLength(
+      1,
+    );
 
     alice.persona = 'alice-work';
     await expect(alice.account.link('google')).rejects.toMatchObject({
@@ -410,6 +439,74 @@ describe('signing in on another device', () => {
     expect(phone.table.order).toEqual(['drain', 'drain', 'hydrate']);
   });
 
+  it('finishes a swap whose first refresh lost its answer without signing the account out', async () => {
+    const alice = await device('alice');
+    await alice.account.link('google');
+    const aliceId = requirePlayerId(alice.player);
+    const phone = await device('alice');
+    phone.player.requests.length = 0;
+    phone.table.onDrain = () => {
+      server.setNetwork('dropResponses');
+    };
+
+    const error = await phone.account.signIn('google').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(SessionSwapError);
+    if (!(error instanceof SessionSwapError)) throw new Error('unreachable');
+    expect(error.stage).toBe('session');
+    server.setNetwork('up');
+    phone.table.onDrain = null;
+    const swap = await error.retry();
+
+    expect(swap.to).toBe(aliceId);
+    expect(phone.player.session.playerId).toBe(aliceId);
+    expect(phone.table.order).toEqual(['drain', 'hydrate']);
+    const refreshKeys = phone.player.requests
+      .filter((request) => request.path === '/v1/auth/refresh')
+      .map((request) => request.headers['Idempotency-Key']);
+    expect(refreshKeys).toHaveLength(2);
+    expect(new Set(refreshKeys).size).toBe(1);
+    expect(paths(phone.player.requests)).not.toContain('/v1/auth/guest');
+
+    time.advance(MOCK_RULES.accessTokenTtlMs + 1);
+    expect((await alice.player.client.call('state')).player.id).toBe(aliceId);
+    expect((await phone.player.client.call('state')).player.id).toBe(aliceId);
+    for (const dev of [alice, phone]) {
+      expect(dev.player.errors).toEqual([]);
+      expect(paths(dev.player.requests).filter((path) => path === '/v1/auth/guest').length).toBe(
+        dev === alice ? 1 : 0,
+      );
+    }
+  });
+
+  it('stops a swap before touching the session when a refresh under way fails', async () => {
+    const alice = await device('alice');
+    await alice.account.link('google');
+    const aliceId = requirePlayerId(alice.player);
+    const phone = await device('alice');
+    const guestId = requirePlayerId(phone.player);
+    const guestSession = await phone.player.store.get('session');
+    phone.table.onDrain = () => {
+      phone.player.session.expireAccessToken();
+      server.setNetwork('down');
+    };
+
+    const error = await phone.account.signIn('google').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(SessionSwapError);
+    if (!(error instanceof SessionSwapError)) throw new Error('unreachable');
+    expect(error.stage).toBe('session');
+    expect(error.cause).toMatchObject({ name: 'NetworkError' });
+    expect(phone.player.session.playerId).toBe(guestId);
+    expect(await phone.player.store.get('session')).toMatchObject({
+      refreshToken: (guestSession as { refreshToken: string }).refreshToken,
+    });
+    server.setNetwork('up');
+    phone.table.onDrain = null;
+    expect((await error.retry()).to).toBe(aliceId);
+    expect(phone.player.session.playerId).toBe(aliceId);
+  });
+
   it('signs other devices out of the save when the provider they came through is unlinked', async () => {
     const alice = await device('alice');
     await alice.account.link('google');
@@ -444,30 +541,31 @@ describe('signing in on another device', () => {
 describe('attacks on the account routes', () => {
   it('refuses forged, expired, foreign, future-dated and cross-provider ID tokens', async () => {
     const alice = await device('alice');
+    const identity = await server.identity();
     const forger = new MockIdentityProvider(time.now);
     const nowSeconds = Math.floor(time.now() / 1000);
     const cases: [string, (nonce: string) => Promise<string>, IdentityProvider][] = [
       ['another key', (nonce) => forger.issue('google', nonce), 'google'],
       [
         'expired',
-        (nonce) => server.identity.issue('google', nonce, { claims: { exp: nowSeconds - 1 } }),
+        (nonce) => identity.issue('google', nonce, { claims: { exp: nowSeconds - 1 } }),
         'google',
       ],
       [
         'another audience',
-        (nonce) => server.identity.issue('google', nonce, { claims: { aud: 'someone-else' } }),
+        (nonce) => identity.issue('google', nonce, { claims: { aud: 'someone-else' } }),
         'google',
       ],
       [
         'issued in the future',
         (nonce) =>
-          server.identity.issue('google', nonce, {
+          identity.issue('google', nonce, {
             claims: { iat: nowSeconds + 3600, exp: nowSeconds + 7200 },
           }),
         'google',
       ],
-      ['an Apple token sent as Google', (nonce) => server.identity.issue('apple', nonce), 'google'],
-      ['another nonce', () => server.identity.issue('google', 'x'.repeat(43)), 'google'],
+      ['an Apple token sent as Google', (nonce) => identity.issue('apple', nonce), 'google'],
+      ['another nonce', () => identity.issue('google', 'x'.repeat(43)), 'google'],
     ];
     for (const [label, mint, provider] of cases) {
       const nonce = await nonceFor(alice, provider, 'link');
@@ -475,7 +573,7 @@ describe('attacks on the account routes', () => {
       expect(errorCode(response), label).toBe('invalid_id_token');
       expect(response.status, label).toBe(401);
     }
-    expect(server.accounts.account(requirePlayerId(alice.player)).identities).toEqual([]);
+    expect((await server.accounts()).account(requirePlayerId(alice.player)).identities).toEqual([]);
   });
 
   it('spends each nonce once, for one device, provider and purpose', async () => {
@@ -483,7 +581,7 @@ describe('attacks on the account routes', () => {
     const bob = await device('bob');
 
     const nonce = await nonceFor(alice, 'google', 'link');
-    const token = await server.identity.issue('google', nonce, { persona: 'alice' });
+    const token = await issue('google', nonce, { persona: 'alice' });
     expect((await forgeLink(alice, { provider: 'google', idToken: token, nonce })).status).toBe(
       200,
     );
@@ -492,30 +590,30 @@ describe('attacks on the account routes', () => {
     );
 
     const stolen = await nonceFor(alice, 'apple', 'link');
-    const bobToken = await server.identity.issue('apple', stolen, { persona: 'bob' });
+    const bobToken = await issue('apple', stolen, { persona: 'bob' });
     expect(
       errorCode(await forgeLink(bob, { provider: 'apple', idToken: bobToken, nonce: stolen })),
     ).toBe('invalid_id_token');
 
     const signinNonce = await nonceFor(bob, 'apple', 'signin');
-    const forLink = await server.identity.issue('apple', signinNonce, { persona: 'bob' });
+    const forLink = await issue('apple', signinNonce, { persona: 'bob' });
     expect(
       errorCode(await forgeLink(bob, { provider: 'apple', idToken: forLink, nonce: signinNonce })),
     ).toBe('invalid_id_token');
 
     const googleNonce = await nonceFor(bob, 'google', 'link');
-    const asApple = await server.identity.issue('apple', googleNonce, { persona: 'bob' });
+    const asApple = await issue('apple', googleNonce, { persona: 'bob' });
     expect(
       errorCode(await forgeLink(bob, { provider: 'apple', idToken: asApple, nonce: googleNonce })),
     ).toBe('invalid_id_token');
 
     const late = await nonceFor(bob, 'google', 'link');
     time.advance(MOCK_ACCOUNT_RULES.nonceTtlMs);
-    const lateToken = await server.identity.issue('google', late, { persona: 'bob' });
+    const lateToken = await issue('google', late, { persona: 'bob' });
     expect(
       errorCode(await forgeLink(bob, { provider: 'google', idToken: lateToken, nonce: late })),
     ).toBe('invalid_id_token');
-    expect(server.accounts.account(requirePlayerId(bob.player)).identities).toEqual([]);
+    expect((await server.accounts()).account(requirePlayerId(bob.player)).identities).toEqual([]);
   });
 
   it('burns sign-in and nonce keys: a captured request works once', async () => {
@@ -530,7 +628,7 @@ describe('attacks on the account routes', () => {
     );
 
     const nonce = await nonceFor(phone, 'google', 'signin');
-    const idToken = await server.identity.issue('google', nonce, { persona: 'alice' });
+    const idToken = await issue('google', nonce, { persona: 'alice' });
     const key = newIdempotencyKey();
     const first = await forgeSignIn(phone, { provider: 'google', idToken, nonce }, key);
     expect(first.status).toBe(200);
@@ -598,7 +696,7 @@ describe('attacks on the account routes', () => {
     const phone = await device('alice');
     const mallory = await device('mallory');
     const nonce = await nonceFor(phone, 'google', 'signin');
-    const idToken = await server.identity.issue('google', nonce, { persona: 'alice' });
+    const idToken = await issue('google', nonce, { persona: 'alice' });
     const response = await forge(server, phone.player.device, {
       method: 'POST',
       path: '/v1/auth/signin',
@@ -616,7 +714,7 @@ describe('attacks on the account routes', () => {
   it('rejects any value smuggled into a link body', async () => {
     const alice = await device('alice');
     const nonce = await nonceFor(alice, 'google', 'link');
-    const idToken = await server.identity.issue('google', nonce, { persona: 'alice' });
+    const idToken = await issue('google', nonce, { persona: 'alice' });
     const response = await forgeLink(alice, { provider: 'google', idToken, nonce, coins: 1e9 });
     expect(errorCode(response)).toBe('validation_failed');
   });
@@ -644,7 +742,9 @@ describe('retries', () => {
       .map((request) => request.headers['Idempotency-Key']);
     expect(linkKeys).toHaveLength(3);
     expect(new Set(linkKeys).size).toBe(1);
-    expect(server.accounts.events.filter((event) => event.kind === 'link')).toHaveLength(1);
+    expect((await server.accounts()).events.filter((event) => event.kind === 'link')).toHaveLength(
+      1,
+    );
   });
 
   it('never resends a sign-in whose answer was lost', async () => {
@@ -746,7 +846,7 @@ describe('live providers', () => {
       },
       renderButton: (parent) => {
         expect(parent).toBe(host);
-        void server.identity.issue('google', nonce, { persona: 'alice' }).then((credential) => {
+        void issue('google', nonce, { persona: 'alice' }).then((credential) => {
           callback?.({ credential });
         });
       },
@@ -765,6 +865,62 @@ describe('live providers', () => {
     expect(swap?.to).toBe(requirePlayerId(alice.player));
   });
 
+  describe('Google One Tap prompt', () => {
+    type Moment = Parameters<NonNullable<Parameters<GoogleIdApi['prompt']>[0]>>[0];
+    const moment = (kind: 'skipped' | 'dismissed', reason?: string): Moment => ({
+      isSkippedMoment: () => kind === 'skipped',
+      isDismissedMoment: () => kind === 'dismissed',
+      ...(reason === undefined ? {} : { getDismissedReason: () => reason }),
+    });
+
+    /** Drives `prompt()` with the given steps, in order, once `initialize` has run. */
+    async function promptWith(steps: readonly (Moment | 'credential')[]) {
+      const nonce = AccountNonceSchema.parse('n'.repeat(43));
+      const credential = await issue('google', nonce, { persona: 'alice' });
+      let callback: ((response: { credential?: string }) => void) | null = null;
+      const google: GoogleIdApi = {
+        initialize: (config) => {
+          callback = config.callback;
+        },
+        renderButton: () => {
+          throw new Error('No host was given, so One Tap should prompt instead.');
+        },
+        prompt: (listener) => {
+          for (const step of steps) {
+            if (step === 'credential') callback?.({ credential });
+            else listener?.(step);
+          }
+        },
+        cancel: () => undefined,
+      };
+      const drivers = liveIdentityDrivers(CONFIGURED, {
+        loadScript: () => Promise.resolve(),
+        google: () => google,
+      });
+      return { credential, result: drivers.google.idToken({ nonce }) };
+    }
+
+    it.each([
+      ['after', ['credential', moment('dismissed', 'credential_returned')]],
+      ['before', [moment('dismissed', 'credential_returned'), 'credential']],
+    ] as const)(
+      'signs in when GIS reports the pick as dismissed %s the credential',
+      async (_order, steps) => {
+        const { credential, result } = await promptWith(steps);
+        await expect(result).resolves.toBe(credential);
+      },
+    );
+
+    it.each([
+      ['skipped', moment('skipped')],
+      ['dismissed with cancel_called', moment('dismissed', 'cancel_called')],
+      ['dismissed without a reason', moment('dismissed')],
+    ] as const)('cancels when the prompt is %s', async (_label, step) => {
+      const { result } = await promptWith([step]);
+      await expect(result).rejects.toBeInstanceOf(SignInCancelledError);
+    });
+  });
+
   it('calls Apple with the server nonce and refuses an answer for another state', async () => {
     const loadScript = vi.fn((_src: string) => Promise.resolve());
     let init: Parameters<AppleAuthApi['init']>[0] | null = null;
@@ -778,7 +934,7 @@ describe('live providers', () => {
         if (config === null) throw new Error('init first');
         if (answer === 'closed')
           throw Object.assign(new Error('Popup closed.'), { error: 'popup_closed_by_user' });
-        const idToken = await server.identity.issue('apple', config.nonce, { persona: 'alice' });
+        const idToken = await issue('apple', config.nonce, { persona: 'alice' });
         return {
           authorization: {
             id_token: idToken,
@@ -897,9 +1053,12 @@ describe('Demo account persistence', () => {
     server.flush();
     expect(storage.writes).toBe(writes + 1);
 
+    const links = storage.items.get(DEMO_ACCOUNT_STORAGE_KEY);
     server = page(storage);
     expect(server.restored).toBe(true);
-    expect(server.accounts.account(id).identities).toHaveLength(1);
+    server.flush();
+    expect(storage.items.get(DEMO_ACCOUNT_STORAGE_KEY)).toBe(links);
+    expect((await server.accounts()).account(id).identities).toHaveLength(1);
     const reloaded = await device('alice');
     expect(requirePlayerId(reloaded.player)).toBe(id);
     expect((await reloaded.account.get()).identities).toHaveLength(1);
@@ -922,7 +1081,7 @@ describe('Demo account persistence', () => {
     server = page(storage, warnings);
     expect(server.restored).toBe(true);
     expect(server.world.player(id)).toBeDefined();
-    expect(server.accounts.account(id).identities).toEqual([]);
+    expect((await server.accounts()).account(id).identities).toEqual([]);
     expect(warnings).toEqual([expect.stringMatching(/account links were dropped: its shape/)]);
     expect(storage.items.has(DEMO_ACCOUNT_STORAGE_KEY)).toBe(false);
 
@@ -944,6 +1103,8 @@ describe('Demo account persistence', () => {
     );
     warnings.length = 0;
     server = page(storage, warnings);
+    expect(warnings).toEqual([]);
+    await server.accounts();
     expect(warnings).toEqual([expect.stringMatching(/names unknown player/)]);
   });
 
