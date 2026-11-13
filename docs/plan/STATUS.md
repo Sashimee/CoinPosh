@@ -141,7 +141,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-2.02 | todo | | Waits on T-1.18. Scratch Cards (GPU scratch mask) |
 | T-2.03 | todo | | Waits on T-1.18. Gacha Capsule Machine |
 | T-2.04 | todo | | Waits on T-1.18. Odds & "Certified Fair" UI |
-| T-2.05 | todo | | Waits on T-1.18. Inventory & item cards; founder wants next, gated by T-1.18 (open question: relax deps) |
+| T-2.05 | done | task/T-2.05 (merge c45f2f6) | Inventory & item cards: apps/web/src/ui/inventory/** (rarity-framed 3D cards, sort/filter, duplicate level-up view) (d41904f); shared contract, fuse route, duplicatesPerLevel and main.ts mount queued as P-455..P-458, WebGPU card art check as P-459 (H); pnpm check green after merge |
 | T-3.01 | todo | | Waits on T-2.05. Charm Board (sockets, 6 charms, synergy tags) |
 | T-3.02 | todo | | Waits on T-2.05. Charm models & effects |
 | T-3.03 | todo | | Waits on T-2.05. Collection Album + Heirloom coins |
