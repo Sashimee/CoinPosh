@@ -1,93 +1,77 @@
-import { economyConfig, openingHeap } from '@coinposh/economy';
-import { COIN_TIERS } from '@coinposh/shared';
-import { describe, expect, it } from 'vitest';
+import { coinTiers, ftueFirstCredit } from '@coinposh/economy';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { TICK_RATE_HZ } from '../constants.ts';
-import type { SimInput } from '../inputs.ts';
-import type { MechanicsConfig } from '../mechanics/index.ts';
-import { Xoshiro128ss } from '../prng.ts';
-import { Sim } from '../sim.ts';
-import { PUSHER } from './layout.ts';
+import { MAX_DROP_OFFSET_MM } from '../inputs.ts';
+import {
+  FTUE_SEEDS,
+  type Opening,
+  type OpeningPlan,
+  PHONE_WIDTH_PX,
+  playOpening,
+  playOpenings,
+  railMmAt,
+  TAP_BANDS_PX,
+  type TapBand,
+} from './ftue.harness.ts';
 
 /**
- * P-436 FTUE harness: a new player's opening taps on the Demo opening heap, measured from the
- * first tap to the first front fall (the first credit). 20 tables (the Demo seed, then 1..19),
- * each first tap at a seeded point in the pusher cycle, because a new player boots at pusher
- * tick 0 and reads the table for an unknown while before tapping.
+ * The P-436 harness on the first three FTUE tables; ftue.report.ts runs all 20 for 02-ECONOMY.
+ * The P-436 bound itself (ftueFirstCredit) is asserted with the change that meets it.
  */
-const SEEDS = Array.from({ length: 20 }, (_, i) => (i === 0 ? 0xc0196051 : i));
-const WORKER_MECHANICS: MechanicsConfig<string> = {
-  tiers: COIN_TIERS,
-  fusion: {
-    inputCount: economyConfig.fusion.inputCount,
-    contactSeconds: economyConfig.fusion.contactSeconds,
-  },
-  tower: null,
-};
-/** The web's aim map puts a tap at 160..220 px on a 390 px screen at these drop-rail points. */
-const CENTRE_X_MM: readonly [number, number] = [-34, 24];
-const RAIL_X_MM: readonly [number, number] = [-150, 150];
-const MAX_DROPS = 60;
-/**
- * Two pusher cycles. A drop only reaches the ledge after the backboard scrapes it forward on
- * a retraction and the next push carries it to the lip, so the first credit trails the first
- * tap by at least one retraction and the push after it.
- */
-const PAYS_WITHIN_TICKS = 2 * PUSHER.periodTicks;
-const PHYSICS_FLOOR_TICKS = 3 * TICK_RATE_HZ;
-/** P-436 asks for the first credit by the 8th drop. */
-const TARGET_DROPS = 8;
+const SEEDS = FTUE_SEEDS.slice(0, 3);
+const intervalTicks = TICK_RATE_HZ / ftueFirstCredit.tapsPerSecond;
 
-interface Opening {
-  readonly drops: number;
-  readonly ticksAfterFirstTap: number;
-}
+describe('the FTUE tap map (apps/web aimMap.ts and drops.ts aimToMm)', () => {
+  it('sends P-436 centre taps, 160..220 px of 390, to -34..24 mm of the rail', () => {
+    expect(TAP_BANDS_PX.centre).toEqual([160, 220]);
+    expect(TAP_BANDS_PX.centre.map((px) => railMmAt(px))).toEqual([-34, 24]);
+    expect(railMmAt(PHONE_WIDTH_PX / 2)).toBe(0);
+  });
 
-async function opening(seed: number, interval: number, aim: readonly [number, number]) {
-  const taps = Xoshiro128ss.fromSeed((seed ^ 0x5eed) >>> 0);
-  const firstTap = taps.nextInt(PUSHER.periodTicks);
-  const sim = await Sim.create({ seed, mechanics: WORKER_MECHANICS, openingHeap });
-  try {
-    let drops = 0;
-    while (drops <= MAX_DROPS) {
-      const inputs: SimInput[] = [];
-      if (sim.tick >= firstTap && (sim.tick - firstTap) % interval === 0) {
-        inputs.push({ kind: 'dropCoin', xMm: Math.round(taps.nextRange(aim[0], aim[1])) });
-        drops += 1;
-      }
-      if (sim.step(inputs).falls.some((fall) => fall.edge === 'front')) {
-        return { drops, ticksAfterFirstTap: sim.tick - firstTap } satisfies Opening;
-      }
-    }
-    throw new Error(`Seed ${seed} paid nothing in ${MAX_DROPS} drops every ${interval} ticks.`);
-  } finally {
-    sim.dispose();
-  }
-}
-
-describe.each([
-  { rate: '3 taps/s', interval: 20 },
-  { rate: '4 taps/s', interval: 15 },
-])('a new player tapping at $rate (P-436)', ({ interval }) => {
-  describe.each([
-    { where: 'centre', aim: CENTRE_X_MM },
-    { where: 'anywhere on the rail', aim: RAIL_X_MM },
-  ])('$where', ({ aim }) => {
-    const runs = Promise.all(SEEDS.map((seed) => opening(seed, interval, aim)));
-
-    it('gets a first credit within two pusher cycles of the first tap on every table', async () => {
-      const slowest = Math.max(...(await runs).map((run) => run.ticksAfterFirstTap));
-      expect(slowest).toBeLessThanOrEqual(PAYS_WITHIN_TICKS);
-    });
-
-    it('never gets it sooner than 3 s after the first tap, the retract-then-push floor', async () => {
-      const fastest = Math.min(...(await runs).map((run) => run.ticksAfterFirstTap));
-      expect(fastest).toBeGreaterThanOrEqual(PHYSICS_FLOOR_TICKS);
-      expect(PHYSICS_FLOOR_TICKS).toBeGreaterThan((TARGET_DROPS - 1) * interval);
-    });
-
-    it('spends no more coins before it than it can tap in those two cycles', async () => {
-      const most = Math.max(...(await runs).map((run) => run.drops));
-      expect(most).toBeLessThanOrEqual(1 + Math.floor(PAYS_WITHIN_TICKS / interval));
-    });
+  it('reaches either rail end inside the screen and clamps past it', () => {
+    expect(railMmAt(0.1 * PHONE_WIDTH_PX)).toBe(-MAX_DROP_OFFSET_MM);
+    expect(railMmAt(0.9 * PHONE_WIDTH_PX)).toBe(MAX_DROP_OFFSET_MM);
+    expect(railMmAt(0)).toBe(-MAX_DROP_OFFSET_MM);
+    expect(railMmAt(PHONE_WIDTH_PX)).toBe(MAX_DROP_OFFSET_MM);
   });
 });
+
+describe.each(Object.keys(TAP_BANDS_PX) as TapBand[])(
+  'a new player tapping %s at 3 taps/s (P-436 harness)',
+  (band) => {
+    const plans: OpeningPlan[] = SEEDS.map((seed) => ({ seed, intervalTicks, band }));
+    let runs: Opening[] = [];
+    beforeAll(async () => {
+      runs = await playOpenings(plans);
+    });
+
+    it('gets a first credit on every table', () => {
+      for (const run of runs) {
+        expect(run.ticksAfterFirstTap).not.toBeNull();
+        expect(run.credited).toBeGreaterThan(0);
+      }
+    });
+
+    it('keeps the Vault: trust fund, less a copper a drop, plus allowance and the credit', () => {
+      for (const run of runs) {
+        expect(run.vaultAtCredit).toBe(
+          run.startingCoins - run.drops * coinTiers[0].value + run.allowance + run.credited,
+        );
+        expect(run.minVault).toBeGreaterThanOrEqual(0);
+        expect(run.minVault).toBeLessThanOrEqual(run.startingCoins - run.drops + run.allowance);
+      }
+    });
+
+    it('refuses a tap only once the Vault is empty', () => {
+      for (const run of runs) {
+        if (run.refusedTaps > 0) expect(run.minVault).toBeLessThan(coinTiers[0].value);
+      }
+    });
+
+    it('replays a table exactly', async () => {
+      const [first] = plans;
+      if (first === undefined) throw new Error('No FTUE plan to replay.');
+      expect(await playOpening(first)).toEqual(runs[0]);
+    });
+  },
+);

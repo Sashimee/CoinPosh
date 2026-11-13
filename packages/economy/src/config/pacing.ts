@@ -75,6 +75,18 @@ export const ftueTargets = [
 ] as const satisfies readonly (Omit<PacingTargetDef, 'id'> & { readonly id: string })[];
 
 /**
+ * P-436, the opening taps on the physics table (packages/sim/src/table/ftue.harness.ts): a new
+ * player tapping this fast, at the centre or anywhere on the rail, gets a first ledge credit by
+ * `maxDrops`, and the Vault never falls below `minVault` before it. Not met yet: 02-ECONOMY.md
+ * "First credit" has the measurements and the design call it waits on.
+ */
+export const ftueFirstCredit = {
+  tapsPerSecond: 3,
+  maxDrops: 8,
+  minVault: 8,
+} as const;
+
+/**
  * The fusion ladder, per play style (sim/ladder.ts). 00-VISION asks for a first Fusion
  * inside 60 s; above that, a Diamond (625) is about 24 min of base net income, so it is a
  * session goal that even 2–3 aimed taps a second should not reach inside the first minute,

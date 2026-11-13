@@ -94,45 +94,50 @@ The pacing targets are untouched: the mean-rate sim player never goes broke.
 
 ## First credit: the opening taps (P-436)
 
-Target: a new player's first credit lands by the 8th drop, and the Vault never falls below 8
-before it. **Not met on the current table; no in-scope number reaches it.**
+Target (`ftueFirstCredit` in `packages/economy/src/config/pacing.ts`): a new player tapping
+3 times a second, at the centre or anywhere, gets a first credit by the 8th drop, and the Vault
+never falls below 8 before it. **Not met, and no number inside the economy or the opening heap
+reaches it. It waits on a design call from lead-architect (below).**
 
-Measured on `packages/sim` (`src/table/ftue.test.ts`), using the Demo opening heap (100 silver)
-and the 20-coin trust fund. The runs cover 20 tables (Demo seed, then 1..19), with the first tap
-at a seeded pusher phase. Drops cost 1 copper:
+Measured with `node packages/sim/src/table/ftue.report.ts` (harness
+`packages/sim/src/table/ftue.harness.ts`; `ftue.test.ts` checks its Vault bookkeeping and replay
+on 3 of the tables in `pnpm check`). The runs cover 20 tables (Demo seed, then 1..19) on the
+Demo opening heap (100 silver), with the first tap at a seeded pusher phase. Taps go through the
+web aim map (390 px screen, `aimMap.ts` span 0.8), so centre taps at 160–220 px land at −34..24 mm.
+The Vault starts at the 20-coin trust fund. Each drop costs 1 copper, and a tap is refused below
+that. A front fall credits its coin's value with the cascade bonus, unless the Demo server's fall
+checks refuse it (`over_envelope`, P-190). The Steward's allowance pays an empty Vault.
 
-| Taps | Aim (x mm) | Drops to first credit (min / median / max) | First tap to credit | Runs with Vault < 8 / at 0 before it |
-|---|---|---|---|---|
-| 3/s | centre (−34..24, 160–220 px of 390) | 11 / 17 / 24 | 3.35–7.72 s | 14 / 5 of 20 |
-| 3/s | anywhere (−150..150) | 11 / 17 / 22 | 3.40–7.28 s | 15 / 4 of 20 |
-| 4/s | centre | 14 / 21.5 / 28 | 3.28–6.83 s | 20 / 12 of 20 |
-| 4/s | anywhere | 14 / 21 / 28 | 3.35–6.87 s | 20 / 12 of 20 |
+| Taps | Aim | Drops to first credit (min / median / max) | First tap to credit | Lowest Vault | Runs with Vault < 8 / at 0 | Runs with taps refused at 0 (most taps) | Runs the allowance paid | Runs meeting P-436 |
+|---|---|---|---|---|---|---|---|---|
+| 3/s | centre (160–220 px) | 10 / 17 / 20 | 3.33–9.08 s | 0 | 16 / 6 | 4 (max 8) | 0 | 0 of 20 |
+| 3/s | anywhere (0–390 px) | 12 / 17 / 20 | 3.73–7.43 s | 0 | 16 / 6 | 4 (max 3) | 0 | 0 of 20 |
+
+The 20-drop maxima are the trust fund running dry: those runs tap on at 0 until the ledge pays.
+The allowance never fires, because its 6 s grace outlasts every wait at 0.
 
 Why: the heap rests at the brink and pays nothing idle (P-258). A dropped coin reaches the ledge
-only on a pusher retraction: the backboard scrapes it forward, the upper-lip coins step down,
-and the next push carries them over. Every first fall lands at pusher phase 0.40–0.57. So the
-first credit trails the first tap by at least 3 s on every one of the 80 runs. The 8th drop
-comes 2.33 s after the first tap at 3/s and 1.75 s after it at 4/s, which is under that floor
-everywhere.
+only on a pusher retraction. The backboard scrapes it forward, the upper-lip coins step down, and
+the next push carries them over. So the first credit trails the first tap by at least 3.3 s on
+all 40 runs, while the 8th drop comes 2.33 s after the first tap.
 
 Levers tried and rejected (sim evidence):
 
-- **Trust fund 20 → 40**, enough to cover 28 drops plus 8. The trust fund alone then buys the
-  first upgrade (25 coins) at second 1. That breaks the P-193 guards in `sim/simulate.test.ts`:
-  an empty table must not reach the first upgrade, and a copper heap must fail it. It also breaks
-  the P-200 playtest repro in `allowance.test.ts`. Reverted.
-- **2 s pusher cycle** (a mechanic outside this task, tried locally and reverted): max 18/16
-  drops at 3/s and 14/21 at 4/s. Shorter, but still over 8.
+- **Trust fund 20 → 40**, so the Vault outlasts the slowest opening. The trust fund alone then
+  buys the first upgrade (25 coins) at second 1. That breaks the P-193 guards in
+  `sim/simulate.test.ts`: an empty table must not reach the first upgrade, and a copper heap must
+  fail it. It also breaks the P-200 playtest repro in `allowance.test.ts`. Reverted.
 - **Heap layout**: the floor comes from the retract-then-push order, not from where the heap
   lies. Nothing leaves the upper tier during a push stroke. Moving the brink closer to the face
   breaks P-258's idle rule first.
 
-The harness pins what holds today: a credit within two pusher cycles (8 s) of the first tap,
-never sooner than 3 s. Meeting the 8-drop bound needs a design call outside the economy:
-
-- a drop that pays on contact,
-- a guided first drop that lands during the retraction, or
-- a later target.
+Open design call (lead-architect): the 8-drop bound needs the first credit within 2.33 s of the
+first tap at any pusher phase, which the 4 s retract-then-push cycle (`PUSHER.periodTicks` 240)
+cannot give. Options: a shorter default cycle (`packages/sim/src/table/layout.ts`, with the
+determinism hash, the ladder and P-258 re-measured), a guided first drop that lands during the
+retraction (`apps/web`), a drop that pays on contact, or a later target in 00-VISION / POLISH.
+Once it is made, `ftue.test.ts` asserts `ftueFirstCredit` on all 20 tables with that change, and
+this table is re-run.
 
 ## Expansion economy (M10+, founder Q&A 2026-11-09)
 
