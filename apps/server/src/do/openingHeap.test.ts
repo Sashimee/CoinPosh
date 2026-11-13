@@ -11,6 +11,7 @@ import {
   playerStub,
   reload,
   state,
+  tableSession,
   vaultCoins,
 } from '../test/game.ts';
 import { Entities, mintedValue } from './entities.ts';
@@ -200,7 +201,7 @@ describe('opening heap', () => {
     ]);
 
     const idempotencyKey = newIdempotencyKey();
-    const body = { claims: [fall(a)] };
+    const body = { session: await tableSession(session), claims: [fall(a)] };
     const replayed = await session.call(endpoints.tableClaims.path, { body, idempotencyKey });
     const retried = await session.call(endpoints.tableClaims.path, { body, idempotencyKey });
     expect(await retried.json()).toEqual(await replayed.json());

@@ -56,3 +56,14 @@ tableRoutes.post(endpoints.tableClaims.path, async (c) => {
   });
   return respond(c, endpoints.tableClaims.response, result);
 });
+
+tableRoutes.post(endpoints.tableNudge.path, async (c) => {
+  const request = await authenticate(c);
+  const body = parseBody(endpoints.tableNudge.body, request.rawBody);
+  const result = await playerStub(c.env, request.grant.playerId).nudge({
+    idempotencyKey: requireIdempotencyKey(request),
+    fingerprint: fingerprint(request),
+    body,
+  });
+  return respond(c, endpoints.tableNudge.response, result);
+});

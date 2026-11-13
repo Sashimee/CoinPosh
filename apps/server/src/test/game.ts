@@ -5,7 +5,10 @@ import {
   type PlayerId,
   type StateQuery,
   type StateResponse,
+  TableSessionIdSchema,
+  type TableSessionId,
 } from '@coinposh/shared';
+import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { expect } from 'vitest';
 import { guestSignIn, type Session } from './client.ts';
@@ -24,12 +27,30 @@ export async function state(session: Session, query: StateQuery = {}): Promise<S
   return endpoints.state.response.parse(await response.json());
 }
 
+/**
+ * The session holding the table's lease, as the tab that booted last sends it on every table
+ * op. A player who never fetched state gets one the way a client does, by asking for state.
+ */
+export async function tableSession(session: Session): Promise<TableSessionId> {
+  const current = await runInDurableObject(
+    playerStub(session.tokens.playerId),
+    (_do, ctx) =>
+      ctx.storage.sql
+        .exec<{ value: string }>("SELECT value FROM meta WHERE key = 'table_session'")
+        .toArray()[0]?.value,
+  );
+  if (current !== undefined) return TableSessionIdSchema.parse(current);
+  const { table } = await state(session);
+  if (table.session === undefined) throw new Error('state did not return a table session.');
+  return table.session;
+}
+
 export async function drop(
   session: Session,
-  body: { x?: number; tick?: number; coinId?: string } = {},
+  body: { session?: string; x?: number; tick?: number; coinId?: string } = {},
 ): Promise<DropResponse> {
   const response = await session.call(endpoints.tableDrop.path, {
-    body: { x: 0, tick: 0, ...body },
+    body: { session: await tableSession(session), x: 0, tick: 0, ...body },
   });
   expect(response.status, await response.clone().text()).toBe(200);
   return endpoints.tableDrop.response.parse(await response.json());
@@ -66,7 +87,9 @@ export async function vaultCoins(session: Session): Promise<number> {
 }
 
 export async function claims(session: Session, list: unknown[]): Promise<ClaimsResponse> {
-  const response = await session.call(endpoints.tableClaims.path, { body: { claims: list } });
+  const response = await session.call(endpoints.tableClaims.path, {
+    body: { session: await tableSession(session), claims: list },
+  });
   expect(response.status, await response.clone().text()).toBe(200);
   return endpoints.tableClaims.response.parse(await response.json());
 }
