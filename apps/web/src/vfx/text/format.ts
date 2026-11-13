@@ -27,8 +27,19 @@ export function formatPopValue(i18n: I18n, value: number): string {
 export function formatPopNumber(locale: string, value: number): string {
   if (!Number.isFinite(value)) throw new RangeError(`numberPop needs a finite value, got ${value}`);
   if (!locale) throw new Error('A tally pop needs the page language; set <html lang> first');
-  return new Intl.NumberFormat(locale, popNumberOptions(value)).format(value);
+  const compact = Math.abs(value) >= COMPACT_FROM;
+  const signed = value !== 0;
+  const key = `${locale}|${compact ? 'c' : 'f'}|${signed ? 's' : 'n'}`;
+  let format = formats.get(key);
+  if (!format) {
+    format = new Intl.NumberFormat(locale, popNumberOptions(value));
+    formats.set(key, format);
+  }
+  return format.format(value);
 }
+
+/** A counting tally formats every frame its digits change; building a formatter costs more. */
+const formats = new Map<string, Intl.NumberFormat>();
 
 function popNumberOptions(value: number): Intl.NumberFormatOptions {
   const compact = Math.abs(value) >= COMPACT_FROM;
