@@ -571,7 +571,7 @@ describe('opening heap and mechanics', () => {
     expect(replay.sim.hash()).toBe(sim.hash());
     expect(replay.events).toEqual(events);
     // Changing this value breaks replay audits of every input log played with mechanics.
-    expect(sim.hash()).toMatchInlineSnapshot(`"78a2e6ac17f29895"`);
+    expect(sim.hash()).toMatchInlineSnapshot(`"da6a4538eb0aafb7"`);
   });
 
   it('plays the Demo table with fusion: the heap holds until a silver wakes it, drops fuse, coins still fall', async () => {
@@ -612,7 +612,7 @@ describe('opening heap and mechanics', () => {
       );
       if (seed === DEMO_SEED) {
         // Changing this value breaks replay audits of every Demo input log played with fusion.
-        expect(sim.hash()).toMatchInlineSnapshot(`"b38156d0f90afa3c"`);
+        expect(sim.hash()).toMatchInlineSnapshot(`"76da6b166c971a12"`);
       }
     }
   });

@@ -1,4 +1,6 @@
-import type { World } from '@dimforge/rapier3d-deterministic-compat';
+import type { Vector, World } from '@dimforge/rapier3d-deterministic-compat';
+import { economyConfig, openingHeap } from '@coinposh/economy';
+import { COIN_TIERS } from '@coinposh/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import { COIN } from '../coin.ts';
 import { GRAVITY, TICK_RATE_HZ } from '../constants.ts';
@@ -6,7 +8,9 @@ import { StateHasher } from '../hash.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { loadRapier } from '../rapier.ts';
 import { FUSION_TUNING } from '../mechanics/tuning.ts';
-import { HEAP_TUNING, type HeapGeometry, heapCapacity, heapPoses } from './heap.ts';
+import type { MechanicsConfig } from '../mechanics/index.ts';
+import { type CoinState, Sim } from '../sim.ts';
+import { HEAP_TUNING, type HeapGeometry, type HeapPose, heapCapacity, heapPoses } from './heap.ts';
 import { BACKBOARD, PLAYFIELD, PUSHER } from './layout.ts';
 import { type FallEvent, PusherTable } from './table.ts';
 import { configureTableWorld } from './tuning.ts';
@@ -17,6 +21,27 @@ const GEOMETRY: HeapGeometry = {
   upperY: PUSHER.height,
 };
 const SEED = 0x4ea9;
+/** The Demo table's seed (apps/web main.ts TABLE_SEED), then more tables. */
+const SEEDS = [0xc0196051, SEED, 1, 2, 3, 4, 5, 6, 7, 8];
+/**
+ * The Riviera camera's pitch below the horizontal on a 390 × 844 portrait phone and on a
+ * landscape one (apps/web/src/scene/venues/riviera/layout.ts): 45° and 38°, as sin and
+ * cos written out.
+ */
+const PITCHES = [
+  { name: 'portrait 390 × 844', sin: Math.SQRT1_2, cos: Math.SQRT1_2 },
+  { name: 'landscape', sin: 0.6156614753256583, cos: 0.7880107536067219 },
+];
+
+/** The sim worker's mechanics (apps/web simWorker/table-config.ts): fusion on, no tower. */
+const DEMO_MECHANICS: MechanicsConfig<string> = {
+  tiers: COIN_TIERS,
+  fusion: {
+    inputCount: economyConfig.fusion.inputCount,
+    contactSeconds: economyConfig.fusion.contactSeconds,
+  },
+  tower: null,
+};
 
 const live: World[] = [];
 
@@ -32,6 +57,54 @@ async function createTable(): Promise<{ table: PusherTable; rng: Xoshiro128ss; w
   live.push(world);
   configureTableWorld(world);
   return { table: new PusherTable(rapier, world), rng: Xoshiro128ss.fromSeed(SEED), world };
+}
+
+/**
+ * Every four coins, as a camera at `pitch` sees them orthographically, that read as a
+ * ruled row: the middle two within `tolerance` of the points a third and two thirds of
+ * the way between the outer two, which lie R to 3R apart per step. Brute force over all
+ * pairs of outer coins.
+ */
+function ruledRows(
+  poses: readonly HeapPose[],
+  pitch: { sin: number; cos: number },
+  tolerance: number,
+): number[][] {
+  const seen = poses.map(({ translation: t }: { translation: Vector }) => ({
+    h: t.x,
+    v: t.y * pitch.cos - t.z * pitch.sin,
+  }));
+  const near = (h: number, v: number, not: number[]): number[] =>
+    seen.flatMap((p, i) =>
+      !not.includes(i) && (p.h - h) * (p.h - h) + (p.v - v) * (p.v - v) <= tolerance * tolerance
+        ? [i]
+        : [],
+    );
+  const rows: number[][] = [];
+  for (let a = 0; a < seen.length; a++) {
+    for (let d = a + 1; d < seen.length; d++) {
+      const pa = seen[a];
+      const pd = seen[d];
+      if (!pa || !pd) {
+        continue;
+      }
+      const dh = pd.h - pa.h;
+      const dv = pd.v - pa.v;
+      const step = Math.sqrt(dh * dh + dv * dv) / 3;
+      if (step < COIN.radius || step > 3 * COIN.radius) {
+        continue;
+      }
+      const at = (k: number) => [pa.h + ((pd.h - pa.h) * k) / 3, pa.v + ((pd.v - pa.v) * k) / 3];
+      const [h1 = 0, v1 = 0] = at(1);
+      const [h2 = 0, v2 = 0] = at(2);
+      for (const b of near(h1, v1, [a, d])) {
+        for (const c of near(h2, v2, [a, d, b])) {
+          rows.push([a, b, c, d]);
+        }
+      }
+    }
+  }
+  return rows;
 }
 
 function run(table: PusherTable, from: number, ticks: number): FallEvent[] {
@@ -50,7 +123,7 @@ describe('opening heap layout', () => {
     expect(capacity).toBeLessThan(250);
   });
 
-  it('lays the lower sheet first, front row overhanging the lip with its centre on the wood', () => {
+  it('lays the lower sheet first, its front coins overhanging the lip with their centres on the wood', () => {
     const poses = heapPoses(capacity, GEOMETRY, Xoshiro128ss.fromSeed(SEED));
     const lower = poses.filter((p) => p.translation.y < PUSHER.height);
     const firstUpper = poses.findIndex((p) => p.translation.y > PUSHER.height);
@@ -64,40 +137,78 @@ describe('opening heap layout', () => {
   });
 
   it('keeps every coin on the floor, ahead of the backboard, and apart from its layer', () => {
-    const poses = heapPoses(capacity, GEOMETRY, Xoshiro128ss.fromSeed(SEED));
-    const minGap = HEAP_TUNING.gap - 2 * Math.SQRT2 * HEAP_TUNING.jitter;
-    for (const [i, a] of poses.entries()) {
-      const { x, y, z } = a.translation;
-      expect(Math.abs(x) + COIN.radius).toBeLessThan(PLAYFIELD.fieldHalfWidth);
-      expect(z - COIN.radius).toBeGreaterThan(BACKBOARD.frontZ);
-      expect(Math.abs(a.rotation.y * a.rotation.y + a.rotation.w * a.rotation.w - 1)).toBeLessThan(
-        1e-12,
-      );
-      for (const b of poses.slice(i + 1)) {
-        if (b.translation.y !== y) {
-          continue;
+    for (const seed of SEEDS) {
+      const poses = heapPoses(capacity, GEOMETRY, Xoshiro128ss.fromSeed(seed));
+      for (const [i, a] of poses.entries()) {
+        const { x, y, z } = a.translation;
+        expect(Math.abs(x) + COIN.radius).toBeLessThan(PLAYFIELD.fieldHalfWidth);
+        expect(z - COIN.radius).toBeGreaterThan(BACKBOARD.frontZ);
+        expect(
+          Math.abs(a.rotation.y * a.rotation.y + a.rotation.w * a.rotation.w - 1),
+        ).toBeLessThan(1e-12);
+        for (const b of poses.slice(i + 1)) {
+          if (b.translation.y !== y) {
+            continue;
+          }
+          const dx = b.translation.x - x;
+          const dz = b.translation.z - z;
+          expect(Math.sqrt(dx * dx + dz * dz)).toBeGreaterThanOrEqual(
+            2 * COIN.radius + HEAP_TUNING.minGap - 1e-9,
+          );
         }
-        const dx = b.translation.x - x;
-        const dz = b.translation.z - z;
-        expect(Math.sqrt(dx * dx + dz * dz)).toBeGreaterThan(2 * COIN.radius + minGap);
       }
     }
   });
 
-  it("keeps neighbours in a layer outside Contact Fusion's touch gap, however they are jittered", () => {
-    expect(HEAP_TUNING.gap - 2 * Math.SQRT2 * HEAP_TUNING.jitter).toBeGreaterThan(
-      FUSION_TUNING.touchGap,
-    );
+  it("keeps neighbours in a layer outside Contact Fusion's touch gap", () => {
+    expect(HEAP_TUNING.minGap).toBeGreaterThan(FUSION_TUNING.touchGap);
   });
 
-  it("lays only the two tiers' first layer without the second layer", () => {
-    const single = { ...GEOMETRY, secondLayer: false };
-    const poses = heapPoses(heapCapacity(single), single, Xoshiro128ss.fromSeed(SEED));
-    const heights = new Set(poses.map((p) => p.translation.y));
-    expect(heights.size).toBe(2);
-    expect(Math.max(...heights) - Math.min(...heights)).toBeCloseTo(PUSHER.height, 9);
-    expect(poses.length).toBeLessThan(capacity);
-    expect(heapPoses(poses.length, GEOMETRY, Xoshiro128ss.fromSeed(SEED))).toEqual(poses);
+  it.each(PITCHES)('lays no four coins in a ruled row as a $name phone sees them', (pitch) => {
+    for (const seed of SEEDS) {
+      const poses = heapPoses(openingHeap.coins, GEOMETRY, Xoshiro128ss.fromSeed(seed));
+      expect(ruledRows(poses, pitch, 0.001), `seed ${seed}`).toEqual([]);
+    }
+  });
+
+  it('finds the ruled rows of a tiled heap, so the check above can fail', () => {
+    const tiled: HeapPose[] = Array.from({ length: 8 }, (_, k) => ({
+      translation: { x: -0.1 + k * 0.0285, y: 0.0016, z: 0.045 + (k % 2) * 0.0003 },
+      rotation: { x: 0, y: 0, z: 0, w: 1 },
+    }));
+    expect(ruledRows(tiled, PITCHES[0] ?? { sin: 1, cos: 0 }, 0.001)).toHaveLength(5);
+  });
+
+  /**
+   * Upper-tier stacks nest evenly over its sheet instead: the block shakes them at every
+   * stroke, and where they lie decides where a dropped coin lands.
+   */
+  it('piles coins several layers high on both tiers, most of the lower pile at the front', () => {
+    const piledOn = (poses: readonly HeapPose[], floor: number, back: number, lip: number) =>
+      poses.filter(
+        ({ translation: t }) =>
+          t.y > floor + 2 * COIN.halfThickness &&
+          t.y < floor + PUSHER.height &&
+          t.z > back &&
+          t.z < lip,
+      );
+    for (const seed of SEEDS) {
+      const poses = heapPoses(openingHeap.coins, GEOMETRY, Xoshiro128ss.fromSeed(seed));
+      expect(new Set(poses.map((p) => p.translation.y)).size, `seed ${seed}`).toBeGreaterThan(4);
+      const lower = piledOn(poses, 0, GEOMETRY.reachZ, PLAYFIELD.fieldFrontZ);
+      const middle = (GEOMETRY.reachZ + PLAYFIELD.fieldFrontZ) / 2;
+      const front = lower.filter(({ translation: t }) => t.z > middle).length;
+      expect(front, `seed ${seed}`).toBeGreaterThan(lower.length - front);
+      const upper = piledOn(poses, GEOMETRY.upperY, BACKBOARD.frontZ, GEOMETRY.upperLipZ);
+      expect(upper.length, `seed ${seed}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('lays a heap of n coins as the first n of a bigger one', () => {
+    const full = heapPoses(capacity, GEOMETRY, Xoshiro128ss.fromSeed(SEED));
+    for (const n of [1, 23, openingHeap.coins, capacity - 1]) {
+      expect(heapPoses(n, GEOMETRY, Xoshiro128ss.fromSeed(SEED))).toEqual(full.slice(0, n));
+    }
   });
 
   it('leaves the keep-clear spots bare', () => {
@@ -156,6 +267,34 @@ describe('opening heap on the table', () => {
     expect(falls.every((fall) => fall.edge === 'front')).toBe(true);
   });
 
+  it.each(SEEDS)(
+    'opens on seed %i with at least 5 coins over the front lip that hold for 2 s',
+    async (seed) => {
+      const sim = await Sim.create({ seed, mechanics: DEMO_MECHANICS, openingHeap });
+      try {
+        const overhanging = (coins: readonly CoinState[]): number[] =>
+          coins
+            .filter(
+              ({ translation: t }) =>
+                t.y < PUSHER.height &&
+                t.z < PLAYFIELD.fieldFrontZ &&
+                t.z + COIN.radius > PLAYFIELD.fieldFrontZ,
+            )
+            .map(({ id }) => id);
+        const first = overhanging(sim.coins());
+        expect(first.length).toBeGreaterThanOrEqual(5);
+        const falls: FallEvent[] = [];
+        while (sim.tick < 2 * TICK_RATE_HZ) {
+          falls.push(...sim.step().falls);
+        }
+        expect(falls).toEqual([]);
+        expect(overhanging(sim.coins())).toEqual(expect.arrayContaining(first));
+      } finally {
+        sim.dispose();
+      }
+    },
+  );
+
   it('plays out identically from the same seed, and pins the hash', async () => {
     const play = async (): Promise<string> => {
       const { table, rng } = await createTable();
@@ -166,6 +305,6 @@ describe('opening heap on the table', () => {
     const hash = await play();
     expect(await play()).toBe(hash);
     // Changing this value breaks replay audits of input logs that open with a heap.
-    expect(hash).toMatchInlineSnapshot(`"53ff5809aefa4642"`);
+    expect(hash).toMatchInlineSnapshot(`"7ddf8b6ce2e04656"`);
   });
 });
