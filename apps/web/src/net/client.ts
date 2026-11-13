@@ -30,6 +30,10 @@ export interface CallOptions {
   readonly idempotencyKey?: IdempotencyKey;
   /** Extra attempts after a network failure or a retryable server error. */
   readonly retries?: number;
+  /** Lets the request outlive the page, so one under way when it closes still arrives. */
+  readonly keepalive?: boolean;
+  /** Called as each attempt is handed to the transport, after its async signing is done. */
+  readonly onWire?: () => void;
 }
 
 export type CallArgs<N extends EndpointName> =
@@ -179,7 +183,14 @@ export class ApiClient {
           { idempotencyKey, accessToken },
           this.#deps.device,
         );
-        const response = readEndpointResponse(name, endpoint, await this.#deps.transport(request));
+        options.onWire?.();
+        const response = readEndpointResponse(
+          name,
+          endpoint,
+          await this.#deps.transport(
+            options.keepalive === true ? { ...request, keepalive: true } : request,
+          ),
+        );
         this.#observe(response);
         return response;
       } catch (error) {

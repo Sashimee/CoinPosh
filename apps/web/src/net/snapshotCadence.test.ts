@@ -172,6 +172,22 @@ describe('SnapshotCadence', () => {
     expect(uploads).toHaveLength(3);
   });
 
+  it('queues a copy, so the sim rewriting its capture in place changes neither the upload nor the next comparison', () => {
+    const live = capture(1);
+    const coin = live.coins[0];
+    if (coin === undefined) throw new Error('Expected a posed coin.');
+    current = live;
+    const subject = cadence();
+    subject.activity();
+    clock.advance(SNAPSHOT_CADENCE.settleMs);
+    coin[1] = 2;
+    expect(uploads.map((upload) => upload.capture)).toEqual([capture(1)]);
+    subject.activity();
+    clock.advance(SNAPSHOT_CADENCE.minIntervalMs);
+    expect(uploads.map((upload) => upload.capture)).toEqual([capture(1), capture(2)]);
+    expect(uploads[1]?.capture).not.toBe(live);
+  });
+
   it('sends nothing while the sim has nothing to capture', () => {
     current = null;
     const subject = cadence();

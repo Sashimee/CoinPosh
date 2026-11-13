@@ -133,8 +133,11 @@ export class SnapshotCadence {
   }
 
   #upload(): void {
-    const capture = this.#deps.capture();
-    if (capture === null) return;
+    const taken = this.#deps.capture();
+    if (taken === null) return;
+    // The sim may hand out buffers it rewrites in place, which would make every later capture
+    // look unchanged against the last upload, and rewrite the upload itself before it is queued.
+    const capture = structuredClone(taken);
     const sent = this.#sent;
     if (
       sent !== null &&

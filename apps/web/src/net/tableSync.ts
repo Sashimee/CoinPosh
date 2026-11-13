@@ -143,8 +143,10 @@ export class TableSync {
   #session: TableSessionId | null = null;
   #superseded = false;
   #snapshotSeq = 0;
-  /** The pending snapshot signed ahead of time, for `pagehide`. */
+  /** The newest queued snapshot signed ahead of time, for `pagehide`; kept while it is in flight. */
   #keepalive: { readonly op: SnapshotOp; readonly request: WireRequest } | null = null;
+  /** The snapshot whose upload is on the wire now, itself a keepalive request. */
+  #onWire: SnapshotOp | null = null;
   readonly #unsubscribeTokens: () => void;
 
   constructor(deps: TableSyncDeps) {
@@ -161,8 +163,8 @@ export class TableSync {
       this.#kick(0);
     });
     this.#unsubscribeTokens = deps.client.onTokenRefresh(() => {
-      const pending = this.#deps.outbox.pendingSnapshot();
-      if (pending !== undefined) this.#presign(pending);
+      const latest = this.#latestSnapshot();
+      if (latest !== undefined) this.#presign(latest);
     });
   }
 
@@ -344,14 +346,21 @@ export class TableSync {
    * The page is going away: send the queued snapshot with the request signed ahead of time,
    * since nothing can be signed or awaited now. It goes only when nothing is queued before it,
    * so it never overtakes a drop or claim; otherwise it waits in the outbox for the next load.
+   * A drain may already have sealed it and still be signing its own upload, or be waiting to
+   * retry one that failed, so a sealed snapshot goes too unless its upload is on the wire, which
+   * is a keepalive request already. A copy that lands twice shares its key, so the server replays.
    */
   pagehide(): void {
     const keepalive = this.#keepalive;
-    if (keepalive === null || this.#deps.outbox.head() !== keepalive.op || keepalive.op.sent) {
+    if (
+      keepalive === null ||
+      this.#deps.outbox.head() !== keepalive.op ||
+      this.#onWire === keepalive.op
+    ) {
       return;
     }
     this.#keepalive = null;
-    void this.#deps.outbox.seal(keepalive.op);
+    if (!keepalive.op.sent) void this.#deps.outbox.seal(keepalive.op);
     this.#deps.client.sendKeepalive(keepalive.request);
   }
 
@@ -428,7 +437,6 @@ export class TableSync {
       const op = outbox.head();
       if (op === undefined) break;
       if (!op.sent) await outbox.seal(op);
-      if (this.#keepalive?.op === op) this.#keepalive = null;
       try {
         await this.#send(op);
       } catch (error) {
@@ -492,8 +500,19 @@ export class TableSync {
         return;
       }
       case 'snapshot': {
-        const result = await client.snapshot(op.body, options);
-        this.#emit({ type: 'snapshotSettled', ...result });
+        try {
+          const result = await client.snapshot(op.body, {
+            ...options,
+            keepalive: true,
+            onWire: () => {
+              this.#onWire = op;
+            },
+          });
+          if (this.#keepalive?.op === op) this.#keepalive = null;
+          this.#emit({ type: 'snapshotSettled', ...result });
+        } finally {
+          if (this.#onWire === op) this.#onWire = null;
+        }
         return;
       }
     }
@@ -550,10 +569,20 @@ export class TableSync {
     return this.#session === null ? {} : { session: this.#session };
   }
 
+  /** The newest snapshot still in the queue, sent or not: the one `pagehide` may need to send. */
+  #latestSnapshot(): SnapshotOp | undefined {
+    const { ops } = this.#deps.outbox;
+    for (let i = ops.length - 1; i >= 0; i--) {
+      const op = ops[i];
+      if (op?.kind === 'snapshot') return op;
+    }
+    return undefined;
+  }
+
   #presign(op: SnapshotOp): void {
     this.#deps.client.presignSnapshot(op.body, op.key).then(
       (request) => {
-        if (this.#deps.outbox.pendingSnapshot() === op && !this.#superseded) {
+        if (this.#latestSnapshot() === op && !this.#superseded) {
           this.#keepalive = { op, request };
         }
       },
