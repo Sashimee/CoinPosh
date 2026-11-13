@@ -27,7 +27,14 @@ import {
 } from '@coinposh/shared';
 import { Hono } from 'hono';
 import type { Command, DoResult } from '../do/PlayerDO.ts';
-import { commit, LedgerTx, readWallet, type CommitContext, type Leg } from '../do/ledger.ts';
+import {
+  commit,
+  LedgerTx,
+  readWallet,
+  type CommitContext,
+  type Leg,
+  type TxKind,
+} from '../do/ledger.ts';
 import type { Env } from '../env.ts';
 import type { AppEnv } from '../http/context.ts';
 import { ApiFailure } from '../http/errors.ts';
@@ -75,9 +82,8 @@ export const ASCENSION_SQL = `
 /**
  * The single ledger transaction an ascension commits: the venue's resetting currencies go to
  * the house, the mint pays the Gold Bars and the Trust Fund's starting coins.
- * TODO(lead-architect): add 'ascend' to TX_KINDS in do/ledger.ts with the PlayerDO wiring.
  */
-export const ASCEND_TX_KIND = 'ascend';
+export const ASCEND_TX_KIND = 'ascend' satisfies TxKind;
 
 /** Winnings are coins a claim moved into the wallet; Bullion is minted from them. */
 const WINNINGS_KIND = 'claim.fall';

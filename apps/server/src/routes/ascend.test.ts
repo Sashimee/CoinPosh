@@ -2,6 +2,11 @@ import {
   ascension,
   ascensionGoldBars,
   bullion,
+  coinTiers,
+  MINT_MICROS_PER_COIN,
+  mintedCoinMicros,
+  mintedCoinValue,
+  openingHeap,
   upgradeCost,
   upgradeLines,
   upgradeStat,
@@ -16,6 +21,7 @@ import {
   type ErrorCode,
   type IdempotencyKey,
   type UpgradeBuyRequest,
+  type UpgradeBuyResponse,
   type Wallet,
 } from '@coinposh/shared';
 import { runInDurableObject } from 'cloudflare:test';
@@ -23,6 +29,7 @@ import { env } from 'cloudflare:workers';
 import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { describe, expect, it } from 'vitest';
+import { Entities } from '../do/entities.ts';
 import type { Command, DoResult, PlayerDO } from '../do/PlayerDO.ts';
 import { commit, ledgerBalance, LedgerTx, readWallet, type Leg } from '../do/ledger.ts';
 import type { AppEnv } from '../http/context.ts';
@@ -36,11 +43,19 @@ import {
   signParts,
   type Session,
 } from '../test/client.ts';
-import { expectError, playerStub } from '../test/game.ts';
+import {
+  claims,
+  dropAsClient,
+  expectConserved,
+  expectError,
+  playerStub,
+  state,
+  tableSession,
+  vaultCoins,
+} from '../test/game.ts';
 import {
   applyAscension,
   ASCEND_TX_KIND,
-  ASCENSION_SQL,
   ascensionLegs,
   buyFamilyOffice,
   createAscendRoutes,
@@ -55,7 +70,7 @@ import {
   type AscendHost,
   type AscensionCommit,
 } from './ascend.ts';
-import { readUpgradeLevels, recordUpgrade, UPGRADE_LEVELS_SQL } from './upgrades.ts';
+import { readUpgradeLevels, recordUpgrade } from './upgrades.ts';
 
 const RIVIERA = venues[0];
 const PARIS = venues[1];
@@ -97,35 +112,13 @@ function failureCode(run: () => unknown): ErrorCode {
   throw new Error('Expected an ApiFailure, but the call succeeded.');
 }
 
-/**
- * Mirrors ledger.ts `commit` for the `ascend` kind, which TX_KINDS does not list until the
- * PlayerDO wiring lands: legs must balance per unit and only wallet legs move balances.
- */
+/** Commits the ascension's legs as one real `ascend` ledger transaction. */
 const postToLedger =
   (sql: SqlStorage, at: number): AscensionCommit =>
   (kind, legs: readonly Leg[]) => {
-    const sums = new Map<string, number>();
-    for (const leg of legs) sums.set(leg.unit, (sums.get(leg.unit) ?? 0) + leg.delta);
-    for (const [unit, sum] of sums) {
-      if (sum !== 0) throw new Error(`${kind} is unbalanced: ${unit} legs sum to ${sum}.`);
-    }
-    const txId = crypto.randomUUID();
-    for (const leg of legs) {
-      if (leg.account === 'wallet') {
-        sql.exec('UPDATE wallet SET balance = balance + ? WHERE currency = ?', leg.delta, leg.unit);
-      }
-      sql.exec(
-        `INSERT INTO ledger (tx_id, at, kind, account, unit, delta, ref, idempotency_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-        txId,
-        at,
-        kind,
-        leg.account,
-        leg.unit,
-        leg.delta,
-        leg.ref,
-      );
-    }
+    const tx = new LedgerTx(kind);
+    for (const leg of legs) tx.post(leg.account, leg.unit, leg.delta, leg.ref);
+    commit(sql, tx, { at, idempotencyKey: null });
   };
 
 /** Wins `value` coins the way play does: the house stakes the table, a claim pays the wallet. */
@@ -143,11 +136,7 @@ function valueForBullion(amount: number): number {
 async function withPlayer<T>(body: (sql: SqlStorage) => T): Promise<T> {
   const session = await newSession();
   return runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) =>
-    ctx.storage.transactionSync(() => {
-      ctx.storage.sql.exec(UPGRADE_LEVELS_SQL);
-      ctx.storage.sql.exec(ASCENSION_SQL);
-      return body(ctx.storage.sql);
-    }),
+    ctx.storage.transactionSync(() => body(ctx.storage.sql)),
   );
 }
 
@@ -521,5 +510,357 @@ describe('POST /v1/ascend', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
     expect(endpoints.ascend.response.parse(await response.json())).toEqual(ASCENDED);
+  });
+});
+
+const COPPER = coinTiers[0];
+const TRUST_FUND = line('trustFund');
+
+function inPlayer<T>(session: Session, run: (sql: SqlStorage) => T): Promise<T> {
+  return runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) =>
+    ctx.storage.transactionSync(() => run(ctx.storage.sql)),
+  );
+}
+
+/**
+ * Wins `value` coins the way play does: the house stakes a coin on the table and the real
+ * claims route takes it over the front lip, so the Bullion comes from an ordinary win.
+ */
+async function winAtTable(session: Session, value: number): Promise<void> {
+  await tableSession(session);
+  const coinId = await inPlayer(session, (sql) => {
+    const coin = new Entities(sql).mintCoin(COPPER.id, value, null, 'table', 0, Date.now());
+    commit(sql, new LedgerTx('grant.heap').move('house', 'table', 'coins', value, coin.id), {
+      at: Date.now(),
+      idempotencyKey: null,
+    });
+    return coin.id;
+  });
+  const { results } = await claims(session, [{ kind: 'fall', coinId, tick: 0, edge: 'front' }]);
+  expect(results).toEqual([expect.objectContaining({ status: 'accepted' })]);
+}
+
+/** A Vault Crate on the table, minted the way a drop spawns one. */
+function spawnCrate(session: Session): Promise<string> {
+  return inPlayer(session, (sql) => {
+    const crate = new Entities(sql).spawnCrate('vault', 0, Date.now());
+    commit(sql, new LedgerTx('crate.spawn').move('mint', 'table', 'crate', 1, crate.id), {
+      at: Date.now(),
+      idempotencyKey: null,
+    });
+    return crate.id;
+  });
+}
+
+function postAscend(
+  session: Session,
+  body: unknown,
+  idempotencyKey: IdempotencyKey = newIdempotencyKey(),
+): Promise<Response> {
+  return session.call(endpoints.ascend.path, { body, idempotencyKey });
+}
+
+async function ascendOk(response: Response): Promise<AscendResponse> {
+  expect(response.status, await response.clone().text()).toBe(200);
+  return endpoints.ascend.response.parse(await response.json());
+}
+
+function postBuy(
+  session: Session,
+  body: unknown,
+  idempotencyKey: IdempotencyKey = newIdempotencyKey(),
+): Promise<Response> {
+  return session.call(endpoints.upgradesBuy.path, { body, idempotencyKey });
+}
+
+async function buyOk(response: Response): Promise<UpgradeBuyResponse> {
+  expect(response.status, await response.clone().text()).toBe(200);
+  return endpoints.upgradesBuy.response.parse(await response.json());
+}
+
+interface LedgerLeg {
+  readonly tx_id: string;
+  readonly account: string;
+  readonly unit: string;
+  readonly delta: number;
+  readonly ref: string | null;
+  readonly idempotency_key: string | null;
+}
+
+function ledgerOf(session: Session, kind: string): Promise<LedgerLeg[]> {
+  return inPlayer(session, (sql) =>
+    sql
+      .exec<LedgerLeg & Record<string, SqlStorageValue>>(
+        'SELECT tx_id, account, unit, delta, ref, idempotency_key FROM ledger WHERE kind = ? ORDER BY seq',
+        kind,
+      )
+      .toArray(),
+  );
+}
+
+/** A player at the first venue holding `bullionEarned` Bullion, ready to ascend. */
+async function eligiblePlayer(bullionEarned: number = RIVIERA.bullionThreshold): Promise<Session> {
+  const session = await newSession();
+  await winAtTable(session, valueForBullion(bullionEarned));
+  expect((await state(session)).venue.lifetimeBullion).toBe(bullionEarned);
+  return session;
+}
+
+const NO_FAMILY_OFFICE = { oldMoney: 0, privateCourier: 0, trustFund: 0 };
+
+describe('GET /v1/state venue progress', () => {
+  it('reports the current venue, unlocked venues, Bullion and Family Office from storage', async () => {
+    const session = await newSession();
+    const fresh = await state(session);
+    expect(fresh.venue).toMatchObject({
+      id: RIVIERA.id,
+      unlocked: [RIVIERA.id],
+      lifetimeBullion: 0,
+    });
+    expect(fresh.venue.loadout).toHaveLength(RIVIERA.charmSockets);
+    expect(fresh.familyOffice).toEqual(NO_FAMILY_OFFICE);
+    expect(Object.keys(fresh.venue.upgrades)).not.toContain('oldMoney');
+
+    await winAtTable(session, valueForBullion(7) + bullion.valuePerBullion - 1);
+    expect((await state(session)).venue.lifetimeBullion).toBe(7);
+  });
+});
+
+describe('POST /v1/ascend against a real PlayerDO', () => {
+  it('refuses an ascension below the threshold and moves nothing', async () => {
+    const session = await eligiblePlayer(RIVIERA.bullionThreshold - 1);
+    const before = await state(session);
+    const report = await playerStub(session.tokens.playerId).conservation();
+
+    await expectError(await postAscend(session, ascend(RIVIERA.id)), 409, 'not_ready');
+
+    const after = await state(session);
+    expect(after.wallet).toEqual(before.wallet);
+    expect(after.venue).toEqual(before.venue);
+    expect(after.table.coins).toEqual(before.table.coins);
+    expect(await playerStub(session.tokens.playerId).conservation()).toEqual(report);
+    expect(await ledgerOf(session, ASCEND_TX_KIND)).toEqual([]);
+  });
+
+  it('refuses venues other than the current one and any client-sent value', async () => {
+    const session = await eligiblePlayer(PARIS.bullionThreshold * 2);
+    await expectError(await postAscend(session, ascend(PARIS.id)), 403, 'forbidden');
+    await expectError(await postAscend(session, { venueId: 'atlantis' }), 400, 'validation_failed');
+    for (const forged of [
+      { ...ascend(RIVIERA.id), goldBarsGranted: 1e6 },
+      { ...ascend(RIVIERA.id), lifetimeBullion: 1e9 },
+      { ...ascend(RIVIERA.id), at: 0 },
+    ]) {
+      await expectError(await postAscend(session, forged), 400, 'validation_failed');
+    }
+    expect(await ledgerOf(session, ASCEND_TX_KIND)).toEqual([]);
+    expect((await state(session)).venue.id).toBe(RIVIERA.id);
+
+    await ascendOk(await postAscend(session, ascend(RIVIERA.id)));
+    await expectError(await postAscend(session, ascend(RIVIERA.id)), 409, 'conflict');
+    await expectError(await postAscend(session, ascend(PARIS.id)), 409, 'not_ready');
+    expect(new Set((await ledgerOf(session, ASCEND_TX_KIND)).map((leg) => leg.tx_id)).size).toBe(1);
+  });
+
+  it('resets the venue, settles the old table and credits Gold Bars in one ascend entry', async () => {
+    const earned = RIVIERA.bullionThreshold * 4;
+    const session = await eligiblePlayer(earned);
+    await buyOk(await postBuy(session, buy('coinValue', 1)));
+    const crateId = await spawnCrate(session);
+    const [dropped] = await dropAsClient(session, 1);
+    if (dropped === undefined) throw new Error('the drop failed');
+    const before = await state(session);
+    expect(before.venue.upgrades).toMatchObject({ coinValue: 1 });
+    expect(before.table.buffer.length).toBeGreaterThan(0);
+    const key = newIdempotencyKey();
+
+    const result = await ascendOk(await postAscend(session, ascend(RIVIERA.id), key));
+
+    const bars = ascensionGoldBars(earned, RIVIERA.bullionThreshold, ascension);
+    expect(bars).toBe(2 * ascension.goldBarScale);
+    expect(result).toMatchObject({
+      venueId: RIVIERA.id,
+      goldBarsGranted: bars,
+      unlockedVenueId: PARIS.id,
+    });
+    expect(result.wallet).toMatchObject({ goldBars: bars, bullion: 0 });
+    expect(await vaultCoins(session)).toBe(upgradeStat(TRUST_FUND, 0));
+
+    const after = await state(session, { hydrate: 'boot' });
+    expect(after.wallet).toEqual(result.wallet);
+    expect(after.venue).toMatchObject({
+      id: PARIS.id,
+      unlocked: [RIVIERA.id, PARIS.id],
+      lifetimeBullion: 0,
+    });
+    expect(Object.values(after.venue.upgrades).every((level) => level === 0)).toBe(true);
+    expect(after.venue.loadout).toHaveLength(PARIS.charmSockets);
+    expect(after.familyOffice).toEqual(NO_FAMILY_OFFICE);
+
+    const oldIds = new Set([...before.table.coins, ...before.table.buffer].map((coin) => coin.id));
+    const heapTier = coinTiers.find((tier) => tier.id === openingHeap.tier);
+    if (heapTier === undefined) throw new Error('economy has no opening heap tier');
+    const heapValue = mintedCoinValue(heapTier, PARIS, {});
+    expect(heapValue).toBe(heapTier.value * PARIS.coinValueMultiplier);
+    expect(after.table.coins).toHaveLength(openingHeap.coins);
+    for (const coin of after.table.coins) {
+      expect(oldIds.has(coin.id)).toBe(false);
+      expect(coin.tier).toBe(openingHeap.tier);
+      expect(coin.value - heapValue).toBeGreaterThanOrEqual(0);
+      expect(coin.value - heapValue).toBeLessThanOrEqual(1);
+    }
+    expect(after.table.buffer.some((coin) => oldIds.has(coin.id))).toBe(false);
+    expect(after.table.crates).toEqual([]);
+
+    const legs = await ledgerOf(session, ASCEND_TX_KIND);
+    expect(new Set(legs.map((leg) => leg.tx_id)).size).toBe(1);
+    expect(legs.every((leg) => leg.idempotency_key === key)).toBe(true);
+    const sum = (filter: (leg: LedgerLeg) => boolean) =>
+      legs.filter(filter).reduce((total, leg) => total + leg.delta, 0);
+    for (const unit of new Set(legs.map((leg) => leg.unit))) {
+      expect(sum((leg) => leg.unit === unit)).toBe(0);
+    }
+    expect(sum((leg) => leg.account === 'wallet' && leg.unit === 'goldBars')).toBe(bars);
+    expect(sum((leg) => leg.account === 'mint' && leg.unit === 'goldBars')).toBe(-bars);
+    expect(sum((leg) => leg.account === 'table' && leg.unit === 'coins')).toBe(
+      -before.table.coins.reduce((total, coin) => total + coin.value, 0),
+    );
+    expect(sum((leg) => leg.account === 'table' && leg.unit === 'crate')).toBe(-1);
+    expect(sum((leg) => leg.account === 'buffer' && leg.unit === 'coins')).toBe(
+      -before.table.buffer.length * COPPER.value,
+    );
+    await expectConserved(session);
+    expect(await playerStub(session.tokens.playerId).conservation()).toMatchObject({
+      currenciesConserved: true,
+      tableCrates: 0,
+      ledgerCratesOnTable: 0,
+    });
+
+    const late = await claims(session, [
+      { kind: 'fall', coinId: dropped.coin.id, tick: 1, edge: 'front' },
+      { kind: 'crate', crateId, tick: 1, edge: 'front' },
+    ]);
+    expect(late.results).toEqual([
+      { status: 'rejected', reason: 'already_claimed' },
+      { status: 'rejected', reason: 'already_claimed' },
+    ]);
+    const oldBuffered = before.table.buffer[0];
+    if (oldBuffered === undefined) throw new Error('expected a reserved coin before ascending');
+    const replayedDrop = await session.call(endpoints.tableDrop.path, {
+      body: { session: await tableSession(session), x: 0, tick: 1, coinId: oldBuffered.id },
+    });
+    await expectError(replayedDrop, 409, 'conflict');
+    expect((await state(session)).wallet).toEqual(after.wallet);
+    await expectConserved(session);
+  });
+
+  it('replays the same Idempotency-Key with the same result and never ascends twice', async () => {
+    const session = await eligiblePlayer(RIVIERA.bullionThreshold * 4);
+    const key = newIdempotencyKey();
+    const first = await ascendOk(await postAscend(session, ascend(RIVIERA.id), key));
+
+    const again = await postAscend(session, ascend(RIVIERA.id), key);
+    expect(again.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+    expect(await ascendOk(again)).toEqual(first);
+    await expectError(
+      await postAscend(session, ascend(PARIS.id), key),
+      422,
+      'idempotency_key_reused',
+    );
+
+    const now = await state(session);
+    expect(now.wallet.goldBars).toBe(first.goldBarsGranted);
+    expect(now.venue.unlocked).toEqual([RIVIERA.id, PARIS.id]);
+    expect(new Set((await ledgerOf(session, ASCEND_TX_KIND)).map((leg) => leg.tx_id)).size).toBe(1);
+    await expectConserved(session);
+  });
+
+  it('lets exactly one of two racing ascensions through', async () => {
+    const session = await eligiblePlayer(RIVIERA.bullionThreshold * 4);
+    const responses = await Promise.all([
+      postAscend(session, ascend(RIVIERA.id)),
+      postAscend(session, ascend(RIVIERA.id)),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    const bars = ascensionGoldBars(
+      RIVIERA.bullionThreshold * 4,
+      RIVIERA.bullionThreshold,
+      ascension,
+    );
+    expect((await state(session)).wallet.goldBars).toBe(bars);
+    expect(new Set((await ledgerOf(session, ASCEND_TX_KIND)).map((leg) => leg.tx_id)).size).toBe(1);
+    await expectConserved(session);
+  });
+});
+
+describe('The Family Office through POST /v1/upgrades/buy', () => {
+  it('charges Gold Bars only, and refuses a player without them', async () => {
+    const session = await newSession();
+    const before = await state(session);
+    await expectError(await postBuy(session, buy('trustFund', 1)), 409, 'insufficient_funds');
+    const after = await state(session);
+    expect(after.wallet).toEqual(before.wallet);
+    expect(after.familyOffice).toEqual(NO_FAMILY_OFFICE);
+  });
+
+  it('sells levels for Gold Bars, keeps them through ascensions and pays starting coins from them', async () => {
+    const session = await eligiblePlayer(RIVIERA.bullionThreshold * 4);
+    const { goldBarsGranted } = await ascendOk(await postAscend(session, ascend(RIVIERA.id)));
+    const vaultBefore = await vaultCoins(session);
+    const cost = upgradeCost(TRUST_FUND, 0);
+    const key = newIdempotencyKey();
+
+    const bought = await buyOk(await postBuy(session, buy('trustFund', 1, PARIS.id), key));
+    expect(bought).toMatchObject({ venueId: PARIS.id, lineId: 'trustFund', level: 1 });
+    expect(bought.wallet.goldBars).toBe(goldBarsGranted - cost);
+    expect(await vaultCoins(session)).toBe(vaultBefore);
+    const replay = await postBuy(session, buy('trustFund', 1, PARIS.id), key);
+    expect(replay.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+    expect(await buyOk(replay)).toEqual(bought);
+    await expectError(await postBuy(session, buy('trustFund', 1, PARIS.id)), 409, 'conflict');
+    await expectError(await postBuy(session, buy('trustFund', 2, RIVIERA.id)), 403, 'forbidden');
+    await expectError(await postBuy(session, buy('coinValue', 1, RIVIERA.id)), 403, 'forbidden');
+
+    const upgraded = await state(session);
+    expect(upgraded.wallet.goldBars).toBe(goldBarsGranted - cost);
+    expect(upgraded.familyOffice).toEqual({ ...NO_FAMILY_OFFICE, trustFund: 1 });
+    expect(Object.values(upgraded.venue.upgrades).every((level) => level === 0)).toBe(true);
+    const spend = (await ledgerOf(session, 'upgrade.buy')).filter((leg) => leg.unit === 'goldBars');
+    expect(spend).toEqual([
+      expect.objectContaining({ account: 'wallet', delta: -cost, ref: 'trustFund' }),
+      expect.objectContaining({ account: 'house', delta: cost, ref: 'trustFund' }),
+    ]);
+
+    await winAtTable(session, valueForBullion(PARIS.bullionThreshold));
+    const next = await ascendOk(await postAscend(session, ascend(PARIS.id)));
+    expect(next.unlockedVenueId).toBe(venues[2].id);
+    expect(next.wallet.goldBars).toBe(goldBarsGranted - cost + ascension.goldBarScale);
+    expect(await vaultCoins(session)).toBe(Math.floor(upgradeStat(TRUST_FUND, 1)));
+    expect((await state(session)).familyOffice).toEqual({ ...NO_FAMILY_OFFICE, trustFund: 1 });
+    await expectConserved(session);
+  });
+
+  it('raises the value of every coin minted from Old Money on, the reserved buffer included', async () => {
+    const session = await eligiblePlayer(RIVIERA.bullionThreshold * 4);
+    await ascendOk(await postAscend(session, ascend(RIVIERA.id)));
+    const plain = (await state(session)).table.buffer;
+    const plainMicros = mintedCoinMicros(COPPER, PARIS, {});
+    expect(plain.every((coin) => coin.value * MINT_MICROS_PER_COIN === plainMicros)).toBe(true);
+
+    await buyOk(await postBuy(session, buy('oldMoney', 1, PARIS.id)));
+
+    const richer = mintedCoinMicros(COPPER, PARIS, { oldMoney: 1 });
+    expect(richer).toBeGreaterThan(plainMicros);
+    const { buffer } = (await state(session)).table;
+    expect(buffer.map((coin) => coin.id)).toEqual(plain.map((coin) => coin.id));
+    const total = buffer.reduce((sum, coin) => sum + coin.value, 0);
+    const raise = Math.floor((plain.length * (richer - plainMicros)) / MINT_MICROS_PER_COIN);
+    expect(total).toBeGreaterThanOrEqual(
+      plain.length * COPPER.value * PARIS.coinValueMultiplier + raise,
+    );
+    expect(total).toBeLessThanOrEqual(
+      plain.length * COPPER.value * PARIS.coinValueMultiplier + raise + 1,
+    );
+    await expectConserved(session);
   });
 });

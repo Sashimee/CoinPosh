@@ -17,7 +17,6 @@ import {
 } from '@coinposh/shared';
 import { Hono } from 'hono';
 import type { Command, DoResult } from '../do/PlayerDO.ts';
-import { HOME_VENUE } from '../do/entities.ts';
 import type { Env } from '../env.ts';
 import type { AppEnv } from '../http/context.ts';
 import { ApiFailure } from '../http/errors.ts';
@@ -97,15 +96,20 @@ export function readUpgradeLevels(sql: SqlStorage, venueId: VenueId): UpgradeLev
 /**
  * Prices `body` from economy config against the player's real levels and wallet. The client
  * names only the line and the level it expects to reach, so a stale or replayed tap that
- * asks for a level already owned gets `conflict` instead of paying twice.
+ * asks for a level already owned gets `conflict` instead of paying twice. Only the venue the
+ * player is at now (`currentVenueId`, from server state) sells venue upgrades.
  */
 export function quoteUpgrade(
   levels: Readonly<Record<string, number>>,
   wallet: Wallet,
   body: UpgradeBuyRequest,
+  currentVenueId: VenueId,
 ): UpgradeQuote {
-  if (body.venueId !== HOME_VENUE.id) {
-    throw new ApiFailure('forbidden', `Venue ${body.venueId} is not unlocked yet.`);
+  if (body.venueId !== currentVenueId) {
+    throw new ApiFailure(
+      'forbidden',
+      `Venue upgrades are sold only at the current venue ${currentVenueId}, not ${body.venueId}.`,
+    );
   }
   if (!isLineV1(body.lineId)) {
     throw new ApiFailure('not_found', `Upgrade line ${body.lineId} is not available.`);

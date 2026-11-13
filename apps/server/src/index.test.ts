@@ -1,5 +1,8 @@
+import { endpoints } from '@coinposh/shared';
+import { exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { app } from './index.ts';
+import { API_ORIGIN } from './test/client.ts';
 
 describe('GET /health', () => {
   it('answers 200 with an ok status', async () => {
@@ -20,5 +23,19 @@ describe('unknown routes', () => {
     const res = await app.request('/nope');
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: { code: 'not_found', message: 'No such route.' } });
+  });
+});
+
+describe('POST /v1/ascend', () => {
+  it('is routed and asks for a signed-in device before reaching the player', async () => {
+    const res = await exports.default.fetch(
+      new Request(`${API_ORIGIN}${endpoints.ascend.path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ venueId: 'rivieraYacht' }),
+      }),
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: { code: 'unauthorized' } });
   });
 });
