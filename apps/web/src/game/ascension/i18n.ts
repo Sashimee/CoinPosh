@@ -6,6 +6,10 @@ export const ASCENSION_NAMESPACE = 'gameAscension';
 
 interface AscensionStrings extends ResourceTree {
   open: string;
+  entryProgress: string;
+  entryReady: string;
+  entryFinal: string;
+  entryUnknown: string;
   title: string;
   subtitle: string;
   progress: string;
@@ -40,6 +44,10 @@ interface AscensionStrings extends ResourceTree {
 export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
   en: {
     open: 'Ascend',
+    entryProgress: 'Ascension: {{percent}} of the way to {{venue}}',
+    entryReady: 'Ascension ready: {{venue}} awaits',
+    entryFinal: 'Ascension: {{percent}} of the way to a fresh start',
+    entryUnknown: 'Ascension and the Family Office',
     title: 'Venue Ascension',
     subtitle: 'Leave {{venue}} at its peak. The house pays you in Gold Bars.',
     progress: '{{current}} / {{target}} Bullion',
@@ -85,6 +93,10 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
   },
   fr: {
     open: 'Ascension',
+    entryProgress: 'Ascension : {{percent}} du chemin vers {{venue}}',
+    entryReady: 'Ascension prête : {{venue}} vous attend',
+    entryFinal: 'Ascension : {{percent}} du chemin vers un nouveau départ',
+    entryUnknown: 'Ascension et Family Office',
     title: 'Ascension de salon',
     subtitle: 'Quittez {{venue}} au sommet. La maison vous paie en lingots d’or.',
     progress: '{{current}} / {{target}} lingots',
@@ -130,6 +142,10 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
   },
   de: {
     open: 'Aufstieg',
+    entryProgress: 'Aufstieg: {{percent}} des Weges zum {{venue}}',
+    entryReady: 'Aufstieg bereit: {{venue}} erwartet Sie',
+    entryFinal: 'Aufstieg: {{percent}} des Weges zu einem Neubeginn',
+    entryUnknown: 'Aufstieg und Family Office',
     title: 'Aufstieg des Salons',
     subtitle: 'Verlassen Sie {{venue}} auf dem Höhepunkt. Das Haus zahlt in Goldbarren.',
     progress: '{{current}} / {{target}} Bullion',
