@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Connectivity, Scheduler } from './connectivity.ts';
 import { MOCK_RULES } from './mock/rules.ts';
 import type { MockServer } from './mock/server.ts';
-import { Outbox } from './outbox.ts';
+import { Outbox, outboxKey } from './outbox.ts';
 import { TableSync, type TableEvent } from './tableSync.ts';
 import {
   FakeTime,
@@ -326,7 +326,9 @@ describe('TableSync offline queue', () => {
     time.advance(100);
     expect(sync.nudge(time.tick(), 'right')).toBe(false);
     expect(sync.pending).toBe(queued);
-    await expect(alice.store.get('outbox')).resolves.toHaveLength(queued);
+    const session = sync.session;
+    if (session === null) throw new Error('Expected the state to name a table session.');
+    await expect(alice.store.get(outboxKey(session))).resolves.toHaveLength(queued);
 
     server.setNetwork('up');
     await sync.flush();

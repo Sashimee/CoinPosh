@@ -17,7 +17,7 @@ import {
 } from '@coinposh/shared';
 import type { DeviceKey } from './device.ts';
 import { sha256Hex } from './encoding.ts';
-import { ApiRequestError } from './errors.ts';
+import { ApiRequestError, type ApiOperation } from './errors.ts';
 import type { WireRequest, WireResponse } from './wire.ts';
 
 type BodyField<N extends EndpointName> = [EndpointBodyInput<N>] extends [never]
@@ -51,7 +51,7 @@ export function newIdempotencyKey(): IdempotencyKey {
   return crypto.randomUUID() as IdempotencyKey;
 }
 
-function encodeQuery(name: EndpointName, endpoint: Endpoint, query: unknown): string {
+function encodeQuery(name: ApiOperation, endpoint: Endpoint, query: unknown): string {
   if (endpoint.query === undefined) {
     if (query !== undefined) {
       throw new ContractViolationError(`${name} takes no query, so refusing to send one.`);
@@ -72,7 +72,7 @@ function encodeQuery(name: EndpointName, endpoint: Endpoint, query: unknown): st
   return search === '' ? '' : `?${search}`;
 }
 
-function encodeBody(name: EndpointName, endpoint: Endpoint, body: unknown): string | null {
+function encodeBody(name: ApiOperation, endpoint: Endpoint, body: unknown): string | null {
   if (endpoint.body === null) return null;
   const parsed = endpoint.body.safeParse(body);
   if (!parsed.success) {
@@ -91,10 +91,23 @@ export async function signRequest<N extends EndpointName>(
   signed: SignedRequestInput,
   device: DeviceKey,
 ): Promise<WireRequest> {
-  const endpoint: Endpoint = endpoints[name];
-  const path =
-    (buildPath as (n: EndpointName, params?: unknown) => string)(name, input.params) +
-    encodeQuery(name, endpoint, input.query);
+  const path = (buildPath as (n: EndpointName, params?: unknown) => string)(name, input.params);
+  return await signEndpointRequest(name, endpoints[name], path, input, signed, device);
+}
+
+/**
+ * {@link signRequest} for an endpoint given by its contract rather than its name, such as the
+ * table snapshot upload, which is not in `endpoints` yet. `path` is the path without its query.
+ */
+export async function signEndpointRequest(
+  name: ApiOperation,
+  endpoint: Endpoint,
+  path: string,
+  input: { readonly body?: unknown; readonly query?: unknown },
+  signed: SignedRequestInput,
+  device: DeviceKey,
+): Promise<WireRequest> {
+  const pathWithQuery = path + encodeQuery(name, endpoint, input.query);
   const body = encodeBody(name, endpoint, input.body);
   const idempotencyKey = requiresIdempotencyKey(endpoint) ? signed.idempotencyKey : null;
   if (requiresIdempotencyKey(endpoint) && idempotencyKey === null) {
@@ -103,7 +116,7 @@ export async function signRequest<N extends EndpointName>(
   const signature = await device.sign(
     canonicalRequest({
       method: endpoint.method,
-      pathWithQuery: path,
+      pathWithQuery,
       idempotencyKey,
       bodySha256: body === null ? EMPTY_BODY_SHA256 : await sha256Hex(body),
     }),
@@ -116,7 +129,7 @@ export async function signRequest<N extends EndpointName>(
     }
     headers[HEADERS.authorization] = `Bearer ${signed.accessToken}`;
   }
-  return { method: endpoint.method, path, headers, body };
+  return { method: endpoint.method, path: pathWithQuery, headers, body };
 }
 
 function fallbackError(status: number): ApiError {
@@ -133,8 +146,16 @@ export function readResponse<N extends EndpointName>(
   name: N,
   response: WireResponse,
 ): EndpointResponse<N> {
+  return readEndpointResponse(name, endpoints[name], response) as EndpointResponse<N>;
+}
+
+/** {@link readResponse} for an endpoint given by its contract. */
+export function readEndpointResponse(
+  name: ApiOperation,
+  endpoint: Endpoint,
+  response: WireResponse,
+): unknown {
   if (response.status >= 200 && response.status < 300) {
-    const endpoint: Endpoint = endpoints[name];
     const parsed = endpoint.response.safeParse(response.body);
     if (!parsed.success) {
       throw new ContractViolationError(
@@ -142,7 +163,7 @@ export function readResponse<N extends EndpointName>(
         { cause: parsed.error },
       );
     }
-    return parsed.data as EndpointResponse<N>;
+    return parsed.data;
   }
   const envelope = ErrorEnvelopeSchema.safeParse(response.body);
   throw new ApiRequestError(
