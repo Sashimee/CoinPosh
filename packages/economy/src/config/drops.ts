@@ -39,17 +39,46 @@ export const crateSpawn = {
   ftueScriptedCharm: true,
 } as const satisfies CrateSpawnConfig;
 
+/**
+ * Exquisite crates pay a 25 % Gold Safe instead of a Key: with a Key there, crates alone paid
+ * 1.6 Keys per safe and Keys piled up unspent (02-ECONOMY.md "Safes").
+ */
 export const crateRewards = {
-  common: { incomeSeconds: 5, pearls: 0, keys: 0, tickets: 0, charmChance: 0, albumCard: true },
-  fine: { incomeSeconds: 12, pearls: 1, keys: 0, tickets: 0, charmChance: 1_000, albumCard: true },
-  rare: { incomeSeconds: 30, pearls: 3, keys: 0, tickets: 0, charmChance: 3_000, albumCard: true },
+  common: {
+    incomeSeconds: 5,
+    pearls: 0,
+    keys: 0,
+    tickets: 0,
+    charmChance: 0,
+    albumCard: true,
+    safeChance: 0,
+  },
+  fine: {
+    incomeSeconds: 12,
+    pearls: 1,
+    keys: 0,
+    tickets: 0,
+    charmChance: 1_000,
+    albumCard: true,
+    safeChance: 200,
+  },
+  rare: {
+    incomeSeconds: 30,
+    pearls: 3,
+    keys: 0,
+    tickets: 0,
+    charmChance: 3_000,
+    albumCard: true,
+    safeChance: 1_000,
+  },
   exquisite: {
     incomeSeconds: 90,
     pearls: 8,
-    keys: 1,
+    keys: 0,
     tickets: 1,
     charmChance: 6_000,
     albumCard: true,
+    safeChance: 2_500,
   },
   legendary: {
     incomeSeconds: 300,
@@ -58,6 +87,7 @@ export const crateRewards = {
     tickets: 2,
     charmChance: 10_000,
     albumCard: true,
+    safeChance: 5_000,
   },
   heirloom: {
     incomeSeconds: 900,
@@ -66,5 +96,6 @@ export const crateRewards = {
     tickets: 3,
     charmChance: 10_000,
     albumCard: true,
+    safeChance: 10_000,
   },
 } as const satisfies CrateRewardTable;

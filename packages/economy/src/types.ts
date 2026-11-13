@@ -108,9 +108,31 @@ export interface CrateRewardDef {
   /** Basis points (10 000 = always). */
   readonly charmChance: number;
   readonly albumCard: boolean;
+  /**
+   * Basis points that the open also grants a safe of `safes.crateDrop.type`. Rolled only on
+   * opens of `safes.crateDrop.source`, so a safe, gacha capsule or scratch card never chains one.
+   */
+  readonly safeChance: number;
 }
 
 export type CrateRewardTable = Readonly<Record<RarityId, CrateRewardDef>>;
+
+export interface SafeTypeDef {
+  /** A `SafeTypeId` catalog key. */
+  readonly id: string;
+  /** The drop table (and pity counters) the safe's contents roll on. */
+  readonly dropSource: DropSourceId;
+  /** Keys that open it at once, whatever its timer shows. */
+  readonly keysPerSafe: number;
+  /** The server sets `unlocksAt = grantedAt + unlockSeconds × 1 000`; past it, the timer opens it. */
+  readonly unlockSeconds: number;
+}
+
+export interface SafesConfig {
+  readonly types: readonly SafeTypeDef[];
+  /** Which opens roll the crate reward table's `safeChance`, and the safe type they grant. */
+  readonly crateDrop: { readonly source: DropSourceId; readonly type: string };
+}
 
 export const UPGRADE_STAT_IDS = [
   'pusherSpeed',
@@ -260,6 +282,7 @@ export interface EconomyConfig {
   readonly pity: PityConfig;
   readonly crateSpawn: CrateSpawnConfig;
   readonly crateRewards: CrateRewardTable;
+  readonly safes: SafesConfig;
   readonly venues: readonly VenueDef[];
   readonly album: readonly AlbumSetDef[];
   readonly offline: OfflineConfig;
