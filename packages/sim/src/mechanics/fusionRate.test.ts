@@ -7,6 +7,9 @@ import {
 } from '@coinposh/economy';
 import { COIN_TIERS } from '@coinposh/shared';
 import { afterAll, describe, expect, it } from 'vitest';
+// The economy's measured ladder lives in its sim/ folder, which its package exports leave out.
+import { evaluateLadder, playStyles } from '../../../economy/sim/ladder.ts';
+import { simModel } from '../../../economy/sim/model.ts';
 import { COIN } from '../coin.ts';
 import { TICK_RATE_HZ } from '../constants.ts';
 import { MAX_DROP_OFFSET_MM, type SimInput } from '../inputs.ts';
@@ -259,8 +262,17 @@ describe('a sustained pour on the Demo table', () => {
   const POUR_SECONDS = 90;
   const POURS = [1, 2, 3, 4].flatMap((seed) => [-120, 0, 60].map((xMm) => [seed, xMm] as const));
   const MINUTE_TICKS = rateEnvelope.fusions.windowMs / (1000 / TICK_RATE_HZ);
-  /** Two to three aimed taps a second fuse 47 to 83 times a minute (packages/economy/sim ladder runs). */
-  const TAPPED_FUSIONS_PER_MINUTE = { min: 40, max: 85 };
+  /** Fusions a minute of the economy's ladder styles that tap two to three times a second, aimed. */
+  const tappedFusionsPerMinute = evaluateLadder(simModel, economyConfig.fusion.bonusMultiplier)
+    .styles.filter(({ style }) => {
+      const { tapsPerSecond, aimSpreadMm, pour } = playStyles[style];
+      return !pour && tapsPerSecond >= 2 && tapsPerSecond <= 3 && aimSpreadMm < MAX_DROP_OFFSET_MM;
+    })
+    .map(({ fusionsPerMinute }) => fusionsPerMinute);
+  const TAPPED_FUSIONS_PER_MINUTE = {
+    min: Math.min(...tappedFusionsPerMinute),
+    max: Math.max(...tappedFusionsPerMinute),
+  };
 
   function pour(xMm: number): (tick: number) => SimInput[] {
     return (tick) => (tick % POUR_TICKS === 0 ? [{ kind: 'dropCoin', xMm }] : []);
@@ -308,6 +320,7 @@ describe('a sustained pour on the Demo table', () => {
   );
 
   it('fuses like fast tapping, not faster', { timeout: 600_000 }, async () => {
+    expect(tappedFusionsPerMinute.length).toBeGreaterThan(0);
     const all = await Promise.all(POURS.map(([seed, xMm]) => poured(seed, xMm)));
     for (const played of all) {
       const perMinute = (played.fusions.length / POUR_SECONDS) * 60;
