@@ -98,6 +98,40 @@ function vaultMoves(world: StoredWorld | null, fromSeq: number): StoredEntry[] {
   );
 }
 
+/** A fall the server credited, once it has reached the tab's storage. */
+function fallCredit(world: StoredWorld | null): StoredEntry | undefined {
+  return world?.ledger.find(
+    (entry) => entry.reason === 'claim.fall' && (entry.delta.coins ?? 0) > 0,
+  );
+}
+
+/**
+ * Waits for the taps to earn a fall credit, so the reload always carries a session that earned
+ * something. The plaque cannot tell: it counts the drop buffer, so it moves on the first
+ * buffered drop whether or not anything was earned.
+ */
+async function earnFromTaps(page: Page): Promise<void> {
+  let world: StoredWorld | null = null;
+  try {
+    await expect
+      .poll(
+        async () => {
+          world = await storedWorld(page);
+          return fallCredit(world) !== undefined;
+        },
+        { timeout: 60_000, intervals: [500] },
+      )
+      .toBe(true);
+  } catch (error) {
+    const ledger = (world as StoredWorld | null)?.ledger ?? [];
+    const tail = ledger.slice(-8).map((entry) => `${entry.reason} ${JSON.stringify(entry.delta)}`);
+    throw new Error(
+      `The ${String(TAPS)} taps never earned a fall credit, so there is no earned session to carry across the reload. Last ledger entries: ${tail.join('; ') || 'none stored'}`,
+      { cause: error },
+    );
+  }
+}
+
 /**
  * Coins the restored sim was laid with at boot: every pose and heap slot the server handed back.
  * Unlike the live count it does not move as the pusher drops and fuses coins after the boot.
@@ -184,13 +218,7 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
     await tapDrop(page);
     await page.waitForTimeout(TAP_EVERY_MS);
   }
-  // Drops are prepaid from the buffer, so the Vault first moves when the pusher lands a credit.
-  await expect
-    .poll(() => vaultBalance(page), {
-      message: 'the 30 taps earn a credit to carry across the reload',
-      timeout: 60_000,
-    })
-    .not.toBe(freshVault);
+  await earnFromTaps(page);
   await settle(page);
   const coins = await tableCoins(page);
 

@@ -21,6 +21,7 @@ import {
 } from './persist.ts';
 import { MOCK_RULES } from './rules.ts';
 import { createMockServer, type MockServer, type MockServerOptions } from './server.ts';
+import { MockWorld } from './world.ts';
 
 class FakeStorage implements MockStorage {
   readonly items = new Map<string, string>();
@@ -286,7 +287,7 @@ describe('Demo persistence: the world survives a reload of the tab', () => {
     }
   });
 
-  it('stores the last finished state at once on a mid-request pagehide, then the new one after', async () => {
+  it('keeps the last stored state on a mid-request pagehide, then stores the new one after', async () => {
     const lifecycle = new EventTarget();
     let hideMidRequest = false;
     let duringHide: { writes: number; tableSession: string | null | undefined } | null = null;
@@ -303,19 +304,52 @@ describe('Demo persistence: the world survives a reload of the tab', () => {
     };
     const tab = await Tab.open(page({ now, lifecycle, persistDelayMs: 60_000 }));
     const first = await tab.player.client.call('state', { query: { hydrate: 'boot' } });
+    tab.server.flush();
     const writesBefore = storage.writes;
     hideMidRequest = true;
     const booted = await tab.player.client.call('state', { query: { hydrate: 'boot' } });
     expect(session(booted)).not.toBe(session(first));
-    expect(duringHide, 'the hidden page stores the state the previous request left').toEqual({
-      writes: writesBefore + 1,
+    expect(duringHide, 'the hidden page never encodes a world mid-request').toEqual({
+      writes: writesBefore,
       tableSession: session(first),
     });
-    expect(storage.writes).toBe(writesBefore + 2);
+    expect(storage.writes).toBe(writesBefore + 1);
     expect(storedWorld().players[0]?.tableSession).toBe(session(booted));
   });
 
-  it('does not rewrite an unchanged captured state on a second mid-request pagehide', async () => {
+  it('retries a failed write on a mid-request pagehide without encoding again', async () => {
+    const lifecycle = new EventTarget();
+    let hideMidRequest = false;
+    let duringHide: { writes: number; encodes: number } | null = null;
+    const serialize = vi.spyOn(MockWorld.prototype, 'serialize');
+    try {
+      const now = () => {
+        if (hideMidRequest) {
+          hideMidRequest = false;
+          lifecycle.dispatchEvent(new Event('pagehide'));
+          duringHide = { writes: storage.writes, encodes: serialize.mock.calls.length };
+        }
+        return time.now();
+      };
+      const tab = await Tab.open(collectingPage({ now, lifecycle, persistDelayMs: 60_000 }));
+      const first = await tab.boot();
+      storage.failSet = true;
+      tab.server.flush();
+      expect(storage.writes).toBe(0);
+      expect(warnings).toHaveLength(1);
+      storage.failSet = false;
+      const encodes = serialize.mock.calls.length;
+      hideMidRequest = true;
+      await tab.player.client.call('state');
+      expect(duringHide).toEqual({ writes: 1, encodes });
+      expect(storedWorld().players[0]?.tableSession).toBe(session(first));
+      expect(storage.writes).toBe(2);
+    } finally {
+      serialize.mockRestore();
+    }
+  });
+
+  it('does not rewrite an unchanged stored state on a second mid-request pagehide', async () => {
     const lifecycle = new EventTarget();
     let hides = 0;
     let writesDuring: number[] = [];
@@ -328,12 +362,123 @@ describe('Demo persistence: the world survives a reload of the tab', () => {
     };
     const tab = await Tab.open(page({ now, lifecycle, persistDelayMs: 60_000 }));
     await tab.player.client.call('state');
+    tab.server.flush();
     const writesBefore = storage.writes;
     hides = 2;
     writesDuring = [];
     await tab.player.client.call('state');
-    expect(writesDuring).toEqual([writesBefore + 1, writesBefore + 1]);
-    expect(storage.writes).toBe(writesBefore + 2);
+    expect(writesDuring).toEqual([writesBefore, writesBefore]);
+    expect(storage.writes).toBe(writesBefore + 1);
+  });
+
+  it('encodes the world once per burst of requests, not once per request', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const serialize = vi.spyOn(MockWorld.prototype, 'serialize');
+    try {
+      const lifecycle = new EventTarget();
+      const tab = await Tab.open(page({ lifecycle, persistDelayMs: 250 }));
+      await tab.boot();
+      vi.advanceTimersByTime(250);
+      serialize.mockClear();
+      const writesBefore = storage.writes;
+      for (let i = 0; i < 5; i++) await tab.player.client.call('state');
+      expect(serialize).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(250);
+      expect(serialize).toHaveBeenCalledTimes(1);
+      expect(storage.writes).toBe(writesBefore + 1);
+
+      lifecycle.dispatchEvent(new Event('pagehide'));
+      expect(serialize, 'nothing changed since the last write').toHaveBeenCalledTimes(1);
+      expect(storage.writes).toBe(writesBefore + 1);
+    } finally {
+      serialize.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('still writes every persistMaxWaitMs while requests keep restarting the debounce', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const tab = await Tab.open(page({ persistDelayMs: 100, persistMaxWaitMs: 400 }));
+      await tab.boot();
+      vi.advanceTimersByTime(400);
+      const writesBefore = storage.writes;
+      for (let i = 0; i < 4; i++) {
+        await tab.player.client.call('state');
+        vi.advanceTimersByTime(90);
+      }
+      expect(storage.writes).toBe(writesBefore);
+      await tab.player.client.call('state');
+      vi.advanceTimersByTime(90);
+      expect(storage.writes).toBe(writesBefore + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores a world whose wallet and drop buffer are both empty, and refills it from new credit', async () => {
+    const first = await Tab.open(page());
+    const state = await first.boot();
+    const dropped: CoinId[] = [];
+    for (let i = 0; i < 100; i++) {
+      const buffer = (await first.player.client.call('state')).table.buffer;
+      if (buffer.length === 0) break;
+      dropped.push((await first.drop(state)).coin.id);
+    }
+    time.advance(1_000);
+    await first.player.client.snapshot(
+      {
+        session: session(state),
+        seq: 1,
+        tick: first.simTick(),
+        pusher: { tickInCycle: 0 },
+        coins: contractGrid(dropped),
+        crates: [],
+      },
+      { idempotencyKey: newIdempotencyKey() },
+    );
+    const drained = await first.player.client.call('state');
+    expect(drained.wallet.coins).toBe(0);
+    expect(drained.table.buffer).toEqual([]);
+    first.server.flush();
+    const left = storedWorld().players[0];
+    expect(left?.wallet.coins).toBe(0);
+    expect(left?.coins.filter((record) => record.place === 'buffer')).toEqual([]);
+
+    time.advance(5_000);
+    const reloaded = page();
+    expect(reloaded.restored).toBe(true);
+    const second = await Tab.open(reloaded);
+    const booted = await second.boot();
+    expect(second.id).toBe(first.id);
+    expect(booted.wallet.coins).toBe(0);
+    expect(booted.table.buffer).toEqual([]);
+    expect(booted.table.coins.map((coin) => coin.id).sort()).toEqual(
+      drained.table.coins.map((coin) => coin.id).sort(),
+    );
+    second.expectConserved();
+
+    const fromSeq = reloaded.ledger().at(-1)?.seq ?? -1;
+    const heapCoin = booted.table.layout?.coins.findIndex((slot) => slot.kind === 'heapSlot') ?? -1;
+    const falling = booted.table.coins[heapCoin];
+    if (falling === undefined) throw new Error('The restored table laid no opening heap coin.');
+    const [claimed] = await second.claimFall(booted, falling.id);
+    expect(claimed).toMatchObject({ status: 'accepted' });
+    const resumed = await second.player.client.call('state');
+    const moves = reloaded
+      .ledger()
+      .filter((entry) => entry.seq > fromSeq && entry.reason !== 'drop.prepay');
+    const earned = moves.reduce((sum, entry) => sum + (entry.delta.coins ?? 0), 0);
+    expect(earned).toBeGreaterThan(0);
+    expect(resumed.table.buffer.length).toBeGreaterThan(0);
+    const plaque = resumed.table.buffer.reduce(
+      (sum, coin) => sum + coin.value,
+      resumed.wallet.coins,
+    );
+    expect(plaque, 'wallet plus buffer is exactly what the player earned since the reload').toBe(
+      earned,
+    );
+    second.expectConserved();
   });
 });
 
@@ -592,6 +737,7 @@ describe('Demo persistence: a bad blob or a broken storage falls back to a fresh
     server.flush();
     expect(storedWorld().players.map((player) => player.id)).toEqual([tab.id]);
     storage.failSet = true;
+    await tab.player.client.call('state');
     server.flush();
     expect(warnings).toHaveLength(2);
   });

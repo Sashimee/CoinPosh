@@ -60,6 +60,11 @@ export interface MockServerOptions {
   readonly onPersistWarning?: PersistWarn;
   /** How long after the last request the world is written; every request in a burst restarts it. */
   readonly persistDelayMs?: number;
+  /**
+   * The longest a changed world waits for its write while requests keep coming, which is also
+   * the most a mid-request pagehide can lose. Defaults to four times `persistDelayMs`.
+   */
+  readonly persistMaxWaitMs?: number;
   /** Whose `pagehide` and `visibilitychange` flush the world at once. Defaults to `window`. */
   readonly lifecycle?: EventTarget | null;
 }
@@ -74,8 +79,8 @@ export interface MockServer {
   /** Whether this server picked up a world an earlier page in this tab left in storage. */
   readonly restored: boolean;
   /**
-   * Writes the world now. Mid-request it stores the state the last finished request left at
-   * once, then the newer one right after the running request finishes.
+   * Writes the world now. Mid-request it retries the last encoded state if its write failed,
+   * then stores the newer one right after the running request finishes.
    */
   flush(): void;
 }
@@ -85,9 +90,10 @@ const DEFAULT_PERSIST_DELAY_MS = 250;
 interface Persistence {
   readonly world: MockWorld;
   readonly restored: boolean;
-  /** Encodes and writes the world; called between requests only, so it never catches a handler between two awaits. */
-  readonly save: () => void;
-  /** Encodes the world as it stands between requests, for {@link writeCaptured} to store later. */
+  /**
+   * Encodes the world as it stands; called between requests only, so it never catches a
+   * handler between two awaits.
+   */
   readonly capture: () => void;
   /** Writes the last captured blob if it is not stored yet, without touching the live world. */
   readonly writeCaptured: () => void;
@@ -104,7 +110,6 @@ function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persis
     return {
       world: new MockWorld(),
       restored: false,
-      save: noop,
       capture: noop,
       writeCaptured: noop,
     };
@@ -159,16 +164,7 @@ function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persis
       failing = true;
     }
   };
-  return {
-    world: live,
-    restored,
-    save() {
-      capture();
-      writeCaptured();
-    },
-    capture,
-    writeCaptured,
-  };
+  return { world: live, restored, capture, writeCaptured };
 }
 
 interface StoredResponse {
@@ -640,33 +636,43 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   }
 
   /*
-   * Writes are debounced and only ever run between requests. Tokens, replay stores, Turnstile
+   * Encoding the whole world costs real main-thread time once the ledger is full, so it runs
+   * only when a write is due: debounced after a burst, or every `persistMaxWaitMs` while play
+   * keeps the queue busy, and only ever between requests. Tokens, replay stores, Turnstile
    * tokens and rate windows are deliberately not stored: the client's tokens and outbox live in
    * page memory and die with the reload, and a seeded page would replay the same idempotency
    * keys. Every guard against spending a coin or crate twice lives in the world, which is stored.
    */
   const persistDelayMs = options.persistDelayMs ?? DEFAULT_PERSIST_DELAY_MS;
+  const persistMaxWaitMs = options.persistMaxWaitMs ?? persistDelayMs * 4;
   let inFlight = 0;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let saveWhenIdle = false;
+  let unsaved = false;
 
   function saveNow(): void {
     if (saveTimer !== null) clearTimeout(saveTimer);
+    if (maxWaitTimer !== null) clearTimeout(maxWaitTimer);
     saveTimer = null;
+    maxWaitTimer = null;
     if (inFlight > 0) {
-      // A hidden page may never run again, so the last state between requests is stored now.
+      // A hidden page may never run again, and the running handler may sit between two awaits.
       persistence.writeCaptured();
       saveWhenIdle = true;
       return;
     }
     saveWhenIdle = false;
-    persistence.save();
+    if (unsaved) persistence.capture();
+    unsaved = false;
+    persistence.writeCaptured();
   }
 
   function scheduleSave(): void {
     if (storage === null) return;
     if (saveTimer !== null) clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, persistDelayMs);
+    maxWaitTimer ??= setTimeout(saveNow, persistMaxWaitMs);
   }
 
   const lifecycle =
@@ -691,12 +697,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return fail('internal', `Mock server bug: ${message}`);
     } finally {
       inFlight -= 1;
-      if (saveWhenIdle) {
-        saveNow();
-      } else {
-        if (inFlight === 0) persistence.capture();
-        scheduleSave();
-      }
+      unsaved = true;
+      if (saveWhenIdle) saveNow();
+      else scheduleSave();
     }
   }
 
