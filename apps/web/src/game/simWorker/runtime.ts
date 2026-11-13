@@ -7,6 +7,7 @@ import type {
   TransportInit,
   WorkerToMain,
 } from './protocol.ts';
+import { assertRestore } from './restore.ts';
 import { SharedFrameRing } from './shared-ring.ts';
 import {
   MAX_DROP_OFFSET_MM,
@@ -19,6 +20,8 @@ import {
   type OpeningHeap,
   type SimEvents,
   type SimInput,
+  type SimRestore,
+  type SimTableSnapshot,
 } from './sim-api.ts';
 
 /** The slice of Sim the worker drives; the real Sim satisfies it. */
@@ -30,18 +33,25 @@ export interface HostedSim {
   readonly pusher: FramePusher;
   step(inputs: readonly SimInput[]): SimEvents;
   coins(): readonly CoinPose[];
+  /** The table quantized for storage, as Sim.snapshot() reads it. */
+  snapshot(): SimTableSnapshot;
   dispose(): void;
 }
 
+/** At most one of `openingHeap` and `restore`. */
 export interface HostedSimOptions {
   readonly seed: number;
   readonly openingHeap?: OpeningHeap;
+  readonly restore?: SimRestore;
 }
 
 /** Everything the worker runtime takes from its environment, so tests can drive it by hand. */
 export interface SimWorkerHost {
   createSim(options: HostedSimOptions): Promise<HostedSim>;
-  /** The most coins an init's `openingHeap` may ask createSim for (Sim.heapCapacity). */
+  /**
+   * The most coins an init's `openingHeap` may ask createSim for, and the bound on a
+   * `restore` entry's heap slot (Sim.heapCapacity).
+   */
   readonly heapCapacity: number;
   now(): number;
   setTimer(callback: () => void, delayMs: number): unknown;
@@ -77,13 +87,16 @@ type Endpoint = MessageEndpoint<MainToWorker, WorkerToMain>;
  * and publishes every coin pose after each step through the transport the page chose, followed by
  * an `events` message with the falls, contacts and fusions of the ticks just run, when there
  * were any. Inputs arriving between ticks are applied, in arrival order, at the start of the next
- * tick. The sim itself never sees a clock; only this scheduler does.
+ * tick. A `snapshot` request is answered between ticks with the table after the newest one, and
+ * one that arrives while the Sim is still being built waits for it. The sim itself never sees a
+ * clock; only this scheduler does.
  */
 export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
   let state: 'idle' | 'starting' | 'running' | 'failed' | 'disposed' = 'idle';
   let sim: HostedSim | null = null;
   let sink: FrameSink | null = null;
   let queue: SimInput[] = [];
+  let snapshotRequests: number[] = [];
   let paused = false;
   let epoch = 0;
   let epochMs = 0;
@@ -103,6 +116,7 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
     if (state === 'failed' || state === 'disposed') return;
     state = 'failed';
     stopTimer();
+    snapshotRequests = [];
     sim?.dispose();
     sim = null;
     post({ type: 'error', message: `Sim worker stopped: ${describe(error)}` });
@@ -110,6 +124,17 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
 
   const publish = (): void => {
     if (sim && sink) sink.publish(sim.tick, epoch, sim.coins(), sim.pusher);
+  };
+
+  const answerSnapshots = (): void => {
+    if (!sim || state !== 'running') return;
+    const requests = snapshotRequests;
+    snapshotRequests = [];
+    if (requests.length === 0) return;
+    const table = sim.snapshot();
+    for (const requestId of requests) {
+      post({ type: 'snapshot', requestId, tick: sim.tick, table });
+    }
   };
 
   const schedule = (now: number): void => {
@@ -151,8 +176,13 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
 
   const start = (message: Extract<MainToWorker, { type: 'init' }>): void => {
     state = 'starting';
-    const { seed, capacity, transport, openingHeap } = message;
-    host.createSim(openingHeap ? { seed, openingHeap } : { seed }).then(
+    const { seed, capacity, transport, openingHeap, restore } = message;
+    const options: HostedSimOptions = openingHeap
+      ? { seed, openingHeap }
+      : restore
+        ? { seed, restore }
+        : { seed };
+    host.createSim(options).then(
       (created) => {
         if (state !== 'starting') {
           created.dispose();
@@ -171,6 +201,7 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
           });
           rebase(host.now(), 0);
           publish();
+          answerSnapshots();
           schedule(host.now());
         } catch (error) {
           fail(error);
@@ -195,6 +226,18 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
           queue.push(...message.inputs);
         }
         return;
+      case 'snapshot': {
+        const { requestId } = message as { requestId: unknown };
+        if (typeof requestId !== 'number' || !Number.isSafeInteger(requestId) || requestId < 0) {
+          throw new RangeError(
+            `snapshot.requestId must be a non-negative integer, got ${JSON.stringify(requestId)}`,
+          );
+        }
+        if (state === 'idle') throw new Error('a snapshot was requested before init');
+        if (state === 'starting' || state === 'running') snapshotRequests.push(requestId);
+        answerSnapshots();
+        return;
+      }
       case 'recycle':
         sink?.recycle(message.buffer);
         return;
@@ -213,6 +256,7 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
       case 'dispose':
         stopTimer();
         state = 'disposed';
+        snapshotRequests = [];
         sim?.dispose();
         sim = null;
         return;
@@ -327,7 +371,7 @@ function isCoinTier(tier: string): tier is CoinTier {
 }
 
 function assertInit(message: Extract<MainToWorker, { type: 'init' }>, heapCapacity: number): void {
-  const { seed, capacity, transport, openingHeap } = message;
+  const { seed, capacity, transport, openingHeap, restore } = message;
   if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
     throw new RangeError(`init.seed must be a uint32, got ${seed}`);
   }
@@ -337,6 +381,13 @@ function assertInit(message: Extract<MainToWorker, { type: 'init' }>, heapCapaci
   const kind: string = transport.kind;
   if (kind !== 'shared' && kind !== 'transfer') {
     throw new TypeError(`init.transport.kind must be "shared" or "transfer", got ${kind}`);
+  }
+  if (restore !== undefined) {
+    if (openingHeap !== undefined) {
+      throw new RangeError('init.restore and init.openingHeap are mutually exclusive; send one');
+    }
+    assertRestore(restore, { heapCapacity, capacity });
+    return;
   }
   if (openingHeap === undefined) return;
   const heap = openingHeap as unknown as Partial<Record<string, unknown>> | null;

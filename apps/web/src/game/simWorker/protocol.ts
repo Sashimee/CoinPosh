@@ -6,6 +6,8 @@ import type {
   FusionEvent,
   OpeningHeap,
   SimInput,
+  SimRestore,
+  SimTableSnapshot,
 } from './sim-api.ts';
 
 export type TransportKind = 'shared' | 'transfer';
@@ -30,10 +32,14 @@ export type MainToWorker =
       readonly seed: number;
       readonly capacity: number;
       readonly transport: TransportInit;
-      /** Coins laid at the brink of the lip before the first tick. */
+      /** Coins laid at the brink of the lip before the first tick. Mutually exclusive with `restore`. */
       readonly openingHeap?: OpeningHeap;
+      /** A saved table to lay instead; entry i becomes sim id i. */
+      readonly restore?: SimRestore;
     }
   | { readonly type: 'input'; readonly inputs: readonly SimInput[] }
+  /** Asks for the table as it stands after the newest tick; answered by a `snapshot` with the same id. */
+  | { readonly type: 'snapshot'; readonly requestId: number }
   | { readonly type: 'recycle'; readonly buffer: ArrayBuffer }
   | { readonly type: 'pause' }
   | { readonly type: 'resume' }
@@ -50,6 +56,13 @@ export type WorkerToMain =
       readonly heapCapacity: number;
     }
   | { readonly type: 'frame'; readonly buffer: ArrayBuffer }
+  | {
+      readonly type: 'snapshot';
+      readonly requestId: number;
+      /** The sim tick the table was read at: the newest tick stepped. */
+      readonly tick: number;
+      readonly table: SimTableSnapshot;
+    }
   | ({ readonly type: 'events' } & SimEventBatch)
   | { readonly type: 'error'; readonly message: string };
 
