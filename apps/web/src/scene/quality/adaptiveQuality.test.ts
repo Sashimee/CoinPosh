@@ -201,6 +201,26 @@ describe('resolveQuality', () => {
     expect((await boot()).source).toBe('provisional');
     expect(benchmark).toHaveBeenCalledTimes(2);
   });
+
+  it('logs the software GPU instead of a frame cost when the benchmark skipped drawing', async () => {
+    const logger = quietLogger();
+    const resolved = await resolveQuality({
+      backend: 'webgl2',
+      store: memoryStore(),
+      benchmark: benchmarkReturning({
+        tier: 'low',
+        msPerFrame: 0,
+        samples: [],
+        complete: false,
+        softwareGpu: 'SwiftShader driver',
+      }),
+      logger,
+    });
+    expect(resolved.source).toBe('provisional');
+    expect(logger.info).toHaveBeenCalledWith(
+      '[CoinPosh] Quality benchmark: skipped for the software GPU "SwiftShader driver" on webgl2, tier low (provisional, not saved)',
+    );
+  });
 });
 
 interface FakePipeline extends ScalablePipeline {
