@@ -476,7 +476,7 @@ Format: `- [ready|scheduled|done] P-<n> · <title> · agent: <agent> · owns: <p
 - [ready] P-381 · [T-3.04] In buyUpgrade, send global Family Office lines (isFamilyOfficeLine) to buyFamilyOffice, and apply familyOfficeEffect when minting starting coins and income · agent: PlayerDO owner
 - [ready] P-382 · [T-3.04] Register createAscendRoutes(playerStub) in apps/server/src/index.ts · agent: server index owner
 - [ready] P-383 · [T-3.04] Report the current and unlocked venues and the Family Office levels in the state response · agent: server state owner
-- [ready] P-384 · [T-3.04] Add lifetimeBullion (Bullion since the last ascension) to VenueState so the client's ascension progress shows a real figure instead of 'unknown' · agent: packages/shared owner
+- [done] P-384 · [T-3.04] Add lifetimeBullion (Bullion since the last ascension) to VenueState so the client's ascension progress shows a real figure instead of 'unknown' · agent: packages/shared owner
 - [ready] P-385 · [T-3.04] Mount mountAscension from apps/web/src/game/ascension with a HUD entry button, the stage canvas as `stage`, browserVibrate as `vibrate`, and a reload of the game state in onAscended · agent: apps/web main.ts owner
 - [ready] P-386 · [T-3.04] Make bindUpgrades skip the global Family Office lines (or hand them to the ascension module) so they are not offered as venue upgrades · agent: game/upgrades owner
 - [ready] P-387 · [T-3.04] Tune the ascension threshold and Gold Bars pacing under P-206 · agent: economy owner

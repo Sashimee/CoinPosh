@@ -123,6 +123,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-396 | done | task/P-396 (merge f813ac8) | A held pour is cancelled when the crate cinematic starts: new cinematicPause.ts, gestures/surface cancel hook, core/create/events/overlay wiring (1093df7); pnpm check green after merge |
 | P-398 | done | task/P-398 (merge 262005f) | First-upgrade nudge fires only with headroom and folds when unaffordable: upgradeNudge.ts, upgradeNudgeTrigger.ts and tests (7834a34); pnpm check green after merge |
 | P-397 | done | task/P-397 (merge 426f29a) | Vault odometer glow unclipped so digits no longer sit in grey boxes: styles.css odometer rules plus odometer.test.ts (79ac3af); pnpm check green after merge |
+| P-384 | done | task/P-384 (merge a499843) | Shared contract for ascension state: lifetimeBullion and Family Office levels on VenueState (packages/shared/src/api/state.ts, state.test.ts) (83b4149); part of T-3.04; pnpm check green after merge |
 | P-375 | blocked(review: SIM_VERSION 9 bump leaves packages/economy/sim/ladder.test.ts red on a cold cache (ladderMeasurement simVersion 8, fusionTuning lacks streamTicks/streamBurst); needs economy owner ladderRuns rerun (P-402) in the same integration; fusionRate.test.ts deep-imports economy/sim) | task/P-375 (da6084a, not merged) | Do not merge alone: land P-402 with or before it; export ladder eval as '@coinposh/economy/sim' |
 | T-92.08 | done | task/T-92.08 (merge b74b73a) | Session lease on every table op: PlayerDO/routes/table.ts check the lease, stale sessions get session_superseded (05b7edf); server tests updated to send the lease; pnpm check green after merge; land T-92.05 before deploy (#85) |
 | T-92.09 | todo | | Waits on T-92.07, T-92.08, T-1.17 (#92) |
@@ -135,7 +136,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.01 | todo | | Waits on T-2.05. Charm Board (sockets, 6 charms, synergy tags) |
 | T-3.02 | todo | | Waits on T-2.05. Charm models & effects |
 | T-3.03 | todo | | Waits on T-2.05. Collection Album + Heirloom coins |
-| T-3.04 | done | task/T-3.04 (merge 33f6a67) | Venue Ascension (prestige) + Family Office: server-validated reset route and Gold Bars/Family Office logic (apps/server/src/routes/ascend.ts), ascension screen (apps/web/src/game/ascension) and 3 s ascend cinematic (apps/web/src/vfx/cinematics/ascend) (fa08c97); wiring follow-ups P-378..P-387 in POLISH; pnpm check green after merge |
+| T-3.04 | done | task/T-3.04 (merge 33f6a67) | Venue Ascension (prestige) + Family Office: server-validated reset route and Gold Bars/Family Office logic (apps/server/src/routes/ascend.ts), ascension screen (apps/web/src/game/ascension) and 3 s ascend cinematic (apps/web/src/vfx/cinematics/ascend) (fa08c97); wiring follow-ups P-378..P-387 in POLISH; pnpm check green after merge; parts merged: P-384 (a499843); parts pending: P-380, P-385 |
 | T-3.05 | todo | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag) |
 | T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
