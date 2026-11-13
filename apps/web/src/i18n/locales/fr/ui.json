@@ -172,5 +172,10 @@
   "common": {
     "close": "Fermer",
     "dragToClose": "Glissez vers le bas pour fermer"
+  },
+  "demoBanner": {
+    "chip": "Démo",
+    "expand": "Mode démo : afficher les détails",
+    "collapse": "Mode démo : masquer les détails"
   }
 }
