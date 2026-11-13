@@ -31,6 +31,14 @@ const CAMERA_FAR = 120;
 // returns null for a moment, so the rebuild backs off instead of giving up on the first try.
 const REBUILD_RETRY_DELAYS_MS = [0, 250, 500, 1000, 2000] as const;
 
+/**
+ * The boot steps inside `createStage`, in order, each recorded as a `coinposh:boot:<step>`
+ * performance mark when it ends: the GPU device or context is up, the quality tier is picked
+ * (the first-boot benchmark, or a saved tier), and the first frame has compiled and drawn.
+ */
+export const STAGE_BOOT_STEPS = ['renderer-init', 'benchmark', 'first-compile'] as const;
+export type StageBootStep = (typeof STAGE_BOOT_STEPS)[number];
+
 export type FrameListener = (deltaSeconds: number, elapsedSeconds: number) => void;
 export type SizeListener = (width: number, height: number) => void;
 export type TierListener = (profile: QualityProfile) => void;
@@ -173,12 +181,12 @@ export async function createStage(
     attempt: RenderBackend,
   ): Promise<ActiveRenderer> => {
     try {
-      return await startRenderer(target, attempt, context);
+      return await startRenderer(target, attempt, context, markBoot);
     } catch (error) {
       const next = fallbackBackend(attempt);
       if (next === null) throw error;
       console.warn('[CoinPosh] WebGPU renderer failed to start, retrying on WebGL2', error);
-      return startRenderer(replaceCanvas(target), next, context);
+      return startRenderer(replaceCanvas(target), next, context, markBoot);
     }
   };
 
@@ -248,6 +256,7 @@ async function startRenderer(
   canvas: HTMLCanvasElement,
   attempt: RenderBackend,
   context: StageContext,
+  mark: (step: StageBootStep) => void = () => undefined,
 ): Promise<ActiveRenderer> {
   const { scene, camera } = context;
   // The post pipeline anti-aliases its scene pass (MSAA or FXAA by tier) and owns the pixel
@@ -266,6 +275,7 @@ async function startRenderer(
     throw error;
   }
 
+  mark('renderer-init');
   const backend = detectBackend(renderer.backend);
   reportBackend(backend);
 
@@ -310,6 +320,7 @@ async function startRenderer(
       ...(context.vignetteTint === undefined ? {} : { vignetteTint: context.vignetteTint }),
       ...(context.override === undefined ? {} : { override: context.override }),
     });
+    mark('benchmark');
     context.applyProfile(renderer, adaptive.profile);
   } catch (error) {
     lossWatch.stop();
@@ -324,10 +335,20 @@ async function startRenderer(
     return active;
   }
 
-  await renderer.setAnimationLoop((time) => {
+  const drawFrame = (time: number): void => {
     context.advance(time);
     adaptive.render(time);
-  });
+  };
+  // The first frame links the coin and post programs. Drawing it here, before the loop starts,
+  // keeps that compile inside the boot the caller awaits and gives it a mark of its own.
+  try {
+    drawFrame(performance.now());
+  } catch (error) {
+    await stopRenderer(active);
+    throw error;
+  }
+  mark('first-compile');
+  await renderer.setAnimationLoop(drawFrame);
   return active;
 }
 
@@ -338,6 +359,10 @@ async function stopRenderer(active: ActiveRenderer): Promise<void> {
   await active.renderer.setAnimationLoop(null);
   active.adaptive.dispose();
   await active.renderer.dispose();
+}
+
+function markBoot(step: StageBootStep): void {
+  performance.mark(`coinposh:boot:${step}`);
 }
 
 function wait(ms: number): Promise<void> {

@@ -38,7 +38,7 @@ New third-party versions must be at least two weeks old when they are pinned.
 
 | Package | Version | Notes |
 |---|---|---|
-| @dimforge/rapier3d-deterministic-compat | 0.21.0 | Cross-platform deterministic build of Rapier, WASM inlined (`-compat`) so it loads in browsers and Workers alike |
+| @dimforge/rapier3d-deterministic-compat | 0.21.0 | Cross-platform deterministic build of Rapier, WASM inlined (`-compat`) so it loads in browsers and Workers alike. Node and the dev server load it as published; the web build (`apps/web/vite.config.ts`, `packages/sim/src/rapier-wasm.ts`) emits those same bytes as a hashed `.wasm` asset that the sim worker streams with `instantiateStreaming` (P-121) |
 
 ### `table.bench` p99 budget (P-253)
 

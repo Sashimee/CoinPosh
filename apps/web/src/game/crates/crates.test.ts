@@ -544,8 +544,9 @@ describe('reward lines', () => {
     { kind: 'collectible', collectibleId: 'navyLacquerCoin' as never },
   ];
 
-  it('puts items first and merges currencies in wallet order', () => {
+  it('puts items first, rarest first, and merges currencies in wallet order', () => {
     expect(rewardLines(rewards)).toEqual([
+      { kind: 'collectible', item: 'navyLacquerCoin', rarity: 'rare', set: 'captainsTable' },
       {
         kind: 'charm',
         level: 2,
@@ -554,14 +555,102 @@ describe('reward lines', () => {
         rarity: 'fine',
         set: 'deckEssentials',
       },
-      { kind: 'collectible', item: 'navyLacquerCoin', rarity: 'rare', set: 'captainsTable' },
       { kind: 'currency', currency: 'coins', amount: 42 },
       { kind: 'currency', currency: 'pearls', amount: 2 },
     ]);
   });
 
-  it('picks the rarest kind of thing for the pedestal', () => {
-    expect(heroOf(rewards)).toBe('charm');
+  it('stars the Legendary Sovereign over a Fine charm the server listed first', () => {
+    const vault: Reward[] = [
+      { kind: 'currency', currency: 'coins', amount: 120 },
+      {
+        kind: 'charm',
+        charmId: 'charm_BBBBBBBBBBBBBBBB' as never,
+        charmType: 'captainsBellCharm' as never,
+        level: 1,
+        duplicate: false,
+      },
+      { kind: 'collectible', collectibleId: 'admiralsSovereign' as never },
+      { kind: 'currency', currency: 'pearls', amount: 8 },
+    ];
+    expect(heroOf(vault)).toBe('card');
+    const lines = rewardLines(vault);
+    expect(lines.map((line) => line.kind)).toEqual([
+      'collectible',
+      'charm',
+      'currency',
+      'currency',
+    ]);
+    expect(lines[0]).toEqual({
+      kind: 'collectible',
+      item: 'admiralsSovereign',
+      rarity: 'legendary',
+      set: 'sunsetGala',
+    });
+    expect(vault[1]?.kind).toBe('charm');
+  });
+
+  it('sorts every item line by economy rarity, never below a currency', () => {
+    const lines = rewardLines([
+      { kind: 'currency', currency: 'keys', amount: 1 },
+      { kind: 'scratchCard', cardId: 'scratch_a1b2c3d4' as never },
+      { kind: 'collectible', collectibleId: 'compassRoseCoin' as never },
+      { kind: 'collectible', collectibleId: 'duchessSovereign1891' as never },
+      { kind: 'collectible', collectibleId: 'monacoGrandPrixCoin' as never },
+    ]);
+    const ranks = lines.flatMap((line) => ('rarity' in line ? [rarityRank(line.rarity)] : []));
+    expect(ranks).toEqual([...ranks].sort((a, b) => b - a));
+    expect(lines.map((line) => ('item' in line ? line.item : line.kind))).toEqual([
+      'duchessSovereign1891',
+      'monacoGrandPrixCoin',
+      'compassRoseCoin',
+      'scratchCard',
+      'currency',
+    ]);
+  });
+
+  it('breaks a rarity tie by kind as before: a charm over a card, a safe over a common card', () => {
+    const fineCoin: Reward = { kind: 'collectible', collectibleId: 'compassRoseCoin' as never };
+    const fineCharm: Reward = {
+      kind: 'charm',
+      charmId: 'charm_CCCCCCCCCCCCCCCC' as never,
+      charmType: 'captainsBellCharm' as never,
+      level: 1,
+      duplicate: false,
+    };
+    expect(heroOf([fineCoin, fineCharm])).toBe('charm');
+    expect(rewardLines([fineCoin, fineCharm]).map((line) => line.kind)).toEqual([
+      'charm',
+      'collectible',
+    ]);
+    const safe: Reward = {
+      kind: 'safe',
+      safe: { id: 'safe_DDDDDDDDDDDDDDDD' as never, type: 'gold' as never, unlocksAt: 0 },
+    };
+    const card: Reward = { kind: 'scratchCard', cardId: 'scratch_a1b2c3d4' as never };
+    const commonCoin: Reward = { kind: 'collectible', collectibleId: 'anchorCoin' as never };
+    expect(heroOf([card, safe])).toBe('safe');
+    expect(heroOf([commonCoin, safe])).toBe('safe');
+    expect(heroOf([safe, fineCoin])).toBe('card');
+  });
+
+  it('keeps the wallet order and the currency hero for an all-currency roll', () => {
+    const purse: Reward[] = [
+      { kind: 'currency', currency: 'tickets', amount: 2 },
+      { kind: 'currency', currency: 'coins', amount: 40 },
+      { kind: 'currency', currency: 'pearls', amount: 3 },
+      { kind: 'currency', currency: 'coins', amount: 10 },
+    ];
+    expect(rewardLines(purse)).toEqual([
+      { kind: 'currency', currency: 'coins', amount: 50 },
+      { kind: 'currency', currency: 'pearls', amount: 3 },
+      { kind: 'currency', currency: 'tickets', amount: 2 },
+    ]);
+    expect(heroOf(purse)).toBe('pearls');
+  });
+
+  it('picks a currency hero only when the roll holds no item', () => {
+    expect(heroOf(rewards)).toBe('card');
     expect(heroOf([{ kind: 'currency', currency: 'coins', amount: 1 }])).toBe('coins');
     expect(
       heroOf([
@@ -569,6 +658,7 @@ describe('reward lines', () => {
         { kind: 'currency', currency: 'keys', amount: 1 },
       ]),
     ).toBe('keys');
+    expect(heroOf([])).toBe('coins');
     expect(rewardLines([])).toEqual([]);
   });
 });
@@ -689,6 +779,25 @@ describe('reward line copy', () => {
     kind: 'currency',
     currency: 'pearls',
     amount,
+  });
+
+  it('heads the Legendary vault card with the Sovereign in EN, FR and DE, not the Fine charm', () => {
+    const [first, second] = rewardLines([
+      { kind: 'currency', currency: 'coins', amount: 300 },
+      {
+        kind: 'charm',
+        charmId: 'charm_EEEEEEEEEEEEEEEE' as never,
+        charmType: 'captainsBellCharm' as never,
+        level: 1,
+        duplicate: false,
+      },
+      { kind: 'collectible', collectibleId: 'admiralsSovereign' as never },
+    ]);
+    if (first === undefined || second === undefined) throw new Error('Expected two item lines.');
+    expect(copyIn('en', first).name).toBe('Admiral’s Sovereign');
+    expect(copyIn('fr', first).name).toBe('Souverain de l’amiral');
+    expect(copyIn('de', first).name).toBe('Sovereign des Admirals');
+    expect(copyIn('en', second).name).toBe('Captain’s Bell');
   });
 
   it('pluralises currencies through i18next at the one/other boundary in EN, FR and DE', () => {

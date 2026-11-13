@@ -53,6 +53,7 @@ export class Session {
   #access: { token: string; expiresAt: number } | null = null;
   #playerId: PlayerId | null = null;
   #inFlight: Promise<string> | null = null;
+  readonly #tokenListeners = new Set<(accessToken: string) => void>();
 
   constructor(deps: SessionDeps) {
     this.#deps = deps;
@@ -72,6 +73,14 @@ export class Session {
       this.#inFlight = null;
     });
     return this.#inFlight;
+  }
+
+  /** Called with each new access token, after a sign-in or a refresh. */
+  onTokens(listener: (accessToken: string) => void): () => void {
+    this.#tokenListeners.add(listener);
+    return () => {
+      this.#tokenListeners.delete(listener);
+    };
   }
 
   /** The server rejected the current access token; the next call re-authenticates. */
@@ -155,6 +164,15 @@ export class Session {
       token: tokens.accessToken,
       expiresAt: this.#deps.monotonic() + Math.max(0, tokens.accessTokenTtlMs - REFRESH_MARGIN_MS),
     };
+    for (const listener of this.#tokenListeners) {
+      try {
+        listener(tokens.accessToken);
+      } catch (error) {
+        this.#deps.onError(
+          new Error('CoinPosh net: a listener for new access tokens threw.', { cause: error }),
+        );
+      }
+    }
     return tokens.accessToken;
   }
 }

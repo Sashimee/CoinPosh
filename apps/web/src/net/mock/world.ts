@@ -65,6 +65,7 @@ import {
   RARITIES,
   SCRATCH_GRID_SIZE,
   SeasonIdSchema,
+  TableSessionIdSchema,
   UpgradeLineIdSchema,
   VenueIdSchema,
   nextCoinTier,
@@ -75,6 +76,7 @@ import {
   type CoinId,
   type CoinTier,
   type CrateId,
+  type CratePoseTuple,
   type Currency,
   type DevicePublicKey,
   type EndpointBody,
@@ -86,29 +88,52 @@ import {
   type MintedCoin,
   type OwnedCharm,
   type PlayerId,
+  type PoseTuple,
   type Rarity,
   type Reward,
   type RevealedSeed,
   type Roll,
   type Safe,
   type ScratchCardId,
+  type StateQuery,
   type TableCrate,
+  type TableLayout,
+  type TableSessionId,
+  type TableSnapshotRequest,
+  type TableSnapshotResponse,
   type UpgradeLevels,
   type VenueId,
   type Wallet,
 } from '@coinposh/shared';
+import { checkCratePose, DEFAULT_PUSHER_MOTION } from '@coinposh/sim/snapshot';
 import { randomBase62 } from '../encoding.ts';
 import { newSeed, nextRoll, reveal, type FairSeedState } from './fair.ts';
 import { MOCK_RULES } from './rules.ts';
+import {
+  CHUTE_POSE,
+  CRATE_MAX_RIDE_SECONDS,
+  elapsedSeconds,
+  judgePoses,
+  present,
+  takeSnapshotToken,
+  toCratePose,
+  withinCoinTravel,
+  withinCrateRide,
+  type SnapshotFlagKind,
+  type StoredSnapshot,
+  type TokenBucket,
+} from './snapshot.ts';
 
 /** A refusal the mock answers with an error envelope, exactly like the real server would. */
 export class MockFailure extends Error {
   readonly code: ErrorCode;
+  readonly retryAfterMs: number | undefined;
 
-  constructor(code: ErrorCode, message: string) {
+  constructor(code: ErrorCode, message: string, retryAfterMs?: number) {
     super(message);
     this.name = 'MockFailure';
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -128,6 +153,11 @@ interface CoinRecord {
   origin: 'drop' | 'fusion' | 'heap';
   /** Millionths of a coin this coin drew from the mint carry; null for a fused coin. */
   mintMicros: number | null;
+  /** The opening heap slot a boot lays this coin at when it has no stored pose. */
+  heapSlot: number | null;
+  /** What the wallet paid for the drops behind this coin, its own or every one fused into it. */
+  paid: number;
+  dropsBehind: number;
 }
 
 interface TickAnchor {
@@ -145,6 +175,7 @@ interface CrateRecord {
   ftue: boolean;
   state: 'table' | 'openable';
   spawnTick: number;
+  spawnedAt: number;
 }
 
 export interface MockPlayer {
@@ -172,12 +203,24 @@ export interface MockPlayer {
   decorumAt: number;
   frozenUntil: number | null;
   drops: number;
+  /** The most `drops` ever reached: a drop refunded by a boot and made again spawns nothing new. */
+  dropHighWater: number;
   lastDropTick: number | null;
   tickAnchor: TickAnchor | null;
   /** The anchor a resume replaced, which still judges the ticks seen before it. */
   previousAnchor: TickAnchor | null;
   /** Server time of a resume whose new anchor waits for the first tick past the old maximum. */
   resumedAt: number | null;
+  /** The last boot: the sim restarts at tick 0 then, so no tick may map to before it. */
+  bootedAt: number | null;
+  tableSession: TableSessionId | null;
+  tableSessionStartedAt: number;
+  /** Highest tick of a drop or accepted claim this session: no snapshot may go back before it. */
+  tableSessionMaxTick: number;
+  tableSnapshot: StoredSnapshot | null;
+  /** The player's, not the session's, so booting again never buys more snapshots. */
+  snapshotBucket: TokenBucket | null;
+  snapshotFlags: Record<SnapshotFlagKind, number>;
   /**
    * The last silence of at least `minOfflineMs`, kept until `state` settles it: a resuming client
    * sends its queued play first, which must not erase the absence before the snapshot.
@@ -376,10 +419,18 @@ export class MockWorld {
       decorumAt: now,
       frozenUntil: null,
       drops: 0,
+      dropHighWater: 0,
       lastDropTick: null,
       tickAnchor: null,
       previousAnchor: null,
       resumedAt: null,
+      bootedAt: null,
+      tableSession: null,
+      tableSessionStartedAt: now,
+      tableSessionMaxTick: 0,
+      tableSnapshot: null,
+      snapshotBucket: null,
+      snapshotFlags: { 'snapshot.foreign': 0, 'snapshot.teleport': 0, 'snapshot.implausible': 0 },
       absence: null,
       lastClaimTick: null,
       recentFalls: [],
@@ -474,7 +525,16 @@ export class MockWorld {
       tier,
       value,
     };
-    player.coins.set(coin.id, { coin, place, spawnTick, origin, mintMicros });
+    player.coins.set(coin.id, {
+      coin,
+      place,
+      spawnTick,
+      origin,
+      mintMicros,
+      heapSlot: null,
+      paid: 0,
+      dropsBehind: 0,
+    });
     return coin;
   }
 
@@ -510,7 +570,8 @@ export class MockWorld {
    */
   #seedOpeningHeap(player: MockPlayer): void {
     for (let i = 0; i < openingHeap.coins; i++) {
-      this.#mintFromCarry(player, openingHeap.tier, 'table', 0, 'heap');
+      const coin = this.#mintFromCarry(player, openingHeap.tier, 'table', 0, 'heap');
+      this.#record(player, coin.id).heapSlot = i;
     }
   }
 
@@ -548,8 +609,15 @@ export class MockWorld {
     while (buffered < target && player.wallet.coins >= DROP_TIER.value) {
       const coin = this.#mintFromCarry(player, DROP_TIER.id, 'buffer', null);
       this.#credit(player, now, 'drop.prepay', { coins: -DROP_TIER.value }, coin.id);
+      this.#record(player, coin.id).paid = DROP_TIER.value;
       buffered++;
     }
+  }
+
+  #record(player: MockPlayer, id: CoinId): CoinRecord {
+    const record = player.coins.get(id);
+    if (record === undefined) throw new Error(`Mock: coin ${id} was just minted but is missing.`);
+    return record;
   }
 
   /**
@@ -569,7 +637,11 @@ export class MockWorld {
       player.tickAnchor = {
         tick,
         at: now,
-        earliestAt: Math.max(player.createdAt, now - MOCK_RULES.claimExpiryMs),
+        earliestAt: Math.max(
+          player.createdAt,
+          player.bootedAt ?? player.createdAt,
+          now - MOCK_RULES.claimExpiryMs,
+        ),
         maxTick: tick,
         floorTick: null,
       };
@@ -700,23 +772,268 @@ export class MockWorld {
     body: EndpointBody<N>,
     params: EndpointParams<N>,
     now: number,
+    query: StateQuery = {},
   ): Promise<EndpointResponseInput<N>> {
     this.#pruneGone(player, now);
     if (now - player.lastActiveAt >= MOCK_RULES.minOfflineMs) {
       player.absence = { since: player.lastActiveAt, until: now };
     }
     const handler: Handler<N> = this.#handlers[name];
-    return handler(player, body, params, now);
+    return handler(player, body, params, now, query);
+  }
+
+  /**
+   * Stores where the client's sim says the table rests, through the server's pipeline
+   * (92-table-persistence 3.2). A pose that is not this table's, not plausible, or moved
+   * further than the table can move it is dropped. Never touches the wallet, ledger or coins.
+   */
+  snapshot(player: MockPlayer, body: TableSnapshotRequest, now: number): TableSnapshotResponse {
+    if (player.tableSession !== body.session) {
+      throw new MockFailure(
+        'session_superseded',
+        'Another tab or device has booted this table since. Reload to play here.',
+      );
+    }
+    const stored = player.tableSnapshot;
+    const previous = stored?.session === body.session ? stored : null;
+    const floorTick = Math.max(previous?.tick ?? 0, player.tableSessionMaxTick);
+    if (previous !== null && body.seq <= previous.seq) {
+      throw new MockFailure(
+        'stale_snapshot',
+        `Snapshot seq ${body.seq} is not after the stored ${previous.seq}. Send the next seq.`,
+      );
+    }
+    if (body.tick < floorTick) {
+      throw new MockFailure(
+        'stale_snapshot',
+        `Snapshot tick ${body.tick} is before tick ${floorTick} the table already reached.`,
+      );
+    }
+    const take = takeSnapshotToken(player.snapshotBucket, now);
+    if (!take.ok) {
+      throw new MockFailure(
+        'rate_limited',
+        'Table snapshots are sent too often. Retry later.',
+        take.retryAfterMs,
+      );
+    }
+    if (body.pusher.tickInCycle >= DEFAULT_PUSHER_MOTION.periodTicks) {
+      throw new MockFailure(
+        'bad_request',
+        `pusher.tickInCycle must be below ${DEFAULT_PUSHER_MOTION.periodTicks}.`,
+      );
+    }
+    player.snapshotBucket = take.bucket;
+
+    let ignored = 0;
+    let foreign = 0;
+    let teleport = 0;
+    const tableCoins = this.#tableCoins(player).map((coin) => coin.id);
+    const onTable = new Set(tableCoins);
+    const owned: PoseTuple[] = [];
+    for (const pose of body.coins) {
+      if (onTable.has(pose[0])) {
+        owned.push(pose);
+        continue;
+      }
+      ignored++;
+      if (player.coins.get(pose[0])?.place !== 'table' && !player.gone.has(pose[0])) foreign++;
+    }
+    const judged = judgePoses(tableCoins, owned, body.pusher.tickInCycle);
+    ignored += judged.dropped;
+    const seconds =
+      previous === null ? 0 : elapsedSeconds(body.tick - previous.tick, previous.receivedAt, now);
+    const coinsBefore = new Map((previous?.poses ?? []).map((pose) => [pose[0], pose]));
+    const accepted = new Map<CoinId, PoseTuple>();
+    for (const [id, pose] of judged.ok) {
+      const from = coinsBefore.get(id);
+      if (from !== undefined && !withinCoinTravel(from, pose, seconds)) {
+        teleport++;
+        ignored++;
+        continue;
+      }
+      accepted.set(id, pose);
+    }
+
+    let implausibleCrates = 0;
+    const tableCrates = this.#tableCrates(player);
+    const cratesOnTable = new Map(tableCrates.map((record) => [record.crate.id, record]));
+    const cratesBefore = new Map((previous?.cratePoses ?? []).map((pose) => [pose[0], pose]));
+    const acceptedCrates = new Map<CrateId, CratePoseTuple>();
+    for (const tuple of body.crates) {
+      const record = cratesOnTable.get(tuple[0]);
+      if (record === undefined) {
+        ignored++;
+        if (!player.crates.has(tuple[0]) && !player.openedCrates.has(tuple[0])) foreign++;
+        continue;
+      }
+      const pose = toCratePose(tuple);
+      if (!checkCratePose(pose, CRATE_MAX_RIDE_SECONDS).ok) {
+        ignored++;
+        implausibleCrates++;
+        continue;
+      }
+      const from = cratesBefore.get(record.crate.id);
+      const rides =
+        from === undefined
+          ? withinCrateRide(
+              CHUTE_POSE,
+              pose,
+              elapsedSeconds(
+                body.tick - record.spawnTick,
+                Math.max(record.spawnedAt, player.tableSessionStartedAt),
+                now,
+              ),
+            )
+          : withinCrateRide(toCratePose(from), pose, seconds);
+      if (!rides) {
+        ignored++;
+        teleport++;
+        continue;
+      }
+      acceptedCrates.set(record.crate.id, tuple);
+    }
+
+    player.tableSnapshot = {
+      session: body.session,
+      seq: body.seq,
+      tick: body.tick,
+      pusherTick: body.pusher.tickInCycle,
+      poses: present(tableCoins.map((id) => accepted.get(id) ?? coinsBefore.get(id))),
+      cratePoses: present(
+        tableCrates.map(
+          (record) => acceptedCrates.get(record.crate.id) ?? cratesBefore.get(record.crate.id),
+        ),
+      ),
+      receivedAt: now,
+    };
+    player.snapshotFlags['snapshot.foreign'] += foreign;
+    player.snapshotFlags['snapshot.teleport'] += teleport;
+    player.snapshotFlags['snapshot.implausible'] += judged.dropped + implausibleCrates;
+    return { seq: body.seq, stored: accepted.size + acceptedCrates.size, ignored };
+  }
+
+  #tableCrates(player: MockPlayer): CrateRecord[] {
+    return [...player.crates.values()].filter((record) => record.state === 'table');
+  }
+
+  #startTableSession(player: MockPlayer, now: number): TableSessionId {
+    const session = TableSessionIdSchema.parse(entityId(ENTITY_ID_PREFIXES.tableSession));
+    player.tableSession = session;
+    player.tableSessionStartedAt = now;
+    player.tableSessionMaxTick = 0;
+    return session;
+  }
+
+  /** A table op naming another session leaves the mark alone. */
+  #raiseSessionTick(player: MockPlayer, session: TableSessionId | undefined, tick: number): void {
+    if (player.tableSession === null) return;
+    if (session !== undefined && session !== player.tableSession) return;
+    player.tableSessionMaxTick = Math.max(player.tableSessionMaxTick, tick);
+  }
+
+  /**
+   * Starts a new table session and places every table coin and crate, as the server's
+   * bootTable: a coin from its stored pose when the sim's checks still pass it, a heap coin
+   * without one at its heap slot, any other coin refunded at most what was paid for it.
+   */
+  #bootTable(player: MockPlayer, now: number): TableLayout {
+    const stored = player.tableSnapshot;
+    const usable =
+      stored !== null && stored.pusherTick < DEFAULT_PUSHER_MOTION.periodTicks ? stored : null;
+    const pusherTick = usable?.pusherTick ?? 0;
+    const session = this.#startTableSession(player, now);
+    const before = this.#tableCoins(player).map((coin) => coin.id);
+    const poses = judgePoses(before, usable?.poses ?? [], pusherTick).ok;
+    for (const id of before) {
+      const record = this.#record(player, id);
+      if (record.heapSlot !== null || poses.has(id)) continue;
+      const refund = Math.min(record.paid, record.coin.value);
+      this.#forget(player, id, now);
+      player.drops -= record.dropsBehind;
+      if (player.drops < 0) {
+        throw new Error('Mock: a boot refunded more drops than were ever made.');
+      }
+      this.#credit(player, now, 'refund.table', { coins: refund }, id);
+    }
+    player.cascadeChain = null;
+    this.#rebaseTicks(player, now);
+    this.#refillBuffer(player, now);
+
+    const coins = this.#tableCoins(player);
+    const crates = this.#tableCrates(player);
+    const cratePoses = new Map(
+      (usable?.cratePoses ?? [])
+        .filter((tuple) => checkCratePose(toCratePose(tuple), CRATE_MAX_RIDE_SECONDS).ok)
+        .map((tuple) => [tuple[0], tuple]),
+    );
+    player.tableSnapshot = {
+      session,
+      seq: 0,
+      tick: 0,
+      pusherTick,
+      poses: present(coins.map((coin) => poses.get(coin.id))),
+      cratePoses: present(crates.map((record) => cratePoses.get(record.crate.id))),
+      receivedAt: now,
+    };
+    return {
+      pusher: { tickInCycle: pusherTick },
+      coins: coins.map((coin) => {
+        const pose = poses.get(coin.id);
+        if (pose !== undefined) return { kind: 'pose', pose };
+        const slot = this.#record(player, coin.id).heapSlot;
+        if (slot !== null) return { kind: 'heapSlot', slot };
+        throw new Error(`Mock: table coin ${coin.id} has neither a pose nor a heap slot.`);
+      }),
+      crates: crates.map((record) => {
+        const pose = cratePoses.get(record.crate.id);
+        return pose === undefined ? { kind: 'chute' } : { kind: 'pose', pose };
+      }),
+    };
+  }
+
+  /**
+   * The booted sim counts from tick 0 again. Every tick the rules remember moves into that frame
+   * by the ticks that passed in real time, so the rate envelopes and drop spacing keep holding
+   * across a reload instead of starting over, and the clock re-anchors no earlier than the boot.
+   */
+  #rebaseTicks(player: MockPlayer, now: number): void {
+    const anchor = player.tickAnchor;
+    const shift =
+      anchor === null
+        ? 0
+        : Math.ceil(Math.max(anchor.maxTick, anchor.tick + (now - anchor.at) / MS_PER_TICK));
+    const rebase = (tick: number) => tick - shift;
+    player.recentFalls = player.recentFalls.map(rebase);
+    player.recentFusions = player.recentFusions.map(rebase);
+    if (player.lastDropTick !== null) player.lastDropTick = rebase(player.lastDropTick);
+    if (player.lastClaimTick !== null) player.lastClaimTick = rebase(player.lastClaimTick);
+    for (const record of player.coins.values()) {
+      if (record.place === 'table') record.spawnTick = 0;
+    }
+    for (const record of player.crates.values()) record.spawnTick = 0;
+    player.tickAnchor = null;
+    player.previousAnchor = null;
+    player.resumedAt = null;
+    player.bootedAt = now;
   }
 
   readonly #handlers: { [N in WorldEndpoint]: Handler<N> } = {
-    state: (player, _body, _params, now) => {
+    state: (player, _body, _params, now, query) => {
       const absence = player.absence;
       player.absence = null;
       if (absence !== null && player.tickAnchor !== null) player.resumedAt = now;
       const settlement =
         absence === null ? null : this.#settleOffline(player, absence.until - absence.since, now);
-      this.#refillBuffer(player, now);
+      let layout: TableLayout | null = null;
+      if (query.hydrate === 'boot') {
+        layout = this.#bootTable(player, now);
+      } else {
+        if (player.tableSession === null) this.#startTableSession(player, now);
+        this.#refillBuffer(player, now);
+      }
+      const session = player.tableSession;
+      if (session === null) throw new Error('Mock: state left the table without a session.');
       return {
         serverTime: now,
         player: {
@@ -734,13 +1051,13 @@ export class MockWorld {
           loadout: this.#slots(player, player.venueId),
         },
         table: {
+          session,
           coins: this.#tableCoins(player),
-          crates: [...player.crates.values()]
-            .filter((record) => record.state === 'table')
-            .map((record) => record.crate),
+          crates: this.#tableCrates(player).map((record) => record.crate),
           buffer: this.#buffer(player),
           decorum: this.#decorum(player, now),
           frozenUntil: player.frozenUntil,
+          layout,
         },
         inventory: {
           charms: player.charms,
@@ -769,6 +1086,7 @@ export class MockWorld {
       if (body.coinId === undefined) {
         this.#credit(player, now, 'drop.debit', { coins: -DROP_TIER.value });
         coin = this.#mintFromCarry(player, DROP_TIER.id, 'table', body.tick);
+        this.#record(player, coin.id).paid = DROP_TIER.value;
       } else {
         const record = player.coins.get(body.coinId);
         if (record === undefined) {
@@ -785,27 +1103,42 @@ export class MockWorld {
         record.spawnTick = body.tick;
         coin = record.coin;
       }
+      this.#record(player, coin.id).dropsBehind = 1;
       player.lastDropTick = body.tick;
+      this.#raiseSessionTick(player, body.session, body.tick);
       player.drops += 1;
-      if (player.drops % season.dropsPerStar === 0) {
-        this.#credit(player, now, 'season.drops', { stars: 1 });
-      }
       const spawnedCrates: TableCrate[] = [];
-      const ftue = player.drops === crateSpawn.ftueScriptedDrop;
-      if (dropSpawnsCrate(player.drops, levelMap(player))) {
-        const crate: TableCrate = {
-          id: CrateIdSchema.parse(entityId(ENTITY_ID_PREFIXES.crate)),
-          kind: 'vault',
-        };
-        player.crates.set(crate.id, { crate, ftue, state: 'table', spawnTick: body.tick });
-        spawnedCrates.push(crate);
+      if (player.drops > player.dropHighWater) {
+        player.dropHighWater = player.drops;
+        if (player.drops % season.dropsPerStar === 0) {
+          this.#credit(player, now, 'season.drops', { stars: 1 });
+        }
+        const ftue = player.drops === crateSpawn.ftueScriptedDrop;
+        if (dropSpawnsCrate(player.drops, levelMap(player))) {
+          const crate: TableCrate = {
+            id: CrateIdSchema.parse(entityId(ENTITY_ID_PREFIXES.crate)),
+            kind: 'vault',
+          };
+          player.crates.set(crate.id, {
+            crate,
+            ftue,
+            state: 'table',
+            spawnTick: body.tick,
+            spawnedAt: now,
+          });
+          spawnedCrates.push(crate);
+        }
       }
       this.#refillBuffer(player, now);
       return { coin, buffer: this.#buffer(player), spawnedCrates, wallet: player.wallet };
     },
 
     tableClaims: (player, body, _params, now) => {
-      const results = body.claims.map((claim) => this.#claim(player, claim, now));
+      const results = body.claims.map((claim) => {
+        const result = this.#claim(player, claim, now);
+        if (result.status === 'accepted') this.#raiseSessionTick(player, body.session, claim.tick);
+        return result;
+      });
       return { results, wallet: player.wallet };
     },
 
@@ -1166,6 +1499,11 @@ export class MockWorld {
           ),
         );
         const minted = this.#mint(player, next, value, null, 'table', claim.tick, 'fusion');
+        const fused = this.#record(player, minted.id);
+        for (const record of records) {
+          fused.paid += record.paid;
+          fused.dropsBehind += record.dropsBehind;
+        }
         return { status: 'accepted', credited: 0, cascade: null, minted };
       }
       case 'crate': {
@@ -1304,6 +1642,7 @@ type Handler<N extends EndpointName> = (
   body: EndpointBody<N>,
   params: EndpointParams<N>,
   now: number,
+  query: StateQuery,
 ) => EndpointResponseInput<N> | Promise<EndpointResponseInput<N>>;
 
 export function deviceThumbprint(key: DevicePublicKey): string {

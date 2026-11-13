@@ -142,7 +142,7 @@ describe('unbox hero props', () => {
 
   it('shows a scratch card and an album coin alike as an upright collector card', () => {
     const scratchCard = ScratchCardIdSchema.parse('scratch_a1b2c3d4');
-    const collectibleId = CollectibleIdSchema.parse('duchess-sovereign-1891');
+    const collectibleId = CollectibleIdSchema.parse('duchessSovereign1891');
     expect(heroOf([{ kind: 'scratchCard', cardId: scratchCard }])).toBe('card');
     expect(heroOf([{ kind: 'collectible', collectibleId }])).toBe('card');
     expect(HERO_PROPS.card.prop).toBe('collector-card');

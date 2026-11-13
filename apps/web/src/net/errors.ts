@@ -1,15 +1,18 @@
 import type { ApiError, EndpointName, ErrorCode, ErrorIssue } from '@coinposh/shared';
 
+/** Every call the client makes: the shared `endpoints`, plus the snapshot upload kept outside them. */
+export type ApiOperation = EndpointName | 'tableSnapshot';
+
 /** The server answered with an error envelope (or something we had to treat as one). */
 export class ApiRequestError extends Error {
-  readonly endpoint: EndpointName;
+  readonly endpoint: ApiOperation;
   readonly status: number;
   readonly code: ErrorCode;
   readonly retryAfterMs: number | null;
   readonly requestId: string | null;
   readonly issues: readonly ErrorIssue[];
 
-  constructor(endpoint: EndpointName, status: number, error: ApiError) {
+  constructor(endpoint: ApiOperation, status: number, error: ApiError) {
     super(`${endpoint} failed with ${error.code} (${status}): ${error.message}`);
     this.name = 'ApiRequestError';
     this.endpoint = endpoint;

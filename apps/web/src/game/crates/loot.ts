@@ -1,4 +1,4 @@
-import { album, pity as pityConfig, rarityRank } from '@coinposh/economy';
+import { album, pity as pityConfig, RARITY_IDS, rarityRank } from '@coinposh/economy';
 import type { AlbumResponse, Currency, PityCounters, Rarity, Reward } from '@coinposh/shared';
 import type { UnboxHero } from '../../vfx/cinematics/unbox/stage.ts';
 
@@ -118,45 +118,76 @@ const CURRENCY_ORDER: readonly Currency[] = [
   'goldBars',
 ];
 
-/** One line per reward, items first (they are the headline), currencies merged and ordered. */
+type ItemLine = Exclude<RewardLine, { readonly kind: 'currency' }>;
+
+const ITEM_KIND_ORDER: readonly ItemLine['kind'][] = [
+  'charm',
+  'safe',
+  'collectible',
+  'scratchCard',
+];
+
+/** Safes and scratch cards carry no album rarity, so they stand with the lowest tier. */
+function itemRank(line: ItemLine): number {
+  return rarityRank('rarity' in line ? line.rarity : RARITY_IDS[0]);
+}
+
+function compareItems(a: ItemLine, b: ItemLine): number {
+  return (
+    itemRank(b) - itemRank(a) || ITEM_KIND_ORDER.indexOf(a.kind) - ITEM_KIND_ORDER.indexOf(b.kind)
+  );
+}
+
+function itemLine(reward: Exclude<Reward, { readonly kind: 'currency' }>): ItemLine {
+  switch (reward.kind) {
+    case 'charm':
+      return {
+        kind: 'charm',
+        level: reward.level,
+        duplicate: reward.duplicate,
+        ...albumPlace(reward.charmType),
+      };
+    case 'collectible':
+      return { kind: 'collectible', ...albumPlace(reward.collectibleId) };
+    case 'safe':
+    case 'scratchCard':
+      return { kind: reward.kind };
+  }
+}
+
+/** Item lines rarest first, so the jackpot of a roll heads the card; display order only. */
+function itemLines(rewards: readonly Reward[]): readonly ItemLine[] {
+  return rewards
+    .flatMap((reward) => (reward.kind === 'currency' ? [] : [itemLine(reward)]))
+    .sort(compareItems);
+}
+
+/** One line per reward: items rarest first (they are the headline), then currencies merged and ordered. */
 export function rewardLines(rewards: readonly Reward[]): readonly RewardLine[] {
   const totals = new Map<Currency, number>();
-  const items: RewardLine[] = [];
   for (const reward of rewards) {
-    switch (reward.kind) {
-      case 'currency':
-        totals.set(reward.currency, (totals.get(reward.currency) ?? 0) + reward.amount);
-        break;
-      case 'charm':
-        items.push({
-          kind: 'charm',
-          level: reward.level,
-          duplicate: reward.duplicate,
-          ...albumPlace(reward.charmType),
-        });
-        break;
-      case 'collectible':
-        items.push({ kind: 'collectible', ...albumPlace(reward.collectibleId) });
-        break;
-      case 'safe':
-      case 'scratchCard':
-        items.push({ kind: reward.kind });
-        break;
+    if (reward.kind === 'currency') {
+      totals.set(reward.currency, (totals.get(reward.currency) ?? 0) + reward.amount);
     }
   }
   const currencies = CURRENCY_ORDER.flatMap((currency): RewardLine[] => {
     const amount = totals.get(currency);
     return amount === undefined ? [] : [{ kind: 'currency', currency, amount }];
   });
-  return [...items, ...currencies];
+  return [...itemLines(rewards), ...currencies];
 }
 
-/** What spins on the pedestal: the rarest kind of thing in the roll. */
+const ITEM_HEROES: Readonly<Record<ItemLine['kind'], UnboxHero>> = {
+  charm: 'charm',
+  safe: 'safe',
+  collectible: 'card',
+  scratchCard: 'card',
+};
+
+/** What spins on the pedestal: the rarest item in the roll, the same one that heads its card. */
 export function heroOf(rewards: readonly Reward[]): UnboxHero {
-  const kinds = new Set(rewards.map((reward) => reward.kind));
-  if (kinds.has('charm')) return 'charm';
-  if (kinds.has('safe')) return 'safe';
-  if (kinds.has('collectible') || kinds.has('scratchCard')) return 'card';
+  const [headline] = itemLines(rewards);
+  if (headline !== undefined) return ITEM_HEROES[headline.kind];
   const currencies = new Set(
     rewards.flatMap((reward) => (reward.kind === 'currency' ? [reward.currency] : [])),
   );

@@ -11,7 +11,7 @@ import {
 import { loadOrCreateDeviceKey } from './device.ts';
 import { currentNetMode, type NetMode } from './env.ts';
 import { createMockServer, type MockServer } from './mock/server.ts';
-import { Outbox } from './outbox.ts';
+import { Outbox, noPartitionLocks, webPartitionLocks, type PartitionLocks } from './outbox.ts';
 import { Session } from './session.ts';
 import { indexedDbStore, memoryStore, type KeyValueStore } from './store.ts';
 import { TableSync } from './tableSync.ts';
@@ -22,11 +22,19 @@ export { NET_I18N_KEYS, NET_I18N_SOURCE, type NetI18nKey } from './i18nKeys.ts';
 export { resolveNetMode, currentNetMode, type NetMode } from './env.ts';
 export { ApiRequestError, NetworkError } from './errors.ts';
 export { ContractViolationError } from './request.ts';
-export { openingTableCoins } from './openingTable.ts';
+export { openingLayout, openingTableCoins, type OpeningLayout } from './openingTable.ts';
+export { SNAPSHOT_CADENCE, SnapshotCadence, type SnapshotCadenceDeps } from './snapshotCadence.ts';
 export type { ApiClient } from './client.ts';
 export type { Session } from './session.ts';
 export type { ServerClock } from './clock.ts';
-export type { TableSync, TableEvent, SyncStatus, Balance, DropTicket } from './tableSync.ts';
+export type {
+  TableSync,
+  TableEvent,
+  SyncStatus,
+  Balance,
+  DropTicket,
+  SnapshotCapture,
+} from './tableSync.ts';
 
 export interface NetOptions {
   readonly mode?: NetMode;
@@ -82,7 +90,8 @@ export async function createNet(options: NetOptions): Promise<Net> {
     onError: options.onError,
   });
   const client = new ApiClient({ transport, device, session, clock });
-  const outbox = await Outbox.open(store, options.onError);
+  const locks = partitionLocks(mode);
+  const outbox = await Outbox.open(store, options.onError, locks);
   const table = new TableSync({
     client,
     outbox,
@@ -91,8 +100,18 @@ export async function createNet(options: NetOptions): Promise<Net> {
     scheduler: options.scheduler ?? realScheduler,
     onError: options.onError,
     localNudges: mode.kind === 'live' ? LIVE_NUDGES_STAY_LOCAL : null,
+    locks,
   });
+  client.setBootGate(() => table.drainBeforeBoot());
   return { mode, client, session, table, clock, mock };
+}
+
+/** Demo Mode keeps its queue in memory, so only live tabs can trip over each other's partitions. */
+function partitionLocks(mode: NetMode): PartitionLocks {
+  if (mode.kind !== 'live' || typeof navigator === 'undefined' || !('locks' in navigator)) {
+    return noPartitionLocks;
+  }
+  return webPartitionLocks(navigator.locks);
 }
 
 function liveUrl(mode: NetMode): string {
