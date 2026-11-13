@@ -49,8 +49,12 @@ export async function resolveQuality(options: ResolveQualityOptions): Promise<Re
   const stored = loadQuality(options.store, options.backend, logger);
   if (stored !== null) return resumeStored(stored, options.store, logger);
   const result = await options.benchmark();
+  const measured =
+    result.softwareGpu === undefined
+      ? `${result.msPerFrame.toFixed(2)} ms/frame`
+      : `skipped for the software GPU "${result.softwareGpu}"`;
   logger.info(
-    `[CoinPosh] Quality benchmark: ${result.msPerFrame.toFixed(2)} ms/frame on ${options.backend}, tier ${result.tier}${result.complete ? '' : ' (provisional, not saved)'}`,
+    `[CoinPosh] Quality benchmark: ${measured} on ${options.backend}, tier ${result.tier}${result.complete ? '' : ' (provisional, not saved)'}`,
   );
   if (!result.complete) {
     return {
