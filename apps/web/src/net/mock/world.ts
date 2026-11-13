@@ -520,6 +520,8 @@ export class MockWorld {
    * Never stored: after a reload every open that was in flight died with the page.
    */
   readonly #claimedThisPage = new Set<CrateId>();
+  /** Table snapshots accepted per player in this page life; never stored, like the claims above. */
+  readonly #acceptedSnapshots = new Map<PlayerId, number>();
 
   /**
    * A seeded Demo page replays the same `crypto` stream after every reload, so ids minted in a
@@ -639,6 +641,11 @@ export class MockWorld {
   /** What a player's evicted ledger entries add up to: replaying the ledger starts here. */
   ledgerCheckpoint(id: PlayerId): Wallet {
     return { ...(this.#checkpoints.get(id) ?? emptyWallet()) };
+  }
+
+  /** How many table snapshots this page life accepted from the player, for the Demo test handle. */
+  acceptedSnapshots(id: PlayerId): number {
+    return this.#acceptedSnapshots.get(id) ?? 0;
   }
 
   player(id: PlayerId): MockPlayer | undefined {
@@ -1203,6 +1210,7 @@ export class MockWorld {
     player.snapshotFlags['snapshot.foreign'] += foreign;
     player.snapshotFlags['snapshot.teleport'] += teleport;
     player.snapshotFlags['snapshot.implausible'] += judged.dropped + implausibleCrates;
+    this.#acceptedSnapshots.set(player.id, this.acceptedSnapshots(player.id) + 1);
     return { seq: body.seq, stored: accepted.size + acceptedCrates.size, ignored };
   }
 

@@ -12,7 +12,12 @@ import {
 import { createTableRelay, type TableRelay } from './game/ascension/relay.ts';
 import type * as CratesApi from './game/crates/index.ts';
 import type * as SessionModule from './game/session/index.ts';
-import type { ElsewhereOverlay, PagePort, SnapshotTriggers } from './game/session/index.ts';
+import type {
+  DemoHandle,
+  ElsewhereOverlay,
+  PagePort,
+  SnapshotTriggers,
+} from './game/session/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
 import { mountUpgrades, netUpgradeApi } from './game/upgrades/index.ts';
@@ -122,8 +127,8 @@ const OFFLINE_BANNER_STYLE: Partial<CSSStyleDeclaration> = {
 };
 
 /**
- * A read-only view of the running table for end-to-end checks and the playtest console. It holds
- * nothing that can act on the table.
+ * A read-only view of the running table for end-to-end checks and the playtest console. Apart
+ * from `demo`, which only Demo Mode has, it holds nothing that can act on the table.
  */
 interface CoinPoshProbe {
   readonly sim: SimBridgeStats | null;
@@ -135,6 +140,8 @@ interface CoinPoshProbe {
   readonly restored: Readonly<RestoreCounts> | null;
   /** True while another tab or device holds the table and this page waits on "Play here". */
   readonly superseded: boolean;
+  /** Re-boots and second-client boots against the in-browser server; only in Demo Mode. */
+  readonly demo?: DemoHandle | undefined;
 }
 
 interface RestoreCounts {
@@ -173,11 +180,13 @@ const probe: {
   counts: ProbeCounts;
   restored: RestoreCounts | null;
   superseded: boolean;
+  demo: DemoHandle | null;
 } = {
   bridge: null,
   playable: false,
   restored: null,
   superseded: false,
+  demo: null,
   counts: {
     simFalls: 0,
     simFusions: 0,
@@ -207,6 +216,9 @@ window.__coinposh = {
   },
   get superseded() {
     return probe.superseded;
+  },
+  get demo() {
+    return probe.demo ?? undefined;
   },
 };
 
@@ -739,6 +751,7 @@ async function bootScene(
       payouts.dispose();
     });
     const systems = startPlay(systemsModule, stage, started, boot, state, vfx, payouts, scope);
+    playingSystems = systems;
     const rides = mountTableCrates(
       cratesApi,
       { stage, venue, bridge: started.bridge, boot, systems, vfx, crates: laid.crates, payouts },
@@ -771,6 +784,7 @@ async function bootScene(
   }
 
   let playing: { readonly sim: StartedSim; readonly layout: OpeningLayout; readonly scope: Scope };
+  let playingSystems: GameSystems;
 
   const layFrom = async (state: StateResponse): Promise<Laid> => {
     const laid = openingLayout(state);
@@ -826,6 +840,21 @@ async function bootScene(
   const view = attachTable(stage, venue, bridge);
   view.use(systems, bridge);
   markBoot('playable');
+  const { mock, demoPeer } = boot.net;
+  if (mock !== null && demoPeer !== null) {
+    probe.demo = sessionModule.createDemoHandle({
+      mock,
+      player: () => boot.net.session.playerId,
+      peer: demoPeer,
+      retake,
+      superseded: () => probe.superseded,
+      sample: () => playing.sim.bridge.snapshot(),
+      coinOf: (simId) => playingSystems.coinOf(simId),
+    });
+    teardown.push(() => {
+      probe.demo = null;
+    });
+  }
 
   const relay = createTableRelay<Laid>({
     state: boot.state,

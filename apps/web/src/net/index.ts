@@ -82,6 +82,11 @@ export interface Net {
   readonly account: () => Promise<AccountClient>;
   /** The in-browser server behind Demo Mode; `null` when talking to the real API. */
   readonly mock: MockServer | null;
+  /**
+   * A second client of this player on the same Demo server, as another tab would be: it shares
+   * the sign-in but not this page's table session or boot gate. `null` against the real API.
+   */
+  readonly demoPeer: (() => ApiClient) | null;
 }
 
 const LIVE_NUDGES_STAY_LOCAL =
@@ -136,7 +141,11 @@ export async function createNet(options: NetOptions): Promise<Net> {
     });
     return account;
   };
-  return { mode, client, session, table, clock, account: loadAccount, mock };
+  const demoPeer =
+    mock === null
+      ? null
+      : () => new ApiClient({ transport, device, session, clock: new ServerClock(monotonic) });
+  return { mode, client, session, table, clock, account: loadAccount, mock, demoPeer };
 }
 
 async function openAccount(

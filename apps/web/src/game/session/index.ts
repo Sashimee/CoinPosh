@@ -30,3 +30,11 @@ export {
   type SessionKey,
 } from './i18n.ts';
 export { createRetake, type RetakeSteps } from './retake.ts';
+export {
+  createDemoHandle,
+  type DemoHandle,
+  type DemoHandleDeps,
+  type DemoPose,
+  type DemoSnapshots,
+  type DemoStoredSnapshot,
+} from './demoHandle.ts';
