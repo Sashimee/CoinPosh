@@ -91,6 +91,10 @@ const RAY_PARTING = ITEM_SIZE * 1.6;
 const BURST_ON_HERO = 0.45;
 /** Where the crate shrinks to as it sinks back into the tray after Collect. */
 const FLY_SCALE = 0.55;
+/** How much brighter the key burns on the hero at the peak of its arrival glint. */
+const GLINT_BOOST = 0.4;
+/** Sides of the polygon that circumscribes the hero's turn for the presentation's fit. */
+const BOUND_SIDES = 12;
 /**
  * The primer draws each unbox material this far below the table, where every triangle is
  * clipped: the GPU builds the pipelines while nothing can be seen.
@@ -429,6 +433,10 @@ export class UnboxStage {
   private readonly toCamera = new Vector3(0, 0, 1);
   private readonly hero: UnboxHero;
   private restYaw = 0;
+  private readonly presentOffset = new Vector3();
+  private presentScale = 1;
+  private restBound: { readonly pitchedBy: number; readonly points: readonly Vector3[] } | null =
+    null;
   private flareStrength = 0;
   private swirl = 0;
   private disposed = false;
@@ -537,6 +545,57 @@ export class UnboxStage {
     return this.disposed ? 0 : this.flareStrength;
   }
 
+  /**
+   * The hero's pivot at rest on its risen pedestal, relative to the stage's base, before any
+   * presentation; with `heroBound`, what the presentation fits into the free band.
+   */
+  get heroPivot(): Vector3 {
+    return heroPivot.set(0, PEDESTAL_HEIGHT + ITEM_SIZE, 0);
+  }
+
+  /**
+   * Corners of the column the hero sweeps as it sways at rest, relative to the stage's base:
+   * whatever its turn, its projection stays inside theirs, so the fit does not wobble with it.
+   */
+  heroBound(): readonly Vector3[] {
+    const pitch = heroPitch(this.hero, this.toCamera.y);
+    if (this.restBound?.pitchedBy === pitch) return this.restBound.points;
+    const geometry = this.assets.hero(this.hero);
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) throw new Error(`Unbox stage could not bound the ${this.hero} hero`);
+    let radius = 0;
+    let low = Infinity;
+    let high = -Infinity;
+    for (const x of [box.min.x, box.max.x])
+      for (const y of [box.min.y, box.max.y])
+        for (const z of [box.min.z, box.max.z]) {
+          const tipped = boundCorner.set(x, y, z).applyAxisAngle(pitchAxis, pitch);
+          radius = Math.max(radius, Math.hypot(tipped.x, tipped.z));
+          low = Math.min(low, tipped.y);
+          high = Math.max(high, tipped.y);
+        }
+    const reach = radius / Math.cos(Math.PI / BOUND_SIDES);
+    const pivot = this.heroPivot;
+    const points: Vector3[] = [];
+    for (let i = 0; i < BOUND_SIDES; i++) {
+      const angle = (i / BOUND_SIDES) * Math.PI * 2;
+      for (const y of [low, high])
+        points.push(new Vector3(Math.cos(angle) * reach, y, Math.sin(angle) * reach).add(pivot));
+    }
+    this.restBound = { pitchedBy: pitch, points };
+    return points;
+  }
+
+  /**
+   * Where the hero goes once `pose.present` reaches 1: `offset` shifts its pivot in the parent's
+   * space and `scale` sizes it about that pivot. The pose blends it in, dip and overshoot too.
+   */
+  present(offset: Vector3, scale: number): void {
+    this.presentOffset.copy(offset);
+    this.presentScale = scale;
+  }
+
   /** Rests the crate at `yaw` and keys it from `toCamera`, a direction in the parent's space. */
   face(yaw: number, toCamera: Vector3): void {
     this.restYaw = yaw;
@@ -586,7 +645,7 @@ export class UnboxStage {
     this.pedestal.scale.setScalar(Math.max(0.001, rise));
     this.pedestal.position.y = this.crate.position.y + bodyHeight * (1 - Math.min(1, rise)) * 0.5;
     this.item.rotation.set(heroPitch(this.hero, this.toCamera.y), view + heroYaw(pose.itemSpin), 0);
-    this.item.scale.setScalar(1 - pose.fly);
+    this.presentItem(pose);
 
     const glow = Math.max(pose.burst, pose.rays, pose.rumble * 0.5);
     const irradiance =
@@ -596,13 +655,41 @@ export class UnboxStage {
         LIGHT.rays * pose.rays,
         LIGHT.burst * pose.burst * shielded,
       ) *
+      (1 + GLINT_BOOST * pose.glint) *
       (1 - pose.fly);
     const light = this.assets.light;
     light.position.copy(this.root.position);
     light.position.addScaledVector(this.toCamera, LIGHT_OFFSET);
     light.position.y += LIGHT_LIFT;
+    light.position.addScaledVector(this.presentOffset, pose.present);
     light.color.copy(this.warm).lerp(this.accent, Math.min(1, glow));
     light.intensity = irradiance * LIGHT_OFFSET * LIGHT_OFFSET;
+  }
+
+  /**
+   * Sizes the hero and, while presented, carries its pivot along the presentation offset. With
+   * nowhere to go it stays on its cap, unsquashed; on the way, the stretch keeps its volume, so
+   * the squash and the launch read as weight, not as growth.
+   */
+  private presentItem(pose: UnboxPose): void {
+    const item = this.item;
+    item.position.set(0, PEDESTAL_HEIGHT + ITEM_SIZE, 0);
+    if (pose.present === 0 || this.presentOffset.lengthSq() === 0) {
+      item.scale.setScalar(1 - pose.fly);
+      return;
+    }
+    const blend = Math.min(1, Math.max(0, pose.present));
+    const size = (1 - pose.fly) * (1 + (this.presentScale - 1) * blend);
+    const stretch = Math.max(0.01, pose.heroStretch);
+    const girth = size / Math.sqrt(stretch);
+    item.scale.set(girth, size * stretch, girth);
+    this.pedestal.updateWorldMatrix(true, false);
+    lifted.copy(item.position).applyMatrix4(this.pedestal.matrixWorld);
+    const parent = this.root.parent;
+    if (parent) parent.localToWorld(presentStep.copy(this.presentOffset)).sub(parentOrigin(parent));
+    else presentStep.copy(this.presentOffset);
+    lifted.addScaledVector(presentStep, pose.present);
+    item.position.copy(this.pedestal.worldToLocal(lifted));
   }
 
   /** Takes the props off the table and darkens the light; the borrowed assets stay alive. */
@@ -688,6 +775,17 @@ export function poseCrate(rig: CrateRig, pose: UnboxPose, view: number): void {
     .setFromAxisAngle(hinge, -pose.lidOpen * 1.9)
     .multiply(shake.setFromAxisAngle(forwardAxis, pose.lidShake));
   lid.visible = pose.lidOpen < 1;
+}
+
+const heroPivot = new Vector3();
+const boundCorner = new Vector3();
+const pitchAxis = new Vector3(1, 0, 0);
+const lifted = new Vector3();
+const presentStep = new Vector3();
+const origin = new Vector3();
+
+function parentOrigin(parent: Object3D): Vector3 {
+  return parent.localToWorld(origin.set(0, 0, 0));
 }
 
 /** The lid flips off away from the camera, whatever the crate's spin, so it never leaves frame. */

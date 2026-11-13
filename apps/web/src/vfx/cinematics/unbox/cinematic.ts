@@ -1,5 +1,5 @@
 import type { Rarity } from '@coinposh/shared';
-import { Vector3, type Object3D, type PerspectiveCamera } from 'three/webgpu';
+import { PerspectiveCamera, Vector3, type Object3D } from 'three/webgpu';
 import type { CameraPreset } from '../../../scene/venues/riviera/layout.ts';
 import type { CameraKickOptions } from '../../camera/cameraKick.ts';
 import type { ContactOptions } from '../../index.ts';
@@ -15,6 +15,7 @@ import {
   type UnboxTimeline,
 } from './plan.ts';
 import { easeInCubic } from '../../easing.ts';
+import { presentHero, unboxClearance, type UnboxClearance } from './presentation.ts';
 import { pushIn, unboxShot, type UnboxShot } from './shot.ts';
 import { CRATE_SIZE, UnboxStage, type UnboxAssets, type UnboxHero } from './stage.ts';
 
@@ -46,6 +47,8 @@ export interface UnboxCinematicOptions {
   readonly haptics?: { pulse(pattern: HapticPattern): boolean } | null;
   /** Every beat as it lands, including ones a skip jumps over; stingers and the card hang off it. */
   readonly onBeat?: (beat: UnboxBeat) => void;
+  /** Where the reward card rests once up; the reveal card posts it, tests pass their own. */
+  readonly clearance?: () => UnboxClearance | null;
 }
 
 /**
@@ -55,6 +58,10 @@ export interface UnboxCinematicOptions {
  */
 const LAND_SPARKS = 0.35;
 const BURST_SPARKS = 0.45;
+/** Soft enough to be glints alone as the hero arrives clear of the card. */
+const PRESENT_SPARKS = 0.3;
+/** How fast the hero follows a card that moves while it is presented, per second. */
+const PRESENT_FOLLOW = 12;
 
 /**
  * One crate opening, driven by `update(dt)` in effect time (pass the delta `Vfx.update`
@@ -78,6 +85,12 @@ export class UnboxCinematic {
   private framingAspect = Number.NaN;
   private framed: CameraPreset | null = null;
   private shotOf: UnboxShot | null = null;
+  private presentedFor: UnboxClearance | null = null;
+  private presentedAspect = Number.NaN;
+  private readonly presentGoal = { offset: new Vector3(), scale: 1 };
+  private readonly presentNow = { offset: new Vector3(), scale: 1 };
+  private presenting = false;
+  private arrived = false;
 
   constructor(options: UnboxCinematicOptions) {
     this.options = options;
@@ -205,9 +218,65 @@ export class UnboxCinematic {
     const shot = this.shot;
     this.stage.face(shot.yaw, shot.toCamera);
     this.stage.root.position.lerpVectors(shot.base, this.options.at, easeInCubic(pose.fly));
+    this.followCard(framing, dtSeconds);
     this.stage.apply(pose, dtSeconds);
     pushIn(framing, shot.center, pose.dolly, this.eye, this.look);
     this.writeCamera(this.eye, this.look, framing.fov);
+    this.arrive(pose);
+  }
+
+  /**
+   * Re-fits the hero whenever the card posts a new resting place, and eases toward it; the first
+   * fit, made before the lift has begun, is taken as is.
+   */
+  private followCard(framing: CameraPreset, dtSeconds: number): void {
+    const clearance = (this.options.clearance ?? unboxClearance)();
+    const aspect = this.options.camera.aspect;
+    if (clearance !== this.presentedFor || aspect !== this.presentedAspect) {
+      this.presentedFor = clearance;
+      this.presentedAspect = aspect;
+      const goal = clearance ? this.fitHero(framing, clearance) : null;
+      this.presentGoal.offset.copy(goal?.offset ?? origin);
+      this.presentGoal.scale = goal?.scale ?? 1;
+      if (!this.presenting || this.options.reducedMotion) {
+        this.presentNow.offset.copy(this.presentGoal.offset);
+        this.presentNow.scale = this.presentGoal.scale;
+      }
+      this.presenting = goal !== null;
+    }
+    const follow = 1 - Math.exp(-PRESENT_FOLLOW * Math.max(0, dtSeconds));
+    this.presentNow.offset.lerp(this.presentGoal.offset, follow);
+    this.presentNow.scale += (this.presentGoal.scale - this.presentNow.scale) * follow;
+    this.stage.present(this.presentNow.offset, this.presentNow.scale);
+  }
+
+  /** The hero's place clear of the card, seen from the camera as the reveal holds it. */
+  private fitHero(
+    framing: CameraPreset,
+    clearance: UnboxClearance,
+  ): { offset: Vector3; scale: number } | null {
+    const { base, center } = this.shot;
+    const held = unboxPose(this.timeline.revealAtMs, this.timeline, this.options.reducedMotion);
+    pushIn(framing, center, held.dolly, restEye, restLook);
+    restCamera.fov = framing.fov;
+    restCamera.aspect = this.options.camera.aspect;
+    restCamera.updateProjectionMatrix();
+    restCamera.position.copy(restEye);
+    restCamera.lookAt(restLook);
+    restCamera.updateMatrixWorld(true);
+    const pivot = restPivot.copy(this.stage.heroPivot).add(base);
+    const bound = this.stage.heroBound().map((point) => point.clone().add(base));
+    const fit = presentHero(restCamera, pivot, bound, clearance);
+    return fit.offset.lengthSq() === 0 && fit.scale === 1 ? null : fit;
+  }
+
+  /** Glints and a tick as the hero first reaches its place clear of the card. */
+  private arrive(pose: UnboxPose): void {
+    if (this.arrived || !this.presenting || pose.present < 1) return;
+    this.arrived = true;
+    this.options.haptics?.pulse('tick');
+    this.stage.heroObject.getWorldPosition(sparkAt);
+    this.options.vfx?.contactSparks(sparkAt, { strength: PRESENT_SPARKS, surface: 'metal' });
   }
 
   /**
@@ -235,3 +304,11 @@ export class UnboxCinematic {
     return this.framed;
   }
 }
+
+const origin = new Vector3();
+const restEye = new Vector3();
+const restLook = new Vector3();
+const restPivot = new Vector3();
+const sparkAt = new Vector3();
+/** The camera as the reveal holds it, for fitting the hero; never drawn through. */
+const restCamera = new PerspectiveCamera(50, 1, 0.01, 100);

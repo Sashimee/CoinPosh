@@ -22,6 +22,8 @@ export interface UnboxTimeline {
   readonly pedestalMs: number;
   /** The reward card comes up; the cinematic then holds until the player collects. */
   readonly revealAtMs: number;
+  /** The hero lifts clear of the card that just came up: a dip, a rise, an overshoot, settled. */
+  readonly presentMs: number;
   /** Item flight into the inventory and the camera's return, after Collect. */
   readonly flyMs: number;
 }
@@ -41,6 +43,7 @@ export const FULL_UNBOX: UnboxTimeline = {
   burstAtMs: 2_000,
   pedestalMs: 620,
   revealAtMs: 2_380,
+  presentMs: 440,
   flyMs: 520,
 };
 
@@ -57,6 +60,7 @@ export const REDUCED_UNBOX: UnboxTimeline = {
   burstAtMs: 720,
   pedestalMs: 0,
   revealAtMs: 820,
+  presentMs: 0,
   flyMs: 0,
 };
 
@@ -130,6 +134,15 @@ export interface UnboxPose {
   readonly itemSpin: number;
   /** 0 at the venue framing, 1 fully dollied in on the crate. */
   readonly dolly: number;
+  /**
+   * 0 on the pedestal, 1 lifted clear of the reward card into the free band of the screen. Dips
+   * under 0 in the anticipation and passes 1 in the overshoot; falls back to 0 with the flight.
+   */
+  readonly present: number;
+  /** Vertical stretch of the hero over its rest shape: squashed in the dip, drawn out on launch. */
+  readonly heroStretch: number;
+  /** 0..1 highlight on the hero as it arrives in the band. */
+  readonly glint: number;
   /** 0..1, the item's flight into the inventory after Collect. */
   readonly fly: number;
 }
@@ -155,6 +168,16 @@ const LID_CLEAR_MS = 360;
 const PEDESTAL_DELAY_MS = 80;
 const SPIN_RAD_PER_S = 2.6;
 const RAYS_AFTER_BURST = 0.7;
+/** Share of the presentation spent sinking before the hero lifts off. */
+const PRESENT_DIP_SHARE = 0.18;
+/** How far it sinks, as a share of the whole lift. */
+const PRESENT_DIP = 0.07;
+const presentRise = easeOutBack(1.45);
+const PRESENT_SQUASH = 0.08;
+const PRESENT_STRETCH = 0.14;
+/** The glint peaks as the hero passes its mark and fades as it settles, motion or not. */
+const GLINT_AT_MS = 200;
+const GLINT_MS = 420;
 
 /**
  * Samples the unbox at `ms`. `flyMs` is the time since Collect, or null before it. Pure, so
@@ -233,6 +256,9 @@ export function unboxPose(
   const fly =
     flyMs === null ? 0 : reducedMotion ? 1 : easeInOutCubic(progress(flyMs, 0, timeline.flyMs));
   const dollyIn = reducedMotion ? 0 : easeInOutCubic(progress(t, 0, timeline.dollyMs));
+  const { present, heroStretch } = presentation(t - timeline.revealAtMs, timeline, reducedMotion);
+  const glinting = progress(t - timeline.revealAtMs, GLINT_AT_MS, GLINT_AT_MS + GLINT_MS);
+  const glint = glinting <= 0 || glinting >= 1 ? 0 : Math.sin(Math.PI * glinting) * (1 - glinting);
   return {
     drop,
     spin,
@@ -248,8 +274,29 @@ export function unboxPose(
     pedestal,
     itemSpin,
     dolly: dollyIn * (1 - fly),
+    present: present * (1 - fly),
+    heroStretch: 1 + (heroStretch - 1) * (1 - fly),
+    glint: glint * (1 - fly),
     fly,
   };
+}
+
+/** The hero's lift once the card is up, `sinceReveal` ms after it; reduced motion cuts to it. */
+function presentation(
+  sinceReveal: number,
+  timeline: UnboxTimeline,
+  reducedMotion: boolean,
+): { readonly present: number; readonly heroStretch: number } {
+  if (sinceReveal < 0) return { present: 0, heroStretch: 1 };
+  if (reducedMotion) return { present: 1, heroStretch: 1 };
+  const u = progress(sinceReveal, 0, timeline.presentMs);
+  if (u < PRESENT_DIP_SHARE) {
+    const sink = Math.sin((Math.PI * u) / PRESENT_DIP_SHARE);
+    return { present: -PRESENT_DIP * sink, heroStretch: 1 - PRESENT_SQUASH * sink };
+  }
+  const rise = (u - PRESENT_DIP_SHARE) / (1 - PRESENT_DIP_SHARE);
+  const launch = rise >= 1 ? 0 : Math.sin(Math.PI * rise) * (1 - rise) ** 2;
+  return { present: presentRise(rise), heroStretch: 1 + PRESENT_STRETCH * launch };
 }
 
 export interface RayStyle {
@@ -319,4 +366,17 @@ export const UNBOX_JUICE: {
   ],
   reduced:
     'No hop, spin, squash, dolly, lid shake or flight: the crate rests centre stage from the first frame, the shudders stay as rumbles and seam glow, the rays fade up, the burst is a flare of light without a pop, and the item appears on its pedestal with its rewards.',
+};
+
+/**
+ * What the hero's lift clear of the reward card delivers on top of the card's own entrance. It
+ * only plays when a card is up to make room for.
+ */
+export const PRESENT_JUICE: {
+  readonly items: readonly JuiceItem[];
+  readonly reduced: string;
+} = {
+  items: ['squashOvershoot', 'lightResponse', 'particles', 'hapticOrShake'],
+  reduced:
+    'The hero cuts to its place clear of the card on the reveal frame, with the same glint, a few slow sparkles and a haptic tick, but no dip, stretch or overshoot.',
 };
