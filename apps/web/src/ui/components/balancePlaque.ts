@@ -17,8 +17,9 @@ export const WALLET_CHIPS = ['pearls', 'keys', 'tickets'] as const;
 export type WalletChip = (typeof WALLET_CHIPS)[number];
 
 /**
- * How long an opened crate may hold its credit back from the Vault. A card left up, a cinematic
- * the director dropped or a crate stuck behind a sheet must not keep the Vault short for good.
+ * How long a crate's card may stand in front of the player, uncollected, before the Vault shows
+ * its credit anyway. It runs only while the card is on screen: a crate waiting its turn in the
+ * queue or behind a sheet is not left up, and keeps its credit until its card is.
  */
 export const PAYOUT_HOLD_CAP_MS = 30_000;
 /** One line's flight from the reward card to its readout. */
@@ -122,6 +123,10 @@ export interface Payout {
 export interface WalletPayout {
   /** The server credited `credit` with this open; keep it off the readouts until collect. */
   hold(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void;
+  /** The crate's card is on screen: start (or restart) the cap on its hold. */
+  arm(id: string): void;
+  /** The card left the screen for a while (a sheet over it): the cap waits until it is back. */
+  disarm(id: string): void;
   /** The player collected: fly each line to its readout, which then counts up. */
   collect(id: string, payout: Payout): void;
   /** The crate went away without a collect (dismissed, dropped, torn down): show it all now. */
@@ -142,7 +147,7 @@ export interface PayoutLedgerOptions {
 /**
  * The bookkeeping behind the payout, free of the DOM: coin and gold-bar holds against the
  * store's balances, the purse chips' shown and server values, and the cap that lets a hold go
- * if its crate is never collected. `changed` runs whenever a readout should repaint.
+ * if its card is left up and never collected. `changed` runs whenever a readout should repaint.
  */
 export class PayoutLedger {
   readonly coins = new CreditHold();
@@ -168,7 +173,11 @@ export class PayoutLedger {
   hold(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void {
     this.coins.hold(id, credit.coins ?? 0);
     this.goldBars.hold(id, credit.goldBars ?? 0);
-    if (!this.#holds(id) || this.#caps.has(id)) return;
+  }
+
+  arm(id: string): void {
+    this.#clearCap(id);
+    if (!this.#holds(id) || this.#collecting.has(id)) return;
     this.#caps.set(
       id,
       setTimeout(() => {
@@ -179,6 +188,10 @@ export class PayoutLedger {
         this.#settle(id);
       }, this.#capMs),
     );
+  }
+
+  disarm(id: string): void {
+    this.#clearCap(id);
   }
 
   /** Starts the payout; returns how each purse chip should count. */
@@ -282,6 +295,8 @@ export function walletPayoutFor(owner: object): PayoutChannel {
     let view: WalletPayout | null = null;
     const made: PayoutChannel = {
       hold: (id, credit) => view?.hold(id, credit),
+      arm: (id) => view?.arm(id),
+      disarm: (id) => view?.disarm(id),
       collect: (id, payout) => view?.collect(id, payout),
       release: (id) => view?.release(id),
       attach(next) {
@@ -535,6 +550,20 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
     timers.add(timer);
   };
 
+  const lifted = new Set<() => void>();
+  /** Blanks the card's line while its ghost flies; the returned call puts it back. */
+  const liftOff = (source: Element): (() => void) | null => {
+    if (!(source instanceof HTMLElement)) return null;
+    const before = source.style.opacity;
+    source.style.opacity = '0';
+    const restore = (): void => {
+      lifted.delete(restore);
+      source.style.opacity = before;
+    };
+    lifted.add(restore);
+    return restore;
+  };
+
   const launch = (id: string, line: PayoutLine, index: number, into: HTMLElement): number => {
     const source = line.source;
     const delay = index * PAYOUT_STAGGER_MS;
@@ -562,7 +591,7 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
     );
     into.append(ghost);
     const from = rectOf(source);
-    if (source instanceof HTMLElement) source.style.opacity = '0';
+    const lift = liftOff(source);
     ghost.animate(flightFrames(from, rectOf(targetOf(line.currency))), {
       duration: PAYOUT_FLIGHT_MS,
       delay,
@@ -571,6 +600,7 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
     });
     later(landAt, () => {
       ghost.remove();
+      lift?.();
       land();
     });
     return landAt;
@@ -579,6 +609,12 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   const payout: WalletPayout = {
     hold(id, credit) {
       ledger.hold(id, credit);
+    },
+    arm(id) {
+      ledger.arm(id);
+    },
+    disarm(id) {
+      ledger.disarm(id);
     },
     collect(id, given) {
       const counts = ledger.collect(id, given);
@@ -642,6 +678,7 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   ctx.own(() => {
     for (const timer of timers) clearTimeout(timer);
     timers.clear();
+    for (const restore of [...lifted]) restore();
     flying.clear();
     ledger.releaseAll();
     layer?.remove();

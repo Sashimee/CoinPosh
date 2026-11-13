@@ -1,8 +1,19 @@
 import { WalletSchema, type Wallet } from '@coinposh/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createBus } from '../../app/bus.ts';
+import { defaultSettings } from '../../app/settings.ts';
+import { initialUiState, type UiEvents } from '../../app/state.ts';
+import { createStore } from '../../app/store.ts';
+import { BUNDLED_RESOURCES, createI18n, type Language } from '../../i18n/index.ts';
+import type { UiContext } from '../context.ts';
+import { Localizer } from '../localize.ts';
+import { setMotionPreference } from '../motion/reduced.ts';
 import {
+  createBalancePlaque,
   CreditHold,
+  PAYOUT_FLIGHT_MS,
   PAYOUT_HOLD_CAP_MS,
+  PAYOUT_STAGGER_MS,
   PayoutLedger,
   walletPayoutFor,
   type PayoutLine,
@@ -248,11 +259,12 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     expect(book.coins.shown).toBe(46);
   });
 
-  it('lets an uncollected crate go after the cap, with a warning', () => {
+  it('lets a card left up uncollected go after the cap, with a warning', () => {
     const { ledger: book, warnings } = ledger();
     book.coins.observe(40);
     book.hold('a', { coins: 6 });
     book.coins.observe(46);
+    book.arm('a');
     vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS - 1);
     expect(book.coins.shown).toBe(40);
     vi.advanceTimersByTime(1);
@@ -266,7 +278,9 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     book.coins.observe(0);
     book.hold('a', { coins: 6 });
     book.coins.observe(6);
+    book.arm('a');
     book.collect('a', { wallet: wallet({ coins: 6 }), lines: [line('coins', 6)] });
+    book.arm('a');
     vi.advanceTimersByTime(1000);
     expect(warnings).toEqual([]);
     expect(book.coins.shown).toBe(0);
@@ -279,8 +293,45 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     book.goldBars.observe(3);
     expect(book.goldBars.shown).toBe(1);
     book.hold('b', { pearls: 3 });
+    book.arm('a');
+    book.arm('b');
     vi.advanceTimersByTime(100);
     expect(book.goldBars.shown).toBe(3);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('keeps a crate that waits its turn for longer than the cap until it is collected', () => {
+    const { ledger: book, warnings } = ledger();
+    book.coins.observe(40);
+    book.hold('a', { coins: 6 });
+    book.coins.observe(46);
+    vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 3);
+    expect(book.coins.shown).toBe(40);
+    book.arm('a');
+    vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS - 1);
+    book.collect('a', { wallet: wallet({ coins: 46 }), lines: [line('coins', 6)] });
+    expect(book.coins.shown).toBe(40);
+    book.land('a', 'coins');
+    expect(book.coins.shown).toBe(46);
+    vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS);
+    expect(warnings).toEqual([]);
+  });
+
+  it('pauses the cap while the card is out of sight and restarts it when it is back', () => {
+    const { ledger: book, warnings } = ledger();
+    book.coins.observe(0);
+    book.hold('a', { coins: 6 });
+    book.coins.observe(6);
+    book.arm('a');
+    vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS - 1000);
+    book.disarm('a');
+    vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 2);
+    book.arm('a');
+    vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS - 1);
+    expect(book.coins.shown).toBe(0);
+    expect(warnings).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(book.coins.shown).toBe(6);
     expect(warnings).toHaveLength(1);
   });
 
@@ -289,6 +340,8 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     book.coins.observe(0);
     book.hold('a', { coins: 4 });
     book.hold('b', { coins: 4 });
+    book.arm('a');
+    book.arm('b');
     book.coins.observe(8);
     book.collect('a', { wallet: wallet({ coins: 8, pearls: 2 }), lines: [line('pearls', 2)] });
     book.releaseAll();
@@ -311,16 +364,282 @@ describe('walletPayoutFor', () => {
     const calls: string[] = [];
     const view: WalletPayout = {
       hold: (id) => calls.push(`hold ${id}`),
+      arm: (id) => calls.push(`arm ${id}`),
+      disarm: (id) => calls.push(`disarm ${id}`),
       collect: (id) => calls.push(`collect ${id}`),
       release: (id) => calls.push(`release ${id}`),
     };
     channel.hold('early', { coins: 1 });
     const detach = channel.attach(view);
     channel.hold('a', { coins: 1 });
+    channel.arm('a');
+    channel.disarm('a');
     channel.collect('a', { wallet: wallet({}), lines: [] });
     channel.release('b');
     detach();
     channel.release('late');
-    expect(calls).toEqual(['hold a', 'collect a', 'release b']);
+    expect(calls).toEqual(['hold a', 'arm a', 'disarm a', 'collect a', 'release b']);
+  });
+});
+
+/** Just enough DOM for the plaque, its odometers and its flights: the suite runs in node. */
+class FakeNode {
+  parent: FakeNode | null = null;
+  readonly children: FakeNode[] = [];
+  readonly attrs = new Map<string, string>();
+  readonly style: Record<string, string> = { opacity: '' };
+  readonly dataset: Record<string, string> = {};
+  #text = '';
+
+  constructor(readonly tagName: string) {}
+
+  get className(): string {
+    return this.attrs.get('class') ?? '';
+  }
+  set className(value: string) {
+    this.attrs.set('class', value);
+  }
+
+  readonly classList = {
+    contains: (name: string): boolean => this.className.split(/\s+/).includes(name),
+    add: (name: string): void => {
+      if (!this.classList.contains(name)) this.className = `${this.className} ${name}`.trim();
+    },
+    remove: (name: string): void => {
+      this.className = this.className
+        .split(/\s+/)
+        .filter((part) => part !== name)
+        .join(' ');
+    },
+    toggle: (name: string, on: boolean): void => {
+      if (on) this.classList.add(name);
+      else this.classList.remove(name);
+    },
+  };
+
+  get hidden(): boolean {
+    return this.attrs.has('hidden');
+  }
+  set hidden(value: boolean) {
+    if (value) this.attrs.set('hidden', '');
+    else this.attrs.delete('hidden');
+  }
+
+  get textContent(): string {
+    return this.#text + this.children.map((child) => child.textContent).join('');
+  }
+  set textContent(value: string) {
+    this.replaceChildren();
+    this.#text = value;
+  }
+
+  get isConnected(): boolean {
+    return this.tagName === 'body' || (this.parent?.isConnected ?? false);
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+  getAttribute(name: string): string | null {
+    return this.attrs.get(name) ?? null;
+  }
+
+  append(...nodes: (FakeNode | string)[]): void {
+    for (const node of nodes) {
+      if (typeof node === 'string') {
+        this.#text += node;
+        continue;
+      }
+      node.remove();
+      node.parent = this;
+      this.children.push(node);
+    }
+  }
+  replaceChildren(...nodes: FakeNode[]): void {
+    for (const child of [...this.children]) child.remove();
+    this.#text = '';
+    this.append(...nodes);
+  }
+  remove(): void {
+    const siblings = this.parent?.children;
+    siblings?.splice(siblings.indexOf(this), 1);
+    this.parent = null;
+  }
+
+  matches(selector: string): boolean {
+    if (selector.startsWith('.')) return this.classList.contains(selector.slice(1));
+    const testId = /^\[data-testid="(.+)"\]$/.exec(selector);
+    if (testId) return this.attrs.get('data-testid') === testId[1];
+    throw new Error(`FakeNode cannot match ${selector}`);
+  }
+  closest(selector: string): FakeNode | null {
+    return this.matches(selector) ? this : (this.parent?.closest(selector) ?? null);
+  }
+  all(): FakeNode[] {
+    return this.children.flatMap((child) => [child, ...child.all()]);
+  }
+  querySelector(selector: string): FakeNode | null {
+    return this.all().find((node) => node.matches(selector)) ?? null;
+  }
+  querySelectorAll(selector: string): FakeNode[] {
+    return this.all().filter((node) => node.matches(selector));
+  }
+
+  getBoundingClientRect(): DOMRect {
+    return { left: 0, top: 0, width: 40, height: 20 } as DOMRect;
+  }
+  animate(): { onfinish: (() => void) | null } {
+    return { onfinish: null };
+  }
+
+  /** `fromMarkup` reads a template's first element; icons are opaque here. */
+  set innerHTML(_markup: string) {
+    this.replaceChildren(new FakeNode('svg'));
+  }
+  get content(): { firstElementChild: FakeNode | null } {
+    return { firstElementChild: this.children[0] ?? null };
+  }
+}
+
+const COLLECT_WALLET = wallet({ coins: 92, pearls: 25 });
+
+function mountPlaque(language: Language = 'en') {
+  const body = new FakeNode('body');
+  vi.stubGlobal('document', { createElement: (tag: string) => new FakeNode(tag), body });
+  vi.stubGlobal('HTMLElement', FakeNode);
+  vi.stubGlobal('requestAnimationFrame', () => 0);
+  const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
+  const store = createStore(initialUiState(defaultSettings(language)));
+  store.setState({ coins: 80 });
+  const bus = createBus<UiEvents>();
+  const feedback: string[] = [];
+  bus.on('ui:feedback', ({ kind }) => feedback.push(kind));
+  const disposers: (() => void)[] = [];
+  const ctx: UiContext = {
+    i18n,
+    loc: new Localizer(i18n),
+    store,
+    bus,
+    own: (dispose) => disposers.push(dispose),
+  };
+  const host = new FakeNode('div');
+  host.className = 'cp-ui-host';
+  body.append(host);
+  host.append(createBalancePlaque(ctx) as unknown as FakeNode);
+  const find = (selector: string): FakeNode => {
+    const found = host.querySelector(selector);
+    if (!found) throw new Error(`no ${selector} in the plaque`);
+    return found;
+  };
+  const cardLine = new FakeNode('li');
+  body.append(cardLine);
+  return {
+    store,
+    host,
+    feedback,
+    cardLine,
+    payout: walletPayoutFor(store),
+    vault: () => find('[data-testid="hud-balance"]').querySelector('.cp-sr-only')?.textContent,
+    chip: (currency: string) => find(`[data-testid="hud-wallet-${currency}"]`),
+    dispose: () => {
+      for (const off of disposers.splice(0).reverse()) off();
+    },
+  };
+}
+
+type Plaque = ReturnType<typeof mountPlaque>;
+
+describe('createBalancePlaque pays a collected crate out on its readouts', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    setMotionPreference('system');
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const open = (plaque: Plaque): void => {
+    plaque.payout.hold('a', { coins: 12, pearls: 25 });
+    plaque.store.setState({ coins: 92 });
+  };
+  const collect = (plaque: Plaque, source: FakeNode | null): void => {
+    plaque.payout.collect('a', {
+      wallet: COLLECT_WALLET,
+      lines: [
+        { currency: 'coins', amount: 12, source: source as unknown as Element | null },
+        { currency: 'pearls', amount: 25, source: null },
+      ],
+    });
+  };
+
+  it('keeps the Vault flat while an opened crate holds its coins', () => {
+    const plaque = mountPlaque();
+    expect(plaque.vault()).toBe('Vault balance: 80 coins');
+    open(plaque);
+    expect(plaque.vault()).toBe('Vault balance: 80 coins');
+    plaque.store.setState({ coins: 95 });
+    expect(plaque.vault()).toBe('Vault balance: 83 coins');
+    plaque.dispose();
+  });
+
+  it('under reduced motion shows the whole payout at once, with no flight', () => {
+    setMotionPreference('reduced');
+    const plaque = mountPlaque();
+    open(plaque);
+    collect(plaque, plaque.cardLine);
+    expect(plaque.vault()).toBe('Vault balance: 92 coins');
+    expect(plaque.chip('pearls').dataset.value).toBe('25');
+    expect(plaque.chip('pearls').hidden).toBe(false);
+    expect(plaque.host.querySelectorAll('.cp-wallet-flight')).toEqual([]);
+    expect(plaque.cardLine.style.opacity).toBe('');
+    expect(plaque.feedback).toEqual(['tick']);
+    plaque.dispose();
+  });
+
+  it('flies each line to its readout and counts it in as it lands', () => {
+    setMotionPreference('full');
+    const plaque = mountPlaque();
+    open(plaque);
+    collect(plaque, plaque.cardLine);
+    expect(plaque.host.querySelectorAll('.cp-wallet-flight')).toHaveLength(1);
+    expect(plaque.cardLine.style.opacity).toBe('0');
+    expect(plaque.vault()).toBe('Vault balance: 80 coins');
+    expect(plaque.chip('pearls').hidden).toBe(false);
+
+    vi.advanceTimersByTime(PAYOUT_FLIGHT_MS - 1);
+    expect(plaque.vault()).toBe('Vault balance: 80 coins');
+    vi.advanceTimersByTime(1);
+    expect(plaque.vault()).toBe('Vault balance: 92 coins');
+    expect(plaque.cardLine.style.opacity).toBe('');
+    expect(plaque.host.querySelectorAll('.cp-wallet-flight')).toEqual([]);
+
+    vi.advanceTimersByTime(PAYOUT_STAGGER_MS);
+    expect(plaque.chip('pearls').dataset.value).toBe(String(COLLECT_WALLET.pearls));
+    expect(plaque.chip('pearls').getAttribute('aria-label')).toBe('Pearls: 25');
+    expect(plaque.feedback).toEqual(['tick', 'tick']);
+    plaque.dispose();
+  });
+
+  it('labels the purse chips in the player language and hides the empty ones', () => {
+    setMotionPreference('reduced');
+    const plaque = mountPlaque('de');
+    collect(plaque, null);
+    expect(plaque.chip('pearls').getAttribute('aria-label')).toBe('Perlen: 25');
+    expect(plaque.chip('keys').hidden).toBe(true);
+    expect(plaque.host.querySelector('[data-testid="hud-wallet"]')?.hidden).toBe(false);
+    plaque.dispose();
+  });
+
+  it('tears down mid-flight with no flight layer, timer or blanked card line left', () => {
+    setMotionPreference('full');
+    const plaque = mountPlaque();
+    open(plaque);
+    collect(plaque, plaque.cardLine);
+    expect(plaque.host.querySelectorAll('.cp-wallet-flights')).toHaveLength(1);
+    plaque.dispose();
+    expect(plaque.host.querySelectorAll('.cp-wallet-flights')).toEqual([]);
+    expect(plaque.cardLine.style.opacity).toBe('');
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -1,10 +1,15 @@
 import { RollSchema, WalletSchema, type CrateId } from '@coinposh/shared';
 import { Group, PerspectiveCamera, Vector3 } from 'three/webgpu';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBus } from '../../app/bus.ts';
 import { defaultSettings } from '../../app/settings.ts';
 import { initialUiState, type UiState } from '../../app/state.ts';
 import { createStore } from '../../app/store.ts';
+import {
+  PAYOUT_HOLD_CAP_MS,
+  PayoutLedger,
+  type WalletPayout,
+} from '../../ui/components/balancePlaque.ts';
 import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import type { CrateEvents } from './events.ts';
 import {
@@ -12,6 +17,7 @@ import {
   holdWhileSheetOpen,
   payoutLines,
   rollCredit,
+  trackCratePayout,
   type KeyDocument,
 } from './mount.ts';
 import { UnboxDirector, type OpenedCrate } from './view.ts';
@@ -223,5 +229,114 @@ describe('the payout a collect hands the HUD', () => {
       ['pearls', null],
       ['tickets', null],
     ]);
+  });
+});
+
+describe('a crate holds its credit from open to collect', () => {
+  const coinRoll = RollSchema.parse({
+    rarity: 'fine',
+    rewards: [{ kind: 'currency', currency: 'coins', amount: 12 }],
+    proof: { serverSeedHash: 'a'.repeat(64), clientSeed: 'velvet', nonce: 2 },
+    pity: { rare: 0, exquisite: 0, legendary: 0 },
+  });
+  const coinWallet = WalletSchema.parse({
+    coins: 52,
+    bullion: 0,
+    goldBars: 0,
+    pearls: 0,
+    keys: 0,
+    tickets: 0,
+    stars: 0,
+  });
+
+  function recorded() {
+    const calls: string[] = [];
+    const payout: WalletPayout = {
+      hold: (id) => calls.push(`hold ${id}`),
+      arm: (id) => calls.push(`arm ${id}`),
+      disarm: (id) => calls.push(`disarm ${id}`),
+      collect: (id) => calls.push(`collect ${id}`),
+      release: (id) => calls.push(`release ${id}`),
+    };
+    return { calls, tracker: trackCratePayout(payout) };
+  }
+
+  it('releases a crate whose card goes without a collect, exactly once', () => {
+    const { calls, tracker } = recorded();
+    tracker.opened(A, coinRoll);
+    tracker.gone(A);
+    tracker.gone(A);
+    tracker.dispose();
+    expect(calls).toEqual([`hold ${A}`, `release ${A}`]);
+  });
+
+  it('does not release a collected crate when its card goes', () => {
+    const { calls, tracker } = recorded();
+    tracker.opened(A, coinRoll);
+    tracker.collected(A, coinRoll, coinWallet, null);
+    tracker.gone(A);
+    tracker.dispose();
+    expect(calls).toEqual([`hold ${A}`, `collect ${A}`]);
+  });
+
+  it('releases every crate still unpaid on teardown, once each', () => {
+    const { calls, tracker } = recorded();
+    const C = 'crate_CCCCCCCCCCCCCCCC' as CrateId;
+    tracker.opened(A, coinRoll);
+    tracker.opened(B, coinRoll);
+    tracker.opened(C, coinRoll);
+    tracker.collected(B, coinRoll, coinWallet, null);
+    tracker.dispose();
+    tracker.dispose();
+    expect(calls.filter((call) => call.startsWith('release'))).toEqual([
+      `release ${A}`,
+      `release ${C}`,
+    ]);
+  });
+
+  it('arms the cap only while an unpaid card is on screen', () => {
+    const { calls, tracker } = recorded();
+    tracker.shown(A);
+    tracker.opened(A, coinRoll);
+    tracker.shown(A);
+    tracker.hidden(A);
+    tracker.collected(A, coinRoll, coinWallet, null);
+    tracker.shown(A);
+    tracker.hidden(A);
+    expect(calls).toEqual([`hold ${A}`, `arm ${A}`, `disarm ${A}`, `collect ${A}`]);
+  });
+
+  describe('against the HUD ledger', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('still pays a crate out on collect after it waited or was held past the cap', () => {
+      const warnings: string[] = [];
+      const ledger = new PayoutLedger(() => undefined, {
+        warn: (message) => warnings.push(message),
+      });
+      const tracker = trackCratePayout(ledger);
+      ledger.coins.observe(40);
+      tracker.opened(A, coinRoll);
+      ledger.coins.observe(52);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 2);
+      expect(ledger.coins.shown).toBe(40);
+
+      tracker.shown(A);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS / 2);
+      tracker.hidden(A);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 2);
+      tracker.shown(A);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS / 2);
+      tracker.collected(A, coinRoll, coinWallet, null);
+      expect(ledger.coins.shown).toBe(40);
+      ledger.land(A, 'coins');
+      expect(ledger.coins.shown).toBe(52);
+      expect(warnings).toEqual([]);
+    });
   });
 });

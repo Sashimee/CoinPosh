@@ -258,7 +258,12 @@
 }
 
 .cp-wallet-spark--pearls {
-  background: radial-gradient(circle, #fff 0 30%, var(--cp-ivory) 55%, transparent 72%);
+  background: radial-gradient(
+    circle,
+    var(--cp-ivory) 0 30%,
+    rgb(var(--cp-ivory-rgb) / 0.85) 55%,
+    transparent 72%
+  );
 }
 
 .cp-wallet-spark--tickets {
