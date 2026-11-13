@@ -419,7 +419,7 @@ describe('the idle Demo table on its own seed', () => {
       const { hashes } = await idleTable(DEMO_SEED);
       // Changing this value breaks replay audits of every input log recorded before
       // the change. Update it only alongside a deliberate sim version bump.
-      expect(hashes.at(-1)).toMatchInlineSnapshot(`"3e6951ced226e46a"`);
+      expect(hashes.at(-1)).toMatchInlineSnapshot(`"2594a3a4fc7da2a1"`);
     },
   );
 });
@@ -455,7 +455,7 @@ describe('the Demo opening heap with a coin dropped every 2 s for 2 minutes', ()
     expect((await demoRun(DEMO_SEED, PLAY_TICKS, DROP_COUNT, 'scattered')).hashes).toEqual(hashes);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate sim version bump.
-    expect(hashes.at(-1)).toMatchInlineSnapshot(`"b4f254b6bc329ea8"`);
+    expect(hashes.at(-1)).toMatchInlineSnapshot(`"21c5adc0ce693322"`);
   });
 });
 

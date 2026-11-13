@@ -25,9 +25,22 @@ export interface NudgeInput {
   readonly direction: NudgeDirection;
 }
 
-export type SimInput = DropCoinInput | NudgeInput;
+/**
+ * A Vault Crate the server spawned, dropped onto the front of the upper tier (CRATE_BODY).
+ * Its depth offset and turn are drawn from the Sim's PRNG, like a coin's.
+ */
+export interface DropCrateInput {
+  readonly kind: 'dropCrate';
+  /** Lateral drop position from the table centre line, in millimetres. */
+  readonly xMm: number;
+}
+
+export type SimInput = DropCoinInput | NudgeInput | DropCrateInput;
 
 export const MAX_DROP_OFFSET_MM = 150;
+
+/** Narrower than a coin's: a crate keeps its bounding sphere clear of the guide walls (CRATE_MAX_X). */
+export const MAX_CRATE_OFFSET_MM = 120;
 
 /**
  * Throws unless `input` is well formed. `tiers` is the Sim's tier ladder, or null for
@@ -62,6 +75,17 @@ export function assertValidInput(
       if (!NUDGE_DIRECTIONS.includes(input.direction)) {
         throw new RangeError(
           `Tick ${tick}: nudge.direction must be one of ${NUDGE_DIRECTIONS.join(', ')}, got ${JSON.stringify(input.direction)}`,
+        );
+      }
+      return;
+    case 'dropCrate':
+      if (
+        !Number.isInteger(input.xMm) ||
+        input.xMm < -MAX_CRATE_OFFSET_MM ||
+        input.xMm > MAX_CRATE_OFFSET_MM
+      ) {
+        throw new RangeError(
+          `Tick ${tick}: dropCrate.xMm must be an integer in [-${MAX_CRATE_OFFSET_MM}, ${MAX_CRATE_OFFSET_MM}], got ${input.xMm}`,
         );
       }
       return;
