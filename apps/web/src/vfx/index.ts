@@ -191,12 +191,14 @@ export const COMPACT_FUSION = {
 
 /**
  * The full set piece's size, metres, seconds and ms. Kept well under a table-wide burst so
- * even the rare gold-or-better beat reads as a crisp accent (founder report #182).
+ * even the rare gold-or-better beat reads as a crisp accent (founder report #182): on a
+ * portrait phone the ring and halo stay under 40 % of the screen width, since they land in
+ * the same frame as the Chic stamp and the Cascade card, yet the ring is twice the compact one.
  */
 export const FULL_FUSION = {
   hitStopMs: 40,
-  flash: { core: 0.11, halo: 0.2 },
-  rings: { first: 0.1, second: 0.075 },
+  flash: { core: 0.07, halo: 0.11 },
+  rings: { first: 0.06, second: 0.045 },
   glow: { peak: 0.7, release: 0.35 },
   kick: { shake: 0.18, fov: 1.4 },
 } as const;

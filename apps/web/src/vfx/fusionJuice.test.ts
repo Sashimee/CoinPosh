@@ -1,7 +1,13 @@
 import { COIN_TIERS, type CoinTier } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../audio/rng.ts';
-import { COMPACT_FUSION_REACH, fusionSpark, type EmitContext } from './emitters.ts';
+import {
+  COMPACT_FUSION_REACH,
+  FULL_FUSION_REACH,
+  fusionImpact,
+  fusionSpark,
+  type EmitContext,
+} from './emitters.ts';
 import { FUSION_FULL_FROM, FUSION_KICK_GAP_MS, FusionDirector } from './fusionJuice.ts';
 import { EFFECT_JUICE } from './juice.ts';
 import { createParticleBuffers, writeParticle, type ParticleSpawn } from './particles/layout.ts';
@@ -97,8 +103,8 @@ describe('fusion juice selection', () => {
   });
 });
 
-describe('compact fusion sparks', () => {
-  const farthest = (reducedMotion: boolean): number => {
+describe('fusion sparks', () => {
+  const farthest = (reducedMotion: boolean, emitter = fusionSpark): number => {
     const spawns: ParticleSpawn[] = [];
     const context: EmitContext = {
       rng: createRng(4),
@@ -106,7 +112,7 @@ describe('compact fusion sparks', () => {
       reducedMotion,
       emit: (s) => spawns.push(s),
     };
-    fusionSpark(context, [0, 0.01, 0], 'silver');
+    emitter(context, [0, 0.01, 0], 'gold');
     const buffers = createParticleBuffers(spawns.length);
     spawns.forEach((s, i) => {
       writeParticle(buffers, i, s);
@@ -129,8 +135,15 @@ describe('compact fusion sparks', () => {
     return reach;
   };
 
-  it('stay within about three coin diameters of the new coin', () => {
+  it('stay within about three coin diameters of the new coin when compact', () => {
     expect(farthest(false)).toBeLessThanOrEqual(COMPACT_FUSION_REACH);
     expect(farthest(true)).toBeLessThan(farthest(false));
+  });
+
+  it('hug the full ring instead of needling across the heap', () => {
+    const full = farthest(false, fusionImpact);
+    expect(full).toBeLessThanOrEqual(FULL_FUSION_REACH);
+    expect(full).toBeGreaterThan(COMPACT_FUSION_REACH);
+    expect(farthest(true, fusionImpact)).toBeLessThan(full);
   });
 });

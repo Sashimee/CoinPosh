@@ -2,6 +2,11 @@ import { CASCADE_TIERS } from '@coinposh/shared';
 import i18next, { type i18n as I18n } from 'i18next';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { PerspectiveCamera, Scene, Vector3, type Mesh, type WebGPURenderer } from 'three/webgpu';
+import {
+  applyCameraPreset,
+  rivieraCameraPreset,
+  RIVIERA_TABLE,
+} from '../scene/venues/riviera/layout.ts';
 import { HAPTIC_PATTERNS } from './haptics.ts';
 import {
   COMPACT_FUSION,
@@ -436,6 +441,49 @@ describe('fusion tiers on the facade', () => {
     expect(swing).toBeLessThan(2);
     expect(frozenFrames).toBeLessThanOrEqual(Math.ceil(FULL_FUSION.hitStopMs / 1000 / FRAME) + 1);
     expect(glowUntil).toBeLessThan(FUSION_TIMING.implode + 0.6);
+  });
+
+  it('keeps the full ring and halo under 40 % of a portrait screen, twice the compact ring', () => {
+    const width = 390;
+    const height = 844;
+    const camera = new PerspectiveCamera(35, width / height, 0.05, 100);
+    applyCameraPreset(camera, rivieraCameraPreset(width / height));
+    camera.updateMatrixWorld();
+    const ringPx = (center: Vector3, radius: number): number => {
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < 64; i++) {
+        const a = (i / 64) * Math.PI * 2;
+        const x = new Vector3(
+          center.x + Math.cos(a) * radius,
+          center.y,
+          center.z + Math.sin(a) * radius,
+        ).project(camera).x;
+        min = Math.min(min, x);
+        max = Math.max(max, x);
+      }
+      return ((max - min) / 2) * width;
+    };
+    const spritePx = (center: Vector3, size: number): number => {
+      const depth = center.clone().applyMatrix4(camera.matrixWorldInverse).z * -1;
+      return (size / (2 * depth * Math.tan((camera.fov * Math.PI) / 360))) * height;
+    };
+    const stretch = rig();
+    stretch.vfx.fusion({ sources, center: at, tier: 'gold' });
+    let peakStretch = 0;
+    for (let t = 0; t < 1; t += FRAME) {
+      frame(stretch);
+      peakStretch = Math.max(peakStretch, stretch.vfx.stats.flashStretch);
+    }
+    expect(peakStretch).toBeGreaterThan(1);
+    const cap = width * 0.4;
+    for (const z of [RIVIERA_TABLE.backboardFrontZ, -0.08, RIVIERA_TABLE.fieldFrontZ]) {
+      const center = new Vector3(0, 0.01, z);
+      const ring = ringPx(center, FULL_FUSION.rings.first);
+      expect(ring).toBeLessThanOrEqual(cap);
+      expect(ring).toBeGreaterThanOrEqual(2 * ringPx(center, COMPACT_FUSION.ringRadius) - 1e-6);
+      expect(spritePx(center, FULL_FUSION.flash.halo * peakStretch)).toBeLessThanOrEqual(cap);
+    }
   });
 
   it('keeps the compact flash and bloom smaller than before #182', () => {
