@@ -195,7 +195,7 @@ Return merged (boolean), the merge sha, and a one-line summary.`,
 let shipping = null
 let shipAgain = false
 const shipPrompt = () => `Ship the current ${plan.base} to the CoinPosh dev environment (https://devcoinposh.bas.lu, API https://api.devcoinposh.bas.lu). Use gh; never push to main or dev directly, and never open or merge a PR into main: main is promoted only when the user validates a release candidate.
-1. If ${plan.base} has commits not on origin/dev: reuse the open PR from ${plan.base} into dev or open one (title "build: <task ids merged since the last ship>"), wait for its checks (gh pr checks --watch), and merge it with gh pr merge --merge. If checks fail, stop and report the failing check and log excerpt.
+1. If ${plan.base} has commits not on origin/dev: reuse the open PR from ${plan.base} into dev or open one (title "build: <task ids merged since the last ship>"), wait for its checks (gh pr checks --watch), and merge it with gh pr merge --merge only when every check on the PR's current head sha passed. "No checks reported" means CI has not started yet: wait (up to 10 minutes, polling) for the checks to appear, never treat it as green. If checks fail or never appear, stop and report the failing check and log excerpt.
 2. Dokploy auto-deploys dev on push. Wait up to 10 minutes for https://api.devcoinposh.bas.lu/health to answer 200 and for https://devcoinposh.bas.lu/ to serve an index.html whose /assets/index-*.js differs from before the merge, and report what you saw.
 PR bodies end with the attribution lines from the session. Do not modify files or the working tree.
 Return a one-line summary with the PR numbers and deploy results.`
