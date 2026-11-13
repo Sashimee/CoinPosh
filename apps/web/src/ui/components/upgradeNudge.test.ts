@@ -10,8 +10,10 @@ import {
   foldNudgeOnCue,
   foldWhenOutOfReach,
   HINT_LINGER_MS,
+  nudgeSnapshot,
   type NudgeWallet,
 } from './upgradeNudge.ts';
+import { createFirstUpgradeNudge, NUDGE_STEADY_MS } from './upgradeNudgeTrigger.ts';
 
 type Handler = Parameters<CinematicEvents['on']>[1];
 
@@ -119,7 +121,7 @@ describe('foldWhenOutOfReach', () => {
   const price = Math.min(...coinLines.map((candidate) => upgradeCost(candidate, 0)));
   const lineId = coinLines.find((candidate) => upgradeCost(candidate, 0) === price)?.id ?? '';
   const vault = (coins: number) =>
-    createStore<NudgeWallet>({ coins, goldBars: 0, upgradeLevels: {} });
+    createStore<NudgeWallet>({ coins, spendableCoins: coins, goldBars: 0, upgradeLevels: {} });
 
   it('stays up while the line is affordable, and folds once a tap spends the Vault under it', () => {
     const store = vault(price + 2);
@@ -149,6 +151,16 @@ describe('foldWhenOutOfReach', () => {
     expect(fold).toHaveBeenCalledTimes(1);
   });
 
+  it('folds once only coins still in the drop rail keep the Vault over the price', () => {
+    const store = vault(price + 4);
+    const fold = vi.fn();
+    foldWhenOutOfReach(store, lineId, fold);
+    store.setState({ spendableCoins: price });
+    expect(fold).not.toHaveBeenCalled();
+    store.setState({ spendableCoins: price - 5 });
+    expect(fold).toHaveBeenCalledTimes(1);
+  });
+
   it('cancelling stops the watch', () => {
     const store = vault(price);
     const fold = vi.fn();
@@ -156,5 +168,41 @@ describe('foldWhenOutOfReach', () => {
     cancel();
     store.setState({ coins: 0 });
     expect(fold).not.toHaveBeenCalled();
+  });
+});
+
+describe('nudgeSnapshot', () => {
+  const coinLines = upgradeLines.filter((candidate) => candidate.currency === 'coins');
+  const price = Math.min(...coinLines.map((candidate) => upgradeCost(candidate, 0)));
+  const memory = () => {
+    const items = new Map<string, string>();
+    return {
+      getItem: (key: string) => items.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        items.set(key, value);
+      },
+    };
+  };
+
+  it('hands the trigger the spendable wallet alongside the Vault as shown', () => {
+    const state = { coins: 29, spendableCoins: 20, goldBars: 3, upgradeLevels: { tempo: 0 } };
+    expect(nudgeSnapshot(state, true)).toEqual({ ...state, playable: true });
+  });
+
+  it('stays silent for a wallet of 20 with 9 in the drop buffer under a price of 25', () => {
+    const wallet = price - 5;
+    const buffered = 9;
+    expect(wallet + buffered).toBeGreaterThanOrEqual(price);
+    const nudge = createFirstUpgradeNudge(upgradeLines, memory());
+    const state = {
+      coins: wallet + buffered,
+      spendableCoins: wallet,
+      goldBars: 0,
+      upgradeLevels: {},
+    };
+    for (let at = 0; at <= NUDGE_STEADY_MS * 3; at += 50) {
+      expect(nudge.evaluate(nudgeSnapshot(state, true), at)).toBe(null);
+    }
+    expect(nudge.retired).toBe(false);
   });
 });

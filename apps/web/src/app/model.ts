@@ -88,7 +88,13 @@ const STAT_FORMATS: Readonly<Record<UpgradeStatId, StatFormat>> = {
 };
 
 export interface Wallet {
+  /** What the Vault shows: the server's wallet plus the drop buffer and unconfirmed winnings. */
   readonly coins: number;
+  /**
+   * The part of `coins` the server can spend: the wallet alone. The pre-minted drop buffer is
+   * already paid for and provisional winnings are not yet confirmed. Omitted means all of it.
+   */
+  readonly spendableCoins?: number;
   readonly goldBars: number;
 }
 
@@ -98,23 +104,37 @@ export interface UpgradeRow {
   readonly maxed: boolean;
   /** Price of the next level, or null once maxed. */
   readonly cost: number | null;
+  /** Whether the server can pay the price now, from spendable coins or gold bars. */
   readonly affordable: boolean;
+  /**
+   * Coins the Vault shows but the server cannot spend yet, when only they stand between the
+   * player and the price; 0 otherwise.
+   */
+  readonly heldBack: number;
   readonly current: number;
   readonly nextValue: number | null;
   readonly format: StatFormat;
+}
+
+export function spendableCoins(wallet: Wallet): number {
+  return Math.min(wallet.coins, wallet.spendableCoins ?? wallet.coins);
 }
 
 export function upgradeRow(line: UpgradeLineDef, level: number, wallet: Wallet): UpgradeRow {
   const clamped = Math.min(Math.max(0, Math.floor(level)), line.maxLevel);
   const maxed = clamped >= line.maxLevel;
   const cost = maxed ? null : upgradeCost(line, clamped);
-  const funds = line.currency === 'coins' ? wallet.coins : wallet.goldBars;
+  const coinLine = line.currency === 'coins';
+  const spendable = coinLine ? spendableCoins(wallet) : wallet.goldBars;
+  const affordable = cost !== null && spendable >= cost;
+  const shown = coinLine ? wallet.coins : wallet.goldBars;
   return {
     line,
     level: clamped,
     maxed,
     cost,
-    affordable: cost !== null && funds >= cost,
+    affordable,
+    heldBack: cost !== null && !affordable && shown >= cost ? shown - spendable : 0,
     current: upgradeStat(line, clamped),
     nextValue: maxed ? null : upgradeStat(line, clamped + 1),
     format: STAT_FORMATS[line.effect.stat],

@@ -86,6 +86,49 @@ describe('upgradeRow', () => {
     expect(upgradeRow(global, 0, { coins: 10 ** 9, goldBars: 0 }).affordable).toBe(false);
   });
 
+  it('checks a coin price against spendable coins, not the Vault the drop buffer swells', () => {
+    const pusher = line('pusherSpeed');
+    const price = upgradeCost(pusher, 0);
+    const shown = price + 4;
+    const spendable = price - 5;
+    const row = upgradeRow(pusher, 0, { coins: shown, spendableCoins: spendable, goldBars: 0 });
+    expect(row.affordable).toBe(false);
+    expect(row.heldBack).toBe(shown - spendable);
+    expect(
+      upgradeRow(pusher, 0, { coins: shown, spendableCoins: price, goldBars: 0 }),
+    ).toMatchObject({ affordable: true, heldBack: 0 });
+  });
+
+  it('treats the whole Vault as spendable when no spendable figure is given', () => {
+    const pusher = line('pusherSpeed');
+    const price = upgradeCost(pusher, 0);
+    expect(upgradeRow(pusher, 0, { coins: price, goldBars: 0 })).toMatchObject({
+      affordable: true,
+      heldBack: 0,
+    });
+  });
+
+  it('holds nothing back when even the Vault as shown is short of the price', () => {
+    const pusher = line('pusherSpeed');
+    const price = upgradeCost(pusher, 0);
+    const row = upgradeRow(pusher, 0, { coins: price - 1, spendableCoins: 0, goldBars: 0 });
+    expect(row).toMatchObject({ affordable: false, heldBack: 0 });
+    const maxed = upgradeRow(pusher, pusher.maxLevel, {
+      coins: 10 ** 12,
+      spendableCoins: 0,
+      goldBars: 0,
+    });
+    expect(maxed).toMatchObject({ affordable: false, heldBack: 0 });
+  });
+
+  it('leaves gold-bar lines on gold bars whatever coins are held back', () => {
+    const global = upgradeLines.find((candidate) => candidate.currency === 'goldBars');
+    if (!global) throw new Error('no gold bar upgrade line');
+    const price = upgradeCost(global, 0);
+    const row = upgradeRow(global, 0, { coins: 10 ** 9, spendableCoins: 0, goldBars: price });
+    expect(row).toMatchObject({ affordable: true, heldBack: 0 });
+  });
+
   it('caps at max level with no price', () => {
     const dropRate = line('dropRate');
     const row = upgradeRow(dropRate, dropRate.maxLevel + 5, { coins: 10 ** 12, goldBars: 0 });

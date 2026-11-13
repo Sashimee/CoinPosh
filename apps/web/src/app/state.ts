@@ -9,7 +9,10 @@ export type PanelId = 'upgrades' | 'settings';
  * last reported; the UI never computes value, it only shows it.
  */
 export interface UiState {
+  /** The Vault as shown: wallet, drop buffer and winnings still waiting on the server. */
   readonly coins: number;
+  /** The share of `coins` the server can spend now; what upgrade prices are checked against. */
+  readonly spendableCoins: number;
   readonly goldBars: number;
   /** True while claims are queued offline and not yet confirmed by the server. */
   readonly provisional: boolean;
@@ -37,6 +40,7 @@ const BASE_DECORUM_CAPACITY =
 export function initialUiState(settings: Settings): UiState {
   return {
     coins: 0,
+    spendableCoins: 0,
     goldBars: 0,
     provisional: false,
     cascadeCount: 0,
