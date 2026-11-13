@@ -70,6 +70,26 @@ import { DROP_ZONE } from '../table/layout.ts';
  *   two a second climb to platinum within the minute. An idle coin below this tier can
  *   neither fuse nor be woken, so it is left out of the contact search (P-332): the paved
  *   strip costs nothing, and the fusions are the same to the bit.
+ *
+ * The chute's stream allowance (P-375). A held pour drops a coin every 6 ticks (10 a
+ * second, the server's drops envelope), and every one of them landed fresh in the same
+ * spot: seeded 60 s pours fused 266 to 274 times a minute, one drop in 2.2, with
+ * platinum at 6 to 11 s and diamond at 20 to 55 s. That is twice the server's
+ * rateEnvelope fusions max (127), so an honest pour was flagged, and a pour mostly fused
+ * coins on the shelf instead of pushing them off.
+ *
+ * - streamTicks 15, streamBurst 4: a drop is fresh only while the chute keeps to one
+ *   coin every 15 ticks (4 a second), with a burst of 4 banked (a GCRA). Past that the
+ *   coin lands idle, an ordinary copper that pushes but never fuses. Taps at 4 a second
+ *   or slower never run dry, so every tap style plays exactly as before; the first 4 to
+ *   6 coins of a pour are fresh, so a quick pour of three still fuses. A held pour fuses
+ *   like fast tapping instead of three times faster: seeded 3 min pours (8 seeds, aims 0,
+ *   -120 and 60 mm, fusionRate.test.ts) give 51 to 59 fusions a minute, the busiest
+ *   minute 54 to 66, one drop in 10 to 12 fused and three in four spilled off the front;
+ *   first silver at 1.6 to 1.9 s, gold at 3 to 3.8 s, platinum in 2 of 24 runs and no
+ *   diamond, against the ladder's 60 s floor. 12 ticks gave 80 to 87 a minute and 10
+ *   ticks 113 to 122, too close to the envelope; a burst of 8 at 12 ticks matched a
+ *   burst of 4, since the pile, not the burst, sets the rate once the bank is spent.
  */
 export const FUSION_TUNING = {
   touchGap: 0.001,
@@ -79,6 +99,8 @@ export const FUSION_TUNING = {
   spawnGraceTicks: 60,
   freshTicks: 315,
   wakeFromTier: 1,
+  streamTicks: 15,
+  streamBurst: 4,
 } as const;
 
 /** Where the Champagne Tower pedestal stands on the upper tier, in metres. */

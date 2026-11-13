@@ -1,4 +1,10 @@
-import { economyConfig, openingHeap } from '@coinposh/economy';
+import {
+  economyConfig,
+  ladderTargets,
+  openingHeap,
+  rateEnvelope,
+  rateEnvelopeDerivation,
+} from '@coinposh/economy';
 import { COIN_TIERS } from '@coinposh/shared';
 import { afterAll, describe, expect, it } from 'vitest';
 import { COIN } from '../coin.ts';
@@ -25,23 +31,32 @@ const PLAY_SECONDS = 180;
 interface Played {
   readonly drops: number;
   readonly fusions: readonly FusionEvent<string>[];
+  readonly fallTicks: readonly number[];
+  readonly hash: string;
 }
 
-async function play(seed: number, inputsAt: (tick: number) => SimInput[], seconds: number) {
+async function play(
+  seed: number,
+  inputsAt: (tick: number) => SimInput[],
+  seconds: number,
+): Promise<Played> {
   const sim = await Sim.create({ seed, mechanics: DEMO_MECHANICS, openingHeap });
   try {
     let drops = 0;
     const fusions: FusionEvent<string>[] = [];
+    const fallTicks: number[] = [];
     for (let tick = 0; tick < seconds * TICK_RATE_HZ; tick++) {
       const inputs = inputsAt(tick);
       drops += inputs.length;
-      for (const event of sim.step(inputs).mechanics) {
+      const events = sim.step(inputs);
+      for (const event of events.mechanics) {
         if (event.kind === 'fusion') {
           fusions.push(event);
         }
       }
+      fallTicks.push(...events.falls.map(() => tick));
     }
-    return { drops, fusions, hash: sim.hash() };
+    return { drops, fusions, fallTicks, hash: sim.hash() };
   } finally {
     sim.dispose();
   }
@@ -214,5 +229,117 @@ describe('aimed drops on the Demo table', () => {
     const a = await play(0xa1d, aimed(0, 5, TICK_RATE_HZ), 8);
     const b = await play(0xa1d, aimed(0, 5, TICK_RATE_HZ), 8);
     expect(b).toEqual(a);
+  });
+});
+
+/** The most events in any `windowTicks`-long span of the sorted `ticks`. */
+function busiest(ticks: readonly number[], windowTicks: number): number {
+  let most = 0;
+  for (let end = 0, start = 0; end < ticks.length; end++) {
+    while ((ticks[end] ?? 0) - (ticks[start] ?? 0) >= windowTicks) {
+      start++;
+    }
+    most = Math.max(most, end - start + 1);
+  }
+  return most;
+}
+
+/**
+ * P-375, founder report on #132: holding a finger on the chute pours a copper every 6
+ * ticks, the most the server's drops envelope lets through, and fused 266 to 274 times a
+ * minute, twice the rateEnvelope fusions max, so an honest pour was flagged, the ladder
+ * reached diamond in under a minute and most coins fused on the shelf instead of falling.
+ * The chute's stream allowance (FUSION_TUNING.streamTicks, streamBurst) lands the coins a
+ * pour drops faster than fast tapping idle, so a pour fuses like 3 to 4 taps a second.
+ */
+describe('a sustained pour on the Demo table', () => {
+  const POUR_TICKS = Math.ceil(
+    rateEnvelope.drops.windowMs / rateEnvelope.drops.max / (1000 / TICK_RATE_HZ),
+  );
+  const POUR_SECONDS = 90;
+  const POURS = [1, 2, 3, 4].flatMap((seed) => [-120, 0, 60].map((xMm) => [seed, xMm] as const));
+  const MINUTE_TICKS = rateEnvelope.fusions.windowMs / (1000 / TICK_RATE_HZ);
+  /** Two to three aimed taps a second fuse 47 to 83 times a minute (packages/economy/sim ladder runs). */
+  const TAPPED_FUSIONS_PER_MINUTE = { min: 40, max: 85 };
+
+  function pour(xMm: number): (tick: number) => SimInput[] {
+    return (tick) => (tick % POUR_TICKS === 0 ? [{ kind: 'dropCoin', xMm }] : []);
+  }
+
+  const pours = new Map<string, Promise<Played>>();
+
+  function poured(seed: number, xMm: number): Promise<Played> {
+    const key = `${seed}:${xMm}`;
+    let played = pours.get(key);
+    if (!played) {
+      played = play(seed, pour(xMm), POUR_SECONDS);
+      pours.set(key, played);
+    }
+    return played;
+  }
+
+  afterAll(() => {
+    pours.clear();
+  });
+
+  const firstSeconds = ({ fusions }: Played, tier: string) =>
+    (fusions.find(({ into }) => into === tier)?.tick ?? Number.POSITIVE_INFINITY) / TICK_RATE_HZ;
+
+  it('pours as fast as the drops envelope lets a held finger', () => {
+    expect(POUR_TICKS).toBe(6);
+  });
+
+  it.each(POURS)(
+    'keeps a pour on seed %i at %i mm under the fusions envelope, with an honest margin',
+    { timeout: 120_000 },
+    async (seed, xMm) => {
+      const played = await poured(seed, xMm);
+      const minute = busiest(
+        played.fusions.map(({ tick }) => tick),
+        MINUTE_TICKS,
+      );
+      expect(minute).toBeLessThanOrEqual(
+        rateEnvelope.fusions.max / rateEnvelopeDerivation.headroom,
+      );
+      const fallWindow = rateEnvelope.falls.windowMs / (1000 / TICK_RATE_HZ);
+      expect(busiest(played.fallTicks, fallWindow)).toBeLessThanOrEqual(rateEnvelope.falls.max);
+      expect(played.fallTicks.length / played.drops).toBeGreaterThanOrEqual(0.6);
+    },
+  );
+
+  it('fuses like fast tapping, not faster', { timeout: 600_000 }, async () => {
+    const all = await Promise.all(POURS.map(([seed, xMm]) => poured(seed, xMm)));
+    for (const played of all) {
+      const perMinute = (played.fusions.length / POUR_SECONDS) * 60;
+      expect(perMinute).toBeGreaterThanOrEqual(TAPPED_FUSIONS_PER_MINUTE.min);
+      expect(perMinute).toBeLessThanOrEqual(TAPPED_FUSIONS_PER_MINUTE.max);
+      expect(played.drops / played.fusions.length).toBeGreaterThanOrEqual(8);
+    }
+  });
+
+  it('holds the ladder targets of 02-ECONOMY for a pour', { timeout: 600_000 }, async () => {
+    const all = await Promise.all(POURS.map(([seed, xMm]) => poured(seed, xMm)));
+    const soonest = ladderTargets.filter((target) => 'min' in target);
+    expect(soonest.length).toBeGreaterThan(0);
+    for (const target of soonest) {
+      for (const played of all) {
+        expect(firstSeconds(played, target.tier), target.id).toBeGreaterThanOrEqual(target.min);
+      }
+    }
+    for (const id of ['firstFusionAimed', 'firstGoldAimed'] as const) {
+      const target = ladderTargets.find((candidate) => candidate.id === id);
+      if (!target || !('max' in target)) {
+        throw new Error(`ladderTargets has no ${id} with a max`);
+      }
+      for (const played of all) {
+        expect(firstSeconds(played, target.tier), id).toBeLessThanOrEqual(target.max);
+      }
+    }
+  });
+
+  it('replays a pour to the same state', { timeout: 120_000 }, async () => {
+    const replayed = await play(1, pour(0), POUR_SECONDS);
+    expect(replayed).toEqual(await poured(1, 0));
+    expect(replayed.hash).toMatchInlineSnapshot(`"9e48160a1fda528e"`);
   });
 });
