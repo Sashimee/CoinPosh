@@ -18,7 +18,10 @@ import {
 import { validateSnapshot } from './snapshot/validate.ts';
 import {
   configureTableWorld,
+  CRATE_BODY,
   type ContactEvent,
+  type CrateFallEvent,
+  type CrateImpactEvent,
   type FallEvent,
   type HeapKeepClear,
   type HeapLayout,
@@ -86,6 +89,10 @@ export interface SimEvents {
   readonly contacts: readonly ContactEvent[];
   /** Fusions, then tower captures and topples; always empty without mechanics. */
   readonly mechanics: readonly MechanicEvent<string>[];
+  /** Crates that left the table, in ascending crate id order. */
+  readonly crateFalls: readonly CrateFallEvent[];
+  /** Crates that landed or were knocked hard, in ascending crate id order. */
+  readonly crateImpacts: readonly CrateImpactEvent[];
 }
 
 /**
@@ -117,6 +124,13 @@ export interface CoinState {
   readonly sleeping: boolean;
   /** Null on a Sim without mechanics. */
   readonly tier: string | null;
+}
+
+/** A crate's pose in metres; crate ids count from 0, apart from coin ids. */
+export interface CrateState {
+  readonly id: number;
+  readonly translation: Readonly<Vector>;
+  readonly rotation: Readonly<Rotation>;
 }
 
 /**
@@ -247,10 +261,21 @@ export class Sim {
       .map((coin) => ({ ...coin, tier: mechanics ? mechanics.tierOf(coin.id) : null }));
   }
 
+  get crateCount(): number {
+    return this.#table.crateCount;
+  }
+
+  /** Current pose of every crate on the table, in ascending id order. */
+  crates(): CrateState[] {
+    this.#assertLive();
+    return this.#table.crates();
+  }
+
   /**
    * The table quantized for storage: the pusher's place in its cycle and every coin's
    * pose and rest state, in ascending id order. Velocities are not kept; a restore
-   * starts every coin at rest. Tiers are the server's to keep.
+   * starts every coin at rest. Tiers are the server's to keep. Crates are not kept:
+   * the table snapshot stores their rides apart (CRATE_RIDE).
    */
   snapshot(): SimTableSnapshot {
     this.#assertLive();
@@ -269,17 +294,25 @@ export class Sim {
   /**
    * Applies `inputs` in array order, then advances the table by exactly one fixed
    * tick and runs the mechanics. Returns what happened, each event stamped with the
-   * new `tick`. Throws, applying nothing, if any input is malformed or more than one
-   * is a nudge.
+   * new `tick`. Throws, applying nothing, if any input is malformed, more than one
+   * is a nudge, or its crates would take the table past CRATE_BODY.maxOnTable.
    */
   step(inputs: readonly SimInput[] = []): SimEvents {
     this.#assertLive();
     let nudges = 0;
+    let crates = 0;
     for (const input of inputs) {
       assertValidInput(input, this.#tick, this.#tiers);
       if (input.kind === 'nudge') {
         nudges += 1;
+      } else if (input.kind === 'dropCrate') {
+        crates += 1;
       }
+    }
+    if (this.#table.crateCount + crates > CRATE_BODY.maxOnTable) {
+      throw new RangeError(
+        `Tick ${this.#tick}: the table holds ${this.#table.crateCount} crates and takes at most ${CRATE_BODY.maxOnTable}; drop a crate only after one has fallen`,
+      );
     }
     // Nudges stack velocity on every coin, so one per tick keeps a replayed log within
     // the kick NUDGE is tuned for; how often a player may nudge is an economy rule.
@@ -296,6 +329,9 @@ export class Sim {
         case 'nudge':
           this.#table.nudge(input.direction);
           break;
+        case 'dropCrate':
+          this.#table.dropCrate(input.xMm / 1000, this.#rng);
+          break;
       }
     }
     this.#tick += 1;
@@ -307,14 +343,21 @@ export class Sim {
           falls.map((fall) => fall.coinId),
         )
       : [];
-    return { falls, contacts, mechanics };
+    return {
+      falls,
+      contacts,
+      mechanics,
+      crateFalls: this.#table.crateFalls,
+      crateImpacts: this.#table.crateImpacts,
+    };
   }
 
   /**
    * Digest of everything that can influence a future tick: the tick counter, the
    * PRNG state, the whole table (pusher clock and pose, every coin's pose, velocity
-   * and sleep state) and, on a Sim with mechanics, every coin's tier and the fusion
-   * and tower state. A Sim without mechanics hashes only the first three.
+   * and sleep state, and every crate's once one has been dropped) and, on a Sim with
+   * mechanics, every coin's tier and the fusion and tower state. A Sim without
+   * mechanics hashes only the first three.
    */
   hash(): string {
     this.#assertLive();

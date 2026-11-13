@@ -196,6 +196,72 @@ export const NUDGE = {
 } as const;
 
 /**
+ * The Vault Crate as a rigid body (P-181): a 42 mm oak cube with brass corner straps
+ * and the loot inside, dropped onto the upper tier and worked off the lip by the
+ * pusher and the pile like any coin. Values in metres, kg/m³, m/s and ticks:
+ *
+ * - size 42 mm: about three coins across, so it reads as a prize among them and its
+ *   centre has to travel a coin and a half past the lip before it tips.
+ * - roundRadius 2 mm: rounded edges, like the coin's rim (COIN_MATERIAL.rimRadius),
+ *   give clean contact normals against the thin coins, and let it roll over the lip
+ *   rather than snag on it.
+ * - density 1,100: about 80 g, six or seven coins' worth. Heavy enough that it lands
+ *   with a thump that shoves the heap, light enough that the pile behind it, not only
+ *   the pusher face, carries it forward across the lower tier. At 1,900 (140 g) it
+ *   parked in front of the face's full reach and outlasted two minutes of drops.
+ * - friction 0.1: averaged against the pusher top's 0.2 it slides at 0.15, so the
+ *   heap holds it while the block draws back and it walks to the lip instead of riding
+ *   the block back and forth as one piece; against the floor's 0.42 it grips at 0.26,
+ *   a coin's grip, so it moves with the pile rather than skating off on one shove. At
+ *   0.3 it rode the top for over a minute.
+ * - restitution 0.02 (Min combine): a dead, wooden landing with no hop.
+ * - linearDamping 0.05, angularDamping 0.8: free in flight so the fall off the lip
+ *   reads as weight; a tumble on its edge settles in a few hundred milliseconds.
+ * - behindLip 2 cm, dropHeight 6 cm: its centre drops 2 cm behind where the pusher's
+ *   lip is on that tick, from above the heap, and lands at about 1 m/s. A fixed spot
+ *   would land it deep in the heap, 12 cm behind the lip, whenever the block is out;
+ *   3 cm behind put the slowest rides past 100 s.
+ * - maxJitter 2 mm, maxYaw 0.08 (a quaternion y component, about 9°): a seeded
+ *   offset and turn so no two crates land alike.
+ * - keepAwake 2 mm: a coin whose centre is within a coin's reach of the crate plus this
+ *   never comes to rest (COIN_REST): a frozen coin is a fixed or kinematic body, which
+ *   the crate could neither push nor ride, and one frozen on a crate sitting on the
+ *   lower tier would ride the pusher. Frozen coins the crate moves toward are woken,
+ *   with the same reach plus its travel in the tick, and passed on through the pile as
+ *   any other push (COIN_REST cascade).
+ * - thudSpeed 0.25 m/s, fullSpeed 1 m/s, cooldownTicks 6: a change of velocity in one
+ *   tick beyond what gravity gave it is a landing or a knock, reported as a crate
+ *   impact (strength 1 at fullSpeed, one per 100 ms); the pusher's shove changes it by
+ *   under 0.01 m/s a tick.
+ * - maxOnTable 16: the most crates a table holds, as packages/shared's
+ *   MAX_SNAPSHOT_CRATES stores; a log asking for more is refused.
+ *
+ * Measured on the Demo table (the economy's 100-coin silver opening heap settled for
+ * 10 s, then a coin every 2 s; seeds 0xc0196051 and 1 to 5, crates at x 0, -60 and
+ * 90 mm): every crate went over the front lip, after 19 s at the median and 72 s at the
+ * longest, inside the economy's crateFallSeconds.max of 90 s. Four of the eighteen
+ * landed on the heap's overhang in front of the lip and tipped off within 1.3 s.
+ */
+export const CRATE_BODY = {
+  size: 0.042,
+  roundRadius: 0.002,
+  density: 1100,
+  friction: 0.1,
+  restitution: 0.02,
+  linearDamping: 0.05,
+  angularDamping: 0.8,
+  behindLip: 0.02,
+  dropHeight: 0.06,
+  maxJitter: 0.002,
+  maxYaw: 0.08,
+  keepAwake: 0.002,
+  thudSpeed: 0.25,
+  fullSpeed: 1,
+  cooldownTicks: 6,
+  maxOnTable: 16,
+} as const;
+
+/**
  * Laying a restored table (PusherTable.restore), in metres:
  *
  * - liftStep 0.5 mm: a heap slot that overlaps a coin already placed, or the pusher, is
