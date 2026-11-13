@@ -2,15 +2,17 @@ import type { Page } from '@playwright/test';
 import { economyConfig } from '@coinposh/economy';
 import { BOOT_RUNS, BOOT_TO_FIRST_DROP_MS } from './budgets.ts';
 import {
-  bootGame,
   coinLedger,
   expect,
+  expectDemoMode,
+  gameUrl,
   prepareGamePage,
   probe,
   reviewShot,
-  tapDrop,
   test,
   unexpectedErrors,
+  type Probe,
+  type ProbeSim,
 } from './fixtures.ts';
 import { median, stampRun, writePerfReport, type WithHost } from './perf-report.ts';
 
@@ -33,84 +35,135 @@ declare global {
 }
 
 /**
- * Times the first drop inside the page. The bridge writes `stats.coins` on every sync, so an
- * accessor on that field stamps the very sync that counts the new coin. Stamping it from the
- * test after a poll instead adds the probe round trips and, on SwiftShader, a single ~1 s frame
- * that lands 100 to 300 ms after the first tap, which made the number jump between about 2.1
- * and 3.2 s. That frame is still reported as `longestFrameAfterTapMs`.
+ * Waits inside the page for the table to take drops, arms the first-drop timer and resolves with
+ * the coin ledger as soon as a sync has counted the opening heap, which at the playable mark it
+ * may not have yet. Waiting from the test instead costs a probe round trip per step while the
+ * main thread is busy with the first venue frames: on SwiftShader the test then tapped 1.3 to
+ * 2.5 s after the playable mark, harness lag a player's thumb does not add.
+ *
+ * The bridge writes `stats.coins` on every sync, so an accessor on that field stamps the very
+ * sync that counts the new coin. The pointerdown's own timestamp marks the tap, so a tap that
+ * queues behind a long frame still counts that wait against the boot, as a player's would.
  */
-function watchFirstDrop(page: Page, ledgerBefore: number): Promise<void> {
+function armFirstDrop(page: Page): Promise<number> {
   return page.evaluate(
-    ({ before, fusionInputs, windowMs }) => {
-      const p = window.__coinposh;
-      const stats = p?.sim;
-      if (!p || !stats) throw new Error('window.__coinposh.sim is missing: the sim is not running');
-      const field = Object.getOwnPropertyDescriptor(stats, 'coins');
-      if (!field || !('value' in field) || field.writable !== true) {
-        throw new Error('sim stats.coins is no longer a plain field, so the drop cannot be timed');
-      }
-      const times: {
-        tapMs: number | null;
-        dropMs: number | null;
-        longestFrameMs: number | null;
-      } = { tapMs: null, dropMs: null, longestFrameMs: null };
-      window.__firstDrop = times;
-      const timeFramesFrom = (tapMs: number): void => {
-        let longest = 0;
-        let last = performance.now();
-        const frame = (now: number): void => {
-          longest = Math.max(longest, now - last);
-          last = now;
-          if (now - tapMs < windowMs) requestAnimationFrame(frame);
-          else times.longestFrameMs = longest;
+    ({ fusionInputs, windowMs, timeoutMs }) =>
+      new Promise<number>((resolve, reject) => {
+        const startedAt = performance.now();
+        const arm = (p: Probe, stats: ProbeSim): void => {
+          const field = Object.getOwnPropertyDescriptor(stats, 'coins');
+          if (!field || !('value' in field) || field.writable !== true) {
+            throw new Error(
+              'sim stats.coins is no longer a plain field, so the drop cannot be timed',
+            );
+          }
+          const ledger = (coins: number): number =>
+            coins + p.counts.simFalls + p.counts.simFusions * (fusionInputs - 1);
+          const times: {
+            tapMs: number | null;
+            dropMs: number | null;
+            longestFrameMs: number | null;
+          } = { tapMs: null, dropMs: null, longestFrameMs: null };
+          window.__firstDrop = times;
+          const timeFramesFrom = (tapMs: number): void => {
+            let longest = 0;
+            let last = performance.now();
+            const frame = (now: number): void => {
+              longest = Math.max(longest, now - last);
+              last = now;
+              if (now - tapMs < windowMs) requestAnimationFrame(frame);
+              else times.longestFrameMs = longest;
+            };
+            requestAnimationFrame(frame);
+          };
+          addEventListener(
+            'pointerdown',
+            (event) => {
+              times.tapMs = event.timeStamp;
+              timeFramesFrom(event.timeStamp);
+            },
+            { capture: true, once: true },
+          );
+          let coins = field.value as number;
+          let before: number | null = null;
+          const synced = (): void => {
+            before = ledger(coins);
+            resolve(before);
+          };
+          Object.defineProperty(stats, 'coins', {
+            configurable: true,
+            enumerable: true,
+            get: () => coins,
+            set: (next: number) => {
+              coins = next;
+              if (before === null) {
+                synced();
+                return;
+              }
+              if (times.tapMs === null || times.dropMs !== null) return;
+              if (ledger(next) > before) times.dropMs = performance.now();
+            },
+          });
+          // The Demo heap is never empty, so coins on the table mean a sync has already run.
+          if (coins > 0) synced();
         };
-        requestAnimationFrame(frame);
-      };
-      addEventListener(
-        'pointerdown',
-        (event) => {
-          times.tapMs = event.timeStamp;
-          timeFramesFrom(event.timeStamp);
-        },
-        { capture: true, once: true },
-      );
-      let coins = field.value as number;
-      Object.defineProperty(stats, 'coins', {
-        configurable: true,
-        enumerable: true,
-        get: () => coins,
-        set: (next: number) => {
-          coins = next;
-          if (times.tapMs === null || times.dropMs !== null) return;
-          const { simFalls, simFusions } = p.counts;
-          if (next + simFalls + simFusions * (fusionInputs - 1) <= before) return;
-          times.dropMs = performance.now();
-        },
-      });
-    },
+        const poll = (): void => {
+          const p = window.__coinposh;
+          if (p?.playable === true && p.sim) {
+            try {
+              arm(p, p.sim);
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
+            return;
+          }
+          if (performance.now() - startedAt > timeoutMs) {
+            reject(new Error(`The table was not playable ${String(timeoutMs)} ms after load`));
+            return;
+          }
+          setTimeout(poll, 4);
+        };
+        poll();
+      }),
     {
-      before: ledgerBefore,
       fusionInputs: economyConfig.fusion.inputCount,
       windowMs: AFTER_TAP_WINDOW_MS,
+      timeoutMs: 60_000,
     },
   );
 }
 
 interface BootRun {
+  /** The app's own `coinposh:boot:playable` mark. */
   readonly playableMs: number;
+  /** The app's `coinposh:boot:stage` mark: the renderer is up and its first frame compiled. */
+  readonly stageMs: number;
+  /** From the playable mark to the test's tap: harness latency a player's thumb would not add. */
+  readonly tapLagMs: number;
   readonly tapMs: number;
   readonly firstDropMs: number;
   readonly tapToDropMs: number;
   readonly longestFrameAfterTapMs: number;
 }
 
+/** When main.ts or stage.ts marked boot `step`, in ms from navigation start. */
+async function bootMark(page: Page, step: string): Promise<number> {
+  const name = `coinposh:boot:${step}`;
+  const at = await page.evaluate(
+    (mark) => performance.getEntriesByName(mark, 'mark')[0]?.startTime ?? null,
+    name,
+  );
+  if (at === null) throw new Error(`The page never marked ${name}; update boot.perf.ts`);
+  return at;
+}
+
 /** One cold boot to the first coin on `page`, timed inside the page. */
 async function bootToFirstDrop(page: Page, shot: string | null): Promise<BootRun> {
-  await bootGame(page, { query: '?quality=low' });
-  const playableMs = await page.evaluate(() => performance.now());
-  const before = coinLedger(await probe(page));
-  await watchFirstDrop(page, before);
-  await tapDrop(page);
+  await page.goto(gameUrl('?quality=low'), { waitUntil: 'domcontentloaded' });
+  const box = await page.locator('#stage').boundingBox();
+  if (!box) throw new Error('The #stage canvas has no layout box, so there is nowhere to tap');
+  const before = await armFirstDrop(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await page.waitForFunction(
     () => {
       const times = window.__firstDrop;
@@ -118,21 +171,25 @@ async function bootToFirstDrop(page: Page, shot: string | null): Promise<BootRun
       return times.dropMs !== null && times.longestFrameMs !== null;
     },
     null,
-    { timeout: 5_000 },
+    { timeout: 5_000, polling: 16 },
   );
   const times = await page.evaluate(() => window.__firstDrop ?? null);
   if (!times) throw new Error('window.__firstDrop is gone: the page navigated during the drop');
   await expect
     .poll(async () => coinLedger(await probe(page)), { message: 'one tap adds one coin' })
     .toBe(before + 1);
+  await expectDemoMode(page);
   if (shot) await reviewShot(page, shot);
 
   const { tapMs, dropMs, longestFrameMs } = times;
   if (tapMs === null || dropMs === null || longestFrameMs === null) {
     throw new Error(`The first drop was not fully timed: ${JSON.stringify(times)}`);
   }
+  const playableMs = await bootMark(page, 'playable');
   return {
     playableMs,
+    stageMs: await bootMark(page, 'stage'),
+    tapLagMs: tapMs - playableMs,
     tapMs,
     firstDropMs: dropMs,
     tapToDropMs: dropMs - tapMs,
@@ -165,6 +222,8 @@ test.describe('boot budget', () => {
     const headline = {
       statistic: `median of ${String(runs.length)}`,
       playableMs: pick('playableMs'),
+      stageMs: pick('stageMs'),
+      tapLagMs: pick('tapLagMs'),
       firstDropMs: pick('firstDropMs'),
       tapToDropMs: pick('tapToDropMs'),
       longestFrameAfterTapMs: pick('longestFrameAfterTapMs'),

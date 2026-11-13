@@ -151,13 +151,28 @@ export function gameUrl(query = ''): string {
   return new URL(query, GAME_URL).href;
 }
 
-/** Opens the Demo Mode build and waits until the table takes drops. */
-export async function bootGame(page: Page, options: BootOptions = {}): Promise<void> {
+/**
+ * Opens the build and returns as soon as the table takes drops. It polls on a 16 ms timer, not
+ * on animation frames: a SwiftShader frame can last a second, and a rAF poll would add one to
+ * every boot this suite times.
+ */
+export async function openUntilPlayable(page: Page, options: BootOptions = {}): Promise<void> {
   await page.goto(gameUrl(options.query));
   await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
     timeout: 60_000,
+    polling: 16,
   });
+}
+
+/** The Demo Mode banner is up, so the page runs on the in-browser server, not a real API. */
+export async function expectDemoMode(page: Page): Promise<void> {
   await expect(page.locator('#coinposh-demo-banner')).toBeVisible();
+}
+
+/** Opens the Demo Mode build and waits until the table takes drops. */
+export async function bootGame(page: Page, options: BootOptions = {}): Promise<void> {
+  await openUntilPlayable(page, options);
+  await expectDemoMode(page);
 }
 
 /** The Vault balance the HUD announces to screen readers, as a number. */
