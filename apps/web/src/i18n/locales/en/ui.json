@@ -25,6 +25,13 @@
       "title": "{{name}} is ready",
       "hint": "Tap to buy your first upgrade.",
       "aria": "{{name}} is ready to buy. Open Upgrades"
+    },
+    "wallet": {
+      "label": "Purse",
+      "gain": "+{{value}}",
+      "pearlsAria": "Pearls: {{value}}",
+      "keysAria": "Keys: {{value}}",
+      "ticketsAria": "Tickets: {{value}}"
     }
   },
   "combo": {

@@ -138,9 +138,136 @@
 }
 
 .cp-plaque-wrap {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Out of flow, so the purse never moves the plaque or the HUD edge the side meters sit under. */
+.cp-wallet {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 8px);
+  translate: 0 -50%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.cp-wallet[hidden],
+.cp-wallet-chip[hidden] {
+  display: none;
+}
+
+.cp-wallet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 21px;
+  padding: 0 8px 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-hairline);
+  background:
+    linear-gradient(160deg, rgb(var(--cp-ivory-rgb) / 0.1), transparent 55%), var(--cp-lacquer);
+  box-shadow: var(--cp-shadow), var(--cp-glow-inner);
+  color: var(--cp-champagne);
+  white-space: nowrap;
+}
+
+.cp-wallet-chip .cp-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.cp-wallet-chip .cp-odo {
+  font-size: 15px;
+  text-shadow: 0 1px 0 rgb(var(--cp-gold-brushed-rgb) / 0.5);
+}
+
+.cp-wallet-chip--pearls .cp-icon,
+.cp-wallet-flight--pearls .cp-icon {
+  color: var(--cp-ivory);
+}
+
+.cp-wallet-chip--keys .cp-icon,
+.cp-wallet-flight--keys .cp-icon {
+  color: var(--cp-gold-brushed);
+}
+
+.cp-wallet-chip--tickets .cp-icon,
+.cp-wallet-flight--tickets .cp-icon {
+  color: var(--cp-coral-sunset);
+}
+
+.cp-wallet-flights {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.cp-wallet-flight {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px 5px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-gold-brushed);
+  background:
+    linear-gradient(160deg, rgb(var(--cp-ivory-rgb) / 0.14), transparent 55%), var(--cp-lacquer);
+  box-shadow:
+    0 8px 22px rgb(0 0 0 / 0.42),
+    0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.45);
+  color: var(--cp-gold-brushed);
+  font-family: var(--cp-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  white-space: nowrap;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.cp-wallet-flight .cp-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.cp-wallet-spark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    var(--cp-ivory) 0 30%,
+    var(--cp-gold-brushed) 60%,
+    transparent 72%
+  );
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.cp-wallet-spark--pearls {
+  background: radial-gradient(circle, #fff 0 30%, var(--cp-ivory) 55%, transparent 72%);
+}
+
+.cp-wallet-spark--tickets {
+  background: radial-gradient(
+    circle,
+    var(--cp-ivory) 0 30%,
+    var(--cp-coral-sunset) 60%,
+    transparent 72%
+  );
 }
 
 .cp-plaque {

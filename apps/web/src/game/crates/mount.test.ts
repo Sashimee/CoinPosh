@@ -7,7 +7,13 @@ import { initialUiState, type UiState } from '../../app/state.ts';
 import { createStore } from '../../app/store.ts';
 import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import type { CrateEvents } from './events.ts';
-import { bindEscapeCollect, holdWhileSheetOpen, type KeyDocument } from './mount.ts';
+import {
+  bindEscapeCollect,
+  holdWhileSheetOpen,
+  payoutLines,
+  rollCredit,
+  type KeyDocument,
+} from './mount.ts';
 import { UnboxDirector, type OpenedCrate } from './view.ts';
 
 const A = 'crate_AAAAAAAAAAAAAAAA' as CrateId;
@@ -174,5 +180,48 @@ describe('Escape on the reward card', () => {
     press('Escape');
     expect(collects).toBe(0);
     expect(listeners.size).toBe(0);
+  });
+});
+
+describe('the payout a collect hands the HUD', () => {
+  const roll = RollSchema.parse({
+    rarity: 'rare',
+    rewards: [
+      { kind: 'currency', currency: 'pearls', amount: 15 },
+      { kind: 'scratchCard', cardId: 'scratch_AAAAAAAAAAAA' },
+      { kind: 'currency', currency: 'coins', amount: 12 },
+      { kind: 'currency', currency: 'pearls', amount: 5 },
+      { kind: 'currency', currency: 'tickets', amount: 2 },
+    ],
+    proof: { serverSeedHash: 'a'.repeat(64), clientSeed: 'velvet', nonce: 3 },
+    pity: { rare: 0, exquisite: 0, legendary: 0 },
+  });
+
+  it('holds each currency the roll credits, summed as the card shows it', () => {
+    expect(rollCredit(roll)).toEqual({ coins: 12, pearls: 20, tickets: 2 });
+    expect(rollCredit(opened(A).roll)).toEqual({ pearls: 25 });
+  });
+
+  it("pairs each currency line with the card's own line element, items first", () => {
+    const items = ['scratch', 'coins', 'pearls', 'tickets'].map((name) => ({ name }));
+    const card = {
+      querySelectorAll: (selector: string) => {
+        expect(selector).toBe('.cp-crate-lines > li');
+        return items as unknown as NodeListOf<Element>;
+      },
+    };
+    expect(payoutLines(roll, card)).toEqual([
+      { currency: 'coins', amount: 12, source: items[1] },
+      { currency: 'pearls', amount: 20, source: items[2] },
+      { currency: 'tickets', amount: 2, source: items[3] },
+    ]);
+  });
+
+  it('still pays every line out without a card to fly from', () => {
+    expect(payoutLines(roll, null).map((line) => [line.currency, line.source])).toEqual([
+      ['coins', null],
+      ['pearls', null],
+      ['tickets', null],
+    ]);
   });
 });

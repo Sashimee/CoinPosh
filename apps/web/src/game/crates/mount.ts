@@ -1,9 +1,10 @@
-import type { CrateId } from '@coinposh/shared';
+import type { CrateId, Currency, Roll } from '@coinposh/shared';
 import type { Object3D, PerspectiveCamera } from 'three/webgpu';
 import type { UiApp } from '../../app/index.ts';
 import { createBus, type Bus } from '../../app/bus.ts';
 import type { UiState } from '../../app/state.ts';
 import { watch, type Store } from '../../app/store.ts';
+import { walletPayoutFor, type PayoutLine } from '../../ui/components/balancePlaque.ts';
 import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
 import type { CameraPreset } from '../../scene/venues/riviera/layout.ts';
@@ -15,7 +16,7 @@ import { CrateController, type CrateControllerOptions, type CrateSimPort } from 
 import type { CrateEvents } from './events.ts';
 import { bindArrivalHint, mountArrivalHint } from './hint.ts';
 import { registerCratesStrings } from './i18n.ts';
-import type { AlbumProgressMap } from './loot.ts';
+import { rewardLines, type AlbumProgressMap } from './loot.ts';
 import { mountCrateReveal, type CrateReveal } from './revealCard.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
 
@@ -45,6 +46,29 @@ export interface CratesMountOptions {
 }
 
 const COLLECT = '[data-testid="crate-collect"]';
+const CARD_LINES = '.cp-crate-lines > li';
+
+/** The currency a roll credits, which the HUD keeps off its readouts until the player collects. */
+export function rollCredit(roll: Roll): Partial<Record<Currency, number>> {
+  const credit: Partial<Record<Currency, number>> = {};
+  for (const line of rewardLines(roll.rewards)) {
+    if (line.kind === 'currency') credit[line.currency] = line.amount;
+  }
+  return credit;
+}
+
+/** The card's currency lines, each with the `<li>` it is drawn in, in the card's order. */
+export function payoutLines(
+  roll: Roll,
+  card: Pick<ParentNode, 'querySelectorAll'> | null,
+): readonly PayoutLine[] {
+  const items = card ? [...card.querySelectorAll(CARD_LINES)] : [];
+  return rewardLines(roll.rewards).flatMap((line, index): PayoutLine[] =>
+    line.kind === 'currency'
+      ? [{ currency: line.currency, amount: line.amount, source: items[index] ?? null }]
+      : [],
+  );
+}
 
 /** Holds the unbox while any sheet is open and lets it go the moment the last one closes. */
 export function holdWhileSheetOpen(
@@ -117,6 +141,11 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   const table = new TableCrateView(options.stage.scene);
   const albums = new Map<CrateId, AlbumProgressMap>();
   const reveals = new Map<CrateId, CrateReveal>();
+  const payout = walletPayoutFor(options.ui.store);
+  const unpaid = new Set<CrateId>();
+  const releasePayout = (crateId: CrateId): void => {
+    if (unpaid.delete(crateId)) payout.release(crateId);
+  };
   const controller = new CrateController({
     table: options.net.table,
     client: options.net.client,
@@ -163,6 +192,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
         dispose: () => {
           unbindEscape();
           reveal.dispose();
+          releasePayout(opened.crateId);
         },
       };
     },
@@ -202,6 +232,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       events.emit('crate:stinger', { cue: 'fall', rarity: null, step: 1, duckSeconds: 0 });
     }),
     events.on('crate:opened', ({ crateId, roll, wallet }) => {
+      unpaid.add(crateId);
+      payout.hold(crateId, rollCredit(roll));
       const at = table.landing(crateId) ?? trayLanding(0);
       director.enqueue({ crateId, roll, wallet, at });
     }),
@@ -209,7 +241,12 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       albums.set(crateId, progress);
       reveals.get(crateId)?.setAlbum(progress);
     }),
-    events.on('crate:collected', ({ crateId }) => {
+    events.on('crate:collected', ({ crateId, roll, wallet }) => {
+      unpaid.delete(crateId);
+      payout.collect(crateId, {
+        wallet,
+        lines: payoutLines(roll, reveals.get(crateId)?.el ?? null),
+      });
       albums.delete(crateId);
       reveals.delete(crateId);
     }),
@@ -246,6 +283,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       if (disposed) return;
       disposed = true;
       for (const off of disposers.splice(0)) off();
+      for (const crateId of [...unpaid]) releasePayout(crateId);
       albums.clear();
       reveals.clear();
       director.dispose();
