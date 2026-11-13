@@ -111,7 +111,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-121 | done | task/P-121 (merge 794c096) | Rapier wasm ships as a separate hashed .wasm asset streamed by the sim worker (instantiateStreaming); sim worker JS under 80 kB gzip (e58665d); follow-ups in POLISH (compression on hosting, shared sideEffects, AdaptiveRendering rAF guard); pnpm check green after merge |
 | T-92.05 | done | task/T-92.05 (merge 13cf378) | Net layer: snapshot op, SnapshotCadence (capture copied), keepalive pagehide upload, drain before boot, Demo Mode mock (fix round 57698e2); pnpm check green after merge; boot wiring left to T-92.07 (#92) |
 | T-92.06 | done | task/T-92.06 (merge 4bd97bb) | Worker bridge restore init and snapshot (bridge.ts, runtime.ts, protocol.ts, restore.ts, sim-api.ts, tests; 9c5a543); pnpm check green after merge |
-| T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
+| T-92.07 | blocked(review: posed crates restart at the chute, needs CrateController.adopt placements #176; retake untested and takes lease before sim ready) | task/T-92.07 (fc0bc94) | Waits on #176 (crates owner) or an amended criterion (#92) |
 | T-92.08 | done | task/T-92.08 (merge b74b73a) | Session lease on every table op: PlayerDO/routes/table.ts check the lease, stale sessions get session_superseded (05b7edf); server tests updated to send the lease; pnpm check green after merge; land T-92.05 before deploy (#85) |
 | T-92.09 | todo | | Waits on T-92.07, T-92.08, T-1.17 (#92) |
 | T-92.10 | done | task/T-92.10 (merge 82654b5) | Crate ride snapshot and restore on CRATE_RIDE bounds (ride.ts, view.ts, crates.test.ts; daf58bf); pnpm check green after merge |
@@ -335,3 +335,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 26 · 2026-11-12 · P-345 P-343 P-348 P-350 · merged P-345 (bb2d650), P-343 (480fe05), P-348 (577c6ea), P-350 (36062bc); 0 rejected
 - wave 27 · 2026-11-13 · T-1.17 T-92.05 T-92.06 T-92.10 T-92.08 · merged T-92.10 (82654b5), T-92.06 (4bd97bb), T-92.08 (b74b73a); 2 rejected (T-1.17, T-92.05)
 - wave 28 · 2026-11-13 · P-121 P-98 T-92.05 P-358 P-359 · merged P-121 (794c096), T-92.05 (13cf378), P-358 (c5b505a), P-359 (ff1e439); 1 rejected (P-98)
+- wave 29 · 2026-11-13 · P-364 T-92.07 P-352 P-362 P-365 · merged P-364 (827b237), P-352 (d99e2ce), P-362 (94f7fef), P-365 (e027599); 1 rejected (T-92.07)
