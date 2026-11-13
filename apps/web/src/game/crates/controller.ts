@@ -168,7 +168,7 @@ export class CrateController {
     this.place(new CrateRide(crate, this.options.sim.stats.pusherStroke), false);
   }
 
-  /** A pose the ride cannot take stays off the table: the server settles that crate itself. */
+  /** A pose the ride cannot take starts that crate from the chute, as the server does for a pose it refuses. */
   private resume(crate: TableCrate, tuple: CratePoseTuple): void {
     const [id, x, z, elapsedMs, phase] = tuple;
     if (id !== crate.id) {
@@ -184,8 +184,8 @@ export class CrateController {
         { x, z, elapsedMs, phase },
         this.options.sim.stats.pusherStroke,
       );
-    } catch (error) {
-      this.options.events.emit('crate:failed', { crateId: crate.id, error });
+    } catch {
+      this.spawn(crate);
       return;
     }
     this.place(ride, true);

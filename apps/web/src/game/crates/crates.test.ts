@@ -969,12 +969,12 @@ describe('arrival hint', () => {
       { show: () => log.push('show'), hide: () => log.push('hide') },
       clock,
     );
-    const spawn = (id: string) => {
+    const spawn = (id: string, resumed = false) => {
       events.emit('crate:spawned', {
         crateId: id as CrateId,
         kind: 'vault',
         position: { x: 0, y: 0, z: 0 },
-        resumed: false,
+        resumed,
       });
     };
     return { events, log, timers, fire, off, spawn };
@@ -989,6 +989,16 @@ describe('arrival hint', () => {
     fire();
     expect(log).toEqual(['show', 'hide']);
     expect(timers.size).toBe(0);
+  });
+
+  it('stays down for a crate resumed mid-table and still prompts on a fresh one after', () => {
+    const { log, timers, spawn } = bound();
+    spawn('crate_AAAAAAAAAAAAAAAA', true);
+    expect(log).toEqual([]);
+    expect(timers.size).toBe(0);
+    spawn('crate_BBBBBBBBBBBBBBBB');
+    expect(log).toEqual(['show']);
+    expect(timers.size).toBe(1);
   });
 
   it('clears as soon as that crate goes over, and ignores other crates falling', () => {
@@ -2011,17 +2021,20 @@ describe('adopting the table the server laid', () => {
     expect(log).toEqual([{ type: 'crate:spawned', crateId: A, resumed: false }]);
   });
 
-  it('keeps a pose the ride cannot take off the table and still lays the rest', () => {
+  it('starts a pose the ride cannot take from the chute and still lays the rest', () => {
     const tipZ = Math.round(CRATE_RIDE.tipZ / POSITION_UNIT);
     const { controller, log } = session();
     controller.adopt(
       [crate(A), crate(B)],
       [{ kind: 'pose', pose: [A, 0, tipZ + 10, 1000, 'teeter'] }, { kind: 'chute' }],
     );
-    expect(controller.riding.map((ride) => ride.crate.id)).toEqual([B]);
-    expect(controller.snapshot().map(([id]) => id)).toEqual([B]);
+    expect(controller.riding.map((ride) => ride.crate.id)).toEqual([A, B]);
+    expect(controller.riding[0]?.position.z).toBe(CRATE_RIDE.spawnZ);
+    expect(controller.riding[0]?.phase).toBe('riding');
+    expect(controller.snapshot().map(([id]) => id)).toEqual([A, B]);
+    expect(log.some(({ type }) => type === 'crate:failed')).toBe(false);
     expect(log).toEqual([
-      { type: 'crate:failed', crateId: A },
+      { type: 'crate:spawned', crateId: A, resumed: false },
       { type: 'crate:spawned', crateId: B, resumed: false },
     ]);
   });
