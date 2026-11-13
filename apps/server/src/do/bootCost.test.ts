@@ -4,7 +4,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { newIdempotencyKey, newSession, type Session } from '../test/client.ts';
-import { expectConserved, playerStub, reload, state } from '../test/game.ts';
+import { expectConserved, playerStub, reload, state, tableSession } from '../test/game.ts';
 import { commit, LedgerTx } from './ledger.ts';
 import { FUSION_INPUTS_SQL, PlayerDO } from './PlayerDO.ts';
 import { MIGRATIONS } from './schema.ts';
@@ -21,7 +21,8 @@ function queryPlan(sql: SqlStorage): string[] {
 }
 
 /** Drops `drops` coins straight into the DO and fuses them in threes, leaving no stored poses. */
-function playFusedHistory(session: Session, drops: number) {
+async function playFusedHistory(session: Session, drops: number) {
+  const lease = await tableSession(session);
   return runInDurableObject(playerStub(session.tokens.playerId), async (player: PlayerDO, ctx) => {
     commit(
       ctx.storage.sql,
@@ -33,7 +34,7 @@ function playFusedHistory(session: Session, drops: number) {
       const dropped = await player.drop({
         idempotencyKey: newIdempotencyKey(),
         fingerprint: `drop ${tick}`,
-        body: { x: 0, tick },
+        body: { session: lease, x: 0, tick },
       });
       if (!dropped.ok) throw new Error(`Drop ${tick} failed: ${dropped.error.message}`);
       const [first, second] = batch;
@@ -45,6 +46,7 @@ function playFusedHistory(session: Session, drops: number) {
         idempotencyKey: newIdempotencyKey(),
         fingerprint: `fuse ${tick}`,
         body: {
+          session: lease,
           claims: [{ kind: 'fusion', coinIds: [first, second, dropped.body.coin.id], tick }],
         },
       });

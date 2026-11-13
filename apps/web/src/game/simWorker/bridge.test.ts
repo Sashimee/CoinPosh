@@ -7,9 +7,19 @@ import { frameByteLength, FrameView } from './frame.ts';
 import type { CoinTransformTarget } from './interpolate.ts';
 import type { MainToWorker, SimEventBatch, TransportKind, WorkerToMain } from './protocol.ts';
 import { MAX_CATCH_UP_TICKS, runSimWorker, TICK_MS } from './runtime.ts';
-import { COIN, Sim } from '@coinposh/sim';
+import { COIN, Sim, StateHasher } from '@coinposh/sim';
+import { validateSnapshot } from '@coinposh/sim/snapshot';
 import { economyConfig, openingHeap } from '@coinposh/economy';
-import type { FallEvent, MechanicsConfig, OpeningHeap, SimInput, SimOptions } from './sim-api.ts';
+import type {
+  FallEvent,
+  MechanicsConfig,
+  OpeningHeap,
+  RestoreEntry,
+  SimInput,
+  SimOptions,
+  SimRestore,
+  SimTableSnapshot,
+} from './sim-api.ts';
 import { OPENING_HEAP_CAPACITY, SIM_MECHANICS } from './table-config.ts';
 
 const SEED = 0xc0195051;
@@ -93,6 +103,8 @@ interface Harness {
   readonly poll: () => Promise<void>;
   /** Every coin at the bridge's newest frame, read through `sync` with the render point there. */
   readonly newest: () => RecordingTarget;
+  /** The Sims the worker built, to read their state from the test. */
+  readonly sims: readonly Sim[];
   readonly close: () => void;
 }
 
@@ -107,6 +119,7 @@ interface HarnessOptions {
   /** Runs the worker's Sim with these; SIM_MECHANICS is what sim.worker.ts uses. */
   readonly mechanics?: MechanicsConfig<string>;
   readonly openingHeap?: OpeningHeap;
+  readonly restore?: SimRestore;
 }
 
 function simOptions(seed: number, options: HarnessOptions): SimOptions {
@@ -114,6 +127,7 @@ function simOptions(seed: number, options: HarnessOptions): SimOptions {
     seed,
     ...(options.mechanics ? { mechanics: options.mechanics } : {}),
     ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
+    ...(options.restore ? { restore: options.restore } : {}),
   };
 }
 
@@ -123,9 +137,15 @@ function harness(transport: TransportKind, options: HarnessOptions = {}): Harnes
   const channel = new MessageChannel();
   const timers = new ManualTimers();
   let renderAhead = 0;
+  const sims: Sim[] = [];
   runSimWorker(channel.port2, {
-    createSim: (hosted) =>
-      Sim.create(options.mechanics ? { ...hosted, mechanics: options.mechanics } : hosted),
+    createSim: async (hosted) => {
+      const sim = await Sim.create(
+        options.mechanics ? { ...hosted, mechanics: options.mechanics } : hosted,
+      );
+      sims.push(sim);
+      return sim;
+    },
     heapCapacity: Sim.heapCapacity(options.mechanics),
     now: () => timers.now,
     setTimer: timers.set,
@@ -136,6 +156,7 @@ function harness(transport: TransportKind, options: HarnessOptions = {}): Harnes
     transport,
     now: () => timers.now + renderAhead,
     ...(options.openingHeap ? { openingHeap: options.openingHeap } : {}),
+    ...(options.restore ? { restore: options.restore } : {}),
   });
   const scratch = new RecordingTarget();
   const created: Harness = {
@@ -158,6 +179,7 @@ function harness(transport: TransportKind, options: HarnessOptions = {}): Harnes
       bridge.sync(target);
       return target;
     },
+    sims,
     close: () => {
       bridge.dispose();
       channel.port1.close();
@@ -687,5 +709,282 @@ describe('SimBridge on the render thread', () => {
   it('exposes the sim coin dimensions for sizing the coin field', () => {
     expect(SIM_COIN_DIMENSIONS).toEqual({ radius: COIN.radius, halfThickness: COIN.halfThickness });
     expect(new SimBridge(new FakeWorker(), { seed: 1 }).coin).toBe(SIM_COIN_DIMENSIONS);
+  });
+});
+
+/** The quantized table as one StateHasher digest: what the server would store, hashed. */
+function hashTable(table: SimTableSnapshot): string {
+  const hasher = new StateHasher().uint32(table.version).uint32(table.pusherTickInCycle);
+  hasher.uint32(table.coins.length);
+  for (const coin of table.coins) {
+    hasher.int(coin.id).bool(coin.rest === 'asleep');
+    for (const v of [...coin.p, ...coin.q]) hasher.int(v);
+  }
+  return hasher.digest();
+}
+
+/** Ticks the Demo table plays before it is saved: its heap, 6 s of drops, then 4 s idle. */
+const SAVED_AFTER_TICKS = 600;
+
+let savedTable: Promise<SimRestore> | null = null;
+
+/**
+ * The Demo table as a boot would restore it: the worker's heap after a stretch of play,
+ * snapshotted mid-cycle and filtered by validateSnapshot as the server stores it, with the
+ * first two heap coins sent back as bare heap slots (a heap coin without a valid pose, D4)
+ * and every coin carrying the tier the server keeps for it.
+ */
+function saved(): Promise<SimRestore> {
+  savedTable ??= (async () => {
+    const sim = await Sim.create({ seed: SEED, mechanics: SIM_MECHANICS, openingHeap });
+    try {
+      while (sim.tick < SAVED_AFTER_TICKS) {
+        const t = sim.tick;
+        sim.step(t < 360 && t % 20 === 0 ? [{ kind: 'dropCoin', xMm: ((t * 7) % 61) - 30 }] : []);
+      }
+      const snapshot = sim.snapshot();
+      const kept = new Set(validateSnapshot(snapshot).ok);
+      const tierOf = new Map(sim.coins().map((coin) => [coin.id, coin.tier ?? undefined]));
+      const coins: RestoreEntry[] = [];
+      for (const pose of snapshot.coins) {
+        const tier = tierOf.get(pose.id);
+        if (tier === undefined) throw new Error(`coin ${pose.id} has no tier`);
+        if (pose.id < 2) coins.push({ kind: 'heapSlot', slot: pose.id, tier });
+        else if (kept.has(pose)) coins.push({ kind: 'pose', pose, tier });
+      }
+      return { pusherTickInCycle: snapshot.pusherTickInCycle, coins };
+    } finally {
+      sim.dispose();
+    }
+  })();
+  return savedTable;
+}
+
+describe.each(['transfer', 'shared'] as const)(
+  'SimBridge restore over the %s transport',
+  { timeout: 30_000 },
+  (transport) => {
+    it('restores, steps and hashes exactly as Sim.create({ restore }) in-thread', async () => {
+      const restore = await saved();
+      expect(restore.pusherTickInCycle).toBeGreaterThan(0);
+      expect(restore.coins.filter((entry) => entry.kind === 'pose').length).toBeGreaterThan(80);
+      const options: HarnessOptions = { mechanics: SIM_MECHANICS, restore };
+      const { bridge, run, poll, newest, sims } = harness(transport, options);
+      const info = await bridge.ready;
+      expect(info.tick).toBe(0);
+      await poll();
+      const direct = await Sim.create(simOptions(SEED, options));
+      try {
+        const worker = sims[0];
+        if (!worker) throw new Error('the worker built no Sim');
+        expect(worker.hash()).toBe(direct.hash());
+        const opened = await bridge.snapshot();
+        expect(opened).toEqual({ tick: 0, table: direct.snapshot() });
+
+        const log = new Map<number, SimInput[]>();
+        for (const xMm of [-30, 0, 30, 12]) {
+          log.set(bridge.stats.tick, [{ kind: 'dropCoin', xMm, tier: 'copper' }]);
+          bridge.drop(xMm, 'copper');
+          await settle();
+          await run(30);
+        }
+        await run(60);
+        const { tick, table } = await bridge.snapshot();
+        expect(tick).toBe(180);
+        expect(tick).toBe(bridge.stats.tick);
+        while (direct.tick < tick) direct.step(log.get(direct.tick) ?? []);
+
+        expect(worker.hash()).toBe(direct.hash());
+        expect(hashTable(table)).toBe(hashTable(direct.snapshot()));
+        expect(table).toEqual(direct.snapshot());
+        expect(table.coins.map((coin) => coin.id)).toEqual(direct.coins().map((coin) => coin.id));
+
+        const target = newest();
+        for (const coin of direct.coins()) {
+          const drawn = target.written.get(coin.tier as CoinTierId);
+          const i = drawn?.ids.indexOf(coin.id) ?? -1;
+          expect(i, `coin ${coin.id}`).toBeGreaterThanOrEqual(0);
+          expect(drawn?.positions[i * 3]).toBe(Math.fround(coin.translation.x));
+          expect(drawn?.positions[i * 3 + 1]).toBe(Math.fround(coin.translation.y));
+          expect(drawn?.positions[i * 3 + 2]).toBe(Math.fround(coin.translation.z));
+          expect(drawn?.quaternions[i * 4 + 3]).toBe(Math.fround(coin.rotation.w));
+        }
+        expect(bridge.stats.pusherPhase).toBe(direct.pusher.phase);
+      } finally {
+        direct.dispose();
+      }
+    });
+
+    it('answers a snapshot asked for before the sim is ready, and one asked for while paused', async () => {
+      const { bridge, timers, run, poll } = harness(transport, { mechanics: SIM_MECHANICS });
+      const both = await Promise.all([bridge.snapshot(), bridge.snapshot()]);
+      expect(both[0]).toEqual({
+        tick: 0,
+        table: { version: 1, pusherTickInCycle: 0, coins: [] },
+      });
+      expect(both[1]).toEqual(both[0]);
+      await poll();
+      bridge.drop(0, 'gold');
+      await settle();
+      await run(10);
+      bridge.pause();
+      await poll();
+      timers.advanceTo(timers.now + 5000);
+      const paused = await bridge.snapshot();
+      expect(paused.tick).toBe(10);
+      expect(paused.table.pusherTickInCycle).toBe(10);
+      expect(paused.table.coins.map((coin) => [coin.id, coin.rest])).toEqual([[0, 'awake']]);
+    });
+  },
+);
+
+describe('SimBridge restore of a table never saved', { timeout: 30_000 }, () => {
+  it('lays every heap slot 0..n-1 exactly as the opening heap, then plays on identically', async () => {
+    const heap = harness('transfer', { mechanics: SIM_MECHANICS, openingHeap });
+    const coins: RestoreEntry[] = Array.from({ length: openingHeap.coins }, (_, slot) => ({
+      kind: 'heapSlot',
+      slot,
+      tier: openingHeap.tier,
+    }));
+    const restored = harness('transfer', {
+      mechanics: SIM_MECHANICS,
+      restore: { pusherTickInCycle: 0, coins },
+    });
+    await Promise.all([heap.bridge.ready, restored.bridge.ready]);
+    const [a, b] = await Promise.all([heap.bridge.snapshot(), restored.bridge.snapshot()]);
+    expect(a.table.coins).toHaveLength(openingHeap.coins);
+    expect(hashTable(b.table)).toBe(hashTable(a.table));
+    for (const side of [heap, restored]) {
+      side.bridge.drop(0, 'copper');
+      await settle();
+      await side.run(90);
+    }
+    expect(restored.sims[0]?.hash()).toBe(heap.sims[0]?.hash());
+  });
+});
+
+describe('SimBridge restore failures', () => {
+  it('refuses openingHeap and restore together on the page', () => {
+    expect(
+      () =>
+        new SimBridge(new FakeWorker(), {
+          seed: 1,
+          openingHeap: { coins: 1 },
+          restore: { pusherTickInCycle: 0, coins: [] },
+        }),
+    ).toThrow(/openingHeap and restore are mutually exclusive/);
+  });
+
+  /** A worker that never builds a Sim, and what it posts back after `messages`. */
+  async function replies(messages: readonly unknown[]): Promise<WorkerToMain[]> {
+    const channel = new MessageChannel();
+    let created = 0;
+    runSimWorker(channel.port2, {
+      createSim: (hosted) => {
+        created += 1;
+        return Sim.create(hosted);
+      },
+      heapCapacity: Sim.heapCapacity(),
+      now: () => 0,
+      setTimer: () => 0,
+      clearTimer: () => undefined,
+    });
+    const received: WorkerToMain[] = [];
+    channel.port1.addEventListener('message', (event: MessageEvent<WorkerToMain>) => {
+      received.push(event.data);
+    });
+    channel.port1.start();
+    for (const message of messages) channel.port1.postMessage(message);
+    await settle();
+    channel.port1.close();
+    channel.port2.close();
+    expect(created).toBe(0);
+    return received;
+  }
+
+  const init = (fields: Record<string, unknown>): Record<string, unknown> => ({
+    type: 'init',
+    seed: 1,
+    capacity: 8,
+    transport: { kind: 'transfer', buffers: [new ArrayBuffer(frameByteLength(8))] },
+    ...fields,
+  });
+
+  it.each([
+    [
+      'with an opening heap',
+      { openingHeap: { coins: 1 }, restore: { pusherTickInCycle: 0, coins: [] } },
+      /init\.restore and init\.openingHeap are mutually exclusive/,
+    ],
+    [
+      'with a heap slot the heap does not have',
+      { restore: { pusherTickInCycle: 0, coins: [{ kind: 'heapSlot', slot: 999 }] } },
+      new RegExp(`coins\\[0\\]\\.slot must be an integer in \\[0, ${Sim.heapCapacity()}\\)`),
+    ],
+    [
+      'with a pose past the lip',
+      {
+        restore: {
+          pusherTickInCycle: 0,
+          coins: [
+            {
+              kind: 'pose',
+              pose: { id: 0, p: [0, 0, 999_999], q: [0, 0, 0, 32767], rest: 'asleep' },
+            },
+          ],
+        },
+      },
+      /coins\[0\] \(id 0\): out_of_bounds/,
+    ],
+  ])('stops the worker on a restore %s, before building a Sim', async (_, fields, error) => {
+    expect(await replies([init(fields)])).toEqual([
+      {
+        type: 'error',
+        message: expect.stringMatching(new RegExp(`rejected a message.*${error.source}`)) as string,
+      },
+    ]);
+  });
+
+  it.each([
+    ['before init', { type: 'snapshot', requestId: 0 }, /snapshot was requested before init/],
+    [
+      'with a bad id',
+      { type: 'snapshot', requestId: -1 },
+      /requestId must be a non-negative integer, got -1/,
+    ],
+  ])('stops the worker on a snapshot request %s', async (_, message, error) => {
+    expect(await replies([message])).toEqual([
+      { type: 'error', message: expect.stringMatching(error) as string },
+    ]);
+  });
+
+  it('rejects pending and later snapshots once the sim fails or the bridge is disposed', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const failing = new FakeWorker();
+    const bridge = new SimBridge(failing, { seed: 1, transport: 'transfer' });
+    const pending = bridge.snapshot();
+    expect(failing.sent.at(-1)?.message).toEqual({ type: 'snapshot', requestId: 0 });
+    failing.emit('message', { type: 'error', message: 'Sim worker stopped: boom' });
+    await expect(pending).rejects.toThrow(/SimBridge\.snapshot: .*boom/);
+    await expect(bridge.snapshot()).rejects.toThrow(/SimBridge\.snapshot: .*boom/);
+
+    const disposed = new SimBridge(new FakeWorker(), { seed: 1, transport: 'transfer' });
+    const inFlight = disposed.snapshot();
+    disposed.dispose();
+    await expect(inFlight).rejects.toThrow(/disposed before the reply/);
+    await expect(disposed.snapshot()).rejects.toThrow(/has been disposed/);
+  });
+
+  it('fails loudly on a snapshot reply nobody asked for', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const worker = new FakeWorker();
+    const bridge = new SimBridge(worker, { seed: 1, transport: 'transfer' });
+    worker.emit('message', {
+      type: 'snapshot',
+      requestId: 5,
+      tick: 0,
+      table: { version: 1, pusherTickInCycle: 0, coins: [] },
+    });
+    expect(bridge.failure?.message).toMatch(/snapshot request 5, which was never made/);
   });
 });
