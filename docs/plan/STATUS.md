@@ -340,3 +340,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 27 · 2026-11-13 · T-1.17 T-92.05 T-92.06 T-92.10 T-92.08 · merged T-92.10 (82654b5), T-92.06 (4bd97bb), T-92.08 (b74b73a); 2 rejected (T-1.17, T-92.05)
 - wave 28 · 2026-11-13 · P-121 P-98 T-92.05 P-358 P-359 · merged P-121 (794c096), T-92.05 (13cf378), P-358 (c5b505a), P-359 (ff1e439); 1 rejected (P-98)
 - wave 29 · 2026-11-13 · P-364 T-92.07 P-352 P-362 P-365 · merged P-364 (827b237), P-352 (d99e2ce), P-362 (94f7fef), P-365 (e027599); 1 rejected (T-92.07)
+- wave 30 · 2026-11-13 · T-1.17 P-155 P-225 P-223 P-224 · merged P-155 (6751fa6), P-224 (d733e52), P-225 (ad2ce41), T-1.17 (02b27de), P-223 (5c9600b); 0 rejected
