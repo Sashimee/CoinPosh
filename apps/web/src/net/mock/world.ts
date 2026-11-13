@@ -1324,6 +1324,9 @@ export class MockWorld {
       this.#credit(player, now, 'ascend.startingCoins', {
         coins: Math.floor(stat(player, 'startingCoins')),
       });
+      // The new venue opens on a fresh heap; the stored poses described the coins just forgotten.
+      player.tableSnapshot = null;
+      this.#seedOpeningHeap(player);
       this.#refillBuffer(player, now);
       return {
         venueId: body.venueId,

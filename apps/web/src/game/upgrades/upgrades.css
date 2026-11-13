@@ -40,12 +40,3 @@
 .cp-ui-host[data-motion='reduced'] .cp-upgrade-notice.is-shown {
   animation: none;
 }
-
-/*
- * Family Office lines cost Gold Bars and live on the ascension screen, so the venue sheet's
- * global section stays out of the way until the panel stops building it.
- * TODO(ui owner): drop the global section from createUpgradesPanel and remove this rule.
- */
-.cp-upgrades > [data-testid='upgrades-global'] {
-  display: none;
-}

@@ -9,7 +9,12 @@ import type { ImpactEvent } from '../../audio/index.ts';
 import { BUNDLED_RESOURCES, createI18n, type Language } from '../../i18n/index.ts';
 import { netAscensionApi } from './api.ts';
 import { ENTRY_MOTES, ENTRY_SHIMMER, entryReadiness, mountAscensionEntry } from './entry.ts';
-import { mountAscensionHud, RELOAD_RETRY_MS, type MountAscensionHudOptions } from './hud.ts';
+import {
+  ENTRY_READ_TIMEOUT_MS,
+  mountAscensionHud,
+  RELOAD_RETRY_MS,
+  type MountAscensionHudOptions,
+} from './hud.ts';
 import { ascensionKey, venueKey } from './i18n.ts';
 import type { AscensionMount, MountAscensionOptions } from './index.ts';
 import { ascensionProgress, lifetimeBullionOf } from './plan.ts';
@@ -268,8 +273,9 @@ describe('mountAscensionHud', () => {
     const booted = await alice.client.call('state', { query: { hydrate: 'boot' } });
     const mounted: MountAscensionOptions[] = [];
     const opened: number[] = [];
+    const shown: (number | null)[] = [];
     let disposed = 0;
-    const moved: StateResponse[] = [];
+    const laid: StateResponse[] = [];
     const errors: unknown[] = [];
     let reads = 0;
     const hud = mountAscensionHud({
@@ -282,13 +288,17 @@ describe('mountAscensionHud', () => {
         reads += 1;
         return alice.client.call('state');
       },
-      onVenueChanged: (fresh) => moved.push(fresh),
+      bootState: () => alice.client.call('state', { query: { hydrate: 'boot' } }),
+      layTable: (fresh) => {
+        laid.push(fresh);
+      },
       audio: t.audio,
       onError: (error) => errors.push(error),
       mount: (options): AscensionMount => {
         mounted.push(options);
         return {
           open: () => opened.push(options.bullion() ?? -1),
+          setBullion: (bullion) => shown.push(bullion),
           dispose: () => (disposed += 1),
         };
       },
@@ -302,7 +312,8 @@ describe('mountAscensionHud', () => {
       hud,
       options,
       opened,
-      moved,
+      shown,
+      laid,
       errors,
       reads: () => reads,
       disposed: () => disposed,
@@ -310,7 +321,14 @@ describe('mountAscensionHud', () => {
     };
   }
 
-  it('feeds the screen the server lifetime Bullion and re-reads it on every press', async () => {
+  function tableCoinIds(): string[] {
+    return [...player().coins.values()]
+      .filter((record) => record.place === 'table')
+      .map((record) => record.coin.id)
+      .sort();
+  }
+
+  it('opens the screen at once on the last figure, then shows the re-read one', async () => {
     const m = await mount();
     expect(m.options.venueId()).toBe(RIVIERA.id);
     expect(m.options.bullion()).toBe(0);
@@ -318,26 +336,57 @@ describe('mountAscensionHud', () => {
 
     player().lifetimeBullion = RIVIERA.bullionThreshold;
     m.el().dispatch('click');
+    expect(m.opened).toEqual([0]);
     m.el().dispatch('click');
     await vi.waitFor(() => {
-      expect(m.opened).toEqual([RIVIERA.bullionThreshold]);
+      expect(m.shown).toEqual([RIVIERA.bullionThreshold]);
     });
     expect(m.reads()).toBe(1);
     expect(m.el().dataset.ready).toBe('ready');
-    expect(m.moved).toEqual([]);
+    expect(m.laid).toEqual([]);
   });
 
-  it('opens with an unknown figure when the re-read fails, so the server decides', async () => {
+  it('shows an unknown figure on the open screen when the re-read fails, so the server decides', async () => {
     const failure = new Error('offline');
     const m = await mount({ readState: () => Promise.reject(failure) });
     await m.hud.open();
-    expect(m.opened).toEqual([-1]);
+    expect(m.opened).toEqual([0]);
+    expect(m.shown).toEqual([null]);
     expect(m.el().dataset.ready).toBe('unknown');
     expect(m.errors).toEqual([failure]);
   });
 
-  it('reloads into the new venue once the cinematic hands back, then renews the ring', async () => {
+  it('does not wait on a slow read: unknown after the timeout, the figure once it lands', async () => {
+    let land: (state: StateResponse) => void = () => undefined;
+    const m = await mount({
+      readState: () =>
+        new Promise<StateResponse>((resolve) => {
+          land = resolve;
+        }),
+    });
+    const fresh = await alice.client.call('state');
+    vi.useFakeTimers();
+    try {
+      const opening = m.hud.open();
+      expect(m.opened).toEqual([0]);
+      expect(m.shown).toEqual([]);
+      vi.advanceTimersByTime(ENTRY_READ_TIMEOUT_MS);
+      await opening;
+      expect(m.shown).toEqual([null]);
+      expect(m.el().dataset.ready).toBe('unknown');
+    } finally {
+      vi.useRealTimers();
+    }
+    land({ ...fresh, venue: { ...fresh.venue, lifetimeBullion: 42 } });
+    await vi.waitFor(() => {
+      expect(m.shown).toEqual([null, 42]);
+    });
+    expect(m.el().dataset.ready).toBe('building');
+  });
+
+  it('boots the new venue once the cinematic hands back and lays exactly the coins the server holds', async () => {
     const m = await mount();
+    const before = tableCoinIds();
     player().lifetimeBullion = RIVIERA.bullionThreshold + 600;
     const response: AscendResponse = await alice.client.call('ascend', {
       body: { venueId: RIVIERA.id },
@@ -348,13 +397,58 @@ describe('mountAscensionHud', () => {
     await vi.waitFor(() => {
       expect(m.el().classList.contains('is-renewed')).toBe(true);
     });
-    expect(m.moved.map((fresh) => fresh.venue.id)).toEqual([PARIS.id]);
-    expect(m.moved[0]?.wallet.goldBars).toBe(response.goldBarsGranted);
+    expect(m.laid.map((fresh) => fresh.venue.id)).toEqual([PARIS.id]);
+    const [laid] = m.laid;
+    if (!laid) throw new Error('the hud did not lay the new venue');
+    expect(laid.table.layout).toBeTruthy();
+    expect(laid.wallet.goldBars).toBe(response.goldBarsGranted);
+    const laidIds = laid.table.coins.map((coin) => coin.id).sort();
+    expect(laidIds).toEqual(tableCoinIds());
+    expect(laidIds.length).toBeGreaterThan(0);
+    expect(laidIds.some((id) => before.includes(id))).toBe(false);
     expect(m.options.venueId()).toBe(PARIS.id);
     expect(m.hud.state.venue.id).toBe(PARIS.id);
     expect(m.options.bullion()).toBe(0);
-    expect(m.el().classList.contains('is-renewed')).toBe(true);
     expect(m.el().getAttribute('aria-label')).toContain('0%');
+  });
+
+  it('relays a plain read that finds the player on another venue, as another tab ascending', async () => {
+    const m = await mount();
+    player().lifetimeBullion = RIVIERA.bullionThreshold;
+    await alice.client.call('ascend', { body: { venueId: RIVIERA.id } });
+    m.options.refresh?.();
+    await vi.waitFor(() => {
+      expect(m.laid.map((fresh) => fresh.venue.id)).toEqual([PARIS.id]);
+    });
+    expect(m.laid[0]?.table.coins.map((coin) => coin.id).sort()).toEqual(tableCoinIds());
+  });
+
+  it('reports a relay that cannot boot or lay, without renewing the ring', async () => {
+    const failure = new Error('offline');
+    const relayFailures: unknown[] = [];
+    const m = await mount({
+      bootState: () => Promise.reject(failure),
+      onRelayFailed: (error) => relayFailures.push(error),
+    });
+    player().lifetimeBullion = RIVIERA.bullionThreshold;
+    const response = await alice.client.call('ascend', { body: { venueId: RIVIERA.id } });
+    m.options.onAscended(response);
+    await vi.waitFor(() => {
+      expect(relayFailures).toEqual([failure]);
+    });
+    expect(m.el().classList.contains('is-renewed')).toBe(false);
+
+    const broken = new Error('the sim did not start');
+    const laidFailures: unknown[] = [];
+    const n = await mount({
+      layTable: () => Promise.reject(broken),
+      onRelayFailed: (error) => laidFailures.push(error),
+    });
+    n.options.onAscended(response);
+    await vi.waitFor(() => {
+      expect(laidFailures).toEqual([broken]);
+    });
+    expect(n.el().classList.contains('is-renewed')).toBe(false);
   });
 
   it('retries the reload with back-off and reports only when every read failed', async () => {

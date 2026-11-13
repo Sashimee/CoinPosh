@@ -1787,6 +1787,35 @@ describe('mock server: state reports ascension progress and the Family Office', 
     expectConserved();
   });
 
+  it('opens the new venue on a fresh heap that a boot lays and pays, while the old coins stay gone', async () => {
+    const riviera = venues[0];
+    const old = (await alice.client.call('state', { query: { hydrate: 'boot' } })).table.coins;
+    const [oldCoin] = old;
+    if (oldCoin === undefined) throw new Error('Expected an opening heap before ascending.');
+    mockPlayer().lifetimeBullion = riviera.bullionThreshold;
+    await alice.client.call('ascend', { body: { venueId: riviera.id } });
+
+    const booted = await alice.client.call('state', { query: { hydrate: 'boot' } });
+    expect(booted.venue.id).not.toBe(riviera.id);
+    expect(booted.table.coins).toHaveLength(openingHeap.coins);
+    const ids = new Set(booted.table.coins.map((coin) => coin.id));
+    expect(old.some((coin) => ids.has(coin.id))).toBe(false);
+    expect(booted.table.layout?.coins).toEqual(
+      booted.table.coins.map((_, slot) => ({ kind: 'heapSlot', slot })),
+    );
+
+    const [fresh] = booted.table.coins;
+    if (fresh === undefined) throw new Error('Expected a fresh heap after ascending.');
+    time.advance(100);
+    expect(await claimAt([fallAt(fresh, time.tick())])).toEqual([
+      { status: 'accepted', credited: fresh.value, cascade: null, minted: null },
+    ]);
+    expect(await claimAt([fallAt(oldCoin, time.tick())])).toEqual([
+      { status: 'rejected', reason: 'already_claimed' },
+    ]);
+    expectConserved();
+  });
+
   it('refuses an ascension below the threshold the state reports', async () => {
     const riviera = venues[0];
     await state();
