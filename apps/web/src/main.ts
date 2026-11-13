@@ -1,4 +1,4 @@
-import type { CrateId, MintedCoin, StateResponse } from '@coinposh/shared';
+import type { MintedCoin, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
@@ -731,32 +731,47 @@ async function bootScene(
     return systems;
   };
 
+  interface Laid {
+    readonly state: StateResponse;
+    readonly layout: OpeningLayout;
+    readonly sim: StartedSim;
+    readonly scope: Scope;
+  }
+
   /**
    * "Play here": a fresh `hydrate=boot` takes the lease back and lays the table as the other
    * tab left it. The new sim is ready before the old run goes, so the table never blanks.
    */
-  const retake = async (): Promise<void> => {
-    const state = await boot.net.client.call('state', { query: { hydrate: 'boot' } });
-    const laid = openingLayout(state);
-    const scope = createScope();
-    let next: StartedSim;
-    try {
-      next = startSim(simApi, laid, scope);
-      await next.bridge.ready;
-    } catch (error) {
+  const retake = sessionModule.createRetake<StateResponse, Laid>({
+    simReady: () => warmSim(simApi),
+    boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
+    lay: async (state) => {
+      const laid = openingLayout(state);
+      const scope = createScope();
+      try {
+        const next = startSim(simApi, laid, scope);
+        await next.bridge.ready;
+        return { state, layout: laid, sim: next, scope };
+      } catch (error) {
+        scope.dispose();
+        throw error;
+      }
+    },
+    play: ({ state, layout: laid, sim: next, scope }) => {
+      run.scope.dispose();
+      run.scope = scope;
+      view.use(next.bridge, next.bridge);
+      probe.superseded = false;
+      boot.net.table.hydrate(state);
+      ui.setUpgradeLevels(state.venue.upgrades);
+      boot.vault.adopted(state);
+      view.use(play(next, state, laid), next.bridge);
+      markBoot('retaken');
+    },
+    discard: ({ scope }) => {
       scope.dispose();
-      throw error;
-    }
-    run.scope.dispose();
-    run.scope = scope;
-    view.use(next.bridge, next.bridge);
-    probe.superseded = false;
-    boot.net.table.hydrate(state);
-    ui.setUpgradeLevels(state.venue.upgrades);
-    boot.vault.adopted(state);
-    view.use(play(next, state, laid), next.bridge);
-    markBoot('retaken');
-  };
+    },
+  });
 
   const elsewhere = mountElsewhere(sessionModule, retake);
   const systems = play(sim, boot.state, layout);
@@ -789,6 +804,20 @@ function createScope(): Scope {
       for (const dispose of disposers.splice(0).reverse()) dispose();
     },
   };
+}
+
+/**
+ * Starts a throwaway sim worker and resolves once it is ready, so "Play here" knows this page
+ * can run a sim before it takes the table: the boot that hands over the layout also takes the
+ * lease, so the laid sim itself can only start after it.
+ */
+async function warmSim(simModule: typeof SimWorkerModule): Promise<void> {
+  const spare = simModule.createSimBridge({ seed: TABLE_SEED });
+  try {
+    await spare.ready;
+  } finally {
+    spare.dispose();
+  }
 }
 
 /** How the server laid the table, in every net mode; null without a table to lay. */
@@ -1158,14 +1187,12 @@ interface CrateWiring {
 /**
  * Vault Crates on the table: the server spawns them with drops, they ride the pusher to the lip,
  * and a fall is claimed, opened by the server and played as the unbox. Crates already on the
- * table when the session loads ride again from the chute. The reward card flies into the Vault
- * plaque, and the plaque re-reads the server wallet once the player collects. Crates are a bonus
- * on top of play, so a failure to mount them is logged, not fatal.
+ * table when the session loads resume their ride where the server stored them, or ride again
+ * from the chute when it stored no pose. The reward card flies into the Vault plaque, and the
+ * plaque re-reads the server wallet once the player collects. Crates are a bonus on top of play,
+ * so a failure to mount them is logged, not fatal.
  *
  * Returns the crates riding the table, for the table snapshot.
- * TODO(crates owner, #176): resume a `pose` placement where the server stored it once the controller
- * takes placements (CrateRide.restore); until then such a crate is left out of the snapshots,
- * since its pose from the chute would read to the server as a teleport.
  */
 function mountTableCrates(
   cratesApi: typeof CratesApi,
@@ -1236,11 +1263,11 @@ function mountTableCrates(
     for (const off of offs) off();
     crates.dispose();
   });
-  const unposed = new Set<CrateId>(
-    wiring.crates.filter(({ placement }) => placement.kind === 'pose').map(({ crate }) => crate.id),
+  crates.controller.adopt(
+    wiring.crates.map(({ crate }) => crate),
+    wiring.crates.map(({ placement }) => placement),
   );
-  crates.controller.adopt(wiring.crates.map(({ crate }) => crate));
-  return () => crates.controller.riding.filter((ride) => !unposed.has(ride.crate.id));
+  return () => crates.controller.riding;
 }
 
 /** Pushed after the bridge, so teardown stops the renderer before the sim it draws from. */

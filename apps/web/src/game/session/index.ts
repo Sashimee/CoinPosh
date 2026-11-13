@@ -29,3 +29,4 @@ export {
   sessionKey,
   type SessionKey,
 } from './i18n.ts';
+export { createRetake, type RetakeSteps } from './retake.ts';
