@@ -1,8 +1,26 @@
-import type { UpgradeLineDef } from '@coinposh/economy';
+import { coinTiers, rateEnvelopeDerivation, type UpgradeLineDef } from '@coinposh/economy';
 import { upgradeRows, type UpgradeRow, type Wallet } from '../../app/model.ts';
 import type { SettingsStorage } from '../../app/settings.ts';
 
 export const UPGRADE_NUDGE_STORAGE_KEY = 'coinposh.nudge.firstUpgrade.v1';
+
+/** How long the Vault must sit at or above a price without dropping before a tight buy is offered. */
+export const NUDGE_STEADY_MS = 1_500;
+
+/**
+ * How long a balance with headroom must hold it before the hint fires. The Vault the HUD sees
+ * is wallet plus buffered drops, and the two can land a few milliseconds apart, so a single
+ * reading can overstate it for a moment.
+ */
+export const NUDGE_CONFIRM_MS = 250;
+
+/**
+ * Coins above the price that fire the hint after only `NUDGE_CONFIRM_MS`: what the fastest
+ * honest tapping spends, one copper drop a tap, while the line is read, so BUY is still lit.
+ */
+export const NUDGE_HEADROOM_COINS =
+  Math.ceil((NUDGE_STEADY_MS / 1000) * rateEnvelopeDerivation.honestTapsPerSecond) *
+  coinTiers[0].value;
 
 export interface ActivationNavigator {
   readonly userActivation?: { readonly hasBeenActive: boolean } | undefined;
@@ -45,11 +63,42 @@ export function cheapestAffordable(rows: readonly UpgradeRow[]): UpgradeRow | nu
   return best;
 }
 
+function purse(wallet: Wallet, row: UpgradeRow): number {
+  return row.line.currency === 'coins' ? wallet.coins : wallet.goldBars;
+}
+
+/** Drops spend coins only, so a gold-bar price needs no cushion. */
+function headroomFor(row: UpgradeRow): number {
+  return row.line.currency === 'coins' ? NUDGE_HEADROOM_COINS : 0;
+}
+
+/** Whether the suggested line can still be bought with this wallet; false for an unknown line. */
+export function nudgeStillAffordable(
+  lines: readonly UpgradeLineDef[],
+  lineId: string,
+  snapshot: Wallet & Pick<NudgeSnapshot, 'upgradeLevels'>,
+): boolean {
+  const row = upgradeRows(lines, snapshot.upgradeLevels, snapshot).find(
+    (candidate) => candidate.line.id === lineId,
+  );
+  return row?.affordable ?? false;
+}
+
 export interface FirstUpgradeNudge {
   /** True once the hint has been offered or the player has bought anything; it never resets. */
   readonly retired: boolean;
-  /** Returns the line to suggest the one time the hint fires, and null on every other call. */
-  evaluate(snapshot: NudgeSnapshot): string | null;
+  /**
+   * When a tight but steady balance will be ripe, in the clock `evaluate` was given; evaluate
+   * again then even if the wallet has not changed. Null when nothing is waiting.
+   */
+  readonly wakeAt: number | null;
+  /**
+   * Returns the line to suggest the one time the hint fires, and null on every other call.
+   * It fires once the balance has cleared the price by `NUDGE_HEADROOM_COINS` for
+   * `NUDGE_CONFIRM_MS`, or has stayed affordable for `NUDGE_STEADY_MS` without dropping.
+   * `now` is in milliseconds.
+   */
+  evaluate(snapshot: NudgeSnapshot, now: number): string | null;
 }
 
 function readRetired(storage: SettingsStorage | null): boolean {
@@ -73,32 +122,65 @@ function writeRetired(storage: SettingsStorage | null): void {
 
 /**
  * The once-per-profile "your first upgrade is affordable" hint. It fires for a fresh profile
- * (no line above level 0) the first time something becomes affordable, and is retired for
- * good, across reloads, the moment it fires or the player buys anything.
+ * (no line above level 0) the first time something is affordable with room to spare, and is
+ * retired for good, across reloads, the moment it fires or the player buys anything.
  */
 export function createFirstUpgradeNudge(
   lines: readonly UpgradeLineDef[],
   storage: SettingsStorage | null,
 ): FirstUpgradeNudge {
   let retired = readRetired(storage);
+  let steady: {
+    lineId: string;
+    since: number;
+    balance: number;
+    roomySince: number | null;
+  } | null = null;
   const retire = (): void => {
     retired = true;
+    steady = null;
     writeRetired(storage);
+  };
+  const fire = (lineId: string): string => {
+    retire();
+    return lineId;
   };
   return {
     get retired() {
       return retired;
     },
-    evaluate(snapshot) {
-      if (retired || !snapshot.playable) return null;
+    get wakeAt() {
+      if (!steady) return null;
+      const settled = steady.since + NUDGE_STEADY_MS;
+      return steady.roomySince === null
+        ? settled
+        : Math.min(settled, steady.roomySince + NUDGE_CONFIRM_MS);
+    },
+    evaluate(snapshot, now) {
+      if (retired) return null;
+      if (!snapshot.playable) {
+        steady = null;
+        return null;
+      }
       if (Object.values(snapshot.upgradeLevels).some((level) => level > 0)) {
         retire();
         return null;
       }
       const pick = cheapestAffordable(upgradeRows(lines, snapshot.upgradeLevels, snapshot));
-      if (!pick) return null;
-      retire();
-      return pick.line.id;
+      if (!pick) {
+        steady = null;
+        return null;
+      }
+      const balance = purse(snapshot, pick);
+      const roomy = balance >= (pick.cost ?? Infinity) + headroomFor(pick);
+      if (steady?.lineId !== pick.line.id) {
+        steady = { lineId: pick.line.id, since: now, balance, roomySince: null };
+      }
+      if (balance < steady.balance) steady.since = now;
+      steady.balance = balance;
+      steady.roomySince = roomy ? (steady.roomySince ?? now) : null;
+      const confirmed = steady.roomySince !== null && now - steady.roomySince >= NUDGE_CONFIRM_MS;
+      return confirmed || now - steady.since >= NUDGE_STEADY_MS ? fire(pick.line.id) : null;
     },
   };
 }

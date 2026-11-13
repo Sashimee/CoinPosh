@@ -17,7 +17,7 @@ export interface TablePoint {
   readonly z: number;
 }
 
-export type DropBlockReason = 'frozen' | 'cooldown' | 'empty';
+export type DropBlockReason = 'frozen' | 'cooldown' | 'empty' | 'suspended';
 export type NudgeRejectReason = 'frozen' | 'offline' | 'server' | 'sim';
 export type PourGrade = 'perfect' | 'early' | 'late';
 export type ContactSurface = 'coin' | 'wood' | 'metal';
@@ -52,7 +52,10 @@ export interface GameEvents {
     readonly drops: number;
     readonly tick: Tick;
   };
-  /** A pour abandoned ungraded, as when a second finger turns it into a nudge. */
+  /**
+   * A pour abandoned ungraded, as when a second finger turns it into a nudge or a crate
+   * cinematic takes the screen.
+   */
   'pour:cancel': { readonly drops: number; readonly tick: Tick };
   nudge: {
     readonly direction: NudgeDirection;

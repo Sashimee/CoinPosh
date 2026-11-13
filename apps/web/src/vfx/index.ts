@@ -34,7 +34,7 @@ import {
   type ViewFrame,
 } from './emitters.ts';
 import { FlashPool } from './flash.ts';
-import { FUSION_FULL_FROM, FusionDirector } from './fusionJuice.ts';
+import { FUSION_MID_FROM, FusionDirector, type FusionTreatment } from './fusionJuice.ts';
 import { GlowEnvelope } from './glow.ts';
 import { Haptics, type HapticNavigator } from './haptics.ts';
 import { CASCADE_COLORS, HEIRLOOM_PRISM, RARITY_COLORS, VFX_COLORS, tierMetal } from './palette.ts';
@@ -54,9 +54,15 @@ export { HIT_STOP_MS, TimeWarp, type SlowMoOptions } from './time/timeWarp.ts';
 export { CameraKick, type CameraKickOptions } from './camera/cameraKick.ts';
 export {
   FUSION_FULL_FROM,
-  FUSION_KICK_GAP_MS,
+  FUSION_FULL_GAP_MS,
+  FUSION_FULL_PER_WINDOW,
+  FUSION_FULL_SPACING_MS,
+  FUSION_FULL_WINDOW_MS,
+  FUSION_MID_FROM,
+  FUSION_MID_GAP_MS,
   FusionDirector,
   type FusionJuice,
+  type FusionReason,
   type FusionTreatment,
 } from './fusionJuice.ts';
 export type { ContactSurface } from './emitters.ts';
@@ -190,8 +196,21 @@ export const COMPACT_FUSION = {
 } as const;
 
 /**
+ * A routine gold or platinum result's footprint, metres: brighter and richer than the
+ * compact flash, with a small double ring and a halo in the tier's metal, but no hit-stop or
+ * camera, so a gold-rich pour shimmers instead of judders (founder report #182). Its outer
+ * ring sits between the compact ring and the full one.
+ */
+export const MID_FUSION = {
+  flash: { core: 0.048, halo: 0.066 },
+  rings: { first: 0.042, second: 0.034 },
+  implosionDensity: 0.65,
+  glow: { peak: 0.26, release: 0.24 },
+} as const;
+
+/**
  * The full set piece's size, metres, seconds and ms. Kept well under a table-wide burst so
- * even the rare gold-or-better beat reads as a crisp accent (founder report #182): on a
+ * even the rare milestone beat reads as a crisp accent (founder report #182): on a
  * portrait phone the ring and halo stay under 40 % of the screen width, since they land in
  * the same frame as the Chic stamp and the Cascade card, yet the ring is twice the compact one.
  */
@@ -202,6 +221,17 @@ export const FULL_FUSION = {
   glow: { peak: 0.7, release: 0.35 },
   kick: { shake: 0.18, fov: 1.4 },
 } as const;
+
+const IMPLOSION_DENSITY: Readonly<Record<FusionTreatment, number>> = {
+  full: 1,
+  mid: MID_FUSION.implosionDensity,
+  compact: COMPACT_FUSION.implosionDensity,
+};
+const IMPLOSION_GLOW: Readonly<Record<FusionTreatment, number>> = {
+  full: 0.15,
+  mid: 0.09,
+  compact: 0.05,
+};
 
 interface ActiveTrail {
   readonly tier: CoinTier;
@@ -390,18 +420,21 @@ export class Vfx {
 
   /**
    * Three coins sucked into a white-gold flash, tiered by how rare the moment is (see
-   * `FusionDirector`). Full, for at most one gold-or-better result per 3 s: the frame
-   * tightens (FOV in) as streaks spiral to the centre, then hit-stop, a flash, a double
-   * shockwave ring, a spark corona, shake + FOV kick, a bloom surge and a haptic thud.
-   * Compact, for every copper and silver one and the rest: the same spiral, then a warm
-   * flash and a crown of sparks about three coins wide, a small ring, a bloom nudge and a
-   * tap; no hit-stop or camera, so a busy table does not wash out or judder.
+   * `FusionDirector`). Full, for the first fusion of the session, the first of each tier and
+   * diamond and up (at most one rare one per 20 s): the frame tightens (FOV in) as streaks
+   * spiral to the centre, then hit-stop, a flash, a double shockwave ring, a spark corona,
+   * shake + FOV kick, a bloom surge and a haptic thud. Mid, for routine gold and platinum: a
+   * denser spiral, then a brighter flash haloed in the tier's metal, a small double ring, a
+   * double crown of sparks, a bloom swell and a tap; no hit-stop or camera. Compact, for
+   * routine copper and silver and the rest: a warm flash and a crown of sparks about three
+   * coins wide, a small ring, a bloom nudge and a tap.
    */
   fusion(options: FusionOptions): void {
     this.assertLive();
     if (options.sources.length === 0) throw new RangeError('fusion needs at least one source coin');
     const juice = this.fusionDirector.select(options.tier, this.now());
-    const full = juice.treatment === 'full';
+    const { treatment } = juice;
+    const full = treatment === 'full';
     const center = options.center.clone();
     const lease = this.attractors.lease(center.x, center.y, center.z);
     fusionImplosion(
@@ -410,17 +443,18 @@ export class Vfx {
       vec(center),
       lease.slot,
       options.tier,
-      full ? 1 : COMPACT_FUSION.implosionDensity,
+      IMPLOSION_DENSITY[treatment],
     );
     if (full) this.kick.kick({ fov: -0.5, dolly: 0.003 });
     this.glowEnvelope.add({
-      peak: full ? 0.15 : 0.05,
+      peak: IMPLOSION_GLOW[treatment],
       attack: FUSION_TIMING.implode,
       release: 0.05,
     });
     this.haptics.pulse('tick');
     this.timeline.at(FUSION_TIMING.implode, () => {
-      if (full) this.fusionImpact(center, options.tier);
+      if (treatment === 'full') this.fusionImpact(center, options.tier);
+      else if (treatment === 'mid') this.fusionMidImpact(center, options.tier);
       else this.fusionCompactImpact(center, options.tier);
       options.onImpact?.();
     });
@@ -684,6 +718,40 @@ export class Vfx {
     this.haptics.pulse('thud');
   }
 
+  private fusionMidImpact(center: Vector3, tier: CoinTier): void {
+    const { flash, rings, glow } = MID_FUSION;
+    this.flashes.spawn(center, {
+      color: VFX_COLORS.whiteGold,
+      size: flash.core,
+      intensity: 3.2,
+      duration: 0.22,
+    });
+    this.flashes.spawn(center, {
+      color: fusionHalo(tier),
+      size: flash.halo,
+      intensity: 1.3,
+      duration: 0.32,
+      delay: 0.025,
+    });
+    this.shockwaves.spawn(center, {
+      color: VFX_COLORS.whiteGold,
+      radius: rings.first,
+      intensity: 1.8,
+      duration: 0.34,
+    });
+    this.shockwaves.spawn(center, {
+      color: fusionHalo(tier),
+      radius: rings.second,
+      intensity: 1.2,
+      duration: 0.36,
+      delay: FUSION_TIMING.ringGap,
+    });
+    fusionSpark(this.context(this.sparks), vec(center), tier);
+    fusionSpark(this.context(this.sparks), vec(center), tier);
+    this.glowEnvelope.add({ peak: glow.peak, attack: 0.03, release: glow.release });
+    this.haptics.pulse('tap');
+  }
+
   private fusionCompactImpact(center: Vector3, tier: CoinTier): void {
     const { flash } = COMPACT_FUSION;
     this.flashes.spawn(center, {
@@ -798,7 +866,7 @@ export class Vfx {
  */
 function fusionHalo(tier: CoinTier): string {
   if (tier === 'heirloom') return HEIRLOOM_PRISM[0];
-  return COIN_TIERS.indexOf(tier) >= COIN_TIERS.indexOf(FUSION_FULL_FROM)
+  return COIN_TIERS.indexOf(tier) >= COIN_TIERS.indexOf(FUSION_MID_FROM)
     ? tierMetal(tier)
     : VFX_COLORS.champagne;
 }

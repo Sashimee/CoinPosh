@@ -119,6 +119,11 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-92.07 | blocked(review: posed crates restart at the chute, needs CrateController.adopt placements #176; retake untested and takes lease before sim ready) | task/T-92.07 (fc0bc94) | Waits on #176 (crates owner) or an amended criterion (#92) |
 | P-376 | done | 6f34af3 | Fusion VFX toned down for #182; review fixes in task/P-376-fix 7f7c0e1 (full ring ≤ 31 % of portrait width) |
 | P-377 | done | 591561a | Audio lifecycle hardened for #184; review fixes in task/P-377-fix a28c6db |
+| P-401 | done | 3170dcc | Tier fusion set pieces: full only for first-of-session, first-of-tier and diamond+, mid variant for routine gold/platinum, full cap ~1 per 20 s (#182); pnpm check green after merge |
+| P-396 | done | task/P-396 (merge f813ac8) | A held pour is cancelled when the crate cinematic starts: new cinematicPause.ts, gestures/surface cancel hook, core/create/events/overlay wiring (1093df7); pnpm check green after merge |
+| P-398 | done | task/P-398 (merge 262005f) | First-upgrade nudge fires only with headroom and folds when unaffordable: upgradeNudge.ts, upgradeNudgeTrigger.ts and tests (7834a34); pnpm check green after merge |
+| P-397 | done | task/P-397 (merge 426f29a) | Vault odometer glow unclipped so digits no longer sit in grey boxes: styles.css odometer rules plus odometer.test.ts (79ac3af); pnpm check green after merge |
+| P-375 | blocked(review: SIM_VERSION 9 bump leaves packages/economy/sim/ladder.test.ts red on a cold cache (ladderMeasurement simVersion 8, fusionTuning lacks streamTicks/streamBurst); needs economy owner ladderRuns rerun (P-402) in the same integration; fusionRate.test.ts deep-imports economy/sim) | task/P-375 (da6084a, not merged) | Do not merge alone: land P-402 with or before it; export ladder eval as '@coinposh/economy/sim' |
 | T-92.08 | done | task/T-92.08 (merge b74b73a) | Session lease on every table op: PlayerDO/routes/table.ts check the lease, stale sessions get session_superseded (05b7edf); server tests updated to send the lease; pnpm check green after merge; land T-92.05 before deploy (#85) |
 | T-92.09 | todo | | Waits on T-92.07, T-92.08, T-1.17 (#92) |
 | T-92.10 | done | task/T-92.10 (merge 82654b5) | Crate ride snapshot and restore on CRATE_RIDE bounds (ride.ts, view.ts, crates.test.ts; daf58bf); pnpm check green after merge |
@@ -345,3 +350,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 29 · 2026-11-13 · P-364 T-92.07 P-352 P-362 P-365 · merged P-364 (827b237), P-352 (d99e2ce), P-362 (94f7fef), P-365 (e027599); 1 rejected (T-92.07)
 - wave 30 · 2026-11-13 · T-1.17 P-155 P-225 P-223 P-224 · merged P-155 (6751fa6), P-224 (d733e52), P-225 (ad2ce41), T-1.17 (02b27de), P-223 (5c9600b); 0 rejected
 - wave 31 · 2026-11-13 · T-3.04 P-181 P-376 P-377 · merged T-3.04 (33f6a67), P-181 (be2ae13); 2 rejected (P-376, P-377)
+- wave 32 · 2026-11-13 · P-375 P-396 P-401 P-397 P-398 · merged P-401 (3170dcc), P-396 (f813ac8), P-398 (262005f), P-397 (426f29a); 1 rejected (P-375)

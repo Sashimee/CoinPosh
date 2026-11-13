@@ -78,6 +78,49 @@ describe('GestureRecognizer: hold to pour', () => {
   });
 });
 
+describe('GestureRecognizer: interrupted by a cinematic', () => {
+  it('cancels a running pour, and the held finger neither pours again nor drops on lift', () => {
+    const g = new GestureRecognizer(CONFIG);
+    g.down(1, 120, 0, 0);
+    expect(g.tick(300)).toEqual([{ kind: 'pourStart', x: 120 }]);
+    expect(g.interrupt()).toEqual([{ kind: 'pourCancel' }]);
+    expect(g.pouring).toBe(false);
+    expect(g.active).toBe(true);
+    expect(g.live).toBe(false);
+    expect(g.move(1, 180, 0, 400)).toEqual([]);
+    expect(g.tick(5_000)).toEqual([]);
+    expect(g.up(1, 180, 0, 5_100)).toEqual([]);
+    expect(g.active).toBe(false);
+  });
+
+  it('a press that has not become a pour yet is spent too, so lifting it drops nothing', () => {
+    const g = new GestureRecognizer(CONFIG);
+    g.down(1, 60, 0, 0);
+    expect(g.interrupt()).toEqual([]);
+    expect(g.tick(1_000)).toEqual([]);
+    expect(g.up(1, 60, 0, 1_100)).toEqual([]);
+  });
+
+  it('a fresh press after every finger lifts aims, drops and pours as usual', () => {
+    const g = new GestureRecognizer(CONFIG);
+    g.down(1, 0, 0, 0);
+    g.tick(300);
+    g.interrupt();
+    g.up(1, 0, 0, 400);
+    expect(g.down(2, 90, 0, 500)).toEqual([{ kind: 'aim', x: 90 }]);
+    expect(g.live).toBe(true);
+    expect(g.tick(800)).toEqual([{ kind: 'pourStart', x: 90 }]);
+    expect(g.up(2, 90, 0, 900)).toEqual([{ kind: 'pourEnd', x: 90 }]);
+  });
+
+  it('with no finger down it does nothing', () => {
+    const g = new GestureRecognizer(CONFIG);
+    expect(g.interrupt()).toEqual([]);
+    expect(g.down(1, 10, 0, 0)).toEqual([{ kind: 'aim', x: 10 }]);
+    expect(g.up(1, 10, 0, 50)).toEqual([{ kind: 'drop', x: 10 }]);
+  });
+});
+
 describe('GestureRecognizer: two-finger nudge', () => {
   const swipe = (dx: number, dy: number, ms: number) => {
     const g = new GestureRecognizer(CONFIG);
