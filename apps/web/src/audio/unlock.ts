@@ -191,6 +191,7 @@ export function manageAudioLifecycle(
     if (running()) {
       unlock.disarm();
       markUnlocked();
+      reconcile(false);
       return;
     }
     armGesture();

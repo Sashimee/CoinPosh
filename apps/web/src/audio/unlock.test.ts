@@ -509,6 +509,56 @@ describe('manageAudioLifecycle tab-switch races (#184)', () => {
     expect(onUnlocked).toHaveBeenCalledOnce();
   });
 
+  it('suspends when the first tap resume settles after the tab was hidden', async () => {
+    const { ctx, doc, onUnlocked, tap } = setup();
+    ctx.deferred = true;
+    await tap();
+    doc.show('hidden');
+    await ctx.settle();
+    expect(onUnlocked).toHaveBeenCalledOnce();
+    expect(ctx.state).toBe('suspended');
+    doc.show('visible');
+    await ctx.settle();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('suspends when a re-tap after an interruption settles after the tab was hidden', async () => {
+    const { ctx, doc, tap } = await unlockedSetup();
+    ctx.set('interrupted');
+    ctx.deferred = true;
+    await tap();
+    doc.show('hidden');
+    await ctx.settle();
+    expect(ctx.state).toBe('suspended');
+    doc.show('visible');
+    await ctx.settle();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('suspends when the system brings the context back to running on a hidden page', async () => {
+    const { ctx, doc } = await unlockedSetup();
+    ctx.set('interrupted');
+    doc.show('hidden');
+    await flush();
+    ctx.set('running');
+    await flush();
+    expect(ctx.state).toBe('suspended');
+    doc.show('visible');
+    await flush();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('suspends when the system brings the context back to running after pagehide', async () => {
+    const { ctx, fire } = await unlockedSetup();
+    ctx.set('interrupted');
+    await fire('pagehide');
+    ctx.set('running');
+    await flush();
+    expect(ctx.state).toBe('suspended');
+    await fire('pageshow');
+    expect(ctx.state).toBe('running');
+  });
+
   it('drops the gesture listeners once a show resume gets the context running', async () => {
     const { ctx, doc, tap } = await unlockedSetup();
     doc.show('hidden');
