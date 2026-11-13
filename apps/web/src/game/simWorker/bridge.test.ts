@@ -284,7 +284,9 @@ describe.each(['transfer', 'shared'] as const)('SimBridge over the %s transport'
     const send = async (input: SimInput, ticks: number): Promise<void> => {
       log.push({ tick: bridge.stats.tick, inputs: [input] });
       if (input.kind === 'nudge') bridge.nudge(input.direction);
-      else bridge.drop(input.xMm, (input.tier ?? 'copper') as CoinTierId);
+      else if (input.kind === 'dropCoin')
+        bridge.drop(input.xMm, (input.tier ?? 'copper') as CoinTierId);
+      else throw new Error(`unexpected input kind in replay log: ${input.kind}`);
       await settle();
       await run(ticks);
     };
