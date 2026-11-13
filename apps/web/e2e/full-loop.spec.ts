@@ -329,6 +329,7 @@ test.describe('full loop in Demo Mode at 390x844 (T-1.18)', () => {
       await reviewShot(page, 'full-loop-04-upgrade-ready');
 
       const sheet = await openSheet(page, 'upgrades');
+      await expect(sheet.getByTestId('upgrades-global')).toHaveCount(0);
       const lineId = CHEAPEST_COIN_LINE.id;
       const bought = sheet.locator(`.cp-upgrade[data-line="${lineId}"]`);
       await expect(bought, 'the cheapest coin line is lit').toHaveClass(/is-affordable/);

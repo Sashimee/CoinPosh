@@ -391,6 +391,7 @@ export function createHud(ctx: UiContext): Hud {
     createUpgradeNudge(ctx, {
       trigger: upgradesButton,
       storage: browserStorage(),
+      lines: UPGRADE_SHEET_LINES,
       playable: isPlayable,
       openUpgrades() {
         setPanel('upgrades');

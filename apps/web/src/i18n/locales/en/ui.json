@@ -69,8 +69,6 @@
     "title": "Upgrades",
     "subtitle": "Refine the table, one indulgence at a time.",
     "venueSection": "The Yacht",
-    "globalSection": "The Family Office",
-    "globalHint": "Paid in gold bars. Kept through every Ascension.",
     "level": "Lv {{level}}",
     "levelAria": "Level {{level}} of {{max}}",
     "maxed": "Maxed",
