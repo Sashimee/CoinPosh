@@ -117,7 +117,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-92.05 | done | task/T-92.05 (merge 13cf378) | Net layer: snapshot op, SnapshotCadence (capture copied), keepalive pagehide upload, drain before boot, Demo Mode mock (fix round 57698e2); pnpm check green after merge; boot wiring left to T-92.07 (#92) |
 | T-92.06 | done | task/T-92.06 (merge 4bd97bb) | Worker bridge restore init and snapshot (bridge.ts, runtime.ts, protocol.ts, restore.ts, sim-api.ts, tests; 9c5a543); pnpm check green after merge |
 | T-92.07-p1 | done | task/T-92.07-p1 (merge c27f83d) | Crate controller adopts stored placements and resumes posed crates (apps/web/src/game/crates/**, 39f71f7) (#176); main.ts wiring queued as P-421 for T-92.07-p2; pnpm check green after merge |
-| T-92.07 | in_progress | task/T-92.07 (fc0bc94) | Parts T-92.07-p1, T-92.07-p2. Parts merged: T-92.07-p1 (merge c27f83d); waiting on T-92.07-p2 (#92, #176) |
+| T-92.07-p2 | done | task/T-92.07-p2 (merge b8f0d7a) | Boot glue re-gated on crate adopt (placements passed to CrateController.adopt, P-421), session retake/capture/overlay/triggers under apps/web/src/game/session/**, retake lease waits for a ready sim (d9f7ce8); pnpm check green after merge |
+| T-92.07 | done | task/T-92.07 (fc0bc94) | Parts T-92.07-p1, T-92.07-p2. Parts merged: T-92.07-p1 (merge c27f83d), T-92.07-p2 (merge b8f0d7a) (#92, #176) |
 | P-376 | done | 6f34af3 | Fusion VFX toned down for #182; review fixes in task/P-376-fix 7f7c0e1 (full ring ≤ 31 % of portrait width) |
 | P-377 | done | 591561a | Audio lifecycle hardened for #184; review fixes in task/P-377-fix a28c6db |
 | P-401 | done | 3170dcc | Tier fusion set pieces: full only for first-of-session, first-of-tier and diamond+, mid variant for routine gold/platinum, full cap ~1 per 20 s (#182); pnpm check green after merge |
