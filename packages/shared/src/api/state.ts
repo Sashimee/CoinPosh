@@ -26,6 +26,9 @@ export const VenueStateSchema = z.object({
   unlocked: z.array(VenueIdSchema).min(1),
   upgrades: UpgradeLevelsSchema,
   loadout: z.array(CharmSlotSchema),
+  /** Bullion earned since the last ascension; drives the ascension progress figure. */
+  // TODO(lead-architect): make required once P-380 and P-385 land
+  lifetimeBullion: AmountSchema.optional(),
 });
 export type VenueState = z.infer<typeof VenueStateSchema>;
 
@@ -54,5 +57,8 @@ export const StateResponseSchema = z.object({
   inventory: InventorySchema,
   offline: OfflineSettlementSchema.nullable(),
   fair: ActiveSeedSchema,
+  /** Global Family Office line levels, which survive ascension unlike venue upgrades. */
+  // TODO(lead-architect): make required once P-380 and P-385 land
+  familyOffice: UpgradeLevelsSchema.optional(),
 });
 export type StateResponse = z.infer<typeof StateResponseSchema>;
