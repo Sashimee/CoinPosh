@@ -227,6 +227,18 @@ describe('bindUpgrades', () => {
     ]);
   });
 
+  it('buys for the venue being played when given a getter, so an ascension moves purchases', () => {
+    const h = harness(1_000_000);
+    const { api, calls } = deferredApi();
+    const paris = endpoints.upgradesBuy.body.shape.venueId.parse('salonDeParis');
+    let playing = VENUE;
+    bindUpgrades({ ui: h.ui, api, venueId: () => playing, events: h.events });
+    h.request('dropRate', 0);
+    playing = paris;
+    h.request('dropRate', 0);
+    expect(calls.map((call) => call.body.venueId)).toEqual([VENUE, paris]);
+  });
+
   it('reports unexpected errors and ignores answers that arrive after dispose', async () => {
     const h = harness(1000);
     const { api, pending } = deferredApi();

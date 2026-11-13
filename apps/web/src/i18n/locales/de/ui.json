@@ -69,8 +69,6 @@
     "title": "Upgrades",
     "subtitle": "Verfeinern Sie den Tisch, Luxus für Luxus.",
     "venueSection": "Die Yacht",
-    "globalSection": "Das Family Office",
-    "globalHint": "Bezahlt in Goldbarren. Bleibt bei jedem Aufstieg erhalten.",
     "level": "St. {{level}}",
     "levelAria": "Stufe {{level}} von {{max}}",
     "maxed": "Max.",

@@ -8,7 +8,7 @@ import {
   type UpgradeLineDef,
   type VenueDef,
 } from '@coinposh/economy';
-import { VenueIdSchema, type VenueId } from '@coinposh/shared';
+import { VenueIdSchema, type VenueId, type VenueState } from '@coinposh/shared';
 
 export interface AscensionProgress {
   readonly venueId: VenueId;
@@ -54,6 +54,11 @@ export function ascensionProgress(venueId: VenueId, bullion: number | null): Asc
     estimatedGoldBars:
       known === null ? null : ascensionGoldBars(known, venue.bullionThreshold, ascension),
   };
+}
+
+/** The server's Bullion since the last ascension; null (the unknown path) while it reports none. */
+export function lifetimeBullionOf(venue: Pick<VenueState, 'lifetimeBullion'>): number | null {
+  return venue.lifetimeBullion ?? null;
 }
 
 /** Only an explicit "not yet" from the numbers blocks the hold; an unknown lets the server decide. */

@@ -58,6 +58,8 @@ export interface AscensionScreenOptions {
 
 export interface AscensionScreen {
   readonly el: HTMLElement;
+  /** A fresher lifetime Bullion figure from the server; null when the read failed. */
+  setBullion(bullion: number | null): void;
   dispose(): void;
 }
 
@@ -93,7 +95,7 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   const venueName = (id: VenueId) => ui.i18n.t(venueKey(id));
   const int = (value: number) => formatInteger(value, ui.i18n.language);
   const play = (sound: ImpactEvent) => options.audio()?.playImpact(sound);
-  const progress = ascensionProgress(venueId, options.bullion);
+  let progress = ascensionProgress(venueId, options.bullion);
 
   const title = h('h2', { class: 'cp-ascension-title', attrs: { id: 'cp-ascension-title' } });
   const subtitle = h('p', { class: 'cp-ascension-subtitle' });
@@ -111,7 +113,6 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   const fill = ring('cp-ascension-ring-fill');
   const hold = ring('cp-ascension-ring-hold');
   svg.append(track, fill, hold);
-  setRing(fill, progress.fraction);
   setRing(hold, 0);
   const laurel = h('span', { class: 'cp-ascension-laurel' }, icon('laurel'));
   const dial = h('div', { class: 'cp-ascension-dial' }, svg, laurel);
@@ -126,7 +127,6 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     estimateValue,
     provisional,
   );
-  estimate.hidden = progress.estimatedGoldBars === null;
 
   const resetsTitle = h('dt');
   const resetsList = h('dd');
@@ -195,17 +195,17 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   ctx.own(loc.text(title, () => t('title')));
   ctx.own(loc.text(subtitle, () => t('subtitle', { venue: venueName(venueId) })));
   ctx.own(loc.attr(close, 'aria-label', () => t('close')));
-  ctx.own(
-    loc.text(progressText, () =>
+  const renderProgress = () => {
+    setRing(fill, progress.fraction);
+    progressText.textContent =
       progress.bullion === null
         ? t('progressUnknown')
-        : t('progress', { current: int(progress.bullion), target: int(progress.threshold) }),
-    ),
-  );
+        : t('progress', { current: int(progress.bullion), target: int(progress.threshold) });
+    estimate.hidden = progress.estimatedGoldBars === null;
+    estimateValue.textContent = t('estimate', { amount: int(progress.estimatedGoldBars ?? 0) });
+  };
+  ctx.own(loc.bind(renderProgress));
   ctx.own(loc.text(estimateLabel, () => t('estimateLabel')));
-  ctx.own(
-    loc.text(estimateValue, () => t('estimate', { amount: int(progress.estimatedGoldBars ?? 0) })),
-  );
   ctx.own(loc.text(provisional, () => t('provisional')));
   ctx.own(loc.text(resetsTitle, () => t('resets')));
   ctx.own(loc.text(resetsList, () => t('resetsList')));
@@ -222,8 +222,8 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   ctx.own(loc.text(officeSubtitle, () => t('familyOfficeSubtitle')));
 
   type HoldState = 'idle' | 'holding' | 'sending' | 'blocked';
-  const allowed = canRequestAscension(progress);
-  let state: HoldState = allowed ? 'idle' : 'blocked';
+  let state: HoldState = canRequestAscension(progress) ? 'idle' : 'blocked';
+  let blockedHint = '';
   let heldMs = 0;
   let lastTick = 0;
   let stopHold: (() => void) | null = null;
@@ -238,10 +238,11 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     holdLabel.textContent =
       state === 'holding' ? t('holding') : state === 'sending' ? t('sending') : t('hold');
     if (state === 'blocked' && status.textContent === '') {
-      status.textContent = t('notReadyHint', {
+      blockedHint = t('notReadyHint', {
         venue: venueName(venueId),
         target: int(progress.threshold),
       });
+      status.textContent = blockedHint;
     }
   };
   ctx.own(loc.bind(renderHold));
@@ -462,6 +463,19 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     }),
   );
 
+  const setBullion = (bullion: number | null) => {
+    if (closed) return;
+    const wasReady = progress.ready === true;
+    progress = ascensionProgress(venueId, bullion);
+    renderProgress();
+    if (state === 'idle' || state === 'blocked') {
+      state = canRequestAscension(progress) ? 'idle' : 'blocked';
+      if (state === 'idle' && status.textContent === blockedHint) status.textContent = '';
+      renderHold();
+    }
+    if (!reduced && !wasReady && progress.ready === true) restartAnimation(dial, 'is-ready');
+  };
+
   options.host.append(root);
   feedback(ctx, 'open');
   root.tabIndex = -1;
@@ -479,5 +493,5 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     root.remove();
   }
 
-  return { el: root, dispose };
+  return { el: root, setBullion, dispose };
 }

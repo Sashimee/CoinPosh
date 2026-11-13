@@ -3,7 +3,13 @@ import { upgradeLines } from '@coinposh/economy';
 import { describe, expect, it } from 'vitest';
 import { upgradeRow } from '../../app/model.ts';
 import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../../i18n/index.ts';
-import { fitScale, upgradeRowCopy, type UpgradeRowCopy } from './upgradesPanel.ts';
+import {
+  fitScale,
+  UPGRADE_SHEET_LINES,
+  UPGRADE_SHEET_SECTIONS,
+  upgradeRowCopy,
+  type UpgradeRowCopy,
+} from './upgradesPanel.ts';
 
 const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8').replace(
   /\/\*[\s\S]*?\*\//g,
@@ -194,5 +200,18 @@ describe('upgradeRowCopy', () => {
       buyLabel: 'Maxed',
       price: '',
     });
+  });
+});
+
+describe('upgrades sheet sections', () => {
+  it('renders no Family Office (upgrades-global) section', () => {
+    expect(UPGRADE_SHEET_SECTIONS.map((section) => section.id)).toEqual(['venue']);
+  });
+
+  it('lists every venue line and no Gold Bar line', () => {
+    expect(upgradeLines.some((line) => line.scope === 'global')).toBe(true);
+    const venueIds = upgradeLines.filter((line) => line.scope === 'venue').map((line) => line.id);
+    expect(UPGRADE_SHEET_LINES.map((line) => line.id)).toEqual(venueIds);
+    expect(UPGRADE_SHEET_LINES.every((line) => line.currency === 'coins')).toBe(true);
   });
 });
