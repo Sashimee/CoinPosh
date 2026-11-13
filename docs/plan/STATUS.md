@@ -102,7 +102,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-348 | done | task/P-348 (merge 577c6ea) | Certified Fair chip is a 44 px button showing the roll nonce and opens an odds + provably-fair sheet (new odds.ts, oddsSheet.ts; revealCard.ts, crates.css, EN/FR/DE i18n): per-rarity shares from @coinposh/economy, pity outlook, commitment hash, nonce, verify via packages/shared fair once the seed is revealed; odds.test.ts pins odds and per-roll nonce (f9ecd15); pnpm check green after merge; revealedSeeds wiring (mount.ts), odds-sheet event and ROADMAP owns note queued in POLISH.md |
 | P-350 | done | task/P-350 (merge 36062bc) | Upgrade rows keep their height across a purchase (upgradesPanel.ts, styles.css; new upgradesPanel.test.ts); pnpm check green after merge |
 | T-92.05 | todo | | Waits on T-92.01, T-92.02 (#92) |
-| T-92.06 | todo | | Waits on T-92.02 (#92) |
+| T-92.06 | done | task/T-92.06 (merge 4bd97bb) | Worker bridge restore init and snapshot (bridge.ts, runtime.ts, protocol.ts, restore.ts, sim-api.ts, tests; 9c5a543); pnpm check green after merge |
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
 | T-92.08 | todo | | Waits on T-92.04 (#85) |
 | T-92.09 | todo | | Waits on T-92.07, T-92.08, T-1.17 (#92) |
