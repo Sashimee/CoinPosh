@@ -1,4 +1,4 @@
-import type { MintedCoin, StateResponse } from '@coinposh/shared';
+import type { MintedCoin, Roll, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
@@ -38,6 +38,13 @@ import {
   holdTierVoice,
   type AnnouncementHold,
 } from './ui/components/announcementHold.ts';
+import {
+  PAYOUT_FLIGHT_MS,
+  PAYOUT_HOLD_CAP_MS,
+  PAYOUT_STAGGER_MS,
+  walletPayoutFor,
+  type WalletPayout,
+} from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
@@ -518,6 +525,11 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
   teardown.push(
     table.subscribe((event) => {
       if (event.type === 'dropSettled') refillValue = event.coin.value;
+      // A claim settles with the new wallet while its estimate is still provisional in the
+      // outbox; the balance event once it leaves is the true sum. Refreshing here counts the
+      // credit twice, and a Vault hold absorbs that phantom rise, so a crate's coin line
+      // would come up short.
+      if (event.type === 'claimSettled') return;
       if (awaitingSync && event.type === 'status' && event.status === 'synced') {
         forgetBuffer();
         return;
@@ -706,10 +718,14 @@ async function bootScene(
 
   const play = (started: StartedSim, state: StateResponse, laid: OpeningLayout): GameSystems => {
     const { scope } = run;
-    const systems = startPlay(systemsModule, stage, started, boot, state, vfx, scope);
+    const payouts = orderCratePayouts(walletPayoutFor(ui.store));
+    scope.add(() => {
+      payouts.dispose();
+    });
+    const systems = startPlay(systemsModule, stage, started, boot, state, vfx, payouts, scope);
     const rides = mountTableCrates(
       cratesApi,
-      { stage, venue, bridge: started.bridge, boot, systems, vfx, crates: laid.crates },
+      { stage, venue, bridge: started.bridge, boot, systems, vfx, crates: laid.crates, payouts },
       scope,
     );
     wireTableSession(
@@ -1054,6 +1070,7 @@ function startPlay(
   boot: NetBoot,
   state: StateResponse,
   vfx: Vfx | null,
+  payouts: CratePayoutOrder,
   scope: Scope,
 ): GameSystems {
   // TODO(ui owner): take the number-pop target from a UiApp vault anchor instead of the DOM.
@@ -1078,12 +1095,13 @@ function startPlay(
   scope.add(comboAudio.dispose);
   scope.add(
     systemsModule.wireFeedback(systems.events, {
-      vfx: () => vfx,
+      vfx: payouts.feedbackVfx(() => vfx),
       audio: comboAudio.port,
       vault,
     }),
   );
   systems.hydrate(state);
+  scope.add(payouts.bindTable(systems.events));
   const { counts } = probe;
   const offs = [
     systems.events.on('drop:requested', ({ coin, poured }) => {
@@ -1174,6 +1192,210 @@ function afterCrateRevealExit(host: HTMLElement, done: () => void): () => void {
   return stop;
 }
 
+/** Air between a crate's coin line landing in the Vault and the table's held falls following it. */
+const FALLS_AFTER_CRATE_MS = 450;
+/** The held falls' pops normally land within a second or two; past this the Vault shows them. */
+const HELD_FALL_POPS_CAP_MS = 4000;
+
+type DeferredPop = Parameters<SystemsModule.FeedbackVfx['numberPop']>;
+
+interface FallBatch {
+  readonly id: string;
+  readonly pops: DeferredPop[];
+}
+
+/** Keeps the table's falls out of a crate's payout, so the Vault rises by the card first. */
+interface CratePayoutOrder {
+  /** The feedback effects, with the number pops of held falls kept back until they are paid. */
+  feedbackVfx(vfx: () => Vfx | null): () => SystemsModule.FeedbackVfx | null;
+  bindTable(events: GameSystems['events']): () => void;
+  opened(crateId: string): void;
+  /** The player collected; the card's coin line reaches the Vault in `landsInMs`. */
+  collected(crateId: string, landsInMs: number): void;
+  /** The crate left without a collect, or every crate cinematic is over. */
+  gone(crateId: string | null): void;
+  dispose(): void;
+}
+
+/**
+ * While a crate is open, and until its coin line has landed in the Vault, a table fall's
+ * credit is held off the Vault and its number pop is kept back. Collect then rolls the Vault by
+ * exactly the card's coin line, and the falls follow FALLS_AFTER_CRATE_MS after the frame that
+ * shows it, as their own pops, each landing ticking the Vault. Reduced motion keeps the order: the coin line shows at
+ * once and the falls' pops fade in place. A front fall's provisional estimate is held from its
+ * claim and the rest of its credit when the server pays it.
+ */
+function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
+  const unpaid = new Map<string, ReturnType<typeof setTimeout>>();
+  const landing = new Map<string, () => void>();
+  const estimates = new Map<MintedCoin['id'], number>();
+  const releasing = new Set<() => void>();
+  let holdUntil = 0;
+  let batch: FallBatch | null = null;
+  let batches = 0;
+  let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  let effects: () => Vfx | null = () => null;
+
+  const active = (): boolean =>
+    unpaid.size > 0 || landing.size > 0 || performance.now() < holdUntil;
+  const current = (): FallBatch => {
+    if (batch) return batch;
+    batches += 1;
+    batch = { id: `table-falls-${String(batches)}`, pops: [] };
+    return batch;
+  };
+
+  const pay = (paid: FallBatch): void => {
+    const vfx = effects();
+    if (!vfx || paid.pops.length === 0) {
+      payout.release(paid.id);
+      return;
+    }
+    let landed = 0;
+    const finish = (): void => {
+      if (!releasing.delete(finish)) return;
+      clearTimeout(cap);
+      payout.release(paid.id);
+    };
+    const cap = setTimeout(finish, HELD_FALL_POPS_CAP_MS);
+    releasing.add(finish);
+    for (const [value, from, target, options] of paid.pops) {
+      vfx.numberPop(value, from, target, {
+        ...options,
+        onArrive: () => {
+          options?.onArrive?.();
+          landed += 1;
+          if (landed === paid.pops.length) finish();
+        },
+      });
+    }
+  };
+
+  const settle = (): void => {
+    if (releaseTimer !== null) clearTimeout(releaseTimer);
+    releaseTimer = null;
+    if (unpaid.size > 0 || landing.size > 0) return;
+    const wait = holdUntil - performance.now();
+    if (wait > 0) {
+      releaseTimer = setTimeout(settle, wait);
+      return;
+    }
+    const paid = batch;
+    batch = null;
+    if (paid) pay(paid);
+  };
+
+  const forget = (crateId: string): void => {
+    clearTimeout(unpaid.get(crateId));
+    unpaid.delete(crateId);
+  };
+
+  return {
+    feedbackVfx(vfx) {
+      effects = vfx;
+      let wrapped: SystemsModule.FeedbackVfx | null = null;
+      let wraps: Vfx | null = null;
+      return () => {
+        const real = vfx();
+        if (!real) return null;
+        if (wraps !== real || !wrapped) {
+          wraps = real;
+          wrapped = {
+            contactSparks: (...args) => {
+              real.contactSparks(...args);
+            },
+            fusion: (...args) => {
+              real.fusion(...args);
+            },
+            cascade: (...args) => {
+              real.cascade(...args);
+            },
+            cameraKick: (...args) => {
+              real.cameraKick(...args);
+            },
+            numberPop: (...args) => {
+              if (active()) current().pops.push(args);
+              else real.numberPop(...args);
+            },
+          };
+        }
+        return wrapped;
+      };
+    },
+    bindTable(events) {
+      const offs = [
+        events.on('coin:fell', ({ coin, edge }) => {
+          if (!coin || edge !== 'front') return;
+          estimates.set(coin.id, coin.value);
+          if (active()) payout.hold(current().id, { coins: coin.value });
+        }),
+        events.on('value:credited', ({ amount, coinId }) => {
+          const estimate = estimates.get(coinId) ?? 0;
+          estimates.delete(coinId);
+          if (active() && amount > estimate) {
+            payout.hold(current().id, { coins: amount - estimate });
+          }
+        }),
+        events.on('fall:refused', ({ coinId }) => {
+          estimates.delete(coinId);
+        }),
+      ];
+      return () => {
+        for (const off of offs) off();
+      };
+    },
+    opened(crateId) {
+      forget(crateId);
+      unpaid.set(
+        crateId,
+        setTimeout(() => {
+          forget(crateId);
+          settle();
+        }, PAYOUT_HOLD_CAP_MS),
+      );
+    },
+    collected(crateId, landsInMs) {
+      forget(crateId);
+      landing.get(crateId)?.();
+      let frame = 0;
+      const timer = setTimeout(() => {
+        frame = requestAnimationFrame(() => {
+          landing.delete(crateId);
+          holdUntil = Math.max(holdUntil, performance.now() + FALLS_AFTER_CRATE_MS);
+          settle();
+        });
+      }, landsInMs);
+      landing.set(crateId, () => {
+        clearTimeout(timer);
+        cancelAnimationFrame(frame);
+        landing.delete(crateId);
+      });
+    },
+    gone(crateId) {
+      if (crateId === null) for (const id of [...unpaid.keys()]) forget(id);
+      else forget(crateId);
+      settle();
+    },
+    dispose() {
+      for (const id of [...unpaid.keys()]) forget(id);
+      for (const cancel of [...landing.values()]) cancel();
+      holdUntil = 0;
+      settle();
+      for (const finish of [...releasing]) finish();
+    },
+  };
+}
+
+/** When the card's coin line reaches the Vault after a collect: its flight, or at once. */
+function coinLineLandsInMs(cratesApi: typeof CratesApi, roll: Roll): number {
+  if (isReducedMotion()) return 0;
+  const currencies = cratesApi
+    .rewardLines(roll.rewards)
+    .flatMap((line) => (line.kind === 'currency' ? [line.currency] : []));
+  const index = currencies.indexOf('coins');
+  return index < 0 ? 0 : PAYOUT_FLIGHT_MS + index * PAYOUT_STAGGER_MS;
+}
+
 interface CrateWiring {
   readonly stage: Stage;
   readonly venue: RivieraVenue;
@@ -1182,6 +1404,7 @@ interface CrateWiring {
   readonly systems: GameSystems;
   readonly vfx: Vfx | null;
   readonly crates: OpeningLayout['crates'];
+  readonly payouts: CratePayoutOrder;
 }
 
 /**
@@ -1199,7 +1422,7 @@ function mountTableCrates(
   wiring: CrateWiring,
   scope: Scope,
 ): () => readonly SessionModule.CapturedRide[] {
-  const { stage, venue, bridge, boot, systems, vfx } = wiring;
+  const { stage, venue, bridge, boot, systems, vfx, payouts } = wiring;
   const haptics = new Haptics(typeof navigator === 'undefined' ? undefined : navigator, () =>
     performance.now(),
   );
@@ -1241,14 +1464,23 @@ function mountTableCrates(
     crates.events.on('crate:spawned', () => {
       counts.cratesSpawned += 1;
     }),
-    crates.events.on('crate:opened', () => {
+    crates.events.on('crate:opened', ({ crateId }) => {
       counts.cratesOpened += 1;
+      payouts.opened(crateId);
     }),
-    crates.events.on('crate:collected', () => {
+    crates.events.on('crate:collected', ({ crateId, roll }) => {
       counts.cratesCollected += 1;
+      payouts.collected(crateId, coinLineLandsInMs(cratesApi, roll));
       boot.resync('a Vault Crate was collected');
     }),
+    crates.events.on('crate:rejected', ({ crateId }) => {
+      payouts.gone(crateId);
+    }),
+    announcementHoldFor(ui.store).onChange((held) => {
+      if (!held) payouts.gone(null);
+    }),
     crates.events.on('crate:failed', ({ crateId, error }) => {
+      payouts.gone(crateId);
       if (error instanceof ApiRequestError && error.code === 'session_superseded') {
         console.warn(
           `CoinPosh crates: crate ${crateId} is claimed once this page takes the table back.`,
