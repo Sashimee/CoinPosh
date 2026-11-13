@@ -110,9 +110,16 @@ export class SnapshotCadence {
     this.#heartbeat = this.#deps.scheduler.setTimeout(() => {
       this.#heartbeat = null;
       if (this.#closed) return;
-      if (this.#settle === null) this.#attempt();
+      if (this.#settle === null || this.#overdue()) this.#attempt();
       this.#beat();
     }, SNAPSHOT_CADENCE.heartbeatMs);
+  }
+
+  /** A table that never rests would starve the settle wait, so the heartbeat caps how long it can defer. */
+  #overdue(): boolean {
+    return (
+      this.#sentAt === null || this.#deps.monotonic() - this.#sentAt >= SNAPSHOT_CADENCE.heartbeatMs
+    );
   }
 
   #attempt(): void {

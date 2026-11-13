@@ -155,6 +155,23 @@ describe('SnapshotCadence', () => {
     ]);
   });
 
+  it('still uploads every heartbeat while the table never rests', () => {
+    const subject = cadence();
+    for (let at = 0; at < 30_000; at += 500) {
+      current = capture(at);
+      subject.activity();
+      clock.advance(500);
+    }
+    expect(uploads.map((upload) => upload.at)).toEqual([
+      SNAPSHOT_CADENCE.heartbeatMs,
+      SNAPSHOT_CADENCE.heartbeatMs * 2,
+      SNAPSHOT_CADENCE.heartbeatMs * 3,
+    ]);
+    expect(uploads.at(-1)?.capture).toEqual(capture(29_500));
+    clock.advance(SNAPSHOT_CADENCE.heartbeatMs);
+    expect(uploads).toHaveLength(3);
+  });
+
   it('sends nothing while the sim has nothing to capture', () => {
     current = null;
     const subject = cadence();
