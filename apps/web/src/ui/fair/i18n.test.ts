@@ -58,10 +58,24 @@ describe('Certified Fair strings', () => {
       ...VERIFY_FIELDS.map((field): FairKey => `verify.invalid.${field}`),
       'verify.mismatch.commitment',
       'verify.mismatch.clientSeed',
+      'verify.unavailableTitle',
+      'verify.cryptoUnavailable',
+      'odds.rowLabel',
+      'odds.totalLabel',
     ];
     expect(keys.filter((key) => !i18n.exists(fairKey(key)))).toEqual([]);
     const rarities = RARITIES.map((rarity) => i18n.t(cratesKey(`rarity.${rarity}`)));
     expect(rarities.filter((name) => name.includes(':') || name.trim() === '')).toEqual([]);
+  });
+
+  it.each([
+    ['en', 'Rare: 12.5 %', 'Total: 100 %'],
+    ['fr', 'Rare\u00a0: 12.5 %', 'Total\u00a0: 100 %'],
+    ['de', 'Rare: 12.5 %', 'Summe: 100 %'],
+  ] as const)('%s builds the odds aria labels with its own punctuation', (language, row, sum) => {
+    const t = fairT(setup(language));
+    expect(t('odds.rowLabel', { rarity: 'Rare', share: '12.5 %' })).toBe(row);
+    expect(t('odds.totalLabel', { total: t('odds.total'), share: '100 %' })).toBe(sum);
   });
 
   it.each(LANGUAGES)('%s picks plural forms by count', (language) => {

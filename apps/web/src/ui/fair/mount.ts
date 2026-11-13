@@ -340,7 +340,10 @@ export function mountFair(options: FairMountOptions): FairPanel {
       if (fromZero) line.odo.jump(shareText(0));
       line.odo.set(text, previous && previous.weight > row.weight ? -1 : 1);
       line.el.classList.toggle('is-empty', row.weight === 0);
-      line.el.setAttribute('aria-label', `${rarityName(row.rarity)}: ${text}`);
+      line.el.setAttribute(
+        'aria-label',
+        t('odds.rowLabel', { rarity: rarityName(row.rarity), share: text }),
+      );
       const odds = oneIn(row);
       line.sub.textContent =
         odds === null ? t('odds.none') : t('odds.oneIn', { value: count(odds) });
@@ -351,7 +354,7 @@ export function mountFair(options: FairMountOptions): FairPanel {
     const sum = shareText(oddsTotalPercent(rows.value));
     if (fromZero) totalOdo.jump(shareText(0));
     totalOdo.set(sum, 1);
-    total.setAttribute('aria-label', `${t('odds.total')}: ${sum}`);
+    total.setAttribute('aria-label', t('odds.totalLabel', { total: t('odds.total'), share: sum }));
   }
 
   const pityHeading = h('h3', { class: 'cp-fair-heading' });
@@ -827,6 +830,8 @@ export function mountFair(options: FairMountOptions): FairPanel {
         return { title: '', text: t('verify.checking') };
       case 'invalid':
         return { title: t('verify.invalidTitle'), text: t(`verify.invalid.${state.field}`) };
+      case 'unavailable':
+        return { title: t('verify.unavailableTitle'), text: t('verify.cryptoUnavailable') };
       case 'mismatch':
         return {
           title: t('verify.mismatchTitle'),
@@ -911,14 +916,10 @@ export function mountFair(options: FairMountOptions): FairPanel {
         : (revealed.find(
             (seed) => seed.serverSeedHash === inputs.commitment.value.trim().toLowerCase(),
           ) ?? null);
-    let result: VerifyResult;
-    try {
-      result = await verifyRoll(readInput(), published);
-    } catch (error) {
-      console.error('[CoinPosh] Web Crypto could not recompute the roll', error);
-      result = { status: 'invalid', field: 'serverSeed' };
-    }
+    const result = await verifyRoll(readInput(), published);
     if (token !== verifyToken || disposed) return;
+    if (result.status === 'unavailable')
+      console.warn('[CoinPosh] Web Crypto could not recompute the roll', result.cause);
     if (published) selected = published;
     const land = () => {
       if (token !== verifyToken || disposed) return;
@@ -930,7 +931,11 @@ export function mountFair(options: FairMountOptions): FairPanel {
       if (result.status === 'match' && plan.sparks > 0) sparks(sparkHost, plan.sparks);
     };
     const kind: FairCue =
-      result.status === 'match' ? 'match' : result.status === 'consistent' ? 'step' : 'mismatch';
+      result.status === 'match'
+        ? 'match'
+        : result.status === 'consistent' || result.status === 'unavailable'
+          ? 'step'
+          : 'mismatch';
     const plan = cue ? play(kind, true) : fairCuePlan(kind, isReducedMotion());
     if (!cue) {
       land();

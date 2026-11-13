@@ -18,6 +18,8 @@
     "oneIn": "about 1 in {{value}}",
     "none": "not in this source",
     "total": "Total",
+    "rowLabel": "{{rarity}}: {{share}}",
+    "totalLabel": "{{total}}: {{share}}",
     "note": "These are the exact weights in the economy table the server rolls against. Nothing is rescaled or rounded on the way to you.",
     "broken": "This odds table could not be shown. The server still rolls from it."
   },
@@ -80,6 +82,8 @@
       "clientSeed": "A client seed is 1 to 64 printable characters, no spaces.",
       "nonce": "A nonce is a whole number, 0 or more."
     },
+    "unavailableTitle": "Check unavailable",
+    "cryptoUnavailable": "This browser could not run Web Crypto, so the roll was not checked. That says nothing about the seed: try again, or open CoinPosh over HTTPS in a current browser.",
     "digest": "HMAC-SHA256 digest",
     "computed": "SHA-256 of the server seed",
     "unavailable": "The seed ledger could not be fetched.",

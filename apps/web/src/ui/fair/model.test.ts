@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { dropTables, ODDS_SCALE, pity } from '@coinposh/economy';
 import { commitmentOf, fairDigest, type RevealedSeed } from '@coinposh/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   digestWords,
   FAIR_SOURCES,
@@ -151,6 +151,43 @@ describe('verifyRoll', () => {
     ['nonce', { nonce: '' }],
   ] as const)('refuses an invalid %s', async (field, edit) => {
     expect(await verifyRoll({ ...KNOWN, ...edit }, null)).toEqual({ status: 'invalid', field });
+  });
+});
+
+describe('verifyRoll without Web Crypto', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('reports unavailable, not an invalid seed, when SHA-256 throws', async () => {
+    const failure = new DOMException('The operation is insecure.', 'SecurityError');
+    vi.spyOn(crypto.subtle, 'digest').mockRejectedValue(failure);
+    expect(await verifyRoll(KNOWN, REVEALED)).toEqual({ status: 'unavailable', cause: failure });
+  });
+
+  it('reports unavailable when the HMAC key cannot be imported', async () => {
+    const failure = new Error('importKey unsupported');
+    vi.spyOn(crypto.subtle, 'importKey').mockImplementation(() => {
+      throw failure;
+    });
+    expect(await verifyRoll(KNOWN, null)).toEqual({ status: 'unavailable', cause: failure });
+  });
+
+  it('reports unavailable in an insecure context with no crypto.subtle', async () => {
+    vi.stubGlobal('crypto', {});
+    const result = await verifyRoll(KNOWN, REVEALED);
+    expect(result.status).toBe('unavailable');
+    expect(result).toHaveProperty('cause', expect.any(TypeError));
+  });
+
+  it('still points at the bad field before touching Web Crypto', async () => {
+    const digest = vi.spyOn(crypto.subtle, 'digest');
+    expect(await verifyRoll({ ...KNOWN, nonce: 'x' }, REVEALED)).toEqual({
+      status: 'invalid',
+      field: 'nonce',
+    });
+    expect(digest).not.toHaveBeenCalled();
   });
 });
 

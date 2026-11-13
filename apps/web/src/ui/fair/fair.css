@@ -671,6 +671,12 @@
   background: color-mix(in srgb, var(--cp-ivory) 4%, transparent);
 }
 
+.cp-fair-verdict[data-state='unavailable'] {
+  border-style: solid;
+  border-color: var(--cp-gold-brushed);
+  background: color-mix(in srgb, var(--cp-champagne) 8%, transparent);
+}
+
 .cp-fair-verdict[data-state='mismatch'],
 .cp-fair-verdict[data-state='invalid'] {
   border-style: solid;

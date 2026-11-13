@@ -18,6 +18,8 @@
     "oneIn": "etwa 1 zu {{value}}",
     "none": "in dieser Quelle nicht enthalten",
     "total": "Summe",
+    "rowLabel": "{{rarity}}: {{share}}",
+    "totalLabel": "{{total}}: {{share}}",
     "note": "Das sind genau die Gewichte der Wirtschaftstabelle, nach der der Server würfelt. Auf dem Weg zu dir wird nichts umskaliert oder gerundet.",
     "broken": "Diese Chancentabelle kann nicht angezeigt werden. Der Server würfelt trotzdem danach."
   },
@@ -80,6 +82,8 @@
       "clientSeed": "Ein Client-Seed hat 1 bis 64 druckbare Zeichen, keine Leerzeichen.",
       "nonce": "Eine Nonce ist eine ganze Zahl, 0 oder größer."
     },
+    "unavailableTitle": "Prüfung nicht verfügbar",
+    "cryptoUnavailable": "Dieser Browser konnte Web Crypto nicht ausführen, daher wurde der Wurf nicht geprüft. Über den Seed sagt das nichts aus: Versuch es erneut oder öffne CoinPosh per HTTPS in einem aktuellen Browser.",
     "digest": "HMAC-SHA256-Digest",
     "computed": "SHA-256 des Server-Seeds",
     "unavailable": "Das Seed-Register konnte nicht geladen werden.",

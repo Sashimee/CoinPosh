@@ -99,6 +99,7 @@ export type MismatchReason = 'commitment' | 'clientSeed' | 'unspent';
 
 export type VerifyResult =
   | { readonly status: 'invalid'; readonly field: VerifyField }
+  | { readonly status: 'unavailable'; readonly cause: unknown }
   | {
       readonly status: 'mismatch';
       readonly reason: MismatchReason;
@@ -140,7 +141,9 @@ function parseInput(input: VerifyInput): ParsedInput | VerifyField {
  * commitment, and the roll is `HMAC_SHA256(serverSeed, clientSeed:nonce)`. Checked against
  * `published` too when given, so a proof whose client seed or nonce was edited after the reveal
  * cannot pass. Without `published` the best it can say is `consistent`: any made-up seed hashes
- * to its own SHA-256, so only a seed from the server's ledger earns a `match`.
+ * to its own SHA-256, so only a seed from the server's ledger earns a `match`. When this device
+ * cannot run Web Crypto (an insecure context, an old WebView) the result is `unavailable`, which
+ * says nothing about the seed.
  */
 export async function verifyRoll(
   input: VerifyInput,
@@ -148,8 +151,14 @@ export async function verifyRoll(
 ): Promise<VerifyResult> {
   const parsed = parseInput(input);
   if (typeof parsed === 'string') return { status: 'invalid', field: parsed };
-  const computed = await commitmentOf(parsed.serverSeed);
-  const digest = await fairDigest(parsed.serverSeed, parsed.clientSeed, parsed.nonce);
+  let computed: Sha256Hex;
+  let digest: Sha256Hex;
+  try {
+    computed = await commitmentOf(parsed.serverSeed);
+    digest = await fairDigest(parsed.serverSeed, parsed.clientSeed, parsed.nonce);
+  } catch (cause) {
+    return { status: 'unavailable', cause };
+  }
   const mismatch = (reason: MismatchReason): VerifyResult => ({
     status: 'mismatch',
     reason,

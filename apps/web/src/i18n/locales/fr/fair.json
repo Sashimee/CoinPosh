@@ -18,6 +18,8 @@
     "oneIn": "environ 1 sur {{value}}",
     "none": "absent de cette source",
     "total": "Total",
+    "rowLabel": "{{rarity}} : {{share}}",
+    "totalLabel": "{{total}} : {{share}}",
     "note": "Ce sont les poids exacts de la table d’économie sur laquelle tire le serveur. Rien n’est remis à l’échelle ni arrondi en chemin.",
     "broken": "Cette table de chances ne peut pas s’afficher. Le serveur tire toujours d’après elle."
   },
@@ -84,6 +86,8 @@
       "clientSeed": "Une graine client compte 1 à 64 caractères imprimables, sans espace.",
       "nonce": "Un nonce est un nombre entier, 0 ou plus."
     },
+    "unavailableTitle": "Vérification indisponible",
+    "cryptoUnavailable": "Ce navigateur n’a pas pu exécuter Web Crypto, donc le tirage n’a pas été vérifié. Cela ne dit rien de la graine : réessayez, ou ouvrez CoinPosh en HTTPS dans un navigateur à jour.",
     "digest": "Empreinte HMAC-SHA256",
     "computed": "SHA-256 de la graine du serveur",
     "unavailable": "Impossible de charger le registre des graines.",
