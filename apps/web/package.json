@@ -12,6 +12,7 @@
     "test": "vitest run",
     "e2e": "playwright test -c e2e/playwright.config.ts --project=e2e --trace off",
     "perf": "playwright test -c e2e/playwright.config.ts --project=perf --trace off",
+    "lighthouse": "playwright test -c e2e/playwright.config.ts --project=perf --trace off lighthouse.perf.ts",
     "bundle:check": "node e2e/bundle-size.ts",
     "test:perf": "vitest run --config vitest.perf.config.ts"
   },
@@ -27,6 +28,7 @@
     "@playwright/test": "1.64.1",
     "@types/node": "24.19.2",
     "@types/three": "0.187.0",
+    "lighthouse": "13.6.0",
     "vite": "8.3.6",
     "vitest": "4.1.12"
   }
