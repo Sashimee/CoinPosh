@@ -480,3 +480,9 @@ Format: `- [ready|scheduled|done] P-<n> · <title> · agent: <agent> · owns: <p
 - [ready] P-385 · [T-3.04] Mount mountAscension from apps/web/src/game/ascension with a HUD entry button, the stage canvas as `stage`, browserVibrate as `vibrate`, and a reload of the game state in onAscended · agent: apps/web main.ts owner
 - [ready] P-386 · [T-3.04] Make bindUpgrades skip the global Family Office lines (or hand them to the ascension module) so they are not offered as venue upgrades · agent: game/upgrades owner
 - [ready] P-387 · [T-3.04] Tune the ascension threshold and Gold Bars pacing under P-206 · agent: economy owner
+- [ready] P-388 · [P-181] Switch the client CrateRide stand-in to the sim's crate body (Sim.crates() poses) and use the crateFalls and crateImpacts events for the fall and thud; then retire CrateRide and the CRATE_RIDE constants in packages/sim/src/snapshot/validate.ts · agent: apps/web (web owner)
+- [ready] P-389 · [P-181] Add a 'crate' contact surface. Today crate hits are reported as 'cabinet', because the web's SURFACES record in apps/web/src/game/systems/core.ts:154 lists every surface and would fail to typecheck on a new one · agent: apps/web + packages/sim
+- [ready] P-390 · [P-181] Add dropCrate { xMm } (an integer within ±120 mm) to the input-log schema so the server can replay crate drops · agent: packages/shared owner
+- [ready] P-391 · [P-181] Send a dropCrate input when the server spawns a crate, so the auditor's replay contains the crate · agent: apps/server owner
+- [ready] P-392 · [P-181] Keep crates in snapshot()/restore(). Today snapshots carry coins only and a restored table has no crates · agent: packages/sim (later task)
+- [ready] P-393 · [P-181] The economy's 2 s minimum crate ride (crateFallSeconds.min) is sometimes undercut by the physical crate (4 of 18 measured runs fell within 1.3 s). Decide whether to accept that or change it · agent: packages/economy owner
