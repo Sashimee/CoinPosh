@@ -9,6 +9,9 @@ import { describe, expect, it } from 'vitest';
 import type { DecorumState } from '../../app/model.ts';
 import type { FeedbackKind } from '../../app/state.ts';
 import { createI18n, LANGUAGES } from '../../i18n/index.ts';
+import { createAnnouncementHold } from '../../ui/components/announcementHold.ts';
+import { GestureRecognizer, type GestureAction } from '../input/gestures.ts';
+import { pauseDuringCinematics } from './cinematicPause.ts';
 import type { TableEvent } from '../../net/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
 import type { SimEventBatch } from '../simWorker/protocol.ts';
@@ -861,6 +864,150 @@ describe('systems core: the Sommelier Pour', () => {
     expect(cancels).toEqual([{ drops: 1, tick: 0 }]);
     expect(ends).toEqual([]);
     expect(sim.drops).toHaveLength(1);
+  });
+});
+
+describe('systems core: suspended while a cinematic owns the screen', () => {
+  it('cancels a running pour ungraded and drops nothing more until it lets go', () => {
+    const { core, sim, time, ui, advance } = setup();
+    const cancels = record(core, 'pour:cancel');
+    const ends = record(core, 'pour:end');
+    const blocked = record(core, 'drop:blocked');
+    core.startPour(0);
+    advance(POUR_STREAM_TICKS);
+    core.update();
+    expect(sim.drops).toHaveLength(2);
+
+    core.setSuspended(true);
+    expect(core.suspended).toBe(true);
+    expect(cancels).toEqual([{ drops: 2, tick: POUR_STREAM_TICKS }]);
+    expect(core.pourView().pouring).toBe(false);
+    time.now = POUR_TARGET_MS;
+    advance(POUR_STREAM_TICKS * 20);
+    core.update();
+    expect(core.drop(0)).toBe(false);
+    core.startPour(0);
+    advance(POUR_STREAM_TICKS * 5);
+    core.update();
+    expect(sim.drops).toHaveLength(2);
+    expect(core.pourView().pouring).toBe(false);
+    expect(core.endPour()).toBeNull();
+    expect(ends).toEqual([]);
+    expect(ui.feedback).toEqual([]);
+    expect(blocked.map((b) => b.reason)).toEqual(['suspended', 'suspended']);
+
+    core.setSuspended(false);
+    expect(core.drop(0)).toBe(true);
+    expect(sim.drops).toHaveLength(3);
+  });
+
+  it('suspending twice or with no pour running announces nothing', () => {
+    const { core } = setup();
+    const cancels = record(core, 'pour:cancel');
+    core.setSuspended(true);
+    core.setSuspended(true);
+    core.setSuspended(false);
+    expect(cancels).toEqual([]);
+  });
+});
+
+describe('systems: the crate cinematic pauses play', () => {
+  function wired() {
+    const base = setup();
+    const { core } = base;
+    const gestures = new GestureRecognizer({
+      holdMs: 300,
+      slopPx: 10,
+      swipeMinPx: 40,
+      swipeMaxMs: 400,
+      swipeFullPx: 160,
+    });
+    const run = (actions: readonly GestureAction[]): void => {
+      for (const action of actions) {
+        if (action.kind === 'drop') core.drop(0);
+        if (action.kind === 'pourStart') core.startPour(0);
+        if (action.kind === 'pourEnd') core.endPour();
+        if (action.kind === 'pourCancel') core.cancelPour();
+      }
+    };
+    const hold = createAnnouncementHold();
+    const overlay: boolean[] = [];
+    const stop = pauseDuringCinematics(hold, {
+      core,
+      interrupt: () => {
+        run(gestures.interrupt());
+      },
+      overlay: {
+        setSuspended: (suspended) => {
+          overlay.push(suspended);
+        },
+      },
+    });
+    /** One frame with the finger held: the recognizer's clock and the pour stream run. */
+    const frame = (at: number): void => {
+      base.time.now = at;
+      run(gestures.tick(at));
+      base.advance(POUR_STREAM_TICKS);
+      core.update();
+    };
+    return { ...base, gestures, run, hold, overlay, stop, frame };
+  }
+
+  it('a held pour stops the moment the cinematic starts and stays stopped through COLLECT', () => {
+    const { core, sim, gestures, run, hold, overlay, frame, ui } = wired();
+    const cancels = record(core, 'pour:cancel');
+    const ends = record(core, 'pour:end');
+    run(gestures.down(1, 100, 0, 0));
+    frame(300);
+    frame(320);
+    const poured = sim.drops.length;
+    expect(poured).toBeGreaterThan(0);
+
+    const release = hold.hold();
+    expect(cancels).toHaveLength(1);
+    expect(core.pourView().pouring).toBe(false);
+    for (let at = 340; at < 15_000; at += 16) frame(at);
+    expect(sim.drops).toHaveLength(poured);
+
+    release();
+    for (let at = 15_000; at < 16_000; at += 16) frame(at);
+    run(gestures.up(1, 100, 0, 16_000));
+    expect(sim.drops).toHaveLength(poured);
+    expect(ends).toEqual([]);
+    expect(ui.feedback).not.toContain('confirm');
+    expect(overlay).toEqual([true, false]);
+  });
+
+  it('after COLLECT a new hold pours again', () => {
+    const { core, sim, gestures, run, hold, frame } = wired();
+    const starts = record(core, 'pour:start');
+    run(gestures.down(1, 100, 0, 0));
+    frame(300);
+    hold.hold()();
+    run(gestures.up(1, 100, 0, 400));
+    const before = sim.drops.length;
+    run(gestures.down(2, 100, 0, 500));
+    frame(800);
+    frame(816);
+    expect(starts).toHaveLength(2);
+    expect(sim.drops.length).toBeGreaterThan(before);
+  });
+
+  it('starts paused when the cinematic is already up, and unsubscribes cleanly', () => {
+    const base = setup();
+    const hold = createAnnouncementHold();
+    const release = hold.hold();
+    const stop = pauseDuringCinematics(hold, {
+      core: base.core,
+      interrupt: () => undefined,
+      overlay: { setSuspended: () => undefined },
+    });
+    expect(base.core.suspended).toBe(true);
+    release();
+    expect(base.core.suspended).toBe(false);
+    stop();
+    hold.hold();
+    expect(base.core.suspended).toBe(false);
   });
 });
 

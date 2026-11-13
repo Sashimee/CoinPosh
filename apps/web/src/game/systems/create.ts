@@ -2,9 +2,11 @@ import type { MintedCoin, StateResponse } from '@coinposh/shared';
 import type { Bus } from '../../app/bus.ts';
 import type { UiApp } from '../../app/index.ts';
 import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
+import { announcementHoldFor } from '../../ui/components/announcementHold.ts';
 import { bindInputSurface, linearAimMap, type AimMap, type InputHandlers } from '../input/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
 import type { SimEventBatch } from '../simWorker/protocol.ts';
+import { pauseDuringCinematics } from './cinematicPause.ts';
 import {
   createSystemsCore,
   followUpgradeLevels,
@@ -152,6 +154,13 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
 
   const offs = [
     followUpgradeLevels(ui.store, core),
+    pauseDuringCinematics(announcementHoldFor(ui.store), {
+      core,
+      interrupt: () => {
+        surface.binding.input.interrupt();
+      },
+      overlay,
+    }),
     core.events.on('pour:end', ({ grade }) => {
       overlay.stamp(t(`pour.${grade}`), grade === 'perfect' ? 'perfect' : 'neutral');
     }),

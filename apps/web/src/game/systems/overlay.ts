@@ -12,6 +12,8 @@ export type StampTone = 'perfect' | 'neutral' | 'warn';
 export interface SystemsOverlay {
   render(aimPx: number, pressed: boolean, pour: PourView): void;
   stamp(message: string, tone: StampTone): void;
+  /** Fades the reticle and gauge out while a cinematic owns the screen. */
+  setSuspended(suspended: boolean): void;
   dispose(): void;
 }
 
@@ -92,6 +94,9 @@ export function createSystemsOverlay(host: HTMLElement, labels: OverlayLabels): 
         fill.style.transform = `scaleX(${share.toFixed(3)})`;
         gauge.setAttribute('aria-valuenow', String(percent));
       }
+    },
+    setSuspended(suspended) {
+      root.classList.toggle('is-suspended', suspended);
     },
     stamp(message, tone) {
       stampEl.textContent = message;
