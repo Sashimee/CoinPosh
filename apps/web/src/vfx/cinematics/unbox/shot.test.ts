@@ -1,5 +1,5 @@
 import { CollectibleIdSchema, RARITIES, ScratchCardIdSchema } from '@coinposh/shared';
-import { Color, Group, Mesh, UniformNode, Vector3, type Node } from 'three/webgpu';
+import { Color, Group, Mesh, Texture, UniformNode, Vector3, type Node } from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
 import { heroOf } from '../../../game/crates/loot.ts';
 import { flatEmbossTexture } from '../../../scene/coins/materials.ts';
@@ -342,11 +342,34 @@ describe('unbox hero props', () => {
     expect(new Set(RARITIES.map((rarity) => HERO_FACE_TIERS[rarity])).size).toBe(RARITIES.length);
   });
 
-  it('strikes the coins flat until the primer has baked the faces', () => {
-    const assets = new UnboxAssets(new Group());
+  it('strikes the coins flat while the table has no bake of their face', () => {
+    const assets = new UnboxAssets(new Group(), { faces: () => null });
     new UnboxStage('legendary', 'card', assets);
     expect(uniformValues(assets.heroMaterial.normalNode)).toContain(flatEmbossTexture());
     expect(uniformValues(assets.heroMaterial.colorNode)).toContain(flatEmbossTexture());
+    assets.dispose();
+  });
+
+  it("strikes the coins with the table's bake of the rolled rarity's face", () => {
+    const bakes = new Map(RARITIES.map((rarity) => [HERO_FACE_TIERS[rarity], new Texture()]));
+    const assets = new UnboxAssets(new Group(), { faces: (tier) => bakes.get(tier) ?? null });
+    new UnboxStage('exquisite', 'coins', assets);
+    const face = bakes.get(HERO_FACE_TIERS.exquisite);
+    expect(uniformValues(assets.heroMaterial.colorNode)).toContain(face);
+    expect(uniformValues(assets.heroMaterial.colorNode)).not.toContain(flatEmbossTexture());
+    assets.dispose();
+  });
+
+  it('follows the table when it rebakes a face mid-unbox', () => {
+    let bake = new Texture();
+    const assets = new UnboxAssets(new Group(), { faces: () => bake });
+    const stage = new UnboxStage('rare', 'coins', assets);
+    const first = bake;
+    bake = new Texture();
+    stage.apply(unboxPose(FULL_UNBOX.revealAtMs, FULL_UNBOX, false));
+    const values = uniformValues(assets.heroMaterial.colorNode);
+    expect(values).toContain(bake);
+    expect(values).not.toContain(first);
     assets.dispose();
   });
 

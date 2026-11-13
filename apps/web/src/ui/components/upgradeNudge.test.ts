@@ -1,10 +1,17 @@
+import { upgradeCost, upgradeLines } from '@coinposh/economy';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createStore } from '../../app/store.ts';
 import de from '../../i18n/locales/de/ui.json';
 import en from '../../i18n/locales/en/ui.json';
 import fr from '../../i18n/locales/fr/ui.json';
 import { createAnnouncementHold, type AnnouncementHold } from './announcementHold.ts';
 import { holdForCrateCinematics, type CinematicEvents } from './cinematicHold.ts';
-import { foldNudgeOnCue, HINT_LINGER_MS } from './upgradeNudge.ts';
+import {
+  foldNudgeOnCue,
+  foldWhenOutOfReach,
+  HINT_LINGER_MS,
+  type NudgeWallet,
+} from './upgradeNudge.ts';
 
 type Handler = Parameters<CinematicEvents['on']>[1];
 
@@ -104,5 +111,50 @@ describe('first-upgrade copy', () => {
     expect(hint.aria).toContain('{{name}}');
     expect(hint.hint).toMatch(buy);
     expect(`${hint.title} ${hint.aria}`).not.toMatch(/within reach|à votre portée|in Reichweite/i);
+  });
+});
+
+describe('foldWhenOutOfReach', () => {
+  const coinLines = upgradeLines.filter((candidate) => candidate.currency === 'coins');
+  const price = Math.min(...coinLines.map((candidate) => upgradeCost(candidate, 0)));
+  const lineId = coinLines.find((candidate) => upgradeCost(candidate, 0) === price)?.id ?? '';
+  const vault = (coins: number) =>
+    createStore<NudgeWallet>({ coins, goldBars: 0, upgradeLevels: {} });
+
+  it('stays up while the line is affordable, and folds once a tap spends the Vault under it', () => {
+    const store = vault(price + 2);
+    const fold = vi.fn();
+    foldWhenOutOfReach(store, lineId, fold);
+    store.setState({ coins: price + 1 });
+    store.setState({ coins: price });
+    expect(fold).not.toHaveBeenCalled();
+    store.setState({ coins: price - 1 });
+    expect(fold).toHaveBeenCalledTimes(1);
+    store.setState({ coins: price + 5 });
+    store.setState({ coins: price - 3 });
+    expect(fold).toHaveBeenCalledTimes(1);
+  });
+
+  it('folds at once when the line is already out of reach', () => {
+    const fold = vi.fn();
+    foldWhenOutOfReach(vault(price - 1), lineId, fold);
+    expect(fold).toHaveBeenCalledTimes(1);
+  });
+
+  it('folds when a purchase reprices the line past the wallet', () => {
+    const store = vault(price);
+    const fold = vi.fn();
+    foldWhenOutOfReach(store, lineId, fold);
+    store.setState({ upgradeLevels: { [lineId]: 1 } });
+    expect(fold).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelling stops the watch', () => {
+    const store = vault(price);
+    const fold = vi.fn();
+    const cancel = foldWhenOutOfReach(store, lineId, fold);
+    cancel();
+    store.setState({ coins: 0 });
+    expect(fold).not.toHaveBeenCalled();
   });
 });

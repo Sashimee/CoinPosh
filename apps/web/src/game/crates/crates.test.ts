@@ -1398,6 +1398,22 @@ describe('UnboxDirector', () => {
 
   const BAD = 'crate_BBBBBBBBBBBBBBBB';
 
+  it('compiles the unbox props only once primed or handed a crate, never at mount', () => {
+    const { unbox, parent } = director(new Set());
+    const light = parent.children[0];
+    expect(light?.children).toEqual([]);
+    unbox.prime();
+    expect(light?.children.map((child) => child.name)).toEqual(['unbox-primer']);
+    unbox.dispose();
+
+    const handed = director(new Set());
+    handed.unbox.enqueue(opened('crate_AAAAAAAAAAAAAAAA'));
+    expect(handed.parent.children[0]?.children.map((child) => child.name)).toContain(
+      'unbox-primer',
+    );
+    handed.unbox.dispose();
+  });
+
   it('keeps one light in the scene from mount to dispose, whatever plays', () => {
     const { unbox, parent } = director(new Set());
     expect(parent.children).toHaveLength(1);

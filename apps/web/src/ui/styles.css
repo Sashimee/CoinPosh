@@ -676,9 +676,11 @@
   overflow: hidden;
   color: var(--cp-ivory);
   font-variant-numeric: tabular-nums lining-nums;
-  text-shadow:
-    0 1px 0 rgb(var(--cp-gold-brushed-rgb) / 0.6),
-    0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.35);
+  text-shadow: 0 1px 0 rgb(var(--cp-gold-brushed-rgb) / 0.6);
+  /* The glow is a filter on the whole counter, not a text-shadow: the wheel windows clip their
+     digits, so a per-digit glow would be cut into hard boxes at every column edge. A filter
+     blooms from what is already visible and is not clipped by this element's own overflow. */
+  filter: drop-shadow(0 0 0.2em rgb(var(--cp-gold-brushed-rgb) / 0.35));
 }
 
 .cp-odo-col {

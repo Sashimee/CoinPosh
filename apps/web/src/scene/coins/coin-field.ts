@@ -11,6 +11,7 @@ import {
   Vector3,
   type LightShadow,
   type PerspectiveCamera,
+  type Texture,
   type WebGPURenderer,
 } from 'three/webgpu';
 import { bakeCoinEmboss, DEFAULT_EMBOSS_RESOLUTION, type CoinEmbossBake } from './emboss.ts';
@@ -495,6 +496,14 @@ export class CoinField {
       batch.bake = bakeCoinEmboss(renderer, COIN_LOOKS[batch.tier].face, resolution);
       batch.material.setEmboss(batch.bake.texture);
     }
+  }
+
+  /**
+   * The tier's baked face, or null before the first `bake`. A rebake disposes it, so borrowers
+   * look it up again rather than keep it.
+   */
+  faceTexture(tier: CoinTierId): Texture | null {
+    return this.batch(tier).bake?.texture ?? null;
   }
 
   setReducedMotion(reduced: boolean): void {

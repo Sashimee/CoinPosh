@@ -75,6 +75,11 @@ describe('CoinField', () => {
     }
   });
 
+  it('has no face texture to lend before its first bake', () => {
+    const coins = field({ capacity: 1 });
+    for (const tier of COIN_TIER_IDS) expect(coins.faceTexture(tier)).toBeNull();
+  });
+
   it('rejects bad capacities, counts and ids without touching the current set', () => {
     expect(() => new CoinField({ capacity: -1 })).toThrow(/capacity/);
     expect(() => new CoinField({ capacity: 1, radius: 0 })).toThrow(/radius/);

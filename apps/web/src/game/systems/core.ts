@@ -122,6 +122,12 @@ export interface SystemsCore {
   endPour(): PourResult | null;
   cancelPour(): void;
   pourView(): PourView;
+  /**
+   * Something else owns the screen, such as a crate cinematic: a running pour is cancelled
+   * ungraded, and taps and holds drop nothing until it lets go.
+   */
+  setSuspended(suspended: boolean): void;
+  readonly suspended: boolean;
   readonly tuning: UpgradeTuning;
   nudge(direction: NudgeDirection, strength: number, source: NudgeSource): boolean;
   /** Writes this frame's coins into `target` through the sim, and settles what changed. */
@@ -231,6 +237,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   let pourDrops = 0;
   let nextPourTick = 0;
   let shownDecorum = '';
+  let suspended = false;
   let disposed = false;
 
   const tick = (): Tick => Math.max(0, Math.floor(sim.stats.tick));
@@ -245,6 +252,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   };
 
   const sendDrop = (at: number, poured: boolean): boolean => {
+    if (suspended) return block('suspended', true);
     if (decorum.frozen(now())) return block('frozen', poured);
     const current = tick();
     if (
@@ -519,6 +527,15 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     }
   };
 
+  function cancelPour(): void {
+    if (!pour.pouring) return;
+    pour.cancel();
+    const current = tick();
+    log({ kind: 'pourEnd', tick: current });
+    events.emit('pour:cancel', { drops: pourDrops, tick: current });
+    pourDrops = 0;
+  }
+
   function finishPour(): PourResult | null {
     if (!pour.pouring) return null;
     const result = pour.release(now());
@@ -562,6 +579,10 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       requireLive('startPour');
       setAim(at);
       if (pour.pouring) return;
+      if (suspended) {
+        block('suspended', true);
+        return;
+      }
       if (decorum.frozen(now())) {
         block('frozen', false);
         return;
@@ -578,13 +599,14 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       requireLive('endPour');
       return finishPour();
     },
-    cancelPour() {
-      if (!pour.pouring) return;
-      pour.cancel();
-      const current = tick();
-      log({ kind: 'pourEnd', tick: current });
-      events.emit('pour:cancel', { drops: pourDrops, tick: current });
-      pourDrops = 0;
+    cancelPour,
+    setSuspended(next) {
+      if (disposed || next === suspended) return;
+      suspended = next;
+      if (suspended) cancelPour();
+    },
+    get suspended() {
+      return suspended;
     },
     pourView() {
       const at = now();

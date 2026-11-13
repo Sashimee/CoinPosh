@@ -16,20 +16,18 @@ import {
   Sprite,
   SpriteNodeMaterial,
   Vector3,
-  WebGPURenderer,
   type BufferGeometry,
   type Camera,
   type Material,
   type Object3D,
+  type Texture,
 } from 'three/webgpu';
-import { bakeCoinEmboss, type CoinEmbossBake } from '../../../scene/coins/emboss.ts';
 import { flatEmbossTexture } from '../../../scene/coins/materials.ts';
-import { COIN_LOOKS, type CoinTierId } from '../../../scene/coins/tiers.ts';
+import type { CoinTierId } from '../../../scene/coins/tiers.ts';
 import { rivieraTokens } from '../../../scene/venues/riviera/palette.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../palette.ts';
 import {
   createHeroMaterial,
-  HERO_FACE_RESOLUTION,
   HERO_FACE_TIERS,
   heroGeometry,
   heroPitch,
@@ -101,6 +99,15 @@ const BOUND_SIDES = 12;
  */
 const PRIMER_DEPTH = 1_000;
 
+export interface UnboxAssetsOptions {
+  /**
+   * The baked face of a coin tier, looked up again on every pose since its owner may rebake it;
+   * null strikes the hero's coins flat. On the table this is `CoinField.faceTexture`, so the
+   * hero links no programs of its own to bake faces.
+   */
+  readonly faces?: ((tier: CoinTierId) => Texture | null) | null;
+}
+
 interface RaySlot {
   readonly mesh: Mesh;
   readonly tint: Color;
@@ -113,6 +120,7 @@ interface RaySlot {
  * unbox builds a node graph or uploads a buffer mid-cinematic. The point light sits in `parent`
  * from mount on at intensity 0: in three/webgpu the scene's light set is part of every lit
  * material's pipeline key, so adding and removing a light per unbox would recompile the table.
+ * Its materials compile only once `prime` is called, ahead of the first crate, not at mount.
  */
 export class UnboxAssets {
   readonly body: BoxGeometry;
@@ -137,15 +145,17 @@ export class UnboxAssets {
   private readonly flareTint = uniform(new Color());
   private readonly flareStrength = uniform(0);
   private readonly heroes = new Map<UnboxHero, BufferGeometry>();
-  private readonly faces = new Map<CoinTierId, CoinEmbossBake>();
+  private readonly faces: (tier: CoinTierId) => Texture | null;
   private faceTier: CoinTierId = HERO_FACE_TIERS.common;
-  private facesQueued = false;
   private readonly rays = new Map<Object3D, RaySlot>();
   private readonly primer = new Group();
+  private readonly unprimed: Object3D[] = [];
   private primerSlot: RaySlot | null = null;
+  private primeStarted = false;
   private disposed = false;
 
-  constructor(parent: Object3D) {
+  constructor(parent: Object3D, options: UnboxAssetsOptions = {}) {
+    this.faces = options.faces ?? (() => null);
     const parts = crateGeometry();
     this.body = parts.body;
     this.band = parts.band;
@@ -193,18 +203,30 @@ export class UnboxAssets {
     this.light = new PointLight(0xffffff, 0, LIGHT_RANGE, 2);
     this.light.name = 'unbox-light';
     parent.add(this.light);
-    this.mountPrimer();
-    scheduleIdle(warmUnboxShots);
   }
 
-  /** True while the primer still waits for its first draw of every unbox material. */
+  /** True from `prime` until the primer has drawn every unbox material once. */
   get priming(): boolean {
     return this.primer.parent !== null;
   }
 
   /**
-   * Compiles every unbox pipeline ahead of the first crate, against `scene`'s lights, for hosts
-   * that can await it. Without it the primer still compiles them on the table's next frame.
+   * Starts compiling every unbox pipeline out of sight, one material per idle slot, so no frame
+   * links them all: call it once a crate is on its way. Until then the props cost the table
+   * nothing, and a cinematic that starts first compiles what it draws on its own first frames.
+   */
+  prime(): void {
+    if (this.disposed || this.primeStarted) return;
+    this.primeStarted = true;
+    this.mountPrimer();
+    afterFrame(() => {
+      if (!this.disposed) warmUnboxShots();
+    });
+  }
+
+  /**
+   * Compiles every unbox pipeline at once, against `scene`'s lights, for hosts that can await
+   * it. Without it `prime` compiles them over the table's next frames.
    */
   async warm(
     renderer: {
@@ -213,7 +235,9 @@ export class UnboxAssets {
     camera: Camera,
     scene: Object3D,
   ): Promise<void> {
-    if (this.disposed || !this.priming) return;
+    this.prime();
+    if (!this.priming) return;
+    this.primer.add(...this.unprimed.splice(0));
     await renderer.compileAsync(this.primer, camera, scene);
   }
 
@@ -225,12 +249,17 @@ export class UnboxAssets {
 
   /**
    * Tints every hero prop's enamel, gem and rim in `accent`, the rolled rarity's colour, and
-   * strikes its coins with that rarity's face once the primer has baked it.
+   * strikes its coins with that rarity's face.
    */
   tintHero(accent: Color, rarity: Rarity): void {
     this.heroLook.tint(accent);
     this.faceTier = HERO_FACE_TIERS[rarity];
-    this.heroLook.setFace(this.faces.get(this.faceTier)?.texture ?? flatEmbossTexture());
+    this.strikeFace();
+  }
+
+  /** Points the hero's coins at the current bake of their face, flat while there is none. */
+  strikeFace(): void {
+    this.heroLook.setFace(this.faces(this.faceTier) ?? flatEmbossTexture());
   }
 
   /** The coin tier whose face the hero's coins wear now. */
@@ -276,8 +305,6 @@ export class UnboxAssets {
       ...this.heroes.values(),
     ]);
     for (const geometry of geometries) geometry.dispose();
-    for (const face of this.faces.values()) face.dispose();
-    this.faces.clear();
     const materials: Material[] = [
       this.lacquer,
       this.gold,
@@ -294,9 +321,11 @@ export class UnboxAssets {
 
   /**
    * A three/webgpu material compiles on its first draw, which stalled the first unbox frames
-   * behind a blank screen. The primer draws every unbox material once from mount on, out of
-   * sight, with the light set the stage will have, then leaves the scene. It hangs under the
-   * light, the one object the assets keep in the scene, so mounting adds nothing else there.
+   * behind a blank screen. The primer draws every unbox material once, out of sight, with the
+   * light set the stage will have, then leaves the scene. It hangs under the light, the one
+   * object the assets keep in the scene, so priming adds nothing else there. Each part joins
+   * after the frame that drew the one before: on WebGL2 every program link blocks the main
+   * thread, and on SwiftShader all seven in one frame held up the first tap for 1.7 s.
    */
   private mountPrimer(): void {
     this.primer.name = 'unbox-primer';
@@ -305,63 +334,45 @@ export class UnboxAssets {
     const slot: RaySlot = { mesh: ray, tint: new Color(), strength: 0, angle: 0 };
     this.primerSlot = slot;
     this.bindRay(slot);
-    const hero = new Mesh(this.hero('card'), this.heroMaterial);
-    hero.onBeforeRender = (renderer) => {
-      if (!(renderer instanceof WebGPURenderer))
-        throw new Error('The unbox primer was drawn by a renderer that cannot bake coin faces');
-      this.queueFaceBakes(renderer);
-    };
     const parts: Object3D[] = [
       new Mesh(this.body, this.lacquer),
       new Mesh(this.band, this.gold),
       new Mesh(this.column, this.velvet),
       new Mesh(this.seam, this.seamMaterial),
-      hero,
+      new Mesh(this.hero('card'), this.heroMaterial),
       ray,
       new Sprite(this.flareMaterial),
     ];
     const waiting = new Set(parts);
+    const joinNext = (): void => {
+      const next = this.unprimed.shift();
+      if (next && this.priming) this.primer.clear().add(next);
+    };
     for (const part of parts) {
       part.frustumCulled = false;
       part.onAfterRender = () => {
-        waiting.delete(part);
+        if (!waiting.delete(part)) return;
         // Leaves after the draw call returns, so the render list being walked stays intact.
         if (waiting.size === 0) {
           queueMicrotask(() => {
             this.unmountPrimer();
           });
+        } else {
+          afterFrame(joinNext);
         }
       };
     }
-    this.primer.add(...parts);
+    const [first, ...rest] = parts;
+    if (first) this.primer.add(first);
+    this.unprimed.push(...rest);
     this.light.add(this.primer);
-  }
-
-  /**
-   * Bakes each rarity's coin face once, the one tinted now first, one per idle slot after the
-   * frame that drew the primer: the hero then reads its relief from a texture, as the table
-   * coins do, instead of evaluating the face's SDF in every fragment of every prop.
-   */
-  private queueFaceBakes(renderer: WebGPURenderer): void {
-    if (this.facesQueued) return;
-    this.facesQueued = true;
-    const tiers = new Set<CoinTierId>([this.faceTier, ...Object.values(HERO_FACE_TIERS)]);
-    const pending = [...tiers];
-    const next = (): void => {
-      const tier = pending.shift();
-      if (tier === undefined || this.disposed) return;
-      const face = bakeCoinEmboss(renderer, COIN_LOOKS[tier].face, HERO_FACE_RESOLUTION);
-      this.faces.set(tier, face);
-      if (tier === this.faceTier) this.heroLook.setFace(face.texture);
-      afterFrame(next);
-    };
-    afterFrame(next);
   }
 
   private unmountPrimer(): void {
     if (!this.priming) return;
     this.primer.removeFromParent();
     this.primer.clear();
+    this.unprimed.length = 0;
     if (this.primerSlot) this.unbindRay(this.primerSlot.mesh);
     this.primerSlot = null;
   }
@@ -605,6 +616,7 @@ export class UnboxStage {
   /** Poses every prop; `dt` only advances the god-rays' sway. */
   apply(pose: UnboxPose, dt = 0): void {
     if (this.disposed) return;
+    this.assets.strikeFace();
     const bodyHeight = CRATE_SIZE - LID_HEIGHT;
     this.root.rotation.y = this.restYaw + pose.spin;
     const shrink = 1 - (1 - FLY_SCALE) * pose.fly;
@@ -801,10 +813,4 @@ const shake = new Quaternion();
 function afterFrame(task: () => void): void {
   if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(task);
   else setTimeout(task, 0);
-}
-
-/** Runs `task` when the main thread is idle where the host can say so, otherwise now. */
-function scheduleIdle(task: () => void): void {
-  if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(task);
-  else task();
 }
