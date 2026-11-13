@@ -62,8 +62,15 @@ export const BUNDLE_BUDGETS = {
    * sim worker since P-121 (1,151.9 kB gzip on 2026-11-13).
    */
   wasm: 1_600 * 1024,
-  /** Every other lazy JS chunk together. */
-  otherLazyJs: 95 * 1024,
+  /**
+   * Every other lazy JS chunk together. Re-baselined from 95 kB on 2026-11-13 (founder call to
+   * favour dev speed) to the Demo build of c239efa: 112.1 kB, of which crates 33.7 (unbox
+   * cinematic, reveal card, odds sheet), vfx 20.3 (P-224 pop coalescing), riviera 14.9, stage
+   * 12.8 and systems 10.1 kB. That is feature growth, not duplication; the one cut found, three's
+   * ConvexHull in unbox/shot.ts (about 2.6 kB), is queued with vfx-juice. Growth past the 5 %
+   * tolerance still fails.
+   */
+  otherLazyJs: 113 * 1024,
 } as const;
 
 /** P-124: a budget fails once exceeded by more than this share. */
