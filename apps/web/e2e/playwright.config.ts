@@ -1,21 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
-import {
-  APP_DIR,
-  CRATE_HARNESS_URL,
-  DEV_PORT,
-  GAME_URL,
-  PREVIEW_PORT,
-  REPORT_DIR,
-  RESULTS_DIR,
-  VIEWPORT,
-} from './env.ts';
+import { APP_DIR, GAME_URL, PREVIEW_PORT, REPORT_DIR, RESULTS_DIR, VIEWPORT } from './env.ts';
 
 const ci = Boolean(process.env.CI);
 
 /**
  * The suites run against the Demo Mode build (no `VITE_API_URL`) served by `vite preview`, the
- * same bundle GitHub Pages ships, at the same root base `/`. The crate harness is not part of
- * the build, so the dev server serves it from source.
+ * same bundle GitHub Pages ships, at the same root base `/`.
  *
  * Chromium is pinned to WebGL2 on SwiftShader: CI runners have no GPU, and the perf budgets in
  * budgets.ts are calibrated for exactly that rasteriser.
@@ -50,22 +40,12 @@ export default defineConfig({
     { name: 'e2e', testMatch: /\.spec\.ts$/, outputDir: `${RESULTS_DIR}/e2e` },
     { name: 'perf', testMatch: /\.perf\.ts$/, outputDir: `${RESULTS_DIR}/perf` },
   ],
-  webServer: [
-    {
-      command: `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${PREVIEW_PORT} --strictPort`,
-      cwd: APP_DIR,
-      url: GAME_URL,
-      reuseExistingServer: false,
-      timeout: 60_000,
-      env: { VITE_API_URL: '' },
-    },
-    {
-      command: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${DEV_PORT} --strictPort`,
-      cwd: APP_DIR,
-      url: CRATE_HARNESS_URL,
-      reuseExistingServer: false,
-      timeout: 60_000,
-      env: { VITE_API_URL: '' },
-    },
-  ],
+  webServer: {
+    command: `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${PREVIEW_PORT} --strictPort`,
+    cwd: APP_DIR,
+    url: GAME_URL,
+    reuseExistingServer: false,
+    timeout: 60_000,
+    env: { VITE_API_URL: '' },
+  },
 });

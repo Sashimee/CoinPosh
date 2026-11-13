@@ -16,6 +16,9 @@ export interface ProbeCounts {
   readonly credits: number;
   readonly creditedCoins: number;
   readonly refusedFalls: Readonly<Record<string, number>>;
+  readonly cratesSpawned: number;
+  readonly cratesOpened: number;
+  readonly cratesCollected: number;
 }
 
 export interface ProbeSim {
@@ -97,6 +100,20 @@ export function unexpectedErrors(errors: readonly string[], testInfo: TestInfo):
   });
 }
 
+/**
+ * Seeds Demo Mode on `page` and collects its page and console errors into the returned list.
+ * The `pageErrors` fixture does this for `page`; call it for any extra page a test opens.
+ */
+export async function prepareGamePage(page: Page): Promise<string[]> {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+  });
+  await seedDemoMode(page, DEMO_SEED);
+  return errors;
+}
+
 interface Fixtures {
   /** Page errors and console errors, failing the test at teardown unless listed as known. */
   pageErrors: string[];
@@ -105,12 +122,7 @@ interface Fixtures {
 export const test = base.extend<Fixtures>({
   pageErrors: [
     async ({ page }, use, testInfo) => {
-      const errors: string[] = [];
-      page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
-      page.on('console', (message) => {
-        if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
-      });
-      await seedDemoMode(page, DEMO_SEED);
+      const errors = await prepareGamePage(page);
       await use(errors);
       expect(unexpectedErrors(errors, testInfo), 'the page logged errors').toEqual([]);
     },

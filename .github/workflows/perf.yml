@@ -37,6 +37,7 @@ jobs:
         run: pnpm i --frozen-lockfile
 
       - name: Build Demo Mode
+        id: build
         env:
           VITE_API_URL: ''
         run: pnpm --filter @coinposh/web... build
@@ -44,12 +45,15 @@ jobs:
       - name: Bundle budgets
         run: pnpm --filter @coinposh/web bundle:check
 
+      # A red bundle gate must not hide the e2e and perf results, so the steps after it still run.
       - name: Install Playwright chromium
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         working-directory: apps/web
         run: pnpm exec playwright install --with-deps chromium
 
       # One run for both projects, so the HTML report covers every flow and budget.
       - name: E2E flows and perf budgets
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         working-directory: apps/web
         env:
           VITE_API_URL: ''

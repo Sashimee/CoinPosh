@@ -1,5 +1,3 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import {
   DEVICE_FRAME_BUDGET_MS,
@@ -7,8 +5,8 @@ import {
   MAX_JS_HEAP_MB,
   SWIFTSHADER_FRAMES,
 } from './budgets.ts';
-import { PERF_DIR } from './env.ts';
 import { bootGame, expect, reviewShot, tapDrop, test } from './fixtures.ts';
+import { stampRun, writePerfReport } from './perf-report.ts';
 
 const WEBGL2_FALLBACK_LOG = '[CoinPosh] WebGPU unavailable, renderer fell back to WebGL2';
 
@@ -87,7 +85,7 @@ async function playFor(page: Page, ms: number): Promise<void> {
 test.describe('frame time on CI chromium (WebGL2)', () => {
   test('twenty seconds of play stays inside the SwiftShader frame floors and the heap budget', async ({
     page,
-  }) => {
+  }, testInfo) => {
     const logs: string[] = [];
     page.on('console', (message) => logs.push(message.text()));
     await bootGame(page, { query: FRAME_SAMPLE.query });
@@ -107,7 +105,7 @@ test.describe('frame time on CI chromium (WebGL2)', () => {
 
     const sorted = [...raw.intervals].sort((a, b) => a - b);
     const seconds = raw.elapsedMs / 1000;
-    const report = {
+    const run = stampRun({
       backend: 'webgl2',
       rasteriser: 'swiftshader',
       viewport: page.viewportSize(),
@@ -129,10 +127,8 @@ test.describe('frame time on CI chromium (WebGL2)', () => {
         ...SWIFTSHADER_FRAMES,
         maxJsHeapMb: MAX_JS_HEAP_MB,
       },
-    };
-    await mkdir(PERF_DIR, { recursive: true });
-    await writeFile(join(PERF_DIR, 'frames.json'), `${JSON.stringify(report, null, 2)}\n`);
-    test.info().annotations.push({ type: 'frames', description: JSON.stringify(report) });
+    });
+    const report = await writePerfReport('frames.json', run, [run], testInfo);
 
     expect(report.fps, 'average fps over the sample').toBeGreaterThanOrEqual(
       SWIFTSHADER_FRAMES.minFps,

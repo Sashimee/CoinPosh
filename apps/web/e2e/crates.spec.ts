@@ -1,86 +1,140 @@
 import type { Page } from '@playwright/test';
 import { economyConfig } from '@coinposh/economy';
-import { CRATE_HARNESS_URL } from './env.ts';
-import { expect, reviewShot, test } from './fixtures.ts';
+import { bootGame, expect, probe, reviewShot, tapDrop, test } from './fixtures.ts';
 
 const FTUE_DROP = economyConfig.crateSpawn.ftueScriptedDrop;
 /** Card fly (520 ms in revealCard.ts) plus the cinematic's wrap-up and a frame or two of slack. */
 const COLLECT_SETTLES_MS = 3_000;
+/** A thumb's pace: fast enough to push the crate to the lip, slow enough to keep the queue short. */
+const TAP_EVERY_MS = 400;
+
+declare global {
+  interface Window {
+    __crateTapGuard?: boolean;
+  }
+}
 
 interface Unboxed {
   readonly rarity: string;
   readonly fairness: string;
 }
 
-async function openHarness(page: Page, motion: 'full' | 'reduced'): Promise<void> {
-  await page.goto(`${CRATE_HARNESS_URL}${motion === 'reduced' ? '?motion=reduced' : ''}`);
-  await page.waitForFunction(() => window.__crates?.ready === true);
+async function crateCounts(page: Page): Promise<{ spawned: number; opened: number }> {
+  const { counts } = await probe(page);
+  return { spawned: counts.cratesSpawned, opened: counts.cratesOpened };
 }
 
-function crateLog(page: Page): Promise<readonly string[]> {
-  return page.evaluate(() => [...(window.__crates?.log ?? [])]);
-}
-
-/** Drops coins until the server's scripted first-session crate lands on the table. */
+/** Taps until the server's scripted first-session crate lands on the table. */
 async function dropUntilCrate(page: Page): Promise<void> {
   for (let i = 0; i < FTUE_DROP; i += 1) {
-    expect(await page.evaluate(() => window.__crates?.drop())).toBe(true);
-    await page.waitForTimeout(120);
+    await tapDrop(page);
+    await page.waitForTimeout(TAP_EVERY_MS);
   }
-  await expect.poll(() => crateLog(page), { timeout: 15_000 }).toContain('crate:spawned');
+  await expect
+    .poll(async () => (await crateCounts(page)).spawned, { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(1);
 }
 
-/** Nudges the table forward until the crate goes over the lip and the server opens it. */
-async function tipCrateOver(page: Page): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        await page.evaluate(() => window.__crates?.nudgeForward());
-        return crateLog(page);
-      },
-      { timeout: 45_000, intervals: [250] },
-    )
-    .toContain('crate:fell');
-  await expect.poll(() => crateLog(page), { timeout: 15_000 }).toContain('crate:opened');
+/** The longest the pusher may take to shove the scripted crate over the lip. */
+const CRATE_OPENS_WITHIN_MS = 90_000;
+
+/**
+ * Keeps playing until the pusher shoves the crate over the lip and the reveal mounts. Any tap
+ * on the open veil is a skip, and a drop tap already on its way when the reveal mounts would
+ * land as one, so until `releaseTaps` the page drops pointer input that reaches an open reveal.
+ */
+async function playUntilRevealMounts(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.__crateTapGuard = true;
+    for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click']) {
+      addEventListener(
+        type,
+        (event) => {
+          if (!window.__crateTapGuard) return;
+          if (!document.querySelector('[data-testid="crate-reveal"]')) return;
+          event.stopImmediatePropagation();
+          event.preventDefault();
+        },
+        { capture: true },
+      );
+    }
+  });
+  const reveal = page.getByTestId('crate-reveal');
+  const deadline = Date.now() + CRATE_OPENS_WITHIN_MS;
+  for (;;) {
+    try {
+      await reveal.waitFor({ state: 'attached', timeout: TAP_EVERY_MS });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'TimeoutError')) throw error;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `No crate reveal within ${String(CRATE_OPENS_WITHIN_MS)} ms of play: ${JSON.stringify(await crateCounts(page))}`,
+      );
+    }
+    await tapDrop(page);
+  }
+}
+
+async function releaseTaps(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.__crateTapGuard = false;
+  });
 }
 
 async function unbox(page: Page, motion: 'full' | 'reduced'): Promise<Unboxed> {
-  await openHarness(page, motion);
+  await page.emulateMedia({ reducedMotion: motion === 'reduced' ? 'reduce' : 'no-preference' });
+  await bootGame(page);
   await dropUntilCrate(page);
-  await tipCrateOver(page);
+  await playUntilRevealMounts(page);
 
   const reveal = page.getByTestId('crate-reveal');
+  await releaseTaps(page);
+  if (motion === 'full') {
+    const veil = await reveal.evaluate((root) => ({
+      revealed: root.classList.contains('is-revealed'),
+      skip: root.querySelector('.cp-crate-skip')?.checkVisibility() ?? false,
+    }));
+    await page.mouse.click(20, 400);
+    expect(veil, 'the full-motion card opens behind a veil with a skip hint').toEqual({
+      revealed: false,
+      skip: true,
+    });
+  }
+  expect((await crateCounts(page)).opened).toBe(1);
   await expect(reveal).toBeVisible();
   await expect(reveal).toHaveAttribute('data-motion', motion);
   await expect(reveal).toHaveAttribute('role', 'dialog');
-  await expect(reveal).not.toHaveClass(/is-revealed/);
-  await expect(reveal.locator('.cp-crate-skip')).toBeVisible();
-  await reviewShot(page, `crate-veil-${motion}`);
-
-  if (motion === 'full') {
-    await page.mouse.click(20, 400);
-  } else {
-    await page.keyboard.press('Escape');
-  }
+  // The reduced veil reveals by itself 820 ms in (plan.ts), sooner than a SwiftShader runner can
+  // reliably land a skip, so a key pressed then would already collect the card.
   await expect(reveal).toHaveClass(/is-revealed/);
   await expect(reveal.locator('.cp-crate-skip')).toBeHidden();
   const collect = page.getByTestId('crate-collect');
   await expect(collect).toBeVisible();
   if (motion === 'reduced') {
-    await expect(collect, 'a keyboard skip hands focus to Collect').toBeFocused();
+    await expect(collect, 'the revealed card hands focus to Collect').toBeFocused();
   } else {
     // A pointer skip lands focus on the dialog root, not Collect: the mousedown that follows
     // the pointerdown refocuses the tabindex=-1 root.
     expect(await reveal.evaluate((el) => el.contains(document.activeElement))).toBe(true);
   }
   await expect(reveal.locator('.cp-crate-line').first()).toBeVisible();
-  expect(await crateLog(page)).toContain('crate:revealed');
   await reveal.evaluate((el) =>
     Promise.all(
       el
         .getAnimations({ subtree: true })
         .filter((a) => a.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY)
-        .map((a) => a.finished),
+        .map((a) =>
+          // A cancelled animation rejects `finished` with AbortError; it has settled all the same.
+          a.finished.then(
+            () => undefined,
+            (error: unknown) => {
+              if (error instanceof DOMException && error.name === 'AbortError') return;
+              throw error;
+            },
+          ),
+        ),
     ),
   );
   await reviewShot(page, `crate-card-${motion}`);
@@ -129,10 +183,11 @@ async function unbox(page: Page, motion: 'full' | 'reduced'): Promise<Unboxed> {
     expect(fly, 'reduced motion fades the card in place').toEqual({ x: '', y: '' });
   }
   await expect(reveal).toHaveCount(0, { timeout: COLLECT_SETTLES_MS });
-  expect(await crateLog(page)).toContain('crate:collected');
+  expect((await probe(page)).counts.cratesCollected).toBe(1);
   return unboxed;
 }
 
+/** The unbox on the shipped Demo Mode game: real taps, sim, pusher, crate controller and card. */
 test.describe('crate unbox (P-183)', () => {
   test('a falling crate opens, the veil skips to the card, Collect flies it to the inventory', async ({
     page,
@@ -143,6 +198,7 @@ test.describe('crate unbox (P-183)', () => {
   test('reduced motion keeps the flow without the fly, and the seeded server repeats the roll', async ({
     page,
   }) => {
+    test.setTimeout(240_000);
     const reduced = await unbox(page, 'reduced');
     const full = await unbox(page, 'full');
     expect(full, 'same Demo seed, same crate roll and fairness commitment').toEqual(reduced);

@@ -2,8 +2,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Fixed ports, served with `--strictPort` so a leftover server fails the run loudly. Parallel
- * worktrees each pick their own pair through E2E_PREVIEW_PORT and E2E_DEV_PORT.
+ * A fixed port, served with `--strictPort` so a leftover server fails the run loudly. Parallel
+ * worktrees each pick their own through E2E_PREVIEW_PORT.
  */
 function portFromEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim() ?? '';
@@ -16,11 +16,9 @@ function portFromEnv(name: string, fallback: number): number {
 }
 
 export const PREVIEW_PORT = portFromEnv('E2E_PREVIEW_PORT', 4417);
-export const DEV_PORT = portFromEnv('E2E_DEV_PORT', 4418);
 
 /** The app is served at the root: vite.config.ts keeps Vite's default base `/`, as Pages does. */
 export const GAME_URL = `http://127.0.0.1:${PREVIEW_PORT}/`;
-export const CRATE_HARNESS_URL = `http://127.0.0.1:${DEV_PORT}/e2e/harness/crates.html`;
 
 /** iPhone 12-class portrait at DPR 1, the reference phone in 01-ARCHITECTURE.md. */
 export const VIEWPORT = { width: 390, height: 844 } as const;
