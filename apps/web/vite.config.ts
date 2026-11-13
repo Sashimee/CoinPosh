@@ -1,4 +1,9 @@
-import { defineConfig, loadEnv } from 'vite';
+import {
+  RAPIER_COMPAT_MODULE,
+  RAPIER_WASM_NAME,
+  streamRapierWasm,
+} from '@coinposh/sim/rapier-wasm';
+import { defineConfig, loadEnv, parseSync, type ESTree, type Plugin } from 'vite';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -40,6 +45,87 @@ function resolveTurnstileSiteKey(raw: string | undefined): string | undefined {
   return value;
 }
 
+/**
+ * Ships Rapier's wasm as a hashed asset beside the sim worker instead of 4 MB of base64 inside
+ * it, so the browser compiles it while it streams in and caches it on its own. Build only: the
+ * dev server keeps the inlined copy, which loads the same bytes.
+ */
+function rapierWasmAsset(): Plugin {
+  return {
+    name: 'coinposh:rapier-wasm-asset',
+    apply: 'build',
+    enforce: 'pre',
+    transform: {
+      filter: { id: RAPIER_COMPAT_MODULE },
+      handler(code) {
+        const streamed = streamRapierWasm(code, (wasm) => {
+          const referenceId = this.emitFile({
+            type: 'asset',
+            name: RAPIER_WASM_NAME,
+            source: wasm,
+          });
+          return `import.meta.ROLLUP_FILE_URL_${referenceId}`;
+        });
+        return {
+          code: streamed,
+          map: null,
+        };
+      },
+    },
+  };
+}
+
+const SHARED_SOURCE = /[\\/]packages[\\/]shared[\\/]src[\\/].*\.ts$/;
+
+/** Where every call or `new` in `node` starts, not looking into function or class bodies. */
+function callStarts(node: unknown, starts: Set<number>): void {
+  if (Array.isArray(node)) {
+    for (const child of node) callStarts(child, starts);
+    return;
+  }
+  if (typeof node !== 'object' || node === null || !('type' in node)) return;
+  const { type, start } = node as ESTree.Node;
+  if (/Function|Class/.test(type)) return;
+  if (type === 'CallExpression' || type === 'NewExpression') starts.add(start);
+  for (const [key, value] of Object.entries(node)) {
+    if (key !== 'type' && typeof value === 'object') callStarts(value, starts);
+  }
+}
+
+/**
+ * Marks the values packages/shared declares at module level (zod schemas, mostly) as pure in
+ * the sim worker, which reads only its constants, so the bundler drops every schema the worker
+ * never uses and zod with them. Building a schema has no effect beyond the value it returns.
+ */
+function pureSharedValues(): Plugin {
+  return {
+    name: 'coinposh:pure-shared-values',
+    apply: 'build',
+    enforce: 'pre',
+    transform: {
+      filter: { id: SHARED_SOURCE },
+      handler(code, id) {
+        const { program, errors } = parseSync(id, code);
+        if (errors.length > 0) {
+          this.error(`could not parse ${id}: ${errors.map((e) => e.message).join('; ')}`);
+        }
+        const starts = new Set<number>();
+        for (const statement of program.body) {
+          const declaration =
+            statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement;
+          if (declaration?.type !== 'VariableDeclaration') continue;
+          for (const { init } of declaration.declarations) callStarts(init, starts);
+        }
+        let annotated = code;
+        for (const start of [...starts].sort((a, b) => b - a)) {
+          annotated = `${annotated.slice(0, start)}/* @__PURE__ */ ${annotated.slice(start)}`;
+        }
+        return { code: annotated, map: null };
+      },
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', 'VITE_');
   const apiUrl = resolveApiUrl(env.VITE_API_URL);
@@ -56,6 +142,17 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_API_URL': apiUrl === undefined ? 'undefined' : JSON.stringify(apiUrl),
       'import.meta.env.VITE_TURNSTILE_SITE_KEY':
         turnstileSiteKey === undefined ? 'undefined' : JSON.stringify(turnstileSiteKey),
+    },
+    worker: {
+      plugins: () => [rapierWasmAsset(), pureSharedValues()],
+      rolldownOptions: {
+        treeshake: {
+          moduleSideEffects: [{ test: SHARED_SOURCE, sideEffects: false }],
+          // Rapier's -compat entry freezes its whole namespace into its default export at load,
+          // which would keep every binding the sim never touches (src/rapier.ts names the rest).
+          manualPureFunctions: ['Object.freeze'],
+        },
+      },
     },
     build: {
       // The lazily imported stage chunk is three/webgpu (~815 kB minified). It loads after first paint, so the budget sits just above it to keep flagging real growth.

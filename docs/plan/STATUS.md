@@ -327,3 +327,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 25 · 2026-11-12 · P-341 P-343 P-339 P-346 · merged P-341 (bd470d7), P-339 (12581c4); 2 rejected (P-343, P-346)
 - wave 26 · 2026-11-12 · P-345 P-343 P-348 P-350 · merged P-345 (bb2d650), P-343 (480fe05), P-348 (577c6ea), P-350 (36062bc); 0 rejected
 - wave 27 · 2026-11-13 · T-1.17 T-92.05 T-92.06 T-92.10 T-92.08 · merged T-92.10 (82654b5), T-92.06 (4bd97bb), T-92.08 (b74b73a); 2 rejected (T-1.17, T-92.05)
+| P-121 | done | task/P-121 (merge 794c096) | Rapier wasm ships as a separate hashed .wasm asset streamed by the sim worker (instantiateStreaming); sim worker JS under 80 kB gzip (e58665d); follow-ups in POLISH (compression on hosting, shared sideEffects, AdaptiveRendering rAF guard); pnpm check green after merge |
