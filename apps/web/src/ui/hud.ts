@@ -1,5 +1,6 @@
-import { stewardAllowance, upgradeLines } from '@coinposh/economy';
+import { stewardAllowance } from '@coinposh/economy';
 import { affordableCount, upgradeRows } from '../app/model.ts';
+import type { NudgeWallet } from './components/upgradeNudge.ts';
 import type { PanelId } from '../app/state.ts';
 import { browserStorage } from '../app/settings.ts';
 import { watch } from '../app/store.ts';
@@ -21,12 +22,26 @@ import { SPRINGS } from './motion/spring.ts';
 import { SpringValue } from './motion/value.ts';
 import { createSettingsPanel } from './panels/settingsPanel.ts';
 import { createSheet, type Sheet } from './panels/sheet.ts';
-import { createUpgradesPanel, revealUpgradeLine } from './panels/upgradesPanel.ts';
+import {
+  createUpgradesPanel,
+  revealUpgradeLine,
+  UPGRADE_SHEET_LINES,
+} from './panels/upgradesPanel.ts';
 
 export interface Hud {
   readonly root: HTMLElement;
   /** Top-of-screen slot reserved for the net layer's connection banner. */
   readonly bannerSlot: HTMLElement;
+}
+
+/** The dock badge counts only lines the Upgrades sheet lists, so every number has a BUY behind it. */
+export function dockAffordableCount(state: NudgeWallet): number {
+  return affordableCount(
+    upgradeRows(UPGRADE_SHEET_LINES, state.upgradeLevels, {
+      coins: state.coins,
+      goldBars: state.goldBars,
+    }),
+  );
 }
 
 function createBadge(ctx: UiContext): HTMLElement {
@@ -37,15 +52,7 @@ function createBadge(ctx: UiContext): HTMLElement {
   const pop = new SpringValue(1, SPRINGS.pop, (value) => {
     badge.style.scale = value === 1 ? '' : String(value);
   });
-  const count = (): number => {
-    const state = ctx.store.getState();
-    return affordableCount(
-      upgradeRows(upgradeLines, state.upgradeLevels, {
-        coins: state.coins,
-        goldBars: state.goldBars,
-      }),
-    );
-  };
+  const count = (): number => dockAffordableCount(ctx.store.getState());
   const paint = (value: number): void => {
     badge.hidden = value === 0;
     badge.textContent = formatInteger(value, ctx.i18n.language);
