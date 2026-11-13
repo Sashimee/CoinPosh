@@ -11,7 +11,7 @@ import {
 import type { Bus } from '../../app/bus.ts';
 import type { UiApp } from '../../app/index.ts';
 import type { UpgradeEvents, UpgradeRejection } from './events.ts';
-import { isUpgradeLineV1 } from './lines.ts';
+import { isFamilyOfficeLine, isUpgradeLineV1 } from './lines.ts';
 
 /**
  * The one network call a purchase makes. Resolve with the server's response, or reject with
@@ -30,13 +30,19 @@ export type UpgradeUi = Pick<
 export interface BindUpgradesOptions {
   readonly ui: UpgradeUi;
   readonly api: UpgradeApi;
-  readonly venueId: VenueId;
+  /** A getter follows the venue the player is on, which changes when they ascend. */
+  readonly venueId: VenueId | (() => VenueId);
   readonly events: Bus<UpgradeEvents>;
   readonly newKey?: () => IdempotencyKey;
   /** Re-reads GET /v1/state; called when the levels on screen turned out to be stale. */
   readonly refresh?: () => void;
   /** Where errors the player cannot act on are reported. */
   readonly onError?: (error: unknown) => void;
+  /**
+   * Family Office lines are bought with Gold Bars on the ascension screen, never as venue
+   * upgrades: a request for one is handed here instead. Without it the request is refused.
+   */
+  readonly onFamilyOffice?: (lineId: string) => void;
 }
 
 const REJECTIONS: Partial<Record<ErrorCode, UpgradeRejection>> = {
@@ -70,7 +76,8 @@ function freshKey(): IdempotencyKey {
  * from the server, and nothing on screen changes until they do.
  */
 export function bindUpgrades(options: BindUpgradesOptions): () => void {
-  const { ui, api, venueId, events } = options;
+  const { ui, api, events, venueId: venue } = options;
+  const venueId = typeof venue === 'function' ? venue : () => venue;
   const newKey = options.newKey ?? freshKey;
   let live = true;
 
@@ -82,6 +89,11 @@ export function bindUpgrades(options: BindUpgradesOptions): () => void {
   };
 
   const purchase = async (lineId: string, level: number): Promise<void> => {
+    if (isFamilyOfficeLine(lineId) && options.onFamilyOffice) {
+      ui.resolveUpgrade();
+      options.onFamilyOffice(lineId);
+      return;
+    }
     if (!isUpgradeLineV1(lineId)) {
       reject(lineId, level, 'unavailable');
       return;
@@ -89,7 +101,7 @@ export function bindUpgrades(options: BindUpgradesOptions): () => void {
     events.emit('upgrade:requested', { lineId, level });
     let response: UpgradeBuyResponse;
     try {
-      const body = endpoints.upgradesBuy.body.parse({ venueId, lineId, level });
+      const body = endpoints.upgradesBuy.body.parse({ venueId: venueId(), lineId, level });
       response = await api.buy(body, newKey());
     } catch (error) {
       if (!live) return;

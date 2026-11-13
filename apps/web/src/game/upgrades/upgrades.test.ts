@@ -19,7 +19,7 @@ import { bindUpgrades, classifyRejection, type UpgradeApi, type UpgradeUi } from
 import type { UpgradeEvents } from './events.ts';
 import { bindUpgradeFeedback, PURCHASE_CHIME } from './feedback.ts';
 import { registerUpgradeStrings, rejectionKey, UPGRADE_STRINGS } from './i18n.ts';
-import { UPGRADE_LINE_IDS_V1, UPGRADE_LINES_V1 } from './lines.ts';
+import { isFamilyOfficeLine, UPGRADE_LINE_IDS_V1, UPGRADE_LINES_V1 } from './lines.ts';
 
 const VENUE = endpoints.upgradesBuy.body.shape.venueId.parse('rivieraYacht');
 
@@ -127,6 +127,16 @@ describe('upgrade lines v1', () => {
       expect(upgradeLines).toContain(line);
     }
   });
+
+  it('tell the Family Office lines apart by their global scope', () => {
+    const global = upgradeLines.filter((line) => line.scope === 'global');
+    expect(global.length).toBeGreaterThan(0);
+    for (const line of upgradeLines) {
+      expect(isFamilyOfficeLine(line.id)).toBe(line.scope === 'global');
+    }
+    for (const id of UPGRADE_LINE_IDS_V1) expect(isFamilyOfficeLine(id)).toBe(false);
+    expect(isFamilyOfficeLine('notALine')).toBe(false);
+  });
 });
 
 describe('bindUpgrades', () => {
@@ -225,6 +235,58 @@ describe('bindUpgrades', () => {
         payload: { lineId: 'fusionWindow', level: 1, reason: 'unavailable' },
       },
     ]);
+  });
+
+  it('hands Family Office lines to the ascension module instead of buying them for the venue', () => {
+    const h = harness(1_000_000, { trustFund: 0 });
+    const { api, calls } = deferredApi();
+    const handed: string[] = [];
+    bindUpgrades({
+      ui: h.ui,
+      api,
+      venueId: VENUE,
+      events: h.events,
+      onFamilyOffice: (lineId) => handed.push(lineId),
+    });
+    h.request('trustFund', 0);
+    expect(calls).toHaveLength(0);
+    expect(handed).toEqual(['trustFund']);
+    expect(h.ui.store.getState()).toMatchObject({
+      pendingUpgrade: null,
+      upgradeLevels: { trustFund: 0 },
+    });
+    expect(h.seen).toEqual([]);
+    expect(h.feedback).toEqual([]);
+
+    h.request('pusherSpeed', 0);
+    expect(handed).toEqual(['trustFund']);
+    expect(calls.map((call) => call.body.lineId)).toEqual(['pusherSpeed']);
+  });
+
+  it('refuses a Family Office line as unavailable when nothing takes the handoff', () => {
+    const h = harness(1_000_000);
+    const { api, calls } = deferredApi();
+    bindUpgrades({ ui: h.ui, api, venueId: VENUE, events: h.events });
+    h.request('trustFund', 0);
+    expect(calls).toHaveLength(0);
+    expect(h.seen).toEqual([
+      {
+        type: 'upgrade:rejected',
+        payload: { lineId: 'trustFund', level: 1, reason: 'unavailable' },
+      },
+    ]);
+  });
+
+  it('buys for the venue being played when given a getter, so an ascension moves purchases', () => {
+    const h = harness(1_000_000);
+    const { api, calls } = deferredApi();
+    const paris = endpoints.upgradesBuy.body.shape.venueId.parse('salonDeParis');
+    let playing = VENUE;
+    bindUpgrades({ ui: h.ui, api, venueId: () => playing, events: h.events });
+    h.request('dropRate', 0);
+    playing = paris;
+    h.request('dropRate', 0);
+    expect(calls.map((call) => call.body.venueId)).toEqual([VENUE, paris]);
   });
 
   it('reports unexpected errors and ignores answers that arrive after dispose', async () => {

@@ -1,7 +1,14 @@
 import type { MintedCoin, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
+import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
+import {
+  mountAscension,
+  mountAscensionHud,
+  netAscensionApi,
+  type AscensionHud,
+} from './game/ascension/index.ts';
 import type * as CratesApi from './game/crates/index.ts';
 import type * as SystemsModule from './game/systems/index.ts';
 import type { GameSystems } from './game/systems/index.ts';
@@ -176,6 +183,8 @@ document.body.append(uiRoot);
 const ui = mountUi(uiRoot);
 
 let audio: AudioEngine | null = null;
+/** Mounted once play starts; until then the boot state's venue is the one played. */
+let ascensionHud: AscensionHud | null = null;
 
 const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
@@ -354,7 +363,11 @@ function mountUpgradePurchases(
       setWallet: walletChanged,
     },
     api: netUpgradeApi(net.client),
-    venueId: state.venue.id,
+    venueId: () => ascensionHud?.state.venue.id ?? state.venue.id,
+    onFamilyOffice: () => {
+      app.store.setState({ panel: null });
+      void ascensionHud?.open();
+    },
     audio: () => audio,
     refresh: () => {
       net.client.call('state').then(
@@ -662,6 +675,48 @@ async function bootScene(
   attachTable(stage, venue, bridge).use(systems);
   probe.playable = true;
   markBoot('playable');
+  mountAscensionDoor(stage, boot, systems);
+}
+
+/** The HUD laurel and the prestige loop behind it; an ascension re-lays the new venue in place. */
+function mountAscensionDoor(stage: Stage, boot: NetBoot, systems: GameSystems): void {
+  const dock = uiRoot.querySelector<HTMLElement>('[data-testid="hud-dock"]');
+  if (!dock) {
+    throw new Error(
+      'CoinPosh boot: the HUD dock ([data-testid="hud-dock"]) is missing, so the ascension entry has nowhere to sit; mount the UI before the scene.',
+    );
+  }
+  const hud = mountAscensionHud({
+    ui: {
+      store: ui.store,
+      bus: ui.bus,
+      i18n: ui.i18n,
+      setWallet: () => {
+        boot.resync('an ascension');
+      },
+    },
+    host: uiRoot,
+    dock,
+    api: netAscensionApi(boot.net.client),
+    state: boot.state,
+    readState: () => boot.net.client.call('state'),
+    onVenueChanged: (fresh) => {
+      ui.setUpgradeLevels(fresh.venue.upgrades);
+      systems.hydrate(fresh);
+    },
+    audio: () => audio,
+    vibrate: browserVibrate(),
+    stage: () => stage.canvas,
+    mount: mountAscension,
+    onError: (error) => {
+      console.error('CoinPosh net: the ascension could not reach the server.', error);
+    },
+  });
+  ascensionHud = hud;
+  teardown.push(() => {
+    ascensionHud = null;
+    hud.dispose();
+  });
 }
 
 /** The opening heap the server minted onto the table, in every net mode. */

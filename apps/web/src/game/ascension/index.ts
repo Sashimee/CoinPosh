@@ -14,6 +14,10 @@ export { netAscensionApi } from './api.ts';
 export { classifyAscensionRejection, createAscensionController } from './controller.ts';
 export type { AscensionApi, AscensionController, Outcome } from './controller.ts';
 export type { AscensionEvents, AscensionRejection } from './events.ts';
+export { ENTRY_MOTES, ENTRY_SHIMMER, entryReadiness, mountAscensionEntry } from './entry.ts';
+export type { AscensionEntry, AscensionEntryOptions, EntryReadiness } from './entry.ts';
+export { ENTRY_READ_TIMEOUT_MS, mountAscensionHud, RELOAD_RETRY_MS } from './hud.ts';
+export type { AscensionHud, MountAscensionHudOptions } from './hud.ts';
 export { ASCENSION_NAMESPACE, registerAscensionStrings } from './i18n.ts';
 export {
   ascensionProgress,
@@ -23,6 +27,7 @@ export {
   HOLD_TO_ASCEND_MS,
   holdFraction,
   holdTick,
+  lifetimeBullionOf,
   nextVenueId,
 } from './plan.ts';
 export type { AscensionProgress, FamilyOfficeRow } from './plan.ts';

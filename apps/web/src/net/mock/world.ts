@@ -701,6 +701,16 @@ export class MockWorld {
     return levels;
   }
 
+  /** The global lines alone: they survive an ascension, so they are reported apart from the venue's. */
+  #familyOfficeLevels(player: MockPlayer): UpgradeLevels {
+    const levels: UpgradeLevels = {};
+    for (const def of upgradeLines) {
+      if (def.scope !== 'global') continue;
+      levels[UpgradeLineIdSchema.parse(def.id)] = player.levels.get(levelKey(player, def)) ?? 0;
+    }
+    return levels;
+  }
+
   #loadout(player: MockPlayer, venueId: VenueDef['id']): (CharmId | null)[] {
     let loadout = player.loadouts.get(venueId);
     if (loadout === undefined) {
@@ -1049,6 +1059,7 @@ export class MockWorld {
           unlocked: player.unlocked.map((id) => VenueIdSchema.parse(id)),
           upgrades: this.#upgradeLevels(player),
           loadout: this.#slots(player, player.venueId),
+          lifetimeBullion: player.lifetimeBullion,
         },
         table: {
           session,
@@ -1070,6 +1081,7 @@ export class MockWorld {
           clientSeed: player.fair.clientSeed,
           nonce: player.fair.nonce,
         },
+        familyOffice: this.#familyOfficeLevels(player),
       };
     },
 

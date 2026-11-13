@@ -1,4 +1,6 @@
 import {
+  ascension,
+  ascensionGoldBars,
   cascade,
   cascadeTierFor,
   coinTiers,
@@ -28,6 +30,7 @@ import {
   ErrorEnvelopeSchema,
   GuestAuthResponseSchema,
   StateResponseSchema,
+  UpgradeLineIdSchema,
   type Claim,
   type ClaimResult,
   type CoinId,
@@ -1729,5 +1732,68 @@ describe('mock server: upgrade effects match the authoritative server', () => {
     expect(top?.creditedMs).toBe(offline.maxCapHours * 3_600_000);
     expect(top?.coins).toBe(starterVaultCoins(offline.maxCapHours));
     expectConserved();
+  });
+});
+
+describe('mock server: state reports ascension progress and the Family Office', () => {
+  const FAMILY_OFFICE = upgradeLines.filter((def) => def.scope === 'global');
+  const VENUE_LINES = upgradeLines.filter((def) => def.scope === 'venue');
+
+  const lineId = (id: string) => UpgradeLineIdSchema.parse(id);
+
+  function mockPlayer() {
+    const found = server.world.player(requirePlayerId(alice));
+    if (found === undefined) throw new Error('Expected the mock to hold the player.');
+    return found;
+  }
+
+  it('reports lifetime Bullion on the venue and only the global lines as the Family Office', async () => {
+    const fresh = await state();
+    expect(StateResponseSchema.parse(fresh)).toEqual(fresh);
+    expect(fresh.venue.lifetimeBullion).toBe(0);
+    expect(Object.keys(fresh.familyOffice ?? {}).sort()).toEqual(
+      FAMILY_OFFICE.map((def) => def.id).sort(),
+    );
+    expect(Object.values(fresh.familyOffice ?? {}).every((level) => level === 0)).toBe(true);
+
+    mockPlayer().lifetimeBullion = 1_234;
+    expect((await state()).venue.lifetimeBullion).toBe(1_234);
+  });
+
+  it('agrees with its own ascend: Bullion back to zero, Family Office kept, Gold Bars credited', async () => {
+    const riviera = venues[0];
+    await state();
+    const player = mockPlayer();
+    const earned = riviera.bullionThreshold + 600;
+    player.lifetimeBullion = earned;
+    player.levels.set('trustFund', 2);
+    player.levels.set(`${riviera.id}:pusherSpeed`, 3);
+    const before = await state();
+    expect(before.venue.lifetimeBullion).toBe(earned);
+    expect(before.familyOffice?.[lineId('trustFund')]).toBe(2);
+    expect(before.venue.upgrades[lineId('pusherSpeed')]).toBe(3);
+
+    const ascended = await alice.client.call('ascend', { body: { venueId: riviera.id } });
+    const granted = ascensionGoldBars(earned, riviera.bullionThreshold, ascension);
+    expect(ascended.goldBarsGranted).toBe(granted);
+
+    const after = await state();
+    expect(after.venue.id).toBe(ascended.unlockedVenueId);
+    expect(after.venue.unlocked).toEqual(expect.arrayContaining([riviera.id, after.venue.id]));
+    expect(after.venue.lifetimeBullion).toBe(0);
+    expect(after.familyOffice?.[lineId('trustFund')]).toBe(2);
+    expect(after.wallet.goldBars).toBe(granted);
+    for (const def of VENUE_LINES) expect(after.venue.upgrades[lineId(def.id)]).toBe(0);
+    expectConserved();
+  });
+
+  it('refuses an ascension below the threshold the state reports', async () => {
+    const riviera = venues[0];
+    await state();
+    mockPlayer().lifetimeBullion = riviera.bullionThreshold - 1;
+    expect((await state()).venue.lifetimeBullion).toBe(riviera.bullionThreshold - 1);
+    await expect(
+      alice.client.call('ascend', { body: { venueId: riviera.id } }),
+    ).rejects.toMatchObject({ code: 'not_ready' });
   });
 });
