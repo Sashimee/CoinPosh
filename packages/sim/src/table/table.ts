@@ -43,6 +43,7 @@ import {
   COIN_REST,
   COIN_RESTORE,
   CONTACT_EVENTS,
+  CRATE_BODY,
   NUDGE,
   TABLE_MATERIAL,
   TABLE_SOLVER,
@@ -53,7 +54,8 @@ export type FallEdge = 'front' | 'left' | 'right';
 
 /**
  * What a coin struck: another coin, the pusher block (its face or the upper tier on
- * top of it), the lower-tier floor, or the rest of the cabinet (side walls, backboard).
+ * top of it), the lower-tier floor, or the rest of the cabinet (side walls, backboard)
+ * and the crates on it.
  */
 export type ContactSurface = 'coin' | 'pusher' | 'floor' | 'cabinet';
 
@@ -134,6 +136,16 @@ const COIN_DISC: DiscShape = {
 const COIN_REACH = discReach(COIN_DISC);
 const PROBE = COIN_RESTORE.probe * SCALE;
 const PROBE_GRIP = PROBE * COIN_RESTORE.probeGrip;
+const CRATE_HALF = (CRATE_BODY.size / 2) * SCALE;
+const CRATE_ROUND = CRATE_BODY.roundRadius * SCALE;
+const CRATE_CORE = CRATE_HALF - CRATE_ROUND;
+/** Centre distance in world units within which a coin can touch a crate: both bounding spheres. */
+const CRATE_TOUCH = Math.sqrt(3 * CRATE_CORE * CRATE_CORE) + CRATE_ROUND + COIN_REACH;
+/** Within this centre distance of a crate a coin is kept awake; see CRATE_BODY.keepAwake. */
+const CRATE_NEAR = CRATE_TOUCH + CRATE_BODY.keepAwake * SCALE;
+const CRATE_THUD = CRATE_BODY.thudSpeed * SCALE;
+/** A crate whose centre is above this height in world units lies on the pusher top. */
+const CRATE_SHELF_Y = SHELF_Y + CRATE_HALF / 2;
 const PUSHER_HALF: Readonly<Vector> = {
   x: (PLAYFIELD.fieldHalfWidth - PUSHER.sideClearance) * SCALE,
   y: (PUSHER.height / 2) * SCALE,
@@ -186,6 +198,45 @@ interface Push {
   vx: number;
   vy: number;
   vz: number;
+}
+
+/**
+ * A crate on the table: its body, the velocity it started the tick with, and for how
+ * many ticks in a row it has started one no faster than COIN_REST.wakeSpeed across what
+ * it lies on.
+ */
+interface Crate {
+  readonly body: RigidBody;
+  readonly v: Vector;
+  still: number;
+}
+
+/** A crate that left the table, like FallEvent for a coin. */
+export interface CrateFallEvent {
+  readonly crateId: number;
+  readonly edge: FallEdge;
+  /** The tick the crate crossed the fall plane, counted like Sim.tick (after the step). */
+  readonly tick: number;
+}
+
+/** A crate landing or knocked hard enough to hear; see CRATE_BODY.thudSpeed. */
+export interface CrateImpactEvent {
+  readonly crateId: number;
+  /** The tick of the step it happened in, counted like Sim.tick (after the step). */
+  readonly tick: number;
+  /** The crate's centre after the step, in metres. */
+  readonly position: Readonly<Vector>;
+  /** Its change of velocity in the step beyond what gravity gave it, in m/s. */
+  readonly speed: number;
+  /** speed / CRATE_BODY.fullSpeed, capped at 1. */
+  readonly strength: number;
+}
+
+export interface TableCrate {
+  readonly id: number;
+  /** The crate's centre, in metres. */
+  readonly translation: Readonly<Vector>;
+  readonly rotation: Readonly<Rotation>;
 }
 
 export interface FallEvent {
@@ -282,8 +333,10 @@ export class PusherTable {
   readonly #cellPool: Rest[][] = [];
   /** Awake coins too fast for the grid, rebuilt by #pressedFrozen every tick. */
   readonly #farCoins: Rest[] = [];
-  /** Frozen coins by grid cell (TOUCH_REACH wide), rebuilt by #cascade every tick. */
+  /** Frozen coins by grid cell (TOUCH_REACH wide), rebuilt by #frozenGrid every tick. */
   readonly #frozenCells = new Map<number, Rest[]>();
+  /** Whether #frozenCells was built this tick; coins woken since stay listed, unfrozen. */
+  #frozenCellsBuilt = false;
   /** The cell lists #frozenCells has used, kept for reuse. */
   readonly #frozenPool: Rest[][] = [];
   /** #cascade's queue: each coin pushing on, with the push it passes on. */
@@ -304,6 +357,13 @@ export class PusherTable {
   readonly #lastContact = new Map<number, number>();
   #contacts: ContactEvent[] = [];
   #nextCoinId = 0;
+  readonly #crates = new Map<number, Crate>();
+  readonly #crateColliders = new Set<number>();
+  /** The tick of each crate's last reported impact, for CRATE_BODY.cooldownTicks. */
+  readonly #lastCrateImpact = new Map<number, number>();
+  #crateFalls: CrateFallEvent[] = [];
+  #crateImpacts: CrateImpactEvent[] = [];
+  #nextCrateId = 0;
   #separation: SeparationResult = { moved: 0, passes: 0, converged: true, loosened: [] };
 
   constructor(rapier: Rapier, world: World, options: TableOptions = {}) {
@@ -353,6 +413,20 @@ export class PusherTable {
     return this.#contacts;
   }
 
+  get crateCount(): number {
+    return this.#crates.size;
+  }
+
+  /** The crates that left the table during the last step, in ascending id order. */
+  get crateFalls(): readonly CrateFallEvent[] {
+    return this.#crateFalls;
+  }
+
+  /** The crate impacts of the last step, in ascending id order. */
+  get crateImpacts(): readonly CrateImpactEvent[] {
+    return this.#crateImpacts;
+  }
+
   get pusher(): PusherState {
     return {
       phase: this.#clock.phase,
@@ -379,6 +453,59 @@ export class PusherTable {
       rotation: body.rotation(),
       sleeping: this.#isFrozen(id) || body.isSleeping(),
     }));
+  }
+
+  /** Current pose of every crate on the table, in ascending id order. */
+  crates(): TableCrate[] {
+    return Array.from(this.#crates, ([id, { body }]) => ({
+      id,
+      translation: toMetres(body.translation()),
+      rotation: body.rotation(),
+    }));
+  }
+
+  /**
+   * Drops a crate onto the front of the upper tier at `x` metres from the centre line,
+   * with a small depth offset and turn drawn from `rng` (CRATE_BODY), and returns its
+   * id. Crate ids count from 0, apart from coin ids. Throws, adding nothing, when the
+   * table already holds CRATE_BODY.maxOnTable crates or `x` is past CRATE_MAX_X.
+   */
+  dropCrate(x: number, rng: Xoshiro128ss): number {
+    if (this.#crates.size >= CRATE_BODY.maxOnTable) {
+      throw new RangeError(
+        `PusherTable.dropCrate: the table already holds ${CRATE_BODY.maxOnTable} crates; wait for one to fall`,
+      );
+    }
+    if (!(Math.abs(x) <= CRATE_MAX_X)) {
+      throw new RangeError(`PusherTable.dropCrate: x must be within ±${CRATE_MAX_X} m, got ${x}`);
+    }
+    const jitter = rng.nextRange(-CRATE_BODY.maxJitter, CRATE_BODY.maxJitter);
+    const z = PUSHER.frontZ + this.#clock.offset - CRATE_BODY.behindLip + jitter;
+    const yaw = rng.nextRange(-CRATE_BODY.maxYaw, CRATE_BODY.maxYaw);
+    const norm = Math.sqrt(yaw * yaw + 1);
+    const { RigidBodyDesc, ColliderDesc, CoefficientCombineRule } = this.#rapier;
+    const body = this.#world.createRigidBody(
+      RigidBodyDesc.dynamic()
+        .setTranslation(x * SCALE, (PUSHER.height + CRATE_BODY.dropHeight) * SCALE, z * SCALE)
+        .setRotation({ x: 0, y: yaw / norm, z: 0, w: 1 / norm })
+        .setLinearDamping(CRATE_BODY.linearDamping)
+        .setAngularDamping(CRATE_BODY.angularDamping)
+        .setCanSleep(true)
+        .setCcdEnabled(true),
+    );
+    const collider = this.#world.createCollider(
+      ColliderDesc.roundCuboid(CRATE_CORE, CRATE_CORE, CRATE_CORE, CRATE_ROUND)
+        .setDensity(CRATE_BODY.density / (SCALE * SCALE * SCALE))
+        .setFriction(CRATE_BODY.friction)
+        .setRestitution(CRATE_BODY.restitution)
+        .setRestitutionCombineRule(CoefficientCombineRule.Min),
+      body,
+    );
+    const id = this.#nextCrateId;
+    this.#crates.set(id, { body, v: { x: 0, y: 0, z: 0 }, still: 0 });
+    this.#crateColliders.add(collider.handle);
+    this.#nextCrateId += 1;
+    return id;
   }
 
   /**
@@ -566,6 +693,10 @@ export class PusherTable {
       const v = body.linvel();
       body.setLinvel({ x: v.x + dx, y: v.y + lift, z: v.z + dz }, true);
     }
+    for (const { body } of this.#crates.values()) {
+      const v = body.linvel();
+      body.setLinvel({ x: v.x + dx, y: v.y + lift, z: v.z + dz }, true);
+    }
   }
 
   /** Places a coin at an exact pose. Returns the new coin's id. */
@@ -620,7 +751,9 @@ export class PusherTable {
     const to = this.#clock.offset;
     this.#pusherSpeed = ((to - from) * SCALE) / FIXED_DT;
     this.#pushQueue.length = 0;
+    this.#frozenCellsBuilt = false;
     this.#wakeAhead(from, to);
+    this.#wakeForCrates();
     this.#cascade();
     const carry = ((to - from) * SCALE) / SUBSTEPS;
     for (let i = 1; i <= SUBSTEPS; i++) {
@@ -637,6 +770,7 @@ export class PusherTable {
     }
     const falls = this.#collectFalls(tick);
     this.#contacts = this.#collectContacts(tick);
+    this.#collectCrates(tick);
     this.#settle();
     return falls;
   }
@@ -900,30 +1034,7 @@ export class PusherTable {
     if (queue.length === 0) {
       return;
     }
-    const cells = this.#frozenCells;
-    cells.clear();
-    let pooled = 0;
-    for (const [id, rest] of this.#rest) {
-      if (!rest.frozen) {
-        continue;
-      }
-      const t = this.#coin(id).translation(rest.t);
-      const key = cellKey(Math.floor(t.x / TOUCH_REACH), Math.floor(t.z / TOUCH_REACH));
-      const cell = cells.get(key);
-      if (cell) {
-        cell.push(rest);
-        continue;
-      }
-      let fresh = this.#frozenPool[pooled];
-      if (fresh === undefined) {
-        fresh = [];
-        this.#frozenPool.push(fresh);
-      }
-      pooled += 1;
-      fresh.length = 0;
-      fresh.push(rest);
-      cells.set(key, fresh);
-    }
+    const cells = this.#frozenGrid();
     if (cells.size === 0) {
       return;
     }
@@ -963,6 +1074,42 @@ export class PusherTable {
     }
   }
 
+  /**
+   * The frozen coins by grid cell, TOUCH_REACH wide, built at most once a tick after
+   * #wakeAhead: a coin woken after it is still listed, so readers skip the unfrozen.
+   */
+  #frozenGrid(): Map<number, Rest[]> {
+    const cells = this.#frozenCells;
+    if (this.#frozenCellsBuilt) {
+      return cells;
+    }
+    this.#frozenCellsBuilt = true;
+    cells.clear();
+    let pooled = 0;
+    for (const [id, rest] of this.#rest) {
+      if (!rest.frozen) {
+        continue;
+      }
+      const t = this.#coin(id).translation(rest.t);
+      const key = cellKey(Math.floor(t.x / TOUCH_REACH), Math.floor(t.z / TOUCH_REACH));
+      const cell = cells.get(key);
+      if (cell) {
+        cell.push(rest);
+        continue;
+      }
+      let fresh = this.#frozenPool[pooled];
+      if (fresh === undefined) {
+        fresh = [];
+        this.#frozenPool.push(fresh);
+      }
+      pooled += 1;
+      fresh.length = 0;
+      fresh.push(rest);
+      cells.set(key, fresh);
+    }
+    return cells;
+  }
+
   #coin(id: number): RigidBody {
     const body = this.#coins.get(id);
     if (!body) {
@@ -995,6 +1142,9 @@ export class PusherTable {
    */
   #settle(): void {
     for (const id of this.#pressedFrozen()) {
+      this.#wake(id);
+    }
+    for (const id of this.#pressedByCrates()) {
       this.#wake(id);
     }
     for (const [id, body] of this.#coins) {
@@ -1038,7 +1188,11 @@ export class PusherTable {
         rest.anchor[4] = ny;
         rest.anchor[5] = nz;
       }
-      if (rest.still > COIN_REST.ticks && !(shelf && z > SHELF_EDGE_Z)) {
+      if (
+        rest.still > COIN_REST.ticks &&
+        !(shelf && z > SHELF_EDGE_Z) &&
+        !this.#nearCrate(t, shelf)
+      ) {
         this.#freeze(id, body);
       }
     }
@@ -1118,6 +1272,35 @@ export class PusherTable {
     return pressed;
   }
 
+  /**
+   * The frozen coins an awake crate presses on harder than COIN_REST.wakeImpulse, in
+   * ascending id order. Without this a crate the pile shoves into coins frozen in front
+   * of it stands against them as against a wall, too slow for #wakeForCrates to wake
+   * them, and its ride can outlast the economy's crateFallSeconds.max.
+   */
+  #pressedByCrates(): number[] {
+    const pressed: number[] = [];
+    for (const { body } of this.#crates.values()) {
+      if (body.isSleeping()) {
+        continue;
+      }
+      const crate = body.collider(0);
+      const touching: Collider[] = [];
+      this.#world.contactPairsWith(crate, (other) => {
+        const id = this.#idByCollider.get(other.handle);
+        if (id !== undefined && this.#isFrozen(id)) {
+          touching.push(other);
+        }
+      });
+      for (const coin of touching) {
+        if (this.#presses(crate, coin, false, 0)) {
+          pressed.push(this.#idOf(coin));
+        }
+      }
+    }
+    return pressed.sort((a, b) => a - b);
+  }
+
   /** Whether one of `coins` presses on the frozen coin `rest`, whose centre is (x, y, z). */
   #anyPresses(
     coins: readonly Rest[] | undefined,
@@ -1195,6 +1378,9 @@ export class PusherTable {
   }
 
   #surfaceOf(collider: number, other: RigidBody | null): ContactSurface {
+    if (this.#crateColliders.has(collider)) {
+      return 'cabinet';
+    }
     if (other?.isDynamic()) {
       return 'coin';
     }
@@ -1326,6 +1512,116 @@ export class PusherTable {
     return true;
   }
 
+  /**
+   * Before a tick's substeps: records every crate's velocity for #collectCrates and
+   * counts its still ticks, and for each crate moving across what it lies on (or
+   * turning) faster than COIN_REST.wakeSpeed, wakes the frozen coins within
+   * CRATE_BODY.keepAwake of its reach plus its travel in the tick (found in
+   * #frozenGrid), and above COIN_REST.cascadeSpeed starts a push into the pile from its
+   * centre (#cascade).
+   */
+  #wakeForCrates(): void {
+    for (const crate of this.#crates.values()) {
+      const { body } = crate;
+      const v = body.linvel(crate.v);
+      const t = body.translation(this.#scratch);
+      const vz = v.z - (t.y > CRATE_SHELF_Y ? this.#pusherSpeed : 0);
+      const w = body.angvel(this.#scratchCarry);
+      const spin = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z) * CRATE_TOUCH;
+      const speed = Math.sqrt(v.x * v.x + v.y * v.y + vz * vz) + spin;
+      if (speed * speed <= WAKE_SPEED_SQ) {
+        crate.still += 1;
+        continue;
+      }
+      crate.still = 0;
+      const reach = CRATE_NEAR + speed * FIXED_DT;
+      const cells = this.#frozenGrid();
+      const span = Math.ceil(reach / TOUCH_REACH);
+      const ix = Math.floor(t.x / TOUCH_REACH);
+      const iz = Math.floor(t.z / TOUCH_REACH);
+      for (let cx = ix - span; cx <= ix + span; cx++) {
+        for (let cz = iz - span; cz <= iz + span; cz++) {
+          for (const rest of cells.get(cellKey(cx, cz)) ?? NO_COINS) {
+            const dx = rest.t.x - t.x;
+            const dy = rest.t.y - t.y;
+            const dz = rest.t.z - t.z;
+            if (rest.frozen && dx * dx + dy * dy + dz * dz < reach * reach) {
+              this.#wake(this.#idOf(rest.collider));
+            }
+          }
+        }
+      }
+      if (speed * speed > CASCADE_SPEED_SQ) {
+        this.#pushOn(t, CRATE_TOUCH + TOUCH_REACH + speed * FIXED_DT, v.x, v.y, vz);
+      }
+    }
+  }
+
+  /**
+   * Whether a coin at `point` lies within CRATE_NEAR of a crate that keeps it awake: one
+   * not yet still for COIN_REST.ticks, or, for a coin at upper-tier height (`shelf`),
+   * one on the lower tier, which the coin may lie on and must not be frozen to ride the
+   * pusher.
+   */
+  #nearCrate(point: Readonly<Vector>, shelf: boolean): boolean {
+    const reach = CRATE_NEAR;
+    for (const { body, still } of this.#crates.values()) {
+      const t = body.translation(this.#scratchCarry);
+      if (still > COIN_REST.ticks && !(shelf && t.y <= CRATE_SHELF_Y)) {
+        continue;
+      }
+      const dx = t.x - point.x;
+      const dy = t.y - point.y;
+      const dz = t.z - point.z;
+      if (dx * dx + dy * dy + dz * dz < reach * reach) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * After a tick's substeps: removes every crate below the fall plane, and reports
+   * each other crate whose velocity changed by more than gravity accounts for, past
+   * CRATE_BODY.thudSpeed, at most once per CRATE_BODY.cooldownTicks.
+   */
+  #collectCrates(tick: number): void {
+    const falls: CrateFallEvent[] = [];
+    const impacts: CrateImpactEvent[] = [];
+    const g = this.#world.gravity;
+    for (const [id, crate] of this.#crates) {
+      const { body, v: before } = crate;
+      const t = body.translation();
+      if (t.y < FALL_Y) {
+        falls.push({ crateId: id, edge: fallEdge(t.x / SCALE), tick });
+        this.#crateColliders.delete(body.collider(0).handle);
+        this.#crates.delete(id);
+        this.#lastCrateImpact.delete(id);
+        this.#world.removeRigidBody(body);
+        continue;
+      }
+      const v = body.linvel();
+      const ex = v.x - before.x - g.x * FIXED_DT;
+      const ey = v.y - before.y - g.y * FIXED_DT;
+      const ez = v.z - before.z - g.z * FIXED_DT;
+      const knock = Math.sqrt(ex * ex + ey * ey + ez * ez);
+      const last = this.#lastCrateImpact.get(id);
+      if (knock > CRATE_THUD && (last === undefined || tick - last >= CRATE_BODY.cooldownTicks)) {
+        this.#lastCrateImpact.set(id, tick);
+        const speed = knock / SCALE;
+        impacts.push({
+          crateId: id,
+          tick,
+          position: toMetres(t),
+          speed,
+          strength: Math.min(1, speed / CRATE_BODY.fullSpeed),
+        });
+      }
+    }
+    this.#crateFalls = falls;
+    this.#crateImpacts = impacts;
+  }
+
   #collectFalls(tick: number): FallEvent[] {
     const falls: FallEvent[] = [];
     for (const [id, body] of this.#coins) {
@@ -1365,6 +1661,21 @@ export class PusherTable {
       h.int(rest.still).bool(rest.frozen).bool(rest.rider).bool(rest.damped);
       for (const a of rest.anchor) {
         h.float(a);
+      }
+    }
+    // Only a table that has had a crate hashes crates, so a log without one keeps the
+    // hashes it had before crates and SIM_VERSION needs no bump.
+    if (this.#nextCrateId > 0) {
+      h.int(this.#nextCrateId).int(this.#crates.size);
+      for (const [id, { body, still }] of this.#crates) {
+        h.int(id)
+          .int(still)
+          .vec3(body.translation())
+          .quat(body.rotation())
+          .vec3(body.linvel())
+          .vec3(body.angvel())
+          .bool(body.isSleeping())
+          .int(this.#lastCrateImpact.get(id) ?? -1);
       }
     }
     return h;
@@ -1467,6 +1778,12 @@ export class PusherTable {
 }
 
 const ZERO: Readonly<Vector> = { x: 0, y: 0, z: 0 };
+
+/**
+ * Farthest a crate may drop from the centre line, in metres: its bounding sphere and a
+ * coin's still fit between it and the guide wall beside the pusher.
+ */
+export const CRATE_MAX_X = PLAYFIELD.fieldHalfWidth - PUSHER.sideClearance - CRATE_TOUCH / SCALE;
 const NO_COINS: readonly Rest[] = [];
 
 /** The heap laid against a pusher where `clock` has it now, reaching to its full stroke. */

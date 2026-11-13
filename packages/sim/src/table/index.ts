@@ -30,12 +30,16 @@ export type { SeparationResult } from './separation.ts';
 export {
   type ContactEvent,
   type ContactSurface,
+  CRATE_MAX_X,
+  type CrateFallEvent,
+  type CrateImpactEvent,
   type FallEdge,
   type FallEvent,
   type PusherState,
   PusherTable,
   type RestoreCoin,
   type TableCoin,
+  type TableCrate,
   type TableOptions,
 } from './table.ts';
 export {
@@ -43,6 +47,7 @@ export {
   COIN_RESTORE,
   configureTableWorld,
   CONTACT_EVENTS,
+  CRATE_BODY,
   NUDGE,
   TABLE_MATERIAL,
   TABLE_SOLVER,
