@@ -64,6 +64,28 @@ const HEROES: Readonly<Record<ItemKind, UnboxHero>> = {
   scratchCard: 'card',
 };
 
+type Webgl2Probe = () => Pick<WebGL2RenderingContext, 'getExtension'> | null;
+
+function canvasWebgl2(): Pick<WebGL2RenderingContext, 'getExtension'> | null {
+  return document.createElement('canvas').getContext('webgl2');
+}
+
+/**
+ * Whether the studio can render to and read back a float target. WebGPU always can; WebGL2 needs
+ * EXT_color_buffer_float, which some mobile GPUs lack, and there the cards keep their medallions.
+ */
+export function supportsCardArt(
+  backend: RenderBackend,
+  probe: Webgl2Probe = canvasWebgl2,
+): boolean {
+  if (backend === 'webgpu') return true;
+  const gl = probe();
+  if (!gl) return false;
+  const supported = gl.getExtension('EXT_color_buffer_float') !== null;
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+  return supported;
+}
+
 export function artKey(spec: CardArtSpec): string {
   return `${spec.kind}:${spec.rarity ?? 'none'}`;
 }
@@ -96,11 +118,70 @@ export function displayByte(linear: number): number {
 }
 
 /**
+ * `BYTE_FLOOR[b]` is the smallest linear value `displayByte` maps to `b` or above, and
+ * `BYTE_START` holds the byte at the start of each bin of √linear. The curve never climbs more
+ * than one byte per bin, so a lookup and one comparison give the exact byte without the three
+ * `**` per channel that made encoding a frame a long main-thread task on phones.
+ */
+const BIN_SCALE = 512;
+const BYTE_FLOOR = buildByteFloor();
+const BYTE_START = buildByteStart();
+const LAST_BIN = BYTE_START.length - 1;
+
+function buildByteFloor(): Float64Array {
+  const floor = new Float64Array(257);
+  floor[0] = -Infinity;
+  floor[256] = Infinity;
+  let ceiling = 1;
+  while (displayByte(ceiling) < 255) ceiling *= 2;
+  for (let byte = 1; byte < 256; byte++) {
+    let below = 0;
+    let atOrAbove = ceiling;
+    for (;;) {
+      const mid = (below + atOrAbove) / 2;
+      if (mid === below || mid === atOrAbove) break;
+      if (displayByte(mid) >= byte) atOrAbove = mid;
+      else below = mid;
+    }
+    floor[byte] = atOrAbove;
+  }
+  return floor;
+}
+
+function buildByteStart(): Uint8Array {
+  const bins = Math.ceil(Math.sqrt(BYTE_FLOOR[255] ?? 0) * BIN_SCALE) + 1;
+  const start = new Uint8Array(bins);
+  let byte = 0;
+  for (let bin = 0; bin < bins; bin++) {
+    const linear = (bin / BIN_SCALE) ** 2;
+    while ((BYTE_FLOOR[byte + 1] ?? Infinity) <= linear) byte++;
+    start[bin] = byte;
+  }
+  for (let bin = 1; bin < bins; bin++) {
+    if ((start[bin] ?? 0) - (start[bin - 1] ?? 0) > 1) {
+      throw new Error('Card art tone table is too coarse: raise BIN_SCALE');
+    }
+  }
+  return start;
+}
+
+/** `displayByte` through the tables; NaN reads as black. */
+export function displayByteFast(linear: number): number {
+  if (!(linear > 0)) return 0;
+  if (linear >= (BYTE_FLOOR[255] ?? Infinity)) return 255;
+  const bin = Math.min(Math.floor(Math.sqrt(linear) * BIN_SCALE), LAST_BIN);
+  let byte = BYTE_START[bin] ?? 0;
+  if ((BYTE_FLOOR[byte + 1] ?? Infinity) <= linear) byte++;
+  else if ((BYTE_FLOOR[byte] ?? -Infinity) > linear) byte--;
+  return byte;
+}
+
+/**
  * Turns one supersampled float frame into 8-bit RGBA at `out`'s row `rowOffset`. Colour is
  * averaged premultiplied so the transparent background does not bleed dark fringes in.
  */
 export function encodeFrame(
-  pixels: ArrayLike<number>,
+  pixels: Float32Array,
   size: number,
   factor: number,
   bottomUp: boolean,
@@ -109,6 +190,12 @@ export function encodeFrame(
 ): void {
   const source = size * factor;
   const samples = factor * factor;
+  if (pixels.length < source * source * 4) {
+    throw new Error(
+      `Card art readback holds ${pixels.length} floats, expected ${source * source * 4}`,
+    );
+  }
+  let o = rowOffset * size * 4;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let r = 0;
@@ -118,22 +205,42 @@ export function encodeFrame(
       for (let sy = 0; sy < factor; sy++) {
         const row = y * factor + sy;
         const sourceRow = bottomUp ? source - 1 - row : row;
-        for (let sx = 0; sx < factor; sx++) {
-          const i = (sourceRow * source + x * factor + sx) * 4;
-          const alpha = Math.min(Math.max(pixels[i + 3] ?? 0, 0), 1);
+        let i = (sourceRow * source + x * factor) * 4;
+        for (let sx = 0; sx < factor; sx++, i += 4) {
+          const raw = pixels[i + 3] ?? 0;
+          const alpha = raw > 1 ? 1 : raw > 0 ? raw : 0;
           r += (pixels[i] ?? 0) * alpha;
           g += (pixels[i + 1] ?? 0) * alpha;
           b += (pixels[i + 2] ?? 0) * alpha;
           a += alpha;
         }
       }
-      const o = ((rowOffset + y) * size + x) * 4;
-      out[o] = a > 0 ? displayByte(r / a) : 0;
-      out[o + 1] = a > 0 ? displayByte(g / a) : 0;
-      out[o + 2] = a > 0 ? displayByte(b / a) : 0;
+      if (a > 0) {
+        out[o] = displayByteFast(r / a);
+        out[o + 1] = displayByteFast(g / a);
+        out[o + 2] = displayByteFast(b / a);
+      } else {
+        out[o] = 0;
+        out[o + 1] = 0;
+        out[o + 2] = 0;
+      }
       out[o + 3] = Math.round((a / samples) * 255);
+      o += 4;
     }
   }
+}
+
+/** Hands the main thread back between frames, so each frame's encode is its own short task. */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
 }
 
 function accentFor(rarity: Rarity | null): Color {
@@ -232,6 +339,8 @@ export class CardArtStudio {
       await renderer.compileAsync(this.scene, this.camera);
       if (this.stopped()) return null;
       for (let frame = 0; frame < frames; frame++) {
+        if (frame > 0) await nextFrame();
+        if (this.stopped()) return null;
         mesh.rotation.set(REST_PITCH, frameYaw(frame, frames), 0);
         renderer.setRenderTarget(target);
         renderer.setClearColor(0x000000, 0);
@@ -239,6 +348,10 @@ export class CardArtStudio {
         renderer.setRenderTarget(previousTarget);
         renderer.setClearColor(previousColor, previousAlpha);
         const pixels = await renderer.readRenderTargetPixelsAsync(target, 0, 0, size, size);
+        if (this.stopped()) return null;
+        if (!(pixels instanceof Float32Array)) {
+          throw new Error(`Card art expected a float readback, got ${pixels.constructor.name}`);
+        }
         // WebGL reads rows bottom-up; WebGPU copies them top-down.
         encodeFrame(pixels, ART_SIZE, SUPERSAMPLE, backend === 'webgl2', sheet, frame * ART_SIZE);
       }

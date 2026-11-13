@@ -1,6 +1,7 @@
 import { CharmSlotSchema, InventorySchema } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  backCount,
   filterCounts,
   filterStacks,
   fuseProgress,
@@ -273,5 +274,15 @@ describe('inventoryViewFromState', () => {
     expect(() =>
       inventoryViewFromState({ serverTime: 0, inventory: odd, venue: { loadout: [] } }),
     ).toThrow(RangeError);
+  });
+});
+
+describe('backCount', () => {
+  it('rolls a charm up to its level', () => {
+    expect(backCount({ kind: 'charm', level: 4, copies: 2 })).toEqual({ unit: 'level', value: 4 });
+  });
+
+  it.each(['safe', 'scratchCard'] as const)('rolls a %s up to the copies held', (kind) => {
+    expect(backCount({ kind, level: 0, copies: 3 })).toEqual({ unit: 'copies', value: 3 });
   });
 });

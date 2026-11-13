@@ -22,6 +22,7 @@ interface InventoryFlatStrings {
   unavailable: string;
   level: string;
   levelShort: string;
+  owned: string;
   copies: string;
   equipped: string;
   ready: string;
@@ -50,8 +51,8 @@ interface InventoryStrings extends InventoryFlatStrings, ResourceTree {
 
 export const INVENTORY_STRINGS: Readonly<Record<Language, InventoryStrings>> = {
   en: {
-    title: 'Collection',
-    open: 'Open your collection',
+    title: 'Inventory',
+    open: 'Open your inventory',
     filters: 'Filter and sort',
     kindFilter: 'Show',
     rarityFilter: 'Rarity',
@@ -62,11 +63,12 @@ export const INVENTORY_STRINGS: Readonly<Record<Language, InventoryStrings>> = {
     emptyHint: 'Crates from the table bring charms, safes and scratch cards.',
     emptyFiltered: 'Nothing here matches',
     clearFilters: 'Show everything',
-    error: 'The collection could not be fetched.',
+    error: 'The inventory could not be fetched.',
     retry: 'Try again',
     unavailable: 'The display case is closed for now',
     level: 'Level {{level}}',
     levelShort: 'Lv',
+    owned: 'Owned',
     copies: '×{{count}}',
     equipped: 'Equipped',
     ready: 'Ready',
@@ -98,8 +100,8 @@ export const INVENTORY_STRINGS: Readonly<Record<Language, InventoryStrings>> = {
     },
   },
   fr: {
-    title: 'Collection',
-    open: 'Ouvrir votre collection',
+    title: 'Inventaire',
+    open: 'Ouvrir votre inventaire',
     filters: 'Filtrer et trier',
     kindFilter: 'Afficher',
     rarityFilter: 'Rareté',
@@ -110,11 +112,12 @@ export const INVENTORY_STRINGS: Readonly<Record<Language, InventoryStrings>> = {
     emptyHint: 'Les caisses de la table apportent charmes, coffres et cartes à gratter.',
     emptyFiltered: 'Rien ne correspond',
     clearFilters: 'Tout afficher',
-    error: 'Impossible de charger la collection.',
+    error: 'Impossible de charger l’inventaire.',
     retry: 'Réessayer',
     unavailable: 'La vitrine est fermée pour l’instant',
     level: 'Niveau {{level}}',
     levelShort: 'Niv.',
+    owned: 'Possédés',
     copies: '×{{count}}',
     equipped: 'Équipé',
     ready: 'Prêt',
@@ -148,8 +151,8 @@ export const INVENTORY_STRINGS: Readonly<Record<Language, InventoryStrings>> = {
     },
   },
   de: {
-    title: 'Sammlung',
-    open: 'Sammlung öffnen',
+    title: 'Inventar',
+    open: 'Inventar öffnen',
     filters: 'Filtern und sortieren',
     kindFilter: 'Zeigen',
     rarityFilter: 'Seltenheit',
@@ -160,11 +163,12 @@ export const INVENTORY_STRINGS: Readonly<Record<Language, InventoryStrings>> = {
     emptyHint: 'Kisten vom Tisch bringen Charms, Tresore und Rubbelkarten.',
     emptyFiltered: 'Hier passt nichts',
     clearFilters: 'Alles zeigen',
-    error: 'Die Sammlung konnte nicht geladen werden.',
+    error: 'Das Inventar konnte nicht geladen werden.',
     retry: 'Erneut versuchen',
     unavailable: 'Die Vitrine ist vorerst geschlossen',
     level: 'Stufe {{level}}',
     levelShort: 'St.',
+    owned: 'Im Besitz',
     copies: '×{{count}}',
     equipped: 'Ausgerüstet',
     ready: 'Bereit',

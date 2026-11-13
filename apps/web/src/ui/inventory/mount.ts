@@ -14,11 +14,18 @@ import { isReducedMotion, onReducedMotionChange } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { createSheet } from '../panels/sheet.ts';
-import { CardArtStudio, type CardArtSource } from './art.ts';
-import { ItemCard, itemName, rarityName, rarityStyle, type CardOptions } from './card.ts';
+import { CardArtStudio, supportsCardArt, type CardArtSource } from './art.ts';
+import {
+  ItemCard,
+  itemName,
+  rarityName,
+  rarityStyle,
+  spectrumStyle,
+  type CardOptions,
+} from './card.ts';
 import { seenLevelsStore, type SeenLevels } from './data.ts';
 import { inventoryKey, registerInventoryStrings } from './i18n.ts';
-import { cuePlan, type CuePlan } from './juice.ts';
+import { cuePlan, type CueItem, type CuePlan } from './juice.ts';
 import {
   filterCounts,
   filterStacks,
@@ -68,6 +75,14 @@ type Phase = 'loading' | 'ready' | 'error';
 const DEAL_STAGGER_MS = 38;
 const DEAL_MAX_STAGGER = 12;
 
+function artSupported(source: CardArtSource): boolean {
+  if (supportsCardArt(source.backend)) return true;
+  console.warn(
+    '[CoinPosh] float render targets are unavailable, so inventory cards keep painted art',
+  );
+  return false;
+}
+
 export function mountInventory(options: InventoryMountOptions): InventoryPanel {
   registerInventoryStrings(options.ui.i18n);
   const disposers: (() => void)[] = [];
@@ -83,7 +98,7 @@ export function mountInventory(options: InventoryMountOptions): InventoryPanel {
   const t = (key: Parameters<typeof inventoryKey>[0], values?: Record<string, string | number>) =>
     i18n.t(inventoryKey(key), values);
   const seen = options.seen ?? seenLevelsStore(browserStorage());
-  const studio = options.art ? new CardArtStudio(options.art) : null;
+  const studio = options.art && artSupported(options.art) ? new CardArtStudio(options.art) : null;
 
   let view: InventoryView | null = null;
   let stacks: readonly ItemStack[] = [];
@@ -196,8 +211,8 @@ export function mountInventory(options: InventoryMountOptions): InventoryPanel {
     return sortStacks(filterStacks(stacks, filter), sort, nameOf);
   }
 
-  function plan(cue: 'open' | 'flip' | 'levelUp', rarity: Rarity | null): CuePlan {
-    return cuePlan(cue, rarity, isReducedMotion());
+  function plan(cue: 'open' | 'flip' | 'levelUp', item: CueItem | null): CuePlan {
+    return cuePlan(cue, item, isReducedMotion());
   }
 
   function play(cuePlanned: CuePlan, withBus: boolean): void {
@@ -218,7 +233,7 @@ export function mountInventory(options: InventoryMountOptions): InventoryPanel {
     canFuse: canFuse(),
     onTurn: (card, toBack) => {
       for (const other of cards.values()) if (other !== card) other.turn(false, null);
-      card.turn(toBack, plan('flip', card.stack.rarity));
+      card.turn(toBack, plan('flip', card.stack));
     },
     onFuse: (card) => {
       void fuse(card);
@@ -278,7 +293,7 @@ export function mountInventory(options: InventoryMountOptions): InventoryPanel {
           'aria-label': `${label} (${count})`,
           title: label,
           'data-rarity': rarity,
-          style: rarity === 'all' ? '' : rarityStyle(rarity),
+          style: rarity === 'all' ? spectrumStyle() : rarityStyle(rarity),
         },
       },
       h('span', { class: 'cp-inv-gem-stone', attrs: { 'aria-hidden': 'true' } }),
@@ -426,7 +441,7 @@ export function mountInventory(options: InventoryMountOptions): InventoryPanel {
       setTimeout(
         () => {
           if (disposed || cards.get(gain.key) !== card) return;
-          const cue = plan('levelUp', card.stack.rarity);
+          const cue = plan('levelUp', card.stack);
           play(cue, true);
           void card.celebrate(gain.from, cue);
           status.textContent = t('levelUp', { name: nameOf(card.stack), level: card.stack.level });
@@ -450,7 +465,7 @@ export function mountInventory(options: InventoryMountOptions): InventoryPanel {
       render(false);
       const updated = cards.get(card.stack.key);
       if (updated && updated.stack.level > from) {
-        const cue = plan('levelUp', updated.stack.rarity);
+        const cue = plan('levelUp', updated.stack);
         play(cue, true);
         await updated.celebrate(from, cue);
         status.textContent = t('levelUp', {

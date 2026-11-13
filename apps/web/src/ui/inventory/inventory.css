@@ -144,7 +144,7 @@
 }
 
 .cp-inv-gem[data-rarity='all'] .cp-inv-gem-stone {
-  background: conic-gradient(from 45deg, #3ccb7f, #3b82f6, #a855f7, #f5b942, #e9e4d8, #3ccb7f);
+  background: conic-gradient(from 45deg, var(--cp-inv-spectrum));
   box-shadow: none;
 }
 
@@ -199,7 +199,6 @@
 }
 
 .cp-inv-card {
-  --cp-inv-accent: #e9e4d8;
   position: relative;
   aspect-ratio: 3 / 4;
   border-radius: var(--cp-radius-md);
@@ -261,7 +260,7 @@
 }
 
 .cp-inv-card[data-rarity='heirloom'] .cp-inv-frame {
-  background: linear-gradient(120deg, var(--cp-inv-prism), #f5b942);
+  background: linear-gradient(120deg, var(--cp-inv-prism), var(--cp-inv-prism-first));
   background-size: 300% 100%;
   animation: cp-inv-prism 5s linear infinite;
 }
@@ -501,15 +500,12 @@
 .cp-inv-back-level {
   display: flex;
   align-items: baseline;
+  gap: 6px;
   color: var(--cp-gold-brushed);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-}
-
-.cp-inv-card:not(.has-level) .cp-inv-back-level {
-  display: none;
 }
 
 .cp-inv-back-level .cp-odo {

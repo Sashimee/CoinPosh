@@ -1,4 +1,4 @@
-import type { Rarity } from '@coinposh/shared';
+import { RARITIES, type Rarity } from '@coinposh/shared';
 import type { I18n } from '../../i18n/index.ts';
 import { cratesKey } from '../../game/crates/i18n.ts';
 import { albumPlace } from '../../game/crates/loot.ts';
@@ -13,7 +13,7 @@ import { SpringValue } from '../motion/value.ts';
 import type { CardArt } from './art.ts';
 import { inventoryKey } from './i18n.ts';
 import type { CuePlan } from './juice.ts';
-import { fuseProgress, type ItemStack } from './model.ts';
+import { backCount, fuseProgress, type ItemStack } from './model.ts';
 
 const FLIP_SQUASH = 0.07;
 const POP_KICK = 3.2;
@@ -33,11 +33,20 @@ export function rarityName(i18n: I18n, rarity: Rarity): string {
   return i18n.t(cratesKey(`chip.${rarity}`));
 }
 
-/** The frame colours as CSS custom properties; heirloom borrows the prism for its border. */
+/**
+ * The frame colours as CSS custom properties; heirloom borrows the prism for its border and
+ * closes the loop on its first stop so the scrolling gradient has no seam.
+ */
 export function rarityStyle(rarity: Rarity | null): string {
   const accent = RARITY_COLORS[rarity ?? 'common'];
   const prism = HEIRLOOM_PRISM.join(', ');
-  return `--cp-inv-accent: ${accent}; --cp-inv-prism: ${prism}`;
+  return `--cp-inv-accent: ${accent}; --cp-inv-prism: ${prism}; --cp-inv-prism-first: ${HEIRLOOM_PRISM[0]}`;
+}
+
+/** Every rarity colour around the 'all' gem, closed back on the first. */
+export function spectrumStyle(): string {
+  const stops = [...RARITIES.map((rarity) => RARITY_COLORS[rarity]), RARITY_COLORS[RARITIES[0]]];
+  return `--cp-inv-spectrum: ${stops.join(', ')}`;
 }
 
 export interface CardOptions {
@@ -174,7 +183,11 @@ export class ItemCard {
       [nameplate, name],
       [backName, name],
       [levelShort, () => i18n.t(inventoryKey('levelShort'))],
-      [backLevelLabel, () => `${i18n.t(inventoryKey('levelShort'))} `],
+      [
+        backLevelLabel,
+        () =>
+          `${i18n.t(inventoryKey(backCount(this.current).unit === 'level' ? 'levelShort' : 'owned'))} `,
+      ],
       [turnBack, () => i18n.t(inventoryKey('turnBack'))],
       [about, () => i18n.t(inventoryKey(`about.${this.current.kind}`))],
       [rarityLine, rarityText],
@@ -205,7 +218,7 @@ export class ItemCard {
       this.card.style.scale = value === 0 ? '' : `${1 + value * 0.08} ${1 - value * 0.05}`;
     });
     this.levelOdometer.jump(String(this.current.level));
-    this.backLevel.jump(String(this.current.level));
+    this.backLevel.jump(String(backCount(this.current).value));
 
     makePressable(this.front, this.ctx, {
       feedback: 'toggle',
@@ -242,7 +255,7 @@ export class ItemCard {
     this.options = options;
     if (!rose) {
       this.levelOdometer.jump(String(stack.level));
-      this.backLevel.jump(String(stack.level));
+      this.backLevel.jump(String(backCount(stack).value));
     }
     this.repaint();
   }
@@ -275,9 +288,9 @@ export class ItemCard {
     this.back.inert = !toBack;
     this.front.setAttribute('aria-expanded', String(toBack));
     if (plan?.channels.includes('light')) restartAnimation(this.card, 'is-glinting');
-    if (toBack) {
+    if (toBack && plan?.channels.includes('numberPop')) {
       this.backLevel.jump('0');
-      this.backLevel.set(String(this.current.level), 1);
+      this.backLevel.set(String(backCount(this.current).value), 1);
     }
     if (isReducedMotion()) {
       this.angle.jump(0);
@@ -387,7 +400,7 @@ export class ItemCard {
     this.card.classList.toggle('is-ready', stack.kind === 'safe' && stack.ready);
     this.card.classList.toggle('has-level', stack.kind === 'charm');
     this.duplicates.textContent = i18n.t(inventoryKey('duplicates'), { count: stack.copies });
-    this.duplicates.hidden = stack.copies < 2;
+    this.duplicates.hidden = stack.copies < 2 || backCount(stack).unit === 'copies';
     this.front.setAttribute('aria-label', this.frontLabel());
 
     const progress = fuseProgress(stack, this.options.duplicatesPerLevel);

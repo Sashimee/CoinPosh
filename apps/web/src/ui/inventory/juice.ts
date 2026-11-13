@@ -2,6 +2,7 @@ import { RARITIES, type Rarity } from '@coinposh/shared';
 import type { ImpactEvent } from '../../audio/index.ts';
 import type { FeedbackKind } from '../../app/state.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
+import { backCount, type ItemStack } from './model.ts';
 
 /** The juice checklist of 03-ART-AUDIO-JUICE, one entry per channel an interaction lights up. */
 export type JuiceChannel =
@@ -50,11 +51,15 @@ function levelChime(rarity: Rarity | null): readonly ChimeStep[] {
   return steps;
 }
 
+export type CueItem = Pick<ItemStack, 'kind' | 'rarity' | 'level' | 'copies'>;
+
 /**
- * What each inventory moment plays. Reduced motion keeps sound, haptics, light and the number
- * pop (all fades, no travel) and drops particles, squash and hit-stop, still clearing four.
+ * What each inventory moment plays for `item` (none for opening the panel). Reduced motion keeps
+ * sound, haptics, light and the number pop (all fades, no travel) and drops particles, squash and
+ * hit-stop, still clearing four. A flip pops a number only where the back has one to roll.
  */
-export function cuePlan(cue: InventoryCue, rarity: Rarity | null, reduced: boolean): CuePlan {
+export function cuePlan(cue: InventoryCue, item: CueItem | null, reduced: boolean): CuePlan {
+  const rarity = item?.rarity ?? null;
   switch (cue) {
     case 'open':
       return {
@@ -67,7 +72,8 @@ export function cuePlan(cue: InventoryCue, rarity: Rarity | null, reduced: boole
           ? ['sound', 'haptic', 'light', 'numberPop']
           : ['sound', 'haptic', 'squash', 'light', 'numberPop'],
       };
-    case 'flip':
+    case 'flip': {
+      const pop: readonly JuiceChannel[] = item && backCount(item).value > 0 ? ['numberPop'] : [];
       return {
         feedback: 'toggle',
         haptic: null,
@@ -75,9 +81,10 @@ export function cuePlan(cue: InventoryCue, rarity: Rarity | null, reduced: boole
         sparks: 0,
         hold: 0,
         channels: reduced
-          ? ['sound', 'haptic', 'light', 'numberPop']
-          : ['sound', 'haptic', 'squash', 'light', 'numberPop'],
+          ? ['sound', 'haptic', 'light', ...pop]
+          : ['sound', 'haptic', 'squash', 'light', ...pop],
       };
+    }
     case 'levelUp':
       return {
         feedback: 'confirm',

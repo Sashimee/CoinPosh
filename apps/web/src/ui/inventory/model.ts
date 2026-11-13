@@ -217,6 +217,18 @@ export interface FuseProgress {
   readonly levels: number;
 }
 
+export interface BackCount {
+  readonly unit: 'level' | 'copies';
+  readonly value: number;
+}
+
+/** The number a card's back rolls up to as it turns over: a charm's level, else the copies held. */
+export function backCount(stack: Pick<ItemStack, 'kind' | 'level' | 'copies'>): BackCount {
+  return stack.kind === 'charm'
+    ? { unit: 'level', value: stack.level }
+    : { unit: 'copies', value: stack.copies };
+}
+
 /** Duplicate progress for a charm stack, or `null` where duplicates cannot be fused. */
 export function fuseProgress(
   stack: ItemStack,

@@ -1,5 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { artKey, displayByte, encodeFrame, frameYaw, swayFrames } from './art.ts';
+import { describe, expect, it, vi } from 'vitest';
+import type { Color } from 'three/webgpu';
+import {
+  artKey,
+  CardArtStudio,
+  displayByte,
+  displayByteFast,
+  encodeFrame,
+  frameYaw,
+  supportsCardArt,
+  swayFrames,
+  type CardArtSource,
+} from './art.ts';
 
 const LIT = [1, 1, 1, 1];
 const DARK = [0, 0, 0, 1];
@@ -67,5 +78,74 @@ describe('card art', () => {
     const sheet = new Uint8ClampedArray(8);
     encodeFrame(new Float32Array(LIT), 1, 1, false, sheet, 1);
     expect([sheet[0], sheet[4]]).toEqual([0, displayByte(1)]);
+  });
+
+  it('the threshold table reproduces the exact tone curve', () => {
+    const probes = [-1, 0, Number.MIN_VALUE, 1e-6, 0.001, 0.01, 0.18, 0.5, 1, 2, 4, 100];
+    for (let i = 0; i <= 20000; i++) probes.push((i / 20000) ** 3 * 8);
+    for (const value of probes) expect(displayByteFast(value), `${value}`).toBe(displayByte(value));
+    expect(displayByteFast(Number.NaN)).toBe(0);
+    expect(displayByteFast(Infinity)).toBe(255);
+  });
+
+  it('stops rendering frames once disposed during a readback', async () => {
+    let release: (() => void) | null = null;
+    let renders = 0;
+    const renderer: CardArtSource['renderer'] = {
+      render: () => {
+        renders += 1;
+      },
+      getRenderTarget: () => null,
+      setRenderTarget: () => undefined,
+      getClearColor: (target: Color) => target.set(0x000000),
+      getClearAlpha: () => 1,
+      setClearColor: () => undefined,
+      compileAsync: () => Promise.resolve(),
+      readRenderTargetPixelsAsync: () =>
+        new Promise((resolve) => {
+          release = () => {
+            resolve(new Float32Array(4));
+          };
+        }),
+    } as unknown as CardArtSource['renderer'];
+    const studio = new CardArtStudio({ renderer, backend: 'webgpu' });
+    const art = studio.art({ kind: 'charm', rarity: 'rare' });
+    await vi.waitFor(() => {
+      expect(release).not.toBeNull();
+    });
+    studio.dispose();
+    (release as (() => void) | null)?.();
+    await expect(art).resolves.toBeNull();
+    expect(renders).toBe(1);
+  });
+
+  it('renders art on WebGPU without probing', () => {
+    expect(
+      supportsCardArt('webgpu', () => {
+        throw new Error('WebGPU needs no WebGL2 probe');
+      }),
+    ).toBe(true);
+  });
+
+  it('needs EXT_color_buffer_float on WebGL2, and releases the probe context', () => {
+    const probe = (extensions: readonly string[]) => {
+      const lost: string[] = [];
+      const gl = {
+        getExtension: (name: string) =>
+          extensions.includes(name)
+            ? {
+                loseContext: () => {
+                  lost.push(name);
+                },
+              }
+            : null,
+      } as unknown as WebGL2RenderingContext;
+      return { gl, lost };
+    };
+    const capable = probe(['EXT_color_buffer_float', 'WEBGL_lose_context']);
+    expect(supportsCardArt('webgl2', () => capable.gl)).toBe(true);
+    expect(capable.lost).toEqual(['WEBGL_lose_context']);
+    expect(supportsCardArt('webgl2', () => probe(['WEBGL_lose_context']).gl)).toBe(false);
+    expect(supportsCardArt('webgl2', () => null)).toBe(false);
   });
 });
