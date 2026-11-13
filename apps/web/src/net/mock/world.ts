@@ -514,6 +514,12 @@ export class MockWorld {
   readonly #byDevice = new Map<string, PlayerId>();
   /** Page lives this world was restored through; 0 for a world that started in this page. */
   #epoch = 0;
+  /**
+   * Openable crates whose claim this page life accepted. The client that holds that claim may
+   * still have its open in flight, so an in-page re-boot must not lay the crate back at the lip.
+   * Never stored: after a reload every open that was in flight died with the page.
+   */
+  readonly #claimedThisPage = new Set<CrateId>();
 
   /**
    * A seeded Demo page replays the same `crypto` stream after every reload, so ids minted in a
@@ -1257,7 +1263,9 @@ export class MockWorld {
 
   /** Crates won over the lip whose open never reached the server, oldest first. */
   #openableCrates(player: MockPlayer): CrateRecord[] {
-    return [...player.crates.values()].filter((record) => record.state === 'openable');
+    return [...player.crates.values()].filter(
+      (record) => record.state === 'openable' && !this.#claimedThisPage.has(record.crate.id),
+    );
   }
 
   /**
@@ -1505,6 +1513,7 @@ export class MockWorld {
         throw new MockFailure('not_ready', 'Push the crate off the ledge first.');
       player.crates.delete(body.crateId);
       player.openedCrates.add(body.crateId);
+      this.#claimedThisPage.delete(body.crateId);
       const roll = await this.#roll(player, 'vaultCrate', now, body.crateId, record.ftue);
       return { crateId: body.crateId, roll, wallet: player.wallet };
     },
@@ -1789,6 +1798,7 @@ export class MockWorld {
           }
           if (claim.tick < record.spawnTick) return reject('not_on_table');
           record.relaidIn = null;
+          this.#claimedThisPage.add(claim.crateId);
           player.lastClaimTick = claim.tick;
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
         }
@@ -1796,6 +1806,7 @@ export class MockWorld {
         player.lastClaimTick = claim.tick;
         if (claim.edge === 'front') {
           record.state = 'openable';
+          this.#claimedThisPage.add(claim.crateId);
           this.#credit(player, now, 'season.crate', { stars: season.starsPerCrate }, claim.crateId);
         } else {
           player.crates.delete(claim.crateId);

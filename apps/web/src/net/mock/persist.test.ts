@@ -354,6 +354,41 @@ describe('Demo persistence: claimed-but-unopened crates', () => {
     third.expectConserved();
   });
 
+  it('keeps a crate won in this page off the lip on an in-page re-boot, its open still in flight', async () => {
+    const tab = await Tab.open(page());
+    const { crate } = await winFtueCrate(tab);
+    const rebooted = await tab.boot();
+    expect(rebooted.table.crates.map((candidate) => candidate.id)).not.toContain(crate.id);
+    expect(await tab.claimCrate(rebooted, crate.id)).toEqual([
+      { status: 'rejected', reason: 'already_claimed' },
+    ]);
+    const opened = await tab.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    expect(opened.roll.rarity).toBe(crateSpawn.ftueScriptedRarity);
+    tab.expectConserved();
+  });
+
+  it('lays a restored crate at the lip once more after an in-page re-boot, until it is claimed', async () => {
+    const first = await Tab.open(page());
+    const { crate } = await winFtueCrate(first);
+    first.server.flush();
+
+    const second = await Tab.open(page());
+    await second.boot();
+    const retaken = await second.boot();
+    expect(retaken.table.crates.map((candidate) => candidate.id)).toContain(crate.id);
+    expect(await second.claimCrate(retaken, crate.id)).toEqual([
+      { status: 'accepted', credited: 0, cascade: null, minted: null },
+    ]);
+
+    const again = await second.boot();
+    expect(again.table.crates.map((candidate) => candidate.id)).not.toContain(crate.id);
+    expect(await second.claimCrate(again, crate.id)).toEqual([
+      { status: 'rejected', reason: 'already_claimed' },
+    ]);
+    await second.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    second.expectConserved();
+  });
+
   it('refuses a re-claim of a won crate in the session it was won in', async () => {
     const tab = await Tab.open(page());
     const { state, crate } = await winFtueCrate(tab);

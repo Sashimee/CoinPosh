@@ -133,8 +133,9 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
   const vault = await vaultBalance(page);
   const coins = await tableCoins(page);
   expect(vault).not.toBe(freshVault);
+  const unposedCoins = unposed(stored);
   const refundCap = new Map(
-    unposed(stored).map((record) => [record.coin.id, Math.min(record.paid, record.coin.value)]),
+    unposedCoins.map((record) => [record.coin.id, Math.min(record.paid, record.coin.value)]),
   );
 
   await page.reload();
@@ -157,13 +158,16 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
   const refunds = moves.filter((entry) => entry.reason === 'refund.table');
   const falls = moves.filter((entry) => entry.reason === 'claim.fall');
   expect(moves.length).toBe(refunds.length + falls.length);
+  expect(refunds.length).toBeLessThanOrEqual(unposedCoins.length);
+  expect(new Set(refunds.map((entry) => entry.ref)).size).toBe(refunds.length);
   for (const entry of refunds) {
+    expect(refundCap.has(entry.ref ?? ''), `refund of ${String(entry.ref)}`).toBe(true);
     expect(entry.delta.coins).toBeLessThanOrEqual(refundCap.get(entry.ref ?? '') ?? 0);
   }
   expect(falls.length).toBeLessThanOrEqual(FALLS_WHILE_BOOTING);
   testInfo.annotations.push({
     type: 'vault moves after the reload',
-    description: `${String(refunds.length)} unposed coins refunded, ${String(falls.length)} falls`,
+    description: `${String(refunds.length)} of ${String(unposedCoins.length)} unposed coins refunded, ${String(falls.length)} falls`,
   });
   expect(
     Math.abs((await tableCoins(page)) - (coins - refunds.length - falls.length)),
