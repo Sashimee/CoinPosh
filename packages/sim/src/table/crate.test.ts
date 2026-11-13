@@ -1,5 +1,5 @@
 import { openingHeap, rateEnvelopeDerivation } from '@coinposh/economy';
-import { COIN_TIERS } from '@coinposh/shared';
+import { COIN_TIERS, MAX_SNAPSHOT_CRATES } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import { TICK_RATE_HZ } from '../constants.ts';
 import { MAX_CRATE_OFFSET_MM, type SimInput } from '../inputs.ts';
@@ -121,7 +121,7 @@ describe('Vault Crate rigid body (P-181)', () => {
     expect(second.fall).toEqual(first.fall);
     expect(new Set(first.hashes).size).toBe(first.hashes.length);
     expect(first.fall.tick).toMatchInlineSnapshot(`1108`);
-    expect(first.hashes.at(-1)).toMatchInlineSnapshot(`"fb2cdfb057989789"`);
+    expect(first.hashes.at(-1)).toMatchInlineSnapshot(`"bfc338cd646f5fbe"`);
   });
 
   it('keeps the hashes of a table that never held a crate', async () => {
@@ -197,6 +197,35 @@ describe('Vault Crate rigid body (P-181)', () => {
       expect(sim.coinCount).toBe(0);
       expect(sim.crateCount).toBe(0);
       expect(sim.hash()).toBe(before);
+    } finally {
+      sim.dispose();
+    }
+  });
+
+  it('holds as many crates as a stored table snapshot', () => {
+    expect(CRATE_BODY.maxOnTable).toBe(MAX_SNAPSHOT_CRATES);
+  });
+
+  it('refuses a snapshot while a crate is on the table, and takes one after it falls', async () => {
+    const sim = await demoSim();
+    try {
+      settle(sim);
+      sim.step([{ kind: 'dropCrate', xMm: 0 }]);
+      const before = sim.hash();
+      expect(() => sim.snapshot()).toThrow(
+        /Sim.snapshot: tick 601 has 1 crates on the table, which a snapshot cannot hold/,
+      );
+      expect(sim.hash()).toBe(before);
+      const drops = Xoshiro128ss.fromSeed((RIDE_SEED ^ 0x5eed) >>> 0);
+      for (let i = 1; sim.crateCount > 0 && i <= MAX_RIDE_TICKS; i++) {
+        sim.step(
+          i % DROP_EVERY_TICKS === DROP_EVERY_TICKS / 2
+            ? [{ kind: 'dropCoin', xMm: drops.nextInt(241) - 120 }]
+            : [],
+        );
+      }
+      expect(sim.crateCount).toBe(0);
+      expect(sim.snapshot().coins.length).toBe(sim.coinCount);
     } finally {
       sim.dispose();
     }

@@ -200,10 +200,15 @@ interface Push {
   vz: number;
 }
 
-/** A crate on the table: its body and the velocity it started the tick with. */
+/**
+ * A crate on the table: its body, the velocity it started the tick with, and for how
+ * many ticks in a row it has started one no faster than COIN_REST.wakeSpeed across what
+ * it lies on.
+ */
 interface Crate {
   readonly body: RigidBody;
   readonly v: Vector;
+  still: number;
 }
 
 /** A crate that left the table, like FallEvent for a coin. */
@@ -328,8 +333,10 @@ export class PusherTable {
   readonly #cellPool: Rest[][] = [];
   /** Awake coins too fast for the grid, rebuilt by #pressedFrozen every tick. */
   readonly #farCoins: Rest[] = [];
-  /** Frozen coins by grid cell (TOUCH_REACH wide), rebuilt by #cascade every tick. */
+  /** Frozen coins by grid cell (TOUCH_REACH wide), rebuilt by #frozenGrid every tick. */
   readonly #frozenCells = new Map<number, Rest[]>();
+  /** Whether #frozenCells was built this tick; coins woken since stay listed, unfrozen. */
+  #frozenCellsBuilt = false;
   /** The cell lists #frozenCells has used, kept for reuse. */
   readonly #frozenPool: Rest[][] = [];
   /** #cascade's queue: each coin pushing on, with the push it passes on. */
@@ -495,7 +502,7 @@ export class PusherTable {
       body,
     );
     const id = this.#nextCrateId;
-    this.#crates.set(id, { body, v: { x: 0, y: 0, z: 0 } });
+    this.#crates.set(id, { body, v: { x: 0, y: 0, z: 0 }, still: 0 });
     this.#crateColliders.add(collider.handle);
     this.#nextCrateId += 1;
     return id;
@@ -744,6 +751,7 @@ export class PusherTable {
     const to = this.#clock.offset;
     this.#pusherSpeed = ((to - from) * SCALE) / FIXED_DT;
     this.#pushQueue.length = 0;
+    this.#frozenCellsBuilt = false;
     this.#wakeAhead(from, to);
     this.#wakeForCrates();
     this.#cascade();
@@ -1026,30 +1034,7 @@ export class PusherTable {
     if (queue.length === 0) {
       return;
     }
-    const cells = this.#frozenCells;
-    cells.clear();
-    let pooled = 0;
-    for (const [id, rest] of this.#rest) {
-      if (!rest.frozen) {
-        continue;
-      }
-      const t = this.#coin(id).translation(rest.t);
-      const key = cellKey(Math.floor(t.x / TOUCH_REACH), Math.floor(t.z / TOUCH_REACH));
-      const cell = cells.get(key);
-      if (cell) {
-        cell.push(rest);
-        continue;
-      }
-      let fresh = this.#frozenPool[pooled];
-      if (fresh === undefined) {
-        fresh = [];
-        this.#frozenPool.push(fresh);
-      }
-      pooled += 1;
-      fresh.length = 0;
-      fresh.push(rest);
-      cells.set(key, fresh);
-    }
+    const cells = this.#frozenGrid();
     if (cells.size === 0) {
       return;
     }
@@ -1089,6 +1074,42 @@ export class PusherTable {
     }
   }
 
+  /**
+   * The frozen coins by grid cell, TOUCH_REACH wide, built at most once a tick after
+   * #wakeAhead: a coin woken after it is still listed, so readers skip the unfrozen.
+   */
+  #frozenGrid(): Map<number, Rest[]> {
+    const cells = this.#frozenCells;
+    if (this.#frozenCellsBuilt) {
+      return cells;
+    }
+    this.#frozenCellsBuilt = true;
+    cells.clear();
+    let pooled = 0;
+    for (const [id, rest] of this.#rest) {
+      if (!rest.frozen) {
+        continue;
+      }
+      const t = this.#coin(id).translation(rest.t);
+      const key = cellKey(Math.floor(t.x / TOUCH_REACH), Math.floor(t.z / TOUCH_REACH));
+      const cell = cells.get(key);
+      if (cell) {
+        cell.push(rest);
+        continue;
+      }
+      let fresh = this.#frozenPool[pooled];
+      if (fresh === undefined) {
+        fresh = [];
+        this.#frozenPool.push(fresh);
+      }
+      pooled += 1;
+      fresh.length = 0;
+      fresh.push(rest);
+      cells.set(key, fresh);
+    }
+    return cells;
+  }
+
   #coin(id: number): RigidBody {
     const body = this.#coins.get(id);
     if (!body) {
@@ -1121,6 +1142,9 @@ export class PusherTable {
    */
   #settle(): void {
     for (const id of this.#pressedFrozen()) {
+      this.#wake(id);
+    }
+    for (const id of this.#pressedByCrates()) {
       this.#wake(id);
     }
     for (const [id, body] of this.#coins) {
@@ -1167,7 +1191,7 @@ export class PusherTable {
       if (
         rest.still > COIN_REST.ticks &&
         !(shelf && z > SHELF_EDGE_Z) &&
-        !this.#nearCrate(t, CRATE_NEAR)
+        !this.#nearCrate(t, shelf)
       ) {
         this.#freeze(id, body);
       }
@@ -1246,6 +1270,35 @@ export class PusherTable {
       }
     }
     return pressed;
+  }
+
+  /**
+   * The frozen coins an awake crate presses on harder than COIN_REST.wakeImpulse, in
+   * ascending id order. Without this a crate the pile shoves into coins frozen in front
+   * of it stands against them as against a wall, too slow for #wakeForCrates to wake
+   * them, and its ride can outlast the economy's crateFallSeconds.max.
+   */
+  #pressedByCrates(): number[] {
+    const pressed: number[] = [];
+    for (const { body } of this.#crates.values()) {
+      if (body.isSleeping()) {
+        continue;
+      }
+      const crate = body.collider(0);
+      const touching: Collider[] = [];
+      this.#world.contactPairsWith(crate, (other) => {
+        const id = this.#idByCollider.get(other.handle);
+        if (id !== undefined && this.#isFrozen(id)) {
+          touching.push(other);
+        }
+      });
+      for (const coin of touching) {
+        if (this.#presses(crate, coin, false, 0)) {
+          pressed.push(this.#idOf(coin));
+        }
+      }
+    }
+    return pressed.sort((a, b) => a - b);
   }
 
   /** Whether one of `coins` presses on the frozen coin `rest`, whose centre is (x, y, z). */
@@ -1460,11 +1513,12 @@ export class PusherTable {
   }
 
   /**
-   * Before a tick's substeps: records every crate's velocity for #collectCrates, and
-   * for each crate moving across what it lies on (or turning) faster than
-   * COIN_REST.wakeSpeed, wakes the frozen coins within CRATE_BODY.keepAwake of its reach
-   * plus its travel in the tick, and above COIN_REST.cascadeSpeed starts a push into
-   * the pile from its centre (#cascade).
+   * Before a tick's substeps: records every crate's velocity for #collectCrates and
+   * counts its still ticks, and for each crate moving across what it lies on (or
+   * turning) faster than COIN_REST.wakeSpeed, wakes the frozen coins within
+   * CRATE_BODY.keepAwake of its reach plus its travel in the tick (found in
+   * #frozenGrid), and above COIN_REST.cascadeSpeed starts a push into the pile from its
+   * centre (#cascade).
    */
   #wakeForCrates(): void {
     for (const crate of this.#crates.values()) {
@@ -1476,19 +1530,25 @@ export class PusherTable {
       const spin = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z) * CRATE_TOUCH;
       const speed = Math.sqrt(v.x * v.x + v.y * v.y + vz * vz) + spin;
       if (speed * speed <= WAKE_SPEED_SQ) {
+        crate.still += 1;
         continue;
       }
+      crate.still = 0;
       const reach = CRATE_NEAR + speed * FIXED_DT;
-      for (const [id, coin] of this.#coins) {
-        if (!this.#isFrozen(id)) {
-          continue;
-        }
-        const c = coin.translation(this.#scratchCarry);
-        const dx = c.x - t.x;
-        const dy = c.y - t.y;
-        const dz = c.z - t.z;
-        if (dx * dx + dy * dy + dz * dz < reach * reach) {
-          this.#wake(id);
+      const cells = this.#frozenGrid();
+      const span = Math.ceil(reach / TOUCH_REACH);
+      const ix = Math.floor(t.x / TOUCH_REACH);
+      const iz = Math.floor(t.z / TOUCH_REACH);
+      for (let cx = ix - span; cx <= ix + span; cx++) {
+        for (let cz = iz - span; cz <= iz + span; cz++) {
+          for (const rest of cells.get(cellKey(cx, cz)) ?? NO_COINS) {
+            const dx = rest.t.x - t.x;
+            const dy = rest.t.y - t.y;
+            const dz = rest.t.z - t.z;
+            if (rest.frozen && dx * dx + dy * dy + dz * dz < reach * reach) {
+              this.#wake(this.#idOf(rest.collider));
+            }
+          }
         }
       }
       if (speed * speed > CASCADE_SPEED_SQ) {
@@ -1497,10 +1557,19 @@ export class PusherTable {
     }
   }
 
-  /** Whether a crate's centre lies within `reach` world units of `point`. */
-  #nearCrate(point: Readonly<Vector>, reach: number): boolean {
-    for (const { body } of this.#crates.values()) {
+  /**
+   * Whether a coin at `point` lies within CRATE_NEAR of a crate that keeps it awake: one
+   * not yet still for COIN_REST.ticks, or, for a coin at upper-tier height (`shelf`),
+   * one on the lower tier, which the coin may lie on and must not be frozen to ride the
+   * pusher.
+   */
+  #nearCrate(point: Readonly<Vector>, shelf: boolean): boolean {
+    const reach = CRATE_NEAR;
+    for (const { body, still } of this.#crates.values()) {
       const t = body.translation(this.#scratchCarry);
+      if (still > COIN_REST.ticks && !(shelf && t.y <= CRATE_SHELF_Y)) {
+        continue;
+      }
       const dx = t.x - point.x;
       const dy = t.y - point.y;
       const dz = t.z - point.z;
@@ -1598,8 +1667,9 @@ export class PusherTable {
     // hashes it had before crates and SIM_VERSION needs no bump.
     if (this.#nextCrateId > 0) {
       h.int(this.#nextCrateId).int(this.#crates.size);
-      for (const [id, { body }] of this.#crates) {
+      for (const [id, { body, still }] of this.#crates) {
         h.int(id)
+          .int(still)
           .vec3(body.translation())
           .quat(body.rotation())
           .vec3(body.linvel())

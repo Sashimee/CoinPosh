@@ -274,11 +274,17 @@ export class Sim {
   /**
    * The table quantized for storage: the pusher's place in its cycle and every coin's
    * pose and rest state, in ascending id order. Velocities are not kept; a restore
-   * starts every coin at rest. Tiers are the server's to keep. Crates are not kept:
-   * the table snapshot stores their rides apart (CRATE_RIDE).
+   * starts every coin at rest. Tiers are the server's to keep. Throws while a crate is
+   * on the table: SimTableSnapshot has no place for one, and a restore without it would
+   * replay to other hashes.
    */
   snapshot(): SimTableSnapshot {
     this.#assertLive();
+    if (this.#table.crateCount > 0) {
+      throw new Error(
+        `Sim.snapshot: tick ${this.#tick} has ${this.#table.crateCount} crates on the table, which a snapshot cannot hold; snapshot once they have fallen`,
+      );
+    }
     return {
       version: SIM_SNAPSHOT_VERSION,
       pusherTickInCycle: this.#table.pusherTickInCycle,
