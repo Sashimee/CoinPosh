@@ -329,7 +329,7 @@ export class Sim {
       switch (input.kind) {
         case 'dropCoin': {
           const tier = this.#resolveTier(input.tier, 'dropCoin.tier');
-          this.#register(this.#table.dropCoin(input.xMm / 1000, this.#rng), tier);
+          this.#registerDrop(this.#table.dropCoin(input.xMm / 1000, this.#rng), tier);
           break;
         }
         case 'nudge':
@@ -498,9 +498,9 @@ export class Sim {
     return tier ?? this.#tiers[0] ?? null;
   }
 
-  #register(id: number, tier: string | null): void {
+  #registerDrop(id: number, tier: string | null): void {
     if (this.#mechanics && tier !== null) {
-      this.#mechanics.registerCoin(id, tier);
+      this.#mechanics.registerDrop(id, tier);
     }
   }
 

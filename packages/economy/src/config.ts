@@ -55,20 +55,20 @@ export const rateEnvelope = {
   },
   falls: {
     windowMs: 30_000,
-    max: 300,
+    max: 295,
     scaleBy: { dropRate: 1, pusherSpeed: 1 },
     value: null,
   },
   fallValue: {
     windowMs: 30_000,
-    max: 1_252,
-    // fusionWindow only lifts the fused share of value: 0.773 × 0.25 / (1 + 0.773 × 0.25).
-    scaleBy: { dropRate: 1, pusherSpeed: 1, coinValue: 1, globalCoinValue: 1, fusionWindow: 0.162 },
+    max: 853,
+    // fusionWindow only lifts the fused share of value: 0.778 × 0.25 / (1 + 0.778 × 0.25).
+    scaleBy: { dropRate: 1, pusherSpeed: 1, coinValue: 1, globalCoinValue: 1, fusionWindow: 0.163 },
     value: { perCharm: 0.06 },
   },
   fusions: {
     windowMs: 60_000,
-    max: 127,
+    max: 119,
     // No pusherSpeed: aimed play already fuses close to one merge per (inputCount − 1) coins
     // fed (sim/ladder.ts), so a faster pusher cannot add merges the drops do not feed. With
     // it, every table past ~30 min had a limit the drop cap could never reach.
@@ -77,7 +77,7 @@ export const rateEnvelope = {
   },
   crates: {
     windowMs: 300_000,
-    max: 28,
+    max: 27,
     scaleBy: { dropRate: 1, crateChance: 1, globalCrateChance: 1 },
     value: null,
   },

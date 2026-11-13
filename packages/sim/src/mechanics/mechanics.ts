@@ -76,8 +76,10 @@ interface Freshness {
  * closed, is idle. An idle coin of wakeFromTier or above becomes fresh again, for a window
  * of its own, when a coin of its tier that entered play touches it while fresh, which is
  * how a new silver joins silvers that settled long ago. A woken coin wakes no others, so
- * one coin never wakes a whole heap. The windows are kept, and hashed, only on a table
- * that fuses.
+ * one coin never wakes a whole heap. A chute drop is fresh only within the chute's stream
+ * allowance (FUSION_TUNING streamTicks, streamBurst), so the tail of a held pour lands
+ * idle. The windows and the allowance are kept, and hashed, only on a table that fuses;
+ * a restored table starts with a full allowance, as its coins start idle.
  */
 export class TableMechanics<Tier extends string> {
   readonly #table: MechanicTable;
@@ -90,6 +92,8 @@ export class TableMechanics<Tier extends string> {
   readonly #fusion: ContactFusion | null;
   readonly #tower: ChampagneTower | null;
   readonly #freshTicks: number;
+  /** When the chute's stream allowance is next spent (FUSION_TUNING.streamTicks), as a tick. */
+  #streamDue = 0;
   #lastTick = -1;
 
   constructor(rapier: Rapier, world: World, table: MechanicTable, config: MechanicsConfig<Tier>) {
@@ -131,6 +135,22 @@ export class TableMechanics<Tier extends string> {
   registerCoin(id: number, tier: Tier): void {
     this.#setTier(id, tier, 'registerCoin');
     this.#startGrace(id, this.#lastTick + 1);
+  }
+
+  /**
+   * Records the tier of a coin just dropped down the chute. It waits out the spawn grace
+   * and is then fresh, like any coin added in play, while the chute keeps to its stream
+   * allowance (FUSION_TUNING.streamTicks, streamBurst); past it, in a long pour, the coin
+   * lands idle.
+   */
+  registerDrop(id: number, tier: Tier): void {
+    this.#setTier(id, tier, 'registerDrop');
+    const tick = this.#lastTick + 1;
+    const { streamTicks, streamBurst } = FUSION_TUNING;
+    if (this.#fusion && this.#streamDue - tick <= (streamBurst - 1) * streamTicks) {
+      this.#streamDue = Math.max(this.#streamDue, tick) + streamTicks;
+      this.#startGrace(id, tick);
+    }
   }
 
   /**
@@ -234,7 +254,7 @@ export class TableMechanics<Tier extends string> {
     }
     if (this.#fusion) {
       const fresh = Array.from(this.#fresh).sort((p, q) => p[0] - q[0]);
-      h.int(fresh.length);
+      h.int(this.#streamDue).int(fresh.length);
       for (const [id, { from, wakes }] of fresh) {
         h.int(id)
           .int(from)
