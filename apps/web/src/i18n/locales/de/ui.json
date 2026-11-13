@@ -168,5 +168,10 @@
   "common": {
     "close": "Schließen",
     "dragToClose": "Nach unten ziehen zum Schließen"
+  },
+  "demoBanner": {
+    "chip": "Demo",
+    "expand": "Demo-Modus: Details anzeigen",
+    "collapse": "Demo-Modus: Details ausblenden"
   }
 }
