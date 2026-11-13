@@ -121,6 +121,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-377 | done | 591561a | Audio lifecycle hardened for #184; review fixes in task/P-377-fix a28c6db |
 | P-401 | done | 3170dcc | Tier fusion set pieces: full only for first-of-session, first-of-tier and diamond+, mid variant for routine gold/platinum, full cap ~1 per 20 s (#182); pnpm check green after merge |
 | P-396 | done | task/P-396 (merge f813ac8) | A held pour is cancelled when the crate cinematic starts: new cinematicPause.ts, gestures/surface cancel hook, core/create/events/overlay wiring (1093df7); pnpm check green after merge |
+| P-398 | done | task/P-398 (merge 262005f) | First-upgrade nudge fires only with headroom and folds when unaffordable: upgradeNudge.ts, upgradeNudgeTrigger.ts and tests (7834a34); pnpm check green after merge |
 | T-92.08 | done | task/T-92.08 (merge b74b73a) | Session lease on every table op: PlayerDO/routes/table.ts check the lease, stale sessions get session_superseded (05b7edf); server tests updated to send the lease; pnpm check green after merge; land T-92.05 before deploy (#85) |
 | T-92.09 | todo | | Waits on T-92.07, T-92.08, T-1.17 (#92) |
 | T-92.10 | done | task/T-92.10 (merge 82654b5) | Crate ride snapshot and restore on CRATE_RIDE bounds (ride.ts, view.ts, crates.test.ts; daf58bf); pnpm check green after merge |
