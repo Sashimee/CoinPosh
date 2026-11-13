@@ -27,6 +27,11 @@ export const PAYOUT_FLIGHT_MS = 620;
 export const PAYOUT_STAGGER_MS = 110;
 /** Air after the last landing before the payout settles whatever has not landed. */
 const PAYOUT_SETTLE_MS = 120;
+/**
+ * How long the balance must stay unconfirmed before the plaque says so. A normal round trip
+ * settles well inside it, so the Vault never blinks for a sync detail.
+ */
+export const PROVISIONAL_REVEAL_MS = 600;
 
 interface Held {
   readonly id: string;
@@ -430,7 +435,6 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   const odometer = new Odometer();
   const spoken = h('span', { class: 'cp-sr-only' });
   const label = h('span', { class: 'cp-plaque-label' });
-  const provisional = h('span', { class: 'cp-plaque-provisional' });
   const barsValue = h('span', { class: 'cp-chip-value' });
   const bars = h(
     'span',
@@ -442,11 +446,10 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   const amount = h('span', { class: 'cp-plaque-amount' }, icon('coin'), odometer.el);
   const plaque = h(
     'div',
-    { class: 'cp-plaque cp-panel', attrs: { 'data-testid': 'hud-balance' } },
+    { class: 'cp-plaque cp-panel', attrs: { 'data-testid': 'hud-balance', role: 'group' } },
     glint,
     label,
     amount,
-    provisional,
     spoken,
   );
   const chips = WALLET_CHIPS.map(createPurseChip);
@@ -465,7 +468,6 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   });
 
   ctx.loc.text(label, () => tr(ctx, 'hud.vault'));
-  ctx.loc.text(provisional, () => tr(ctx, 'hud.provisional'));
   ctx.loc.attr(purse, 'aria-label', () => tr(ctx, 'hud.wallet.label'));
 
   let shown: number | null = null;
@@ -666,16 +668,40 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
       paint(false);
     }),
   );
+  let awaiting = false;
+  let revealTimer: ReturnType<typeof setTimeout> | null = null;
+  const showAwaiting = (): void => {
+    plaque.classList.toggle('is-provisional', awaiting);
+    if (awaiting) plaque.setAttribute('aria-label', tr(ctx, 'hud.provisional'));
+    else plaque.removeAttribute('aria-label');
+  };
+  const stopReveal = (): void => {
+    if (revealTimer !== null) clearTimeout(revealTimer);
+    revealTimer = null;
+  };
   ctx.own(
     watch(
       ctx.store,
       (s) => s.provisional,
       (value) => {
-        plaque.classList.toggle('is-provisional', value);
+        if (!value) {
+          stopReveal();
+          awaiting = false;
+          showAwaiting();
+          return;
+        }
+        if (awaiting || revealTimer !== null) return;
+        revealTimer = setTimeout(() => {
+          revealTimer = null;
+          awaiting = true;
+          showAwaiting();
+        }, PROVISIONAL_REVEAL_MS);
       },
     ),
   );
+  ctx.own(ctx.loc.bind(showAwaiting));
   ctx.own(() => {
+    stopReveal();
     for (const timer of timers) clearTimeout(timer);
     timers.clear();
     for (const restore of [...lifted]) restore();

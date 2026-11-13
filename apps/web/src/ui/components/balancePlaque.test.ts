@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { WalletSchema, type Wallet } from '@coinposh/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBus } from '../../app/bus.ts';
@@ -15,6 +16,7 @@ import {
   PAYOUT_HOLD_CAP_MS,
   PAYOUT_STAGGER_MS,
   PayoutLedger,
+  PROVISIONAL_REVEAL_MS,
   walletPayoutFor,
   type PayoutLine,
   type WalletPayout,
@@ -443,6 +445,9 @@ class FakeNode {
   getAttribute(name: string): string | null {
     return this.attrs.get(name) ?? null;
   }
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
+  }
 
   append(...nodes: (FakeNode | string)[]): void {
     for (const node of nodes) {
@@ -535,8 +540,10 @@ function mountPlaque(language: Language = 'en') {
   body.append(cardLine);
   return {
     store,
+    i18n,
     host,
     feedback,
+    plaque: () => find('[data-testid="hud-balance"]'),
     cardLine,
     payout: walletPayoutFor(store),
     vault: () => find('[data-testid="hud-balance"]').querySelector('.cp-sr-only')?.textContent,
@@ -641,5 +648,152 @@ describe('createBalancePlaque pays a collected crate out on its readouts', () =>
     expect(plaque.host.querySelectorAll('.cp-wallet-flights')).toEqual([]);
     expect(plaque.cardLine.style.opacity).toBe('');
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8').replace(
+  /\/\*[\s\S]*?\*\//g,
+  '',
+);
+
+function rulesMatching(test: (selector: string) => boolean): Record<string, string>[] {
+  const out: Record<string, string>[] = [];
+  for (const [, selectors = '', body = ''] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!selectors.split(',').some((part) => test(part.trim()))) continue;
+    const rule: Record<string, string> = {};
+    for (const declaration of body.split(';')) {
+      const colon = declaration.indexOf(':');
+      if (colon < 0) continue;
+      rule[declaration.slice(0, colon).trim()] = declaration.slice(colon + 1).trim();
+    }
+    out.push(rule);
+  }
+  return out;
+}
+
+/** Properties that repaint or composite but never move a box. */
+const PAINT_ONLY = new Set([
+  'opacity',
+  'animation',
+  'transition',
+  'filter',
+  'color',
+  'text-shadow',
+]);
+
+/** The plaque as layout sees it: every node, its classes but the state class, and what is hidden. */
+function layoutShape(node: FakeNode): string {
+  const own = node.className
+    .split(/\s+/)
+    .filter((name) => name !== 'is-provisional')
+    .join('.');
+  const self = `${node.tagName}.${own}${node.hidden ? '[hidden]' : ''}`;
+  return `${self}(${node.children.map(layoutShape).join(',')})`;
+}
+
+describe('createBalancePlaque waits for the house without moving the Vault', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows nothing on a normal round trip that confirms inside the reveal delay', () => {
+    const plaque = mountPlaque();
+    plaque.store.setState({ provisional: true });
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS - 1);
+    expect(plaque.plaque().classList.contains('is-provisional')).toBe(false);
+    plaque.store.setState({ provisional: false });
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS * 2);
+    expect(plaque.plaque().classList.contains('is-provisional')).toBe(false);
+    expect(plaque.plaque().getAttribute('aria-label')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    plaque.dispose();
+  });
+
+  it('says so once the balance has stayed provisional for the delay, and clears on confirm', () => {
+    const plaque = mountPlaque();
+    plaque.store.setState({ provisional: true });
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS);
+    expect(plaque.plaque().classList.contains('is-provisional')).toBe(true);
+    expect(plaque.plaque().getAttribute('role')).toBe('group');
+    expect(plaque.plaque().getAttribute('aria-label')).toBe('Awaiting the house');
+    plaque.store.setState({ provisional: false });
+    expect(plaque.plaque().classList.contains('is-provisional')).toBe(false);
+    expect(plaque.plaque().getAttribute('aria-label')).toBeNull();
+    plaque.dispose();
+  });
+
+  it('does not restart the delay when new claims arrive while it is already waiting', () => {
+    const plaque = mountPlaque();
+    plaque.store.setState({ provisional: true });
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS / 2);
+    plaque.store.setState({ provisional: true, coins: 81 });
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS / 2);
+    expect(plaque.plaque().classList.contains('is-provisional')).toBe(true);
+    plaque.dispose();
+  });
+
+  it('flickers nothing when the sync toggles faster than the delay', () => {
+    const plaque = mountPlaque();
+    for (let i = 0; i < 20; i += 1) {
+      plaque.store.setState({ provisional: true });
+      vi.advanceTimersByTime(300);
+      plaque.store.setState({ provisional: false });
+      vi.advanceTimersByTime(300);
+      expect(plaque.plaque().classList.contains('is-provisional')).toBe(false);
+    }
+    plaque.dispose();
+  });
+
+  it('keeps the label in the player language, across a language switch', () => {
+    const plaque = mountPlaque('fr');
+    plaque.store.setState({ provisional: true });
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS);
+    expect(plaque.plaque().getAttribute('aria-label')).toBe('En attente de la maison');
+    plaque.i18n.changeLanguage('de');
+    expect(plaque.plaque().getAttribute('aria-label')).toBe('Das Haus bestätigt');
+    plaque.dispose();
+  });
+
+  it('adds, shows or hides no node in the plaque while provisional', () => {
+    const plaque = mountPlaque();
+    const before = layoutShape(plaque.host);
+    plaque.store.setState({ provisional: true });
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS);
+    expect(plaque.plaque().classList.contains('is-provisional')).toBe(true);
+    expect(layoutShape(plaque.host)).toBe(before);
+    expect(plaque.plaque().textContent).not.toContain('Awaiting the house');
+    plaque.dispose();
+  });
+
+  it('styles the provisional state with paint-only properties', () => {
+    const rules = rulesMatching((selector) => selector.includes('.cp-plaque.is-provisional'));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) {
+      for (const property of Object.keys(rule)) expect(PAINT_ONLY).toContain(property);
+    }
+    expect(css).not.toContain('.cp-plaque-provisional');
+  });
+
+  it('under reduced motion keeps the dim but drops the shimmer', () => {
+    const [reduced] = rulesMatching(
+      (selector) =>
+        selector === ".cp-ui-host[data-motion='reduced'] .cp-plaque.is-provisional::after",
+    );
+    expect(reduced).toEqual({ animation: 'none', opacity: '0' });
+    const [dim] = rulesMatching((selector) => selector === '.cp-plaque.is-provisional .cp-odo');
+    expect(dim).toEqual({ opacity: '0.78' });
+  });
+
+  it('tears down with a reveal still pending and leaves no timer', () => {
+    const plaque = mountPlaque();
+    plaque.store.setState({ provisional: true });
+    plaque.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS);
+    expect(plaque.plaque().classList.contains('is-provisional')).toBe(false);
   });
 });

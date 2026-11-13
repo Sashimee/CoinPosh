@@ -314,19 +314,54 @@
   height: 24px;
 }
 
-.cp-plaque-provisional {
-  display: none;
-  font-size: 11px;
-  font-style: italic;
-  color: var(--cp-ink-muted);
-}
-
-.cp-plaque.is-provisional .cp-plaque-provisional {
-  display: block;
+/* Awaiting the house: paint-only (opacity, a sweep on a pseudo-element), so the plaque keeps its
+   exact box; the words live in the plaque's aria-label, never in a line under the digits. */
+.cp-plaque .cp-odo {
+  transition: opacity 420ms ease;
 }
 
 .cp-plaque.is-provisional .cp-odo {
   opacity: 0.78;
+}
+
+.cp-plaque::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgb(var(--cp-gold-brushed-rgb) / 0.16) 46%,
+    rgb(var(--cp-ivory-rgb) / 0.12) 50%,
+    rgb(var(--cp-gold-brushed-rgb) / 0.16) 54%,
+    transparent 70%
+  );
+  background-size: 250% 100%;
+  background-position: 130% 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 420ms ease;
+}
+
+.cp-plaque.is-provisional::after {
+  opacity: 1;
+  animation: cp-plaque-await 2.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-plaque.is-provisional::after {
+  animation: none;
+  opacity: 0;
+}
+
+@keyframes cp-plaque-await {
+  from {
+    background-position: 130% 0;
+  }
+
+  to {
+    background-position: -30% 0;
+  }
 }
 
 .cp-glint {
