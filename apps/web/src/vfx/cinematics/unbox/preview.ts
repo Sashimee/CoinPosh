@@ -9,6 +9,8 @@ import {
   type Object3D,
 } from 'three/webgpu';
 import { detectBackend } from '../../../backend.ts';
+import { bakeCoinEmboss } from '../../../scene/coins/emboss.ts';
+import { COIN_LOOKS } from '../../../scene/coins/tiers.ts';
 import { createPostPipeline } from '../../../scene/post/postPipeline.ts';
 import {
   pixelRatioFor,
@@ -18,13 +20,14 @@ import {
 import { applyCameraPreset, createRivieraVenue } from '../../../scene/venues/riviera/index.ts';
 import { createVfx } from '../../index.ts';
 import { UnboxCinematic } from './cinematic.ts';
-import { UNBOX_HEROES } from './hero.ts';
+import { HERO_FACE_RESOLUTION, HERO_FACE_TIERS, UNBOX_HEROES } from './hero.ts';
 import { UnboxAssets } from './stage.ts';
 
 /**
  * Dev-only capture bench for the crate unbox, served by Vite at
  * /src/vfx/cinematics/unbox/preview.html. It mounts the venue, the post pass and the juice the
- * way the table does, builds the unbox assets at boot like the director, then steps the
+ * way the table does, builds and primes the unbox assets at boot, as the director does once a
+ * crate spawns, with the hero faces baked here since there is no coin field, then steps the
  * cinematic frame by frame on `window.__unbox.step(dt)` so a capture script can screenshot and
  * measure each frame. Flags: `webgl`, `reduced`, `rarity=<rarity>`, `overlay` (draws the
  * measured crate box), `hero=<hero>` (the prop on the pedestal, charm by default),
@@ -151,7 +154,19 @@ async function boot(bench: UnboxBench): Promise<void> {
     post.render(performance.now());
   });
 
-  let assets = cold ? null : new UnboxAssets(scene);
+  const faces = new Map(
+    Object.values(HERO_FACE_TIERS).map((tier) => [
+      tier,
+      bakeCoinEmboss(renderer, COIN_LOOKS[tier].face, HERO_FACE_RESOLUTION).texture,
+    ]),
+  );
+  const unboxAssets = (): UnboxAssets =>
+    new UnboxAssets(scene, { faces: (tier) => faces.get(tier) ?? null });
+  let assets: UnboxAssets | null = null;
+  if (!cold) {
+    assets = unboxAssets();
+    assets.prime();
+  }
   let unbox: UnboxCinematic | null = null;
   let cardShown = false;
   let clockMs = 0;
@@ -196,7 +211,7 @@ async function boot(bench: UnboxBench): Promise<void> {
     marker.className = 'crate-reveal';
     document.body.append(marker);
     const begin = performance.now();
-    assets ??= new UnboxAssets(scene);
+    assets ??= unboxAssets();
     unbox = new UnboxCinematic({
       parent: scene,
       assets,
