@@ -9,8 +9,8 @@ import { createComboLadder } from './components/comboLadder.ts';
 import { createConciergeNotice, createDecorumMeter } from './components/decorumMeter.ts';
 import type { MeterRail } from './components/meterRail.ts';
 import { makePressable } from './components/pressable.ts';
-import { coinFloorRect, planMeterRails } from './components/railLayout.ts';
-import { createTierStamp } from './components/tierStamp.ts';
+import { coinFloorFrontHalf, coinFloorRect, planMeterRails } from './components/railLayout.ts';
+import { createTierStamp, type TierStamp } from './components/tierStamp.ts';
 import { createUpgradeNudge } from './components/upgradeNudge.ts';
 import { tr, type UiContext } from './context.ts';
 import { fromMarkup, h, listen, restartAnimation } from './dom.ts';
@@ -118,8 +118,9 @@ function followBoot(ctx: UiContext, meters: HTMLElement, onPlayable: () => void)
 const AIM_RETICLE = '[data-testid="aim-reticle"]';
 
 /**
- * Keeps the side meters in the margins the camera leaves around the coin floor: re-planned
- * whenever the viewport, the HUD above the table or the dock below it changes size.
+ * Keeps the side meters in the margins the camera leaves around the coin floor, and the rank
+ * ribbon clear of the floor's front half: re-planned whenever the viewport, the HUD above the
+ * table or the dock below it changes size.
  */
 function followTable(
   ctx: UiContext,
@@ -128,6 +129,7 @@ function followTable(
   rails: readonly MeterRail[],
   above: HTMLElement,
   below: HTMLElement,
+  stamp: TierStamp,
 ): () => void {
   const reflow = (): void => {
     const view = host.getBoundingClientRect();
@@ -143,15 +145,20 @@ function followTable(
     const reticle = document.querySelector(AIM_RETICLE)?.getBoundingClientRect();
     const base =
       reticle && reticle.height > 0 ? Math.min(dockTop, reticle.top - view.top) : dockTop;
-    const plan = planMeterRails({
-      viewport: { width: view.width, height: view.height },
-      safe,
-      floor: coinFloorRect(view.width, view.height),
-      ceiling: above.getBoundingClientRect().bottom - view.top,
-      base,
-    });
+    const viewport = { width: view.width, height: view.height };
+    const floor = coinFloorRect(view.width, view.height);
+    const ceiling = above.getBoundingClientRect().bottom - view.top;
+    const plan = planMeterRails({ viewport, safe, floor, ceiling, base });
     layer.dataset.zone = plan.zone;
     for (const rail of rails) rail.place(plan[rail.side], { left: safe.left, top: safe.top });
+    stamp.place({
+      viewport,
+      safe,
+      floor,
+      frontHalf: coinFloorFrontHalf(view.width, view.height),
+      ceiling,
+      rails: plan,
+    });
   };
   const observer = new ResizeObserver(reflow);
   for (const el of [host, above, below]) observer.observe(el);
@@ -388,17 +395,18 @@ export function createHud(ctx: UiContext): Hud {
     createConciergeNotice(ctx),
   );
   const hud = h('div', { class: 'cp-hud' }, hudTop, dock);
+  const tierStamp = createTierStamp(ctx);
   const root = h(
     'div',
     { class: 'cp-ui', attrs: { 'data-testid': 'ui-root' } },
     hud,
     meters,
-    createTierStamp(ctx),
+    tierStamp.root,
     sheets.upgrades.sheet.el,
     sheets.settings.sheet.el,
   );
 
-  followBoot(ctx, meters, followTable(ctx, root, meters, rails, hudTop, dock));
+  followBoot(ctx, meters, followTable(ctx, root, meters, rails, hudTop, dock, tierStamp));
 
   ctx.own(
     watch(

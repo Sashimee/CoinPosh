@@ -8,33 +8,94 @@ import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { announcementHoldFor, createRankGate, peakReplay } from './announcementHold.ts';
+import { planRankStamp, type StampLayout } from './stampLayout.ts';
 
 const HOLD_MS = 950;
-const STAMP_FROM = 1.9;
-const TILT_DEG = -7;
+const STAMP_FROM = 1.45;
+const TILT_DEG = -3;
 const LEAVE_MS = 420;
+const FLOURISH_MS = 560;
+const SHEEN_MS = 760;
+const SHEEN_DELAY_MS = 120;
+const SETTLE = 'cubic-bezier(0.2, 0.9, 0.3, 1)';
+
+export interface TierStamp {
+  readonly root: HTMLElement;
+  /** Re-rests the ribbon whenever the table, the HUD or the meter rails move. */
+  place(layout: StampLayout): void;
+}
 
 /**
- * The cascade tier name stamps onto the screen with a serif flourish when a tier is reached.
- * While announcements are held it stays down; afterwards the highest rank reached stamps only if
- * the cascade still stands at it, and a stamp leaves early once its cascade ends.
+ * The cascade tier name lands as a slim translucent ribbon with gold hairlines when a tier is
+ * reached, resting between the Vault and the front half of the coin floor so the coins it
+ * celebrates stay in view. While announcements are held it stays down; afterwards the highest
+ * rank reached stamps only if the cascade still stands at it, and a stamp leaves early once its
+ * cascade ends.
  */
-export function createTierStamp(ctx: UiContext): HTMLElement {
+export function createTierStamp(ctx: UiContext): TierStamp {
   const name = h('span', { class: 'cp-stamp-name' });
   const mult = h('span', { class: 'cp-stamp-mult' });
+  const flourishes = [
+    h('span', { class: 'cp-stamp-flourish', attrs: { 'aria-hidden': 'true' } }),
+    h('span', { class: 'cp-stamp-flourish is-under', attrs: { 'aria-hidden': 'true' } }),
+  ];
+  const sheen = h('span', { class: 'cp-stamp-sheen' });
   const card = h(
     'div',
     { class: 'cp-stamp-card' },
-    h('span', { class: 'cp-stamp-flourish', attrs: { 'aria-hidden': 'true' } }),
-    name,
-    mult,
-    h('span', { class: 'cp-stamp-flourish is-under', attrs: { 'aria-hidden': 'true' } }),
+    flourishes[0],
+    h('span', { class: 'cp-stamp-line' }, name, mult),
+    flourishes[1],
+    h('span', { class: 'cp-stamp-gloss', attrs: { 'aria-hidden': 'true' } }, sheen),
   );
+  const anchor = h('div', { class: 'cp-stamp-anchor' }, card);
   const layer = h(
     'div',
     { class: 'cp-stamp', attrs: { 'aria-hidden': 'true', 'data-testid': 'hud-tier-stamp' } },
-    card,
+    anchor,
   );
+
+  let layout: StampLayout | null = null;
+  const rest = (): void => {
+    if (!layout) return;
+    const width = card.offsetWidth;
+    const height = card.offsetHeight;
+    if (width === 0 || height === 0) return;
+    const { box, scale } = planRankStamp({ ...layout, card: { width, height } });
+    anchor.style.left = `${box.left + box.width / 2}px`;
+    anchor.style.top = `${box.top + box.height / 2}px`;
+    anchor.style.scale = scale === 1 ? '' : String(scale);
+  };
+  const flourishRuns: Animation[] = [];
+  const cancelFlourish = (): void => {
+    for (const running of flourishRuns.splice(0)) running.cancel();
+  };
+  /** The hairlines draw out from the centre and a gold sheen crosses the ribbon as it lands. */
+  const flourish = (): void => {
+    cancelFlourish();
+    for (const line of flourishes) {
+      flourishRuns.push(
+        line.animate(
+          [
+            { scale: '0.12 1', opacity: 0 },
+            { scale: '1 1', opacity: 1 },
+          ],
+          {
+            duration: FLOURISH_MS,
+            easing: SETTLE,
+          },
+        ),
+      );
+    }
+    flourishRuns.push(
+      sheen.animate([{ translate: '-120% 0' }, { translate: '320% 0' }], {
+        duration: SHEEN_MS,
+        delay: SHEEN_DELAY_MS,
+        easing: 'cubic-bezier(0.45, 0, 0.3, 1)',
+        fill: 'backwards',
+      }),
+    );
+  };
 
   const impact = new SpringValue(0, SPRINGS.bouncy, (value) => {
     const scale = STAMP_FROM + (1 - STAMP_FROM) * value;
@@ -60,6 +121,7 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
     if (hideTimer !== null) clearTimeout(hideTimer);
     hideTimer = null;
     impact.jump(0);
+    cancelFlourish();
     layer.classList.remove('is-visible', 'is-leaving');
   };
 
@@ -75,7 +137,10 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
     layer.classList.remove('is-leaving');
     layer.classList.add('is-visible');
     layer.classList.toggle('is-reduced', reduced);
+    rest();
     impact.jump(0);
+    if (reduced) cancelFlourish();
+    else flourish();
     // Reduced motion has no spring to land on, so the card cross-fades in from the frame at 0.
     if (reduced) card.getBoundingClientRect();
     void impact.to(1);
@@ -111,7 +176,14 @@ export function createTierStamp(ctx: UiContext): HTMLElement {
   );
   ctx.own(() => {
     gate.dispose();
+    cancelFlourish();
     if (hideTimer !== null) clearTimeout(hideTimer);
   });
-  return layer;
+  return {
+    root: layer,
+    place(next) {
+      layout = next;
+      rest();
+    },
+  };
 }

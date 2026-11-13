@@ -1166,8 +1166,6 @@
 .cp-stamp {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
   pointer-events: none;
   visibility: hidden;
 }
@@ -1176,56 +1174,100 @@
   visibility: visible;
 }
 
+.cp-stamp-anchor {
+  position: absolute;
+  left: 50%;
+  top: 30%;
+  translate: -50% -50%;
+}
+
 .cp-stamp.is-leaving .cp-stamp-card {
   transition:
     opacity 420ms ease,
     translate 420ms ease;
   /* Beats the inline opacity the impact spring writes. */
   opacity: 0 !important;
-  translate: 0 -24px;
+  translate: 0 -18px;
 }
 
+/*
+ * A ribbon, not a card: the ends fade into the table so the heap behind still reads, and it
+ * lands growing up from its bottom edge, towards the Vault and away from the field.
+ */
 .cp-stamp-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 14px 30px;
-  border: 1.5px solid var(--cp-gold-brushed);
-  border-radius: 6px;
-  background: rgb(var(--cp-navy-lacquer-rgb) / 0.55);
-  box-shadow:
-    0 0 0 4px rgb(var(--cp-navy-lacquer-rgb) / 0.45),
-    0 0 0 5px var(--cp-hairline),
-    0 20px 40px rgb(0 0 0 / 0.4);
+  gap: 1px;
+  padding: 3px 46px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(var(--cp-navy-lacquer-rgb) / 0.5) 22% 78%,
+    transparent
+  );
+  transform-origin: 50% 100%;
+  white-space: nowrap;
   opacity: 0;
+}
+
+.cp-stamp-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
 }
 
 .cp-stamp-name {
   font-family: var(--cp-font-display);
-  font-size: 44px;
+  font-size: 34px;
+  line-height: 1.22;
   font-weight: 700;
   font-style: italic;
   letter-spacing: 0.04em;
   color: var(--cp-champagne);
-  text-shadow: 0 2px 0 rgb(var(--cp-gold-brushed-rgb) / 0.7);
+  text-shadow:
+    0 2px 0 rgb(var(--cp-gold-brushed-rgb) / 0.7),
+    0 0 14px rgb(var(--cp-navy-lacquer-rgb) / 0.8);
 }
 
 .cp-stamp-mult {
   font-variant-numeric: lining-nums;
   font-family: var(--cp-font-display);
-  font-size: 22px;
+  font-size: 19px;
   font-weight: 600;
   color: var(--cp-gold-brushed);
+  text-shadow: 0 0 10px rgb(var(--cp-navy-lacquer-rgb) / 0.8);
 }
 
 .cp-stamp-flourish {
-  width: 90px;
-  height: 8px;
+  width: 100%;
+  height: 7px;
   background:
-    radial-gradient(circle at 50% 50%, var(--cp-gold-brushed) 0 2.5px, transparent 3px),
-    linear-gradient(90deg, transparent, var(--cp-gold-brushed) 30% 70%, transparent) center / 100%
+    radial-gradient(circle at 50% 50%, var(--cp-gold-brushed) 0 2px, transparent 2.5px),
+    linear-gradient(90deg, transparent, var(--cp-gold-brushed) 25% 75%, transparent) center / 100%
       1px no-repeat;
+}
+
+.cp-stamp-gloss {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent 12%, #000 34% 66%, transparent 88%);
+}
+
+.cp-stamp-sheen {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    rgb(var(--cp-champagne-rgb) / 0.32) 50%,
+    transparent
+  );
+  translate: -120% 0;
+  mix-blend-mode: screen;
 }
 
 .cp-stamp.is-visible[data-tier='obscene'] .cp-stamp-name {
@@ -2084,6 +2126,10 @@
   transition: opacity 260ms ease;
 }
 
+.cp-stamp.is-reduced .cp-stamp-gloss {
+  display: none;
+}
+
 .cp-stamp.is-reduced.is-leaving .cp-stamp-card {
   translate: none;
 }
@@ -2104,7 +2150,7 @@
   }
 
   .cp-stamp-name {
-    font-size: 36px;
+    font-size: 30px;
   }
 
   .cp-dock-button {

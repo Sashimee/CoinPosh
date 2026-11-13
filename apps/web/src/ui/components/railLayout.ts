@@ -92,13 +92,13 @@ const FLOOR_POINTS = [-1, 1].flatMap((side) => [
   new Vector3(side * T.fieldHalfWidth, 0, T.backboardFrontZ),
   new Vector3(side * T.fieldHalfWidth, T.pusherHeight, T.backboardFrontZ),
 ]);
+const FRONT_HALF_POINTS = [-1, 1].flatMap((side) => [
+  new Vector3(side * T.fieldHalfWidth, 0, T.fieldFrontZ),
+  new Vector3(side * T.fieldHalfWidth, 0, (T.fieldFrontZ + T.backboardFrontZ) / 2),
+]);
 const projected = new Vector3();
 
-/**
- * Screen rect of the coin floor, pusher deck included, as the stage camera frames it on a
- * full-viewport canvas of this size.
- */
-export function coinFloorRect(width: number, height: number): Box {
+function projectedBounds(points: readonly Vector3[], width: number, height: number): Box {
   const w = Math.max(width, 1);
   const h = Math.max(height, 1);
   floorCamera.aspect = w / h;
@@ -108,7 +108,7 @@ export function coinFloorRect(width: number, height: number): Box {
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
-  for (const point of FLOOR_POINTS) {
+  for (const point of points) {
     projected.copy(point).project(floorCamera);
     const x = ((projected.x + 1) / 2) * w;
     const y = ((1 - projected.y) / 2) * h;
@@ -118,6 +118,22 @@ export function coinFloorRect(width: number, height: number): Box {
     maxY = Math.max(maxY, y);
   }
   return { left: minX, top: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Screen rect of the coin floor, pusher deck included, as the stage camera frames it on a
+ * full-viewport canvas of this size.
+ */
+export function coinFloorRect(width: number, height: number): Box {
+  return projectedBounds(FLOOR_POINTS, width, height);
+}
+
+/**
+ * Screen rect of the front half of the coin floor, from halfway back to the payout lip: where
+ * coins tumble over the edge and their pops rise, so no announcement may cover it.
+ */
+export function coinFloorFrontHalf(width: number, height: number): Box {
+  return projectedBounds(FRONT_HALF_POINTS, width, height);
 }
 
 interface Band {
