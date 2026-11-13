@@ -18,11 +18,16 @@ export type CrateStingerCue =
  * are the server's answers; positions are what this client drew.
  */
 export interface CrateEvents {
-  /** The server put a crate on the table with this drop. */
+  /**
+   * The server put a crate on the table with this drop, or the session loaded with it there.
+   * `resumed` is a crate picking its ride up from a stored pose: it is already on the table, so
+   * it neither drops in nor announces itself.
+   */
   'crate:spawned': {
     readonly crateId: CrateId;
     readonly kind: CrateKind;
     readonly position: TablePoint;
+    readonly resumed: boolean;
   };
   /** The crate reached the lip and hangs over it: the anticipation beat. */
   'crate:teeter': { readonly crateId: CrateId; readonly position: TablePoint };

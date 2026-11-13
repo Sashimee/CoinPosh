@@ -12,12 +12,15 @@ import {
 } from '@coinposh/economy';
 import {
   CURRENCIES,
+  MAX_SNAPSHOT_CRATES,
   RARITIES,
   RollSchema,
   WalletSchema,
   type AlbumResponse,
   type CoinId,
   type CrateId,
+  type CratePlacement,
+  type CratePoseTuple,
   type NudgeDirection,
   type PityCounters,
   type PlayerId,
@@ -966,11 +969,12 @@ describe('arrival hint', () => {
       { show: () => log.push('show'), hide: () => log.push('hide') },
       clock,
     );
-    const spawn = (id: string) => {
+    const spawn = (id: string, resumed = false) => {
       events.emit('crate:spawned', {
         crateId: id as CrateId,
         kind: 'vault',
         position: { x: 0, y: 0, z: 0 },
+        resumed,
       });
     };
     return { events, log, timers, fire, off, spawn };
@@ -985,6 +989,16 @@ describe('arrival hint', () => {
     fire();
     expect(log).toEqual(['show', 'hide']);
     expect(timers.size).toBe(0);
+  });
+
+  it('stays down for a crate resumed mid-table and still prompts on a fresh one after', () => {
+    const { log, timers, spawn } = bound();
+    spawn('crate_AAAAAAAAAAAAAAAA', true);
+    expect(log).toEqual([]);
+    expect(timers.size).toBe(0);
+    spawn('crate_BBBBBBBBBBBBBBBB');
+    expect(log).toEqual(['show']);
+    expect(timers.size).toBe(1);
   });
 
   it('clears as soon as that crate goes over, and ignores other crates falling', () => {
@@ -1827,5 +1841,212 @@ describe('overlapping crate opens', () => {
       { crateId: a, owned: 3 },
       { crateId: b, owned: 4 },
     ]);
+  });
+});
+
+describe('adopting the table the server laid', () => {
+  const STEP = 1 / 60;
+  const A = 'crate_AAAAAAAAAAAAAAAA' as CrateId;
+  const B = 'crate_BBBBBBBBBBBBBBBB' as CrateId;
+  const C = 'crate_CCCCCCCCCCCCCCCC' as CrateId;
+
+  /** A controller on a stub table: the sim clock is set by hand and every event is logged. */
+  function session() {
+    const listeners: ((event: TableEvent) => void)[] = [];
+    const claims: CrateId[] = [];
+    const events = createBus<CrateEvents>();
+    const log: { type: keyof CrateEvents; crateId: CrateId; resumed?: boolean }[] = [];
+    for (const type of ['crate:spawned', 'crate:teeter', 'crate:fell', 'crate:failed'] as const) {
+      events.on(type, (payload) => {
+        log.push({
+          type,
+          crateId: payload.crateId,
+          ...('resumed' in payload ? { resumed: payload.resumed } : {}),
+        });
+      });
+    }
+    const sim = { stats: { tick: 0, pusherStroke: 0 } };
+    const controller = new CrateController({
+      table: {
+        subscribe: (listener) => {
+          listeners.push(listener);
+          return () => undefined;
+        },
+        claimCrate: (crateId) => {
+          claims.push(crateId);
+        },
+      },
+      client: { call: () => Promise.reject(new Error('no server in this test')) },
+      sim,
+      events,
+    });
+    let seconds = 0;
+    const step = () => {
+      seconds += STEP;
+      sim.stats.pusherStroke = strokeAt(seconds);
+      sim.stats.tick += 1;
+      controller.update(STEP);
+    };
+    const at = (time: number) => {
+      seconds = time;
+      sim.stats.pusherStroke = strokeAt(time);
+    };
+    const drop = (...ids: CrateId[]) => {
+      const event = { type: 'dropSettled', spawnedCrates: ids.map(crate) } as unknown as TableEvent;
+      for (const listener of listeners) listener(event);
+    };
+    return { controller, events, log, claims, step, at, drop, now: () => seconds };
+  }
+
+  /** The tuples as they come back from the server: through JSON, as `layout.crates` poses. */
+  function stored(tuples: readonly CratePoseTuple[]): CratePlacement[] {
+    return (JSON.parse(JSON.stringify(tuples)) as CratePoseTuple[]).map((pose) => ({
+      kind: 'pose',
+      pose,
+    }));
+  }
+
+  /** Rides crate A from the chute, uploading the table after `steps` steps. */
+  function rideThenUpload(steps: number) {
+    const before = session();
+    before.controller.adopt([crate(A)]);
+    for (let i = 0; i < steps; i++) before.step();
+    const upload = before.controller.snapshot();
+    return { before, upload };
+  }
+
+  it('resumes a posed crate at its stored pose after a reload and tips on the same frame', () => {
+    const { before, upload } = rideThenUpload(90);
+    const [original] = before.controller.riding;
+    if (!original) throw new Error('crate A fell before the upload');
+    expect(original.position.z).toBeGreaterThan(CRATE_RIDE.spawnZ);
+
+    const after = session();
+    after.at(before.now());
+    after.controller.adopt([crate(A)], stored(upload));
+    const [resumed] = after.controller.riding;
+    if (!resumed) throw new Error('crate A was not resumed');
+    expect(resumed.position).toEqual(original.position);
+    expect(resumed.seconds).toBe(original.seconds);
+    expect(resumed.phase).toBe(original.phase);
+    expect(after.log).toEqual([{ type: 'crate:spawned', crateId: A, resumed: true }]);
+
+    let stepsLeft = 0;
+    while (before.controller.riding.length > 0 || after.controller.riding.length > 0) {
+      if (stepsLeft++ > CRATE_RIDE_SECONDS.max / STEP) throw new Error('crate A never fell');
+      before.step();
+      after.step();
+      expect(after.controller.riding.map((ride) => ride.position)).toEqual(
+        before.controller.riding.map((ride) => ride.position),
+      );
+    }
+    expect(after.claims).toEqual([A]);
+    expect(after.log.at(-1)).toEqual({ type: 'crate:fell', crateId: A });
+  });
+
+  it('resumes a teetering crate over the lip, on the lower tier, still teetering', () => {
+    const before = session();
+    before.controller.adopt([crate(A)]);
+    while (before.controller.riding[0]?.phase === 'riding') before.step();
+    expect(before.controller.riding[0]?.phase).toBe('teeter');
+    const upload = before.controller.snapshot();
+
+    const after = session();
+    after.at(before.now());
+    after.controller.adopt([crate(A)], stored(upload));
+    const [resumed] = after.controller.riding;
+    expect(resumed?.phase).toBe('teeter');
+    expect(resumed?.position.y).toBe(0);
+    expect(resumed?.position.z).toBeGreaterThanOrEqual(CRATE_RIDE.teeterZ);
+    expect(resumed?.tilt).toBeGreaterThan(0);
+    expect(after.log.map(({ type }) => type)).toEqual(['crate:spawned']);
+  });
+
+  it('starts a chute placement fresh from the chute, wherever the crate last was', () => {
+    rideThenUpload(90);
+    const after = session();
+    after.controller.adopt([crate(A)], [{ kind: 'chute' }]);
+    const [ride] = after.controller.riding;
+    expect(ride?.position.z).toBe(CRATE_RIDE.spawnZ);
+    expect(ride?.seconds).toBe(0);
+    expect(ride?.phase).toBe('riding');
+    expect(after.log).toEqual([{ type: 'crate:spawned', crateId: A, resumed: false }]);
+  });
+
+  it('starts every crate from the chute when the session carries no layout', () => {
+    const { controller, log } = session();
+    controller.adopt([crate(A), crate(B)]);
+    expect(controller.riding.map((ride) => ride.position.z)).toEqual([
+      CRATE_RIDE.spawnZ,
+      CRATE_RIDE.spawnZ,
+    ]);
+    expect(log.map(({ resumed }) => resumed)).toEqual([false, false]);
+  });
+
+  it('puts adopted crates in the next table snapshot, posed ones exactly as stored', () => {
+    const { upload } = rideThenUpload(90);
+    const { controller, drop } = session();
+    controller.adopt([crate(A), crate(B)], [...stored(upload), { kind: 'chute' }]);
+    drop(C);
+    const next = controller.snapshot();
+    expect(next.map(([id]) => id)).toEqual([A, B, C]);
+    expect(next[0]).toEqual(upload[0]);
+    const chuteZ = Math.round(CRATE_RIDE.spawnZ / POSITION_UNIT);
+    expect(next[1]).toEqual([B, next[1]?.[1], chuteZ, 0, 'riding']);
+    for (const [, x, z, elapsedMs, phase] of next) {
+      expect(checkCratePose({ x, z, elapsedMs, phase }, CRATE_RIDE_SECONDS.max)).toEqual({
+        ok: true,
+      });
+    }
+  });
+
+  it('leaves a fallen crate out of the snapshot and caps it at the transport bound', () => {
+    const { controller, step } = session();
+    const many = Array.from({ length: MAX_SNAPSHOT_CRATES + 2 }, (_, i) =>
+      crate(`crate_${String(i).padStart(16, 'Z')}`),
+    );
+    controller.adopt(many);
+    expect(controller.snapshot()).toHaveLength(MAX_SNAPSHOT_CRATES);
+    for (let t = 0; t < CRATE_RIDE_SECONDS.max + 1; t += STEP) step();
+    expect(controller.riding).toHaveLength(0);
+    expect(controller.snapshot()).toEqual([]);
+  });
+
+  it('adopts a crate it already rides only once', () => {
+    const { upload } = rideThenUpload(60);
+    const { controller, log } = session();
+    controller.adopt([crate(A)]);
+    controller.adopt([crate(A)], stored(upload));
+    expect(controller.riding).toHaveLength(1);
+    expect(log).toEqual([{ type: 'crate:spawned', crateId: A, resumed: false }]);
+  });
+
+  it('starts a pose the ride cannot take from the chute and still lays the rest', () => {
+    const tipZ = Math.round(CRATE_RIDE.tipZ / POSITION_UNIT);
+    const { controller, log } = session();
+    controller.adopt(
+      [crate(A), crate(B)],
+      [{ kind: 'pose', pose: [A, 0, tipZ + 10, 1000, 'teeter'] }, { kind: 'chute' }],
+    );
+    expect(controller.riding.map((ride) => ride.crate.id)).toEqual([A, B]);
+    expect(controller.riding[0]?.position.z).toBe(CRATE_RIDE.spawnZ);
+    expect(controller.riding[0]?.phase).toBe('riding');
+    expect(controller.snapshot().map(([id]) => id)).toEqual([A, B]);
+    expect(log.some(({ type }) => type === 'crate:failed')).toBe(false);
+    expect(log).toEqual([
+      { type: 'crate:spawned', crateId: A, resumed: false },
+      { type: 'crate:spawned', crateId: B, resumed: false },
+    ]);
+  });
+
+  it('refuses placements that do not lay the crates one for one, in order', () => {
+    const { controller } = session();
+    expect(() => {
+      controller.adopt([crate(A), crate(B)], [{ kind: 'chute' }]);
+    }).toThrow(/1 placements for 2 crates/);
+    expect(() => {
+      controller.adopt([crate(A)], [{ kind: 'pose', pose: [B, 0, 0, 0, 'riding'] }]);
+    }).toThrow(/names crate crate_B/);
+    expect(controller.riding).toHaveLength(0);
   });
 });
