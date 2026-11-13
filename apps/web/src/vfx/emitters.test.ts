@@ -9,8 +9,10 @@ import {
   contactSparks,
   dropSwirl,
   dropTrail,
+  FUSION_SPARKS,
   fusionImpact,
   fusionImplosion,
+  fusionSpark,
   TRAIL_SPACING,
   type EmitContext,
   type ViewFrame,
@@ -175,6 +177,25 @@ describe('emitters', () => {
       dropSwirl(context, [0, 0, 0], tier);
       expect(spawns.every((s) => s.r + s.g + s.b > 0)).toBe(true);
     }
+  });
+
+  it('throw fewer fusion sparks than before #182, full and compact alike', () => {
+    const count = (emit: (context: EmitContext) => void): number => {
+      const { context, spawns } = ctx('high');
+      emit(context);
+      return spawns.length;
+    };
+    const full = count((c) => {
+      fusionImpact(c, [0, 0, 0], 'gold');
+    });
+    const compact = count((c) => {
+      fusionSpark(c, [0, 0, 0], 'silver');
+    });
+    expect(full).toBe(FUSION_SPARKS.full.sparks + FUSION_SPARKS.full.glints);
+    expect(full).toBeLessThan(90 + 16);
+    expect(compact).toBe(FUSION_SPARKS.compact.sparks + FUSION_SPARKS.compact.glints);
+    expect(compact).toBeLessThan(28 + 6);
+    expect(compact).toBeLessThan(full / 2);
   });
 
   it('are deterministic for a seed', () => {

@@ -289,33 +289,48 @@ export function fusionImplosion(
   }
 }
 
-/** The burst at the moment of fusion: a corona of sparks and big slow glints. */
+/** Spark and glint counts at high quality for each fusion treatment. */
+export const FUSION_SPARKS = {
+  full: { sparks: 54, glints: 10 },
+  compact: { sparks: 18, glints: 4 },
+} as const;
+
+/** Furthest a full fusion's sparks travel from the centre, metres: just past its ring. */
+export const FULL_FUSION_REACH = 0.07;
+
+/**
+ * The burst at the moment of fusion: a corona of sparks and big slow glints. Speeds and drag
+ * keep every throw inside `FULL_FUSION_REACH`, so the corona hugs the ring instead of
+ * needling across the heap.
+ */
 export function fusionImpact(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
-  const sparks = scaledCount(ctx, 90);
+  const sparks = scaledCount(ctx, FUSION_SPARKS.full.sparks);
   const hot = toLinear(VFX_COLORS.whiteGold);
+  const drag = 8;
+  const maxSpeed = FULL_FUSION_REACH * drag * 0.9;
   const speed = ctx.reducedMotion ? 0.25 : 1;
   for (let i = 0; i < sparks; i++) {
     const a = ctx.rng() * Math.PI * 2;
     const up = range(ctx.rng, 0.05, 0.9);
-    const v = range(ctx.rng, 0.8, 2.1) * speed;
+    const v = range(ctx.rng, 0.4, 1) * maxSpeed * speed;
     emitOne(ctx, {
       at,
       velocity: [Math.cos(a) * v, up * v, Math.sin(a) * v],
-      life: range(ctx.rng, 0.3, 0.7),
+      life: range(ctx.rng, 0.25, 0.55),
       color: mixLinear(hot, tierAccent(ctx.rng, tier), ctx.rng() * 0.7),
       intensity: HOT,
       size: range(ctx.rng, 0.003, 0.005),
-      drag: 2.6,
+      drag,
       gravity: 0.7,
       kind: ctx.reducedMotion ? ParticleKind.Glint : ParticleKind.Spark,
     });
   }
-  const glints = scaledCount(ctx, 16);
+  const glints = scaledCount(ctx, FUSION_SPARKS.full.glints);
   for (let i = 0; i < glints; i++) {
     const d = direction(ctx.rng, [0, 1, 0]);
     emitOne(ctx, {
       at: [at[0] + d[0] * 0.02, at[1] + d[1] * 0.02 + 0.005, at[2] + d[2] * 0.02],
-      velocity: [d[0] * 0.25 * speed, d[1] * 0.35 * speed, d[2] * 0.25 * speed],
+      velocity: [d[0] * 0.12 * speed, d[1] * 0.3 * speed, d[2] * 0.12 * speed],
       life: range(ctx.rng, 0.6, 1.1),
       color: tierAccent(ctx.rng, tier),
       intensity: HOT,
@@ -341,7 +356,7 @@ export function fusionSpark(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
   const drag = 9;
   const maxSpeed = COMPACT_FUSION_REACH * drag * 0.9;
   const speed = ctx.reducedMotion ? 0.3 : 1;
-  const sparks = scaledCount(ctx, 28);
+  const sparks = scaledCount(ctx, FUSION_SPARKS.compact.sparks);
   for (let i = 0; i < sparks; i++) {
     const a = (i / sparks) * Math.PI * 2 + range(ctx.rng, -0.2, 0.2);
     const v = range(ctx.rng, 0.45, 1) * maxSpeed * speed;
@@ -358,7 +373,7 @@ export function fusionSpark(ctx: EmitContext, at: Vec3, tier: CoinTier): void {
       kind: ctx.reducedMotion ? ParticleKind.Glint : ParticleKind.Spark,
     });
   }
-  const glints = scaledCount(ctx, 6);
+  const glints = scaledCount(ctx, FUSION_SPARKS.compact.glints);
   for (let i = 0; i < glints; i++) {
     const d = direction(ctx.rng, [0, 1, 0]);
     emitOne(ctx, {
