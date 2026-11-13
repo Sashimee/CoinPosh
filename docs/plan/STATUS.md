@@ -106,7 +106,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-92.07 | todo | | Waits on T-92.05, T-92.06, T-92.10 (#92) |
 | T-92.08 | todo | | Waits on T-92.04 (#85) |
 | T-92.09 | todo | | Waits on T-92.07, T-92.08, T-1.17 (#92) |
-| T-92.10 | todo | | Waits on T-92.02 (#92, crates) |
+| T-92.10 | done | task/T-92.10 (merge 82654b5) | Crate ride snapshot and restore on CRATE_RIDE bounds (ride.ts, view.ts, crates.test.ts; daf58bf); pnpm check green after merge |
 | T-2.01 | todo | | Waits on T-1.18. Key-locked Safes (server + client + cinematic) |
 | T-2.02 | todo | | Waits on T-1.18. Scratch Cards (GPU scratch mask) |
 | T-2.03 | todo | | Waits on T-1.18. Gacha Capsule Machine |
