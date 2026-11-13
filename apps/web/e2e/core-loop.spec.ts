@@ -21,7 +21,7 @@ const QUIET_MS = 3_000;
 
 interface Timeline {
   readonly frontFalls: readonly number[];
-  readonly pops: readonly number[];
+  readonly popCredits: readonly number[];
   readonly vault: readonly (readonly [at: number, value: number])[];
   readonly fluteFill: number;
 }
@@ -30,19 +30,19 @@ declare global {
   interface Window {
     __timeline?: {
       frontFalls: number[];
-      pops: number[];
+      popCredits: number[];
       vault: [number, number][];
       fluteFill: number;
     };
   }
 }
 
-/** Records, in page time, every front-edge fall, number pop, Vault change and the flute's peak. */
+/** Records, in page time, every front-edge fall, number-pop credit, Vault change and the flute's peak. */
 async function recordTimeline(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const timeline = {
       frontFalls: [] as number[],
-      pops: [] as number[],
+      popCredits: [] as number[],
       vault: [] as [number, number][],
       fluteFill: 0,
     };
@@ -67,17 +67,38 @@ async function recordTimeline(page: Page): Promise<void> {
       if (Number.isFinite(fill)) timeline.fluteFill = Math.max(timeline.fluteFill, fill);
     };
     setInterval(sample, 10);
+    // P-224 folds a credit that lands beside an open pop into it (`data-count` set) instead of
+    // launching a new one (`hidden` removed), so each launch and each fold is one pop credit.
+    // A record carries only the old value; the state it left is the next record's old value for
+    // the same element and attribute, or the live attribute for the last one.
+    const creditsIn = (records: readonly MutationRecord[]): number => {
+      let credits = 0;
+      records.forEach((record, i) => {
+        const el = record.target;
+        const name = record.attributeName;
+        if (!(el instanceof HTMLElement) || !el.classList.contains('cp-pop') || name === null) {
+          return;
+        }
+        const next = records.slice(i + 1).find((r) => r.target === el && r.attributeName === name);
+        const before = record.oldValue !== null;
+        const after = next ? next.oldValue !== null : el.hasAttribute(name);
+        if (name === 'hidden' && before && !after) credits += 1;
+        if (name === 'data-count' && after) credits += 1;
+      });
+      return credits;
+    };
     new MutationObserver((records) => {
       // A pop and the fall counter can change in the same task, before the next interval tick,
       // so the counter is read first to keep every fall stamped no later than its pop.
       sample();
-      for (const record of records) {
-        const el = record.target;
-        if (el instanceof HTMLElement && el.classList.contains('cp-pop') && !el.hidden) {
-          timeline.pops.push(performance.now());
-        }
-      }
-    }).observe(document, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+      const now = performance.now();
+      for (let n = creditsIn(records); n > 0; n -= 1) timeline.popCredits.push(now);
+    }).observe(document, {
+      subtree: true,
+      attributes: true,
+      attributeOldValue: true,
+      attributeFilter: ['hidden', 'data-count'],
+    });
   });
 }
 
@@ -87,7 +108,7 @@ function readTimeline(page: Page): Promise<Timeline> {
     if (!t) throw new Error('The timeline recorder did not run before the game booted');
     return {
       frontFalls: [...t.frontFalls],
-      pops: [...t.pops],
+      popCredits: [...t.popCredits],
       vault: [...t.vault],
       fluteFill: t.fluteFill,
     };
@@ -96,8 +117,8 @@ function readTimeline(page: Page): Promise<Timeline> {
 
 /**
  * Pairs each fall with its own feedback event: the earliest unclaimed one that lands no earlier
- * than the fall and within FEEDBACK_WINDOW_MS. Feedback that comes first, or one pop shared by
- * two falls, leaves a fall unmatched. Taking the earliest fit in fall order is a maximum
+ * than the fall and within FEEDBACK_WINDOW_MS. Feedback that comes first, or one pop credit
+ * shared by two falls, leaves a fall unmatched. Taking the earliest fit in fall order is a maximum
  * matching, because every fall has a window of the same length.
  */
 function matchEach(falls: readonly number[], feedback: readonly number[]): (number | undefined)[] {
@@ -237,11 +258,11 @@ test.describe('core loop at 390x844 (P-192, P-221)', () => {
     const rises = vault
       .filter(([, value], i) => value > (i === 0 ? start.vault : (vault[i - 1]?.[1] ?? value)))
       .map(([at]) => at);
-    const pops = matchEach(fallsInRun, recorded.pops);
+    const pops = matchEach(fallsInRun, recorded.popCredits);
     fallsInRun.forEach((at, i) => {
       expect(
         pops[i],
-        `its own number pop within ${FEEDBACK_WINDOW_MS} ms after the fall at ${Math.round(at)} ms`,
+        `its own number-pop credit (a new pop or a fold into one) within ${FEEDBACK_WINDOW_MS} ms after the fall at ${Math.round(at)} ms`,
       ).toBeDefined();
     });
     // Falls seen in one sample reach the page in one sim message and are credited by one Vault
