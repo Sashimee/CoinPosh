@@ -18,12 +18,14 @@ import {
   type AlbumResponse,
   type CoinId,
   type CrateId,
+  type NudgeDirection,
   type PityCounters,
   type PlayerId,
   type Rarity,
   type Reward,
   type Roll,
 } from '@coinposh/shared';
+import { checkCratePose, CRATE_RIDE, type CratePose, POSITION_UNIT } from '@coinposh/sim/snapshot';
 import { Group, PerspectiveCamera, Vector3 } from 'three/webgpu';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createBus } from '../../app/bus.ts';
@@ -33,6 +35,7 @@ import { createI18n, LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
 import type { ApiClient } from '../../net/client.ts';
 import type { Connectivity, Scheduler } from '../../net/connectivity.ts';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
+import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
 import type { MockServer } from '../../net/mock/server.ts';
 import { Outbox } from '../../net/outbox.ts';
 import { TableSync, type TableEvent } from '../../net/tableSync.ts';
@@ -168,9 +171,236 @@ describe('CrateRide', () => {
   it('keeps side nudges on the table', () => {
     const ride = new CrateRide(crate('crate_FFFFFFFFFFFFFFFF'), 0);
     for (let i = 0; i < 100; i++) ride.nudge('right', 1);
-    expect(ride.position.x).toBeLessThan(0.18);
+    expect(ride.position.x).toBe(CRATE_RIDE.sideLimit);
     for (let i = 0; i < 200; i++) ride.nudge('left', 1);
-    expect(ride.position.x).toBeGreaterThan(-0.18);
+    expect(ride.position.x).toBe(-CRATE_RIDE.sideLimit);
+  });
+
+  it('takes its bounds from the CRATE_RIDE the server judges by', () => {
+    const ride = new CrateRide(crate('crate_GGGGGGGGGGGGGGGG'), 0);
+    expect(ride.position.z).toBe(CRATE_RIDE.spawnZ);
+    expect(Math.abs(ride.position.x)).toBeLessThanOrEqual(CRATE_RIDE.spreadX);
+    rideToEdge(ride);
+    expect(ride.position.z).toBeGreaterThanOrEqual(CRATE_RIDE.tipZ);
+    expect(ride.tilt).toBe(CRATE_RIDE.maxTilt);
+  });
+});
+
+describe('CrateRide snapshot and restore', () => {
+  const STEP = 1 / 60;
+  const MAX_RIDE_S = CRATE_RIDE_SECONDS.max;
+
+  /** A player's taps along the ride, by step: the same on every run so paths can be compared. */
+  function nudgeAt(step: number): NudgeDirection | undefined {
+    if (step % 211 === 0) return 'forward';
+    if (step % 97 === 0) return 'left';
+    if (step % 131 === 0) return 'right';
+    return undefined;
+  }
+
+  interface RideLog {
+    teeter: number | undefined;
+    fell: number | undefined;
+    /** Every pose uploaded, by the step it went up after. */
+    poses: Map<number, CratePose>;
+  }
+
+  interface RunOptions {
+    from?: number;
+    until?: number;
+    stroke?: (seconds: number) => number;
+    /** Whether the table snapshot goes up after this step. */
+    uploads?: (step: number) => boolean;
+  }
+
+  const UPLOAD_EVERY = 37;
+  const everyUpload = (step: number): boolean => step % UPLOAD_EVERY === 0;
+
+  /** Steps the ride until it falls, logging the step each phase began on and every pose uploaded. */
+  function run(ride: CrateRide, options: RunOptions = {}): RideLog {
+    const { from = 0, until = Infinity, stroke = strokeAt, uploads = everyUpload } = options;
+    const log: RideLog = { teeter: undefined, fell: undefined, poses: new Map() };
+    let phase = ride.phase;
+    for (let step = from + 1; step <= until && phase !== 'fell'; step++) {
+      if (step * STEP > MAX_RIDE_S + 1) throw new Error(`ride ${ride.crate.id} never fell`);
+      const before = phase;
+      ride.update(STEP, stroke(step * STEP));
+      const direction = nudgeAt(step);
+      if (direction) ride.nudge(direction, 0.8);
+      phase = ride.phase;
+      if (before !== 'teeter' && phase === 'teeter') log.teeter = step;
+      if (phase === 'fell') log.fell = step;
+      else if (uploads(step)) log.poses.set(step, ride.snapshot());
+    }
+    return log;
+  }
+
+  /**
+   * Rides `id` to the upload after step `cut`, then reloads: restores the crate from that
+   * pose as it comes back over the wire, with the pusher where the sim restored it, and
+   * finishes the ride.
+   */
+  function reloadedAt(id: string, cut: number, options: RunOptions = {}): RideLog {
+    const { stroke = strokeAt } = options;
+    const before = run(new CrateRide(crate(id), stroke(0)), { ...options, until: cut });
+    const posed = before.poses.get(cut);
+    if (!posed) throw new Error(`no upload after step ${cut} to reload from`);
+    const wire = JSON.parse(JSON.stringify(posed)) as CratePose;
+    const resumed = CrateRide.restore(crate(id), wire, stroke(cut * STEP));
+    expect(resumed.phase).toBe(posed.phase);
+    const after = run(resumed, { ...options, from: cut });
+    return {
+      teeter: before.teeter ?? after.teeter,
+      fell: after.fell,
+      poses: new Map([...before.poses, ...after.poses]),
+    };
+  }
+
+  function pathOf(log: RideLog) {
+    return { teeter: log.teeter, fell: log.fell, poses: [...log.poses] };
+  }
+
+  const IDS = ['crate_AAAAAAAAAAAAAAAA', 'crate_Kq3vX9pLm2Rt8YwZ', 'crate_0000000000000009'];
+
+  it('reaches teeter and falls on the same steps after a mid-ride reload', () => {
+    for (const id of IDS) {
+      const whole = run(new CrateRide(crate(id), strokeAt(0)));
+      const { teeter, fell } = whole;
+      if (teeter === undefined || fell === undefined) throw new Error(`${id} never tipped`);
+      expect(teeter).toBeLessThan(fell);
+      expect(fell * STEP).toBeGreaterThanOrEqual(CRATE_RIDE_SECONDS.min);
+      const cuts = [...whole.poses.keys()];
+      expect(cuts.some((cut) => cut < teeter)).toBe(true);
+      expect(cuts.some((cut) => cut >= teeter)).toBe(true);
+      for (const cut of cuts) {
+        expect({ id, cut, ...pathOf(reloadedAt(id, cut)) }).toEqual({ id, cut, ...pathOf(whole) });
+      }
+    }
+  });
+
+  it('resumes on the same frame from an upload right at the lip', () => {
+    const always = (): boolean => true;
+    for (const id of IDS) {
+      const whole = run(new CrateRide(crate(id), strokeAt(0)), { uploads: always });
+      const teeter = whole.teeter ?? 0;
+      const fell = whole.fell ?? 0;
+      for (const cut of [1, teeter - 1, teeter, teeter + 1, fell - 1]) {
+        const reloaded = reloadedAt(id, cut, { uploads: always });
+        expect({ id, cut, ...pathOf(reloaded) }).toEqual({ id, cut, ...pathOf(whole) });
+      }
+    }
+  });
+
+  it('moves the crate no more than the pose grid when it uploads', () => {
+    for (const id of IDS) {
+      const quiet = run(new CrateRide(crate(id), strokeAt(0)), { uploads: () => false });
+      const uploaded = run(new CrateRide(crate(id), strokeAt(0)));
+      expect(Math.abs((uploaded.fell ?? 0) - (quiet.fell ?? 0))).toBeLessThanOrEqual(1);
+      const ride = new CrateRide(crate(id), 0);
+      for (let step = 1; step <= 300; step++) {
+        ride.update(STEP, strokeAt(step * STEP));
+        const at = ride.position;
+        const seconds = ride.seconds;
+        ride.snapshot();
+        expect(Math.abs(ride.position.x - at.x)).toBeLessThanOrEqual(POSITION_UNIT);
+        expect(Math.abs(ride.position.z - at.z)).toBeLessThanOrEqual(POSITION_UNIT * 1.5);
+        expect(Math.abs(ride.seconds - seconds)).toBeLessThanOrEqual(0.0005);
+      }
+    }
+  });
+
+  it('only ever uploads poses the server accepts', () => {
+    for (const id of IDS) {
+      const always = (): boolean => true;
+      const whole = run(new CrateRide(crate(id), strokeAt(0)), { uploads: always });
+      const reloaded = reloadedAt(id, Math.floor((whole.teeter ?? 0) * 0.7), { uploads: always });
+      const poses = [...whole.poses.values(), ...reloaded.poses.values()];
+      expect(poses.length).toBeGreaterThan(100);
+      expect(poses.some((p) => p.phase === 'riding')).toBe(true);
+      expect(poses.some((p) => p.phase === 'teeter')).toBe(true);
+      for (const pose of poses) {
+        expect({ pose, verdict: checkCratePose(pose, MAX_RIDE_S) }).toEqual({
+          pose,
+          verdict: { ok: true },
+        });
+      }
+    }
+  });
+
+  it('keeps poses valid with the pusher frozen until the pile shoves the crate off', () => {
+    const frozen = (): number => 0.4;
+    const id = 'crate_CCCCCCCCCCCCCCCC';
+    const whole = run(new CrateRide(crate(id), 0.4), { stroke: frozen, uploads: () => true });
+    const fell = whole.fell ?? 0;
+    expect(fell * STEP).toBeLessThanOrEqual(MAX_RIDE_S + STEP);
+    const last = whole.poses.get(fell - 1);
+    expect(last?.elapsedMs).toBeLessThanOrEqual(MAX_RIDE_S * 1000);
+    for (const pose of whole.poses.values()) {
+      expect(checkCratePose(pose, MAX_RIDE_S)).toEqual({ ok: true });
+    }
+    const reloaded = reloadedAt(id, fell - 1, { stroke: frozen, uploads: () => true });
+    expect(reloaded.fell).toBe(fell);
+  });
+
+  it('does not jump the crate on the first stroke after a reload', () => {
+    const ride = new CrateRide(crate('crate_HHHHHHHHHHHHHHHH'), 0);
+    for (let step = 1; step <= 90; step++) ride.update(STEP, strokeAt(step * STEP));
+    const pose = ride.snapshot();
+    const resumed = CrateRide.restore(ride.crate, pose, 0.95);
+    const z = resumed.position.z;
+    resumed.update(0, 0.95);
+    expect(resumed.position.z).toBe(z);
+    resumed.update(STEP, 0.97);
+    expect(resumed.position.z - z).toBeCloseTo(
+      0.02 * RIVIERA_TABLE.pusherStroke * CRATE_RIDE.carry + CRATE_RIDE.creepPerSecond * STEP,
+      9,
+    );
+  });
+
+  it('restores to the pose it was given, on the lower tier and pitched over the lip', () => {
+    const teeter: CratePose = {
+      x: -1234,
+      z: Math.round(CRATE_RIDE.teeterZ / POSITION_UNIT),
+      elapsedMs: 9000,
+      phase: 'teeter',
+    };
+    const ride = CrateRide.restore(crate('crate_JJJJJJJJJJJJJJJJ'), teeter, 0.5);
+    expect(ride.phase).toBe('teeter');
+    expect(ride.seconds).toBe(9);
+    expect(ride.position.x).toBeCloseTo(-0.01234, 9);
+    expect(ride.position.y).toBe(0);
+    expect(ride.position.z).toBeGreaterThanOrEqual(CRATE_RIDE.teeterZ);
+    expect(ride.snapshot()).toEqual(teeter);
+    const riding: CratePose = {
+      x: 0,
+      z: Math.round(CRATE_RIDE.spawnZ / POSITION_UNIT),
+      elapsedMs: 0,
+      phase: 'riding',
+    };
+    const fresh = CrateRide.restore(crate('crate_JJJJJJJJJJJJJJJJ'), riding, 0);
+    expect(fresh.position.y).toBe(RIVIERA_TABLE.pusherHeight);
+    expect(fresh.tilt).toBe(0);
+    expect(fresh.snapshot()).toEqual(riding);
+  });
+
+  it('refuses a pose the server would refuse', () => {
+    const tipZ = Math.round(CRATE_RIDE.tipZ / POSITION_UNIT);
+    const bad: [CratePose, string][] = [
+      [{ x: 0, z: tipZ, elapsedMs: 9000, phase: 'teeter' }, 'out_of_bounds'],
+      [{ x: 0, z: tipZ - 1, elapsedMs: 9000, phase: 'riding' }, 'bad_phase'],
+      [{ x: 0.5, z: tipZ - 1, elapsedMs: 9000, phase: 'teeter' }, 'non_finite'],
+      [{ x: 0, z: tipZ - 1, elapsedMs: MAX_RIDE_S * 1000 + 1, phase: 'teeter' }, 'bad_elapsed'],
+    ];
+    for (const [pose, reason] of bad) {
+      expect(() => CrateRide.restore(crate('crate_KKKKKKKKKKKKKKKK'), pose, 0)).toThrow(reason);
+    }
+  });
+
+  it('never poses a crate that has fallen', () => {
+    const ride = new CrateRide(crate('crate_LLLLLLLLLLLLLLLL'), 0);
+    rideToEdge(ride);
+    expect(ride.phase).toBe('fell');
+    expect(() => ride.snapshot()).toThrow(/has fallen/);
   });
 });
 
