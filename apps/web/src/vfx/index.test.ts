@@ -1,4 +1,4 @@
-import { CASCADE_TIERS } from '@coinposh/shared';
+import { CASCADE_TIERS, COIN_TIERS, type CoinTier } from '@coinposh/shared';
 import i18next, { type i18n as I18n } from 'i18next';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { PerspectiveCamera, Scene, Vector3, type Mesh, type WebGPURenderer } from 'three/webgpu';
@@ -7,6 +7,7 @@ import {
   rivieraCameraPreset,
   RIVIERA_TABLE,
 } from '../scene/venues/riviera/layout.ts';
+import { createRng } from '../audio/rng.ts';
 import { HAPTIC_PATTERNS } from './haptics.ts';
 import {
   COMPACT_FUSION,
@@ -14,7 +15,10 @@ import {
   createVfx,
   EFFECT_JUICE,
   FULL_FUSION,
+  FUSION_FULL_GAP_MS,
+  FUSION_FULL_WINDOW_MS,
   FUSION_TIMING,
+  MID_FUSION,
   type JuiceItem,
   type Vfx,
   type VfxEffect,
@@ -145,6 +149,21 @@ function run(r: Rig, seconds: number): void {
   for (let t = 0; t < seconds; t += FRAME) frame(r);
 }
 
+/**
+ * Plays every tier's first fusion, far apart, then clears the table and lets the cap rest:
+ * the session's milestones are spent, so the next fusion is a routine one.
+ */
+function seasoned(options: Parameters<typeof rig>[0] = {}): Rig {
+  const r = rig(options);
+  for (const tier of COIN_TIERS) {
+    r.clock.ms += FUSION_FULL_WINDOW_MS;
+    r.vfx.fusion({ sources, center: at, tier });
+  }
+  r.vfx.clear();
+  r.clock.ms += FUSION_FULL_WINDOW_MS;
+  return r;
+}
+
 interface Trace {
   readonly items: Set<JuiceItem>;
   readonly cameraMoved: boolean;
@@ -190,6 +209,9 @@ const sources = [
   new Vector3(0, 0.01, 0.06),
 ];
 
+/** Effects that only a seasoned session plays: the first fusion of a session is always full. */
+const ROUTINE_EFFECTS: ReadonlySet<VfxEffect> = new Set(['fusionMid', 'fusionCompact']);
+
 const EFFECTS: Readonly<Record<VfxEffect, (vfx: Vfx) => void>> = {
   dropTrail: (vfx) => {
     const trail = vfx.dropTrail(new Vector3(0, 0.3, 0.1), { tier: 'gold' });
@@ -200,6 +222,9 @@ const EFFECTS: Readonly<Record<VfxEffect, (vfx: Vfx) => void>> = {
   },
   fusion: (vfx) => {
     vfx.fusion({ sources, center: at, tier: 'gold' });
+  },
+  fusionMid: (vfx) => {
+    vfx.fusion({ sources, center: at, tier: 'platinum' });
   },
   fusionCompact: (vfx) => {
     vfx.fusion({ sources, center: at, tier: 'silver' });
@@ -219,7 +244,7 @@ describe('juice checklist, measured on the facade', () => {
   it.each(Object.keys(EFFECTS) as VfxEffect[])(
     '%s delivers every item it claims, and at least 4 without sound',
     (effect) => {
-      const { items } = observe(rig(), EFFECTS[effect]);
+      const { items } = observe(ROUTINE_EFFECTS.has(effect) ? seasoned() : rig(), EFFECTS[effect]);
       const claimed = EFFECT_JUICE[effect].items;
       expect([...items].sort()).toEqual(expect.arrayContaining([...claimed].sort()));
       expect(items.has('sound')).toBe(false);
@@ -308,7 +333,21 @@ describe('fusion tiers on the facade', () => {
     return { flashes, rings };
   };
 
-  it('plays a gold fusion in full: hit-stop, camera and the double ring', () => {
+  const kicks = (r: Rig, seconds: number): { swing: number; froze: boolean; rings: number } => {
+    const rest = r.camera.fov;
+    let swing = 0;
+    let froze = false;
+    let rings = 0;
+    for (let t = 0; t < seconds; t += FRAME) {
+      frame(r);
+      swing = Math.max(swing, Math.abs(r.camera.fov - rest));
+      froze ||= r.vfx.timeScale === 0;
+      rings = Math.max(rings, r.vfx.stats.shockwaves);
+    }
+    return { swing, froze, rings };
+  };
+
+  it('plays the first gold fusion of the session in full: hit-stop, camera, double ring', () => {
     const trace = observe(rig(), (vfx) => {
       vfx.fusion({ sources, center: at, tier: 'gold' });
     });
@@ -320,22 +359,39 @@ describe('fusion tiers on the facade', () => {
   });
 
   it.each(['copper', 'silver'] as const)(
-    'keeps even the first %s fusion of the session compact',
+    'plays the first fusion of the session in full, even a %s one',
     (tier) => {
       const r = rig();
+      r.vfx.fusion({ sources, center: at, tier });
+      const first = kicks(r, 1.5);
+      expect(first.froze).toBe(true);
+      expect(first.swing).toBeGreaterThan(1);
+      expect(first.rings).toBe(2);
+      r.clock.ms += FUSION_FULL_WINDOW_MS;
+      r.vfx.fusion({ sources, center: at, tier });
+      const second = kicks(r, 1.5);
+      expect(second.swing).toBeLessThan(0.01);
+      expect(second).toMatchObject({ froze: false, rings: 1 });
+    },
+  );
+
+  it.each(['gold', 'platinum', 'diamond', 'heirloom'] as const)(
+    'plays the first %s of the session in full, a few seconds after the first fusion',
+    (tier) => {
+      const r = rig();
+      routine(r.vfx);
+      run(r, 1);
+      r.clock.ms += 3000;
       const trace = observe(r, (vfx) => {
         vfx.fusion({ sources, center: at, tier });
       });
-      expect(trace.cameraMoved).toBe(false);
-      expect(trace.items.has('timeManipulation')).toBe(false);
-      const next = rig();
-      next.vfx.fusion({ sources, center: at, tier });
-      expect(peakFlashes(next).rings).toBe(1);
+      expect(trace.items.has('timeManipulation')).toBe(true);
+      expect(trace.cameraMoved).toBe(true);
     },
   );
 
   it('keeps a routine fusion compact: no hit-stop, no camera, one small ring', () => {
-    const r = rig();
+    const r = seasoned();
     const onImpact = vi.fn();
     const trace = observe(r, (vfx) => {
       vfx.fusion({ sources, center: at, tier: 'silver', onImpact });
@@ -344,74 +400,112 @@ describe('fusion tiers on the facade', () => {
     expect(trace.cameraMoved).toBe(false);
     expect(trace.items.has('timeManipulation')).toBe(false);
     expect(trace.items.size).toBeGreaterThanOrEqual(4);
-    const next = rig();
+    const next = seasoned();
     routine(next.vfx);
     expect(peakFlashes(next).rings).toBe(1);
   });
 
   it('lands a routine fusion on the same beat, without freezing the world', () => {
-    const r = rig();
-    const onImpact = vi.fn();
-    r.vfx.fusion({ sources, center: at, tier: 'silver', onImpact });
-    const impactFrame = Math.ceil(FUSION_TIMING.implode / FRAME - 1e-9);
-    for (let i = 0; i < impactFrame; i++) frame(r);
-    expect(onImpact).toHaveBeenCalledTimes(1);
-    expect(frame(r)).toBeCloseTo(FRAME, 9);
-    expect(r.vfx.timeScale).toBe(1);
-  });
-
-  it('blooms far less for a routine fusion than for a gold one', () => {
-    const peakGlow = (r: Rig): number => {
-      let glow = 0;
-      for (let t = 0; t < 1; t += FRAME) {
-        frame(r);
-        glow = Math.max(glow, r.vfx.glow);
-      }
-      return glow;
-    };
-    const gold = rig();
-    gold.vfx.fusion({ sources, center: at, tier: 'gold' });
-    const routineRig = rig();
-    routine(routineRig.vfx);
-    expect(peakGlow(routineRig)).toBeLessThan(peakGlow(gold) * 0.3);
-  });
-
-  it('plays gold and up in full after routine fusions', () => {
-    for (const tier of ['gold', 'platinum', 'diamond', 'heirloom'] as const) {
-      const r = rig();
-      routine(r.vfx);
-      run(r, 1);
-      const trace = observe(r, (vfx) => {
-        vfx.fusion({ sources, center: at, tier });
-      });
-      expect(trace.items.has('timeManipulation')).toBe(true);
-      expect(trace.cameraMoved).toBe(true);
+    for (const tier of ['silver', 'gold'] as const) {
+      const r = seasoned();
+      const onImpact = vi.fn();
+      r.vfx.fusion({ sources, center: at, tier, onImpact });
+      const impactFrame = Math.ceil(FUSION_TIMING.implode / FRAME - 1e-9);
+      for (let i = 0; i < impactFrame; i++) frame(r);
+      expect(onImpact).toHaveBeenCalledTimes(1);
+      expect(frame(r)).toBeCloseTo(FRAME, 9);
+      expect(r.vfx.timeScale).toBe(1);
     }
   });
 
-  it('plays one gold fusion per 3 s in full; the others go compact, no kick or freeze', () => {
-    const r = rig();
-    const rest = r.camera.fov;
-    const gold = (seconds: number): { swing: number; froze: boolean } => {
-      r.vfx.fusion({ sources, center: at, tier: 'gold' });
-      let swing = 0;
-      let froze = false;
-      for (let t = 0; t < seconds; t += FRAME) {
-        frame(r);
-        swing = Math.max(swing, Math.abs(r.camera.fov - rest));
-        froze ||= r.vfx.timeScale === 0;
-      }
-      return { swing, froze };
+  const peakGlow = (r: Rig): number => {
+    let glow = 0;
+    for (let t = 0; t < 1; t += FRAME) {
+      frame(r);
+      glow = Math.max(glow, r.vfx.glow);
+    }
+    return glow;
+  };
+
+  it('blooms compact < mid < full, the routine ones far below the set piece', () => {
+    const gold = rig();
+    gold.vfx.fusion({ sources, center: at, tier: 'gold' });
+    const full = peakGlow(gold);
+    const compactRig = seasoned();
+    routine(compactRig.vfx);
+    const compact = peakGlow(compactRig);
+    const midRig = seasoned();
+    midRig.vfx.fusion({ sources, center: at, tier: 'gold' });
+    const mid = peakGlow(midRig);
+    expect(compact).toBeLessThan(full * 0.3);
+    expect(mid).toBeGreaterThan(compact * 1.5);
+    expect(mid).toBeLessThan(full * 0.55);
+  });
+
+  it.each(['gold', 'platinum'] as const)(
+    'plays a routine %s mid: a double ring and a tap, no hit-stop or camera kick',
+    (tier) => {
+      const r = seasoned();
+      const trace = observe(r, (vfx) => {
+        vfx.fusion({ sources, center: at, tier });
+      });
+      expect(trace.cameraMoved).toBe(false);
+      expect(trace.items.has('timeManipulation')).toBe(false);
+      expect(trace.items.has('squashOvershoot')).toBe(true);
+      expect(trace.vibrations).toContainEqual(HAPTIC_PATTERNS.tap);
+      expect(trace.vibrations).not.toContainEqual(HAPTIC_PATTERNS.thud);
+      const next = seasoned();
+      next.vfx.fusion({ sources, center: at, tier });
+      expect(peakFlashes(next).rings).toBe(2);
+    },
+  );
+
+  it('plays a routine diamond in full at most once per 20 s; the rest go mid', () => {
+    const r = seasoned();
+    const diamond = (seconds: number): ReturnType<typeof kicks> => {
+      r.vfx.fusion({ sources, center: at, tier: 'diamond' });
+      return kicks(r, seconds);
     };
-    const kicked = gold(1.5);
+    const kicked = diamond(1.5);
     expect(kicked.swing).toBeGreaterThan(1);
     expect(kicked.froze).toBe(true);
-    const muted = gold(1.6);
-    expect(muted.swing).toBeLessThan(0.01);
-    expect(muted.froze).toBe(false);
-    const rested = gold(1);
+    r.clock.ms += 5000;
+    const capped = diamond(1.5);
+    expect(capped.swing).toBeLessThan(0.01);
+    expect(capped).toMatchObject({ froze: false, rings: 2 });
+    r.clock.ms += FUSION_FULL_GAP_MS;
+    const rested = diamond(1);
     expect(rested.swing).toBeGreaterThan(1);
     expect(rested.froze).toBe(true);
+  });
+
+  it('plays at most 2 full set pieces in a seeded 30 s gold-rich pour', () => {
+    for (const fresh of [true, false]) {
+      const r = fresh ? rig() : seasoned();
+      const rng = createRng(182);
+      let fulls = 0;
+      let wasFrozen = false;
+      let next = 0;
+      let fusions = 0;
+      for (let t = 0; t < 30; t += FRAME) {
+        if (t >= next) {
+          const roll = rng();
+          const tier: CoinTier =
+            roll < 0.2 ? 'silver' : roll < 0.84 ? 'gold' : roll < 0.97 ? 'platinum' : 'diamond';
+          r.vfx.fusion({ sources, center: at, tier });
+          fusions++;
+          next = t + 0.35 + rng() * 0.85;
+        }
+        frame(r);
+        const frozen = r.vfx.timeScale === 0;
+        if (frozen && !wasFrozen) fulls++;
+        wasFrozen = frozen;
+      }
+      expect(fusions).toBeGreaterThan(30);
+      expect(fulls).toBeLessThanOrEqual(2);
+      if (fresh) expect(fulls).toBeGreaterThanOrEqual(1);
+      expect(r.vfx.stats.dropped).toBe(0);
+    }
   });
 
   it('plays the full set piece smaller, lighter and shorter than before #182', () => {
@@ -482,6 +576,12 @@ describe('fusion tiers on the facade', () => {
       const ring = ringPx(center, FULL_FUSION.rings.first);
       expect(ring).toBeLessThanOrEqual(cap);
       expect(ring).toBeGreaterThanOrEqual(2 * ringPx(center, COMPACT_FUSION.ringRadius) - 1e-6);
+      const mid = ringPx(center, MID_FUSION.rings.first);
+      expect(mid).toBeGreaterThan(ringPx(center, COMPACT_FUSION.ringRadius));
+      expect(mid).toBeLessThanOrEqual(ring * 0.75);
+      expect(spritePx(center, MID_FUSION.flash.halo * peakStretch)).toBeLessThan(
+        spritePx(center, FULL_FUSION.flash.halo * peakStretch) * 0.7,
+      );
       expect(spritePx(center, FULL_FUSION.flash.halo * peakStretch)).toBeLessThanOrEqual(cap);
     }
   });
@@ -490,7 +590,7 @@ describe('fusion tiers on the facade', () => {
     expect(COMPACT_FUSION.flash.core).toBeLessThan(0.042);
     expect(COMPACT_FUSION.flash.halo).toBeLessThan(0.056);
     expect(COMPACT_FUSION.ringRadius).toBeLessThan(0.036);
-    const r = rig();
+    const r = seasoned();
     routine(r.vfx);
     let glow = 0;
     for (let t = 0; t < 1; t += FRAME) {
@@ -501,15 +601,37 @@ describe('fusion tiers on the facade', () => {
     expect(glow).toBeLessThan(0.14);
   });
 
-  it('keeps reduced motion in spirit: bloom in place, no shake, no hit-stop on routine ones', () => {
-    const r = rig({ reducedMotion: true });
-    const trace = observe(r, routine);
-    expect(trace.cameraMoved).toBe(false);
-    expect(trace.items.has('timeManipulation')).toBe(false);
-    expect(trace.items.has('squashOvershoot')).toBe(false);
-    expect([...trace.items]).toEqual(
-      expect.arrayContaining(['particles', 'lightResponse', 'hapticOrShake']),
-    );
+  it.each(['silver', 'gold', 'platinum'] as const)(
+    'keeps reduced motion in spirit for a routine %s: bloom in place, no shake or hit-stop',
+    (tier) => {
+      const r = seasoned({ reducedMotion: true });
+      const trace = observe(r, (vfx) => {
+        vfx.fusion({ sources, center: at, tier });
+      });
+      expect(trace.cameraMoved).toBe(false);
+      expect(trace.items.has('timeManipulation')).toBe(false);
+      expect(trace.items.has('squashOvershoot')).toBe(false);
+      expect([...trace.items]).toEqual(
+        expect.arrayContaining(['particles', 'lightResponse', 'hapticOrShake']),
+      );
+    },
+  );
+
+  it('keeps the mid sparks fewer and its rings dimmer under reduced motion', () => {
+    const sparks = (reducedMotion: boolean): { particles: number; glow: number } => {
+      const r = seasoned({ reducedMotion });
+      r.vfx.fusion({ sources, center: at, tier: 'gold' });
+      const impactFrame = Math.ceil(FUSION_TIMING.implode / FRAME - 1e-9);
+      for (let i = 1; i < impactFrame; i++) frame(r);
+      const before = r.vfx.stats.particles;
+      frame(r);
+      return { particles: r.vfx.stats.particles - before, glow: peakGlow(r) };
+    };
+    const full = sparks(false);
+    const reduced = sparks(true);
+    expect(reduced.particles).toBeGreaterThan(0);
+    expect(reduced.particles).toBeLessThan(full.particles);
+    expect(reduced.glow).toBeGreaterThan(0);
   });
 });
 
