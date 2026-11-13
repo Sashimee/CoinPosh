@@ -252,6 +252,9 @@ async function unbox(page: Page, motion: Motion, skip: Skip): Promise<Unboxed> {
   };
   expect(unboxed.rarity).not.toBe('');
 
+  // A slow runner taps long enough to reach the next scheduled crate, whose reveal mounts as soon
+  // as this one leaves, so the check follows this crate's reveal rather than any reveal.
+  const collected = await reveal.elementHandle();
   // The reduced-motion collect fade lasts 160 ms, shorter than a loaded runner's poll can
   // reliably catch, so the collecting state is recorded the moment the class lands.
   const [fly] = await Promise.all([
@@ -283,7 +286,13 @@ async function unbox(page: Page, motion: Motion, skip: Skip): Promise<Unboxed> {
   } else {
     expect(fly, 'reduced motion fades the card in place').toEqual({ x: '', y: '' });
   }
-  await expect(reveal).toHaveCount(0, { timeout: COLLECT_SETTLES_MS });
+  await expect
+    .poll(() => collected.evaluate((el) => el.isConnected), {
+      message: 'the collected crate reveal leaves the page',
+      timeout: COLLECT_SETTLES_MS,
+    })
+    .toBe(false);
+  await collected.dispose();
   expect((await probe(page)).counts.cratesCollected).toBe(1);
   return unboxed;
 }
