@@ -1163,7 +1163,7 @@ interface CrateWiring {
  * on top of play, so a failure to mount them is logged, not fatal.
  *
  * Returns the crates riding the table, for the table snapshot.
- * TODO(crates owner): resume a `pose` placement where the server stored it once the controller
+ * TODO(crates owner, #176): resume a `pose` placement where the server stored it once the controller
  * takes placements (CrateRide.restore); until then such a crate is left out of the snapshots,
  * since its pose from the chute would read to the server as a teleport.
  */

@@ -189,7 +189,7 @@ describe('wireSnapshotTriggers', () => {
     expect(samples()).toBe(before + 2);
   });
 
-  it('takes one last sample when the page is hidden, then uploads at once', async () => {
+  it('uploads the latest sample at once when the page is hidden, then again once a fresh one lands', async () => {
     let land: () => void = () => undefined;
     const { page, calls, samples } = setup(
       () =>
@@ -200,19 +200,34 @@ describe('wireSnapshotTriggers', () => {
     const before = samples();
     page.setShown(false);
     expect(samples()).toBe(before + 1);
-    expect(calls).toEqual([]);
-    land();
-    await Promise.resolve();
-    await Promise.resolve();
     expect(calls).toEqual(['hidden']);
+    land();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual(['hidden', 'hidden']);
+  });
+
+  it('queues a snapshot before pagehide when the tab closes before the hidden sample lands', async () => {
+    let land: () => void = () => undefined;
+    const { page, calls } = setup(
+      () =>
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+    );
+    page.setShown(false);
+    page.hide();
+    expect(calls).toEqual(['hidden', 'pagehide']);
+    land();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual(['hidden', 'pagehide', 'hidden']);
   });
 
   it('still uploads the last good sample when the hidden one fails, and reports the failure', async () => {
     const failure = new Error('SimBridge.snapshot: the worker failed');
     const { page, calls, errors } = setup(() => Promise.reject(failure));
     page.setShown(false);
-    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toEqual(['hidden']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(errors).toContain(failure);
   });
 

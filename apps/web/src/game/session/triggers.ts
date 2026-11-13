@@ -51,7 +51,7 @@ function moved(batch: SimEventBatch): boolean {
 /**
  * Tells the snapshot cadence when the table moved: a drop, a nudge, a fusion, a fall, or a hard
  * strike in the sim. Meanwhile the sim is sampled so a capture is fresh when the cadence asks.
- * A hidden page takes one last sample and uploads at once; a page going away hands the queued
+ * A hidden page uploads its latest sample at once, then again once a last fresh one lands; a page going away hands the queued
  * snapshot to its keepalive request.
  */
 export function wireSnapshotTriggers(deps: SnapshotTriggerDeps): SnapshotTriggers {
@@ -94,6 +94,9 @@ export function wireSnapshotTriggers(deps: SnapshotTriggerDeps): SnapshotTrigger
         if (timer === null) loop();
         return;
       }
+      // A closing tab fires pagehide right after this, before the worker can answer, so the
+      // latest sample is queued now; a fresher one replaces it if the page lives to see it.
+      cadence.hidden();
       void sample().then(() => {
         if (!closed) cadence.hidden();
       });
