@@ -419,6 +419,107 @@ describe('Contact Fusion on the table', () => {
   });
 });
 
+describe("the chute's stream allowance", () => {
+  const { streamTicks, streamBurst } = FUSION_TUNING;
+
+  async function table() {
+    const { rig, mechanics } = await setUp(false);
+    const settle = FUSION_TUNING.spawnGraceTicks + 3 * ripeTicks(mechanics);
+    return { rig, mechanics, settle };
+  }
+
+  /** Drops `count` coppers on the next tick, right of the row, none touching another. */
+  function dropApart(rig: MechanicsRig, mechanics: TableMechanics<Tier>, count: number): number[] {
+    return Array.from({ length: count }, (_, i) => {
+      const id = rig.placeFlat(0.045 + i * 1.2 * RESTING, LANE_Z);
+      mechanics.registerDrop(id, 'copper');
+      return id;
+    });
+  }
+
+  /** Drops a touching row of three coppers on the next tick. */
+  function dropRow(rig: MechanicsRig, mechanics: TableMechanics<Tier>): number[] {
+    return [0, 1, 2].map((i) => {
+      const id = rig.placeFlat(-0.05 + i * RESTING, LANE_Z);
+      mechanics.registerDrop(id, 'copper');
+      return id;
+    });
+  }
+
+  const fusionOf = (ids: number[]): unknown[] => [
+    expect.objectContaining({ kind: 'fusion', ids, into: 'silver' }),
+  ];
+
+  it('keeps a short pour fresh: three coppers dropped on one tick fuse', async () => {
+    const { rig, mechanics, settle } = await table();
+    const row = dropRow(rig, mechanics);
+    expect(run(rig, mechanics, settle)).toEqual(fusionOf(row));
+  });
+
+  it.each([streamBurst, streamBurst - 1, streamBurst - 2])(
+    'lands the end of a pour idle: after %i drops on one tick, a dropped row never fuses',
+    async (before) => {
+      const { rig, mechanics, settle } = await table();
+      dropApart(rig, mechanics, before);
+      dropRow(rig, mechanics);
+      expect(run(rig, mechanics, FUSION_TUNING.freshTicks + settle)).toEqual([]);
+      expect(rig.coins()).toHaveLength(before + 3);
+    },
+  );
+
+  it.each([
+    [3 * streamTicks - 2, false],
+    [3 * streamTicks - 1, true],
+  ])(
+    'refills a coin every streamTicks: a row dropped %i ticks after a spent pour fuses: %s',
+    async (wait, fuses) => {
+      const { rig, mechanics, settle } = await table();
+      dropApart(rig, mechanics, streamBurst);
+      expect(run(rig, mechanics, wait)).toEqual([]);
+      const row = dropRow(rig, mechanics);
+      expect(run(rig, mechanics, settle)).toEqual(fuses ? fusionOf(row) : []);
+    },
+  );
+
+  it('never runs dry for a drop every streamTicks, the fastest tapping it is tuned for', async () => {
+    const { rig, mechanics, settle } = await table();
+    for (let i = 0; i < 20; i++) {
+      const [id] = dropApart(rig, mechanics, 1);
+      expect(run(rig, mechanics, streamTicks)).toEqual([]);
+      rig.removeCoin(id ?? -1);
+    }
+    const row = dropRow(rig, mechanics);
+    expect(run(rig, mechanics, settle)).toEqual(fusionOf(row));
+  });
+
+  it('is spent only by drops, not by coins registered another way', async () => {
+    const { rig, mechanics, settle } = await table();
+    dropApart(rig, mechanics, streamBurst - 3);
+    placeRow(rig, mechanics, ['copper', 'silver', 'copper'], 0.085);
+    const row = dropRow(rig, mechanics);
+    expect(run(rig, mechanics, settle)).toEqual(fusionOf(row));
+  });
+
+  it('hashes the allowance, so a dropped coin and a placed one differ', async () => {
+    const digest = ({ rig, mechanics }: Awaited<ReturnType<typeof table>>) =>
+      mechanics.hashInto(rig.hashInto(new StateHasher())).digest();
+    const dropped = await table();
+    dropped.mechanics.registerDrop(dropped.rig.placeFlat(0.04, LANE_Z), 'copper');
+    const placed = await table();
+    placed.mechanics.registerCoin(placed.rig.placeFlat(0.04, LANE_Z), 'copper');
+    expect(digest(dropped)).not.toBe(digest(placed));
+  });
+
+  it('refuses a drop of a coin already registered', async () => {
+    const { rig, mechanics } = await table();
+    const id = rig.placeFlat(0.04, LANE_Z);
+    mechanics.registerDrop(id, 'copper');
+    expect(() => {
+      mechanics.registerDrop(id, 'copper');
+    }).toThrow(/registerDrop: coin 0 is already registered/);
+  });
+});
+
 /**
  * Play on the moving upper tier: a seeded stream of mixed-tier drops, most down the
  * middle lane where they pile up and fuse, some onto the tower.
@@ -506,7 +607,7 @@ describe('mechanics determinism', () => {
 
   it('pins the session state so a change to the mechanics is noticed', async () => {
     const { digests } = await playSession(SEED);
-    expect(digests.at(-1)).toMatchInlineSnapshot(`"ea9d594fbf71f999"`);
+    expect(digests.at(-1)).toMatchInlineSnapshot(`"d5688c30416cbd16"`);
   });
 
   it('replays and pins a session with the fusionWindow upgrade at its top level', async () => {
@@ -516,6 +617,6 @@ describe('mechanics determinism', () => {
     expect(b.digests).toEqual(a.digests);
     expect(b.events).toEqual(a.events);
     expect(a.digests.at(-1)).not.toBe('ea9d594fbf71f999');
-    expect(a.digests.at(-1)).toMatchInlineSnapshot(`"e03a2b8ca2026950"`);
+    expect(a.digests.at(-1)).toMatchInlineSnapshot(`"fd308a340f0c7773"`);
   });
 });

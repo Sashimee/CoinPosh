@@ -1,7 +1,8 @@
 name: Perf
 
-# E2E flows and perf budgets on the Demo Mode build. Thresholds and their sources live in
-# apps/web/e2e/budgets.ts; CI chromium has no GPU, so it renders WebGL2 on SwiftShader.
+# E2E flows, perf budgets and the Lighthouse mobile audit on the Demo Mode build. Thresholds and
+# their sources live in apps/web/e2e/budgets.ts and lighthouse.perf.ts; CI chromium has no GPU, so
+# it renders WebGL2 on SwiftShader.
 on:
   pull_request:
     branches: [dev]
@@ -51,8 +52,10 @@ jobs:
         working-directory: apps/web
         run: pnpm exec playwright install --with-deps chromium
 
-      # One run for both projects, so the HTML report covers every flow and budget.
-      - name: E2E flows and perf budgets
+      # One run for both projects, so the HTML report covers every flow and budget. The perf
+      # project includes lighthouse.perf.ts (mobile preset, performance >= 80), which writes its
+      # score and top opportunities to the job summary and perf-report/lighthouse.{json,html}.
+      - name: E2E flows, perf budgets and Lighthouse mobile
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         working-directory: apps/web
         env:

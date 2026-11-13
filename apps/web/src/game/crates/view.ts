@@ -351,7 +351,8 @@ export class TableCrateView {
     return this.crates.has(crateId);
   }
 
-  spawn(crateId: CrateId): void {
+  /** `settled` draws it resting where its ride is, with no drop-in: a crate resumed at boot. */
+  spawn(crateId: CrateId, settled = false): void {
     if (this.crates.has(crateId)) return;
     this.retireStandby();
     const look: CrateLook = {
@@ -362,7 +363,7 @@ export class TableCrateView {
     };
     const root = this.build(`crate:${crateId}`, look);
     this.parent.add(root);
-    this.crates.set(crateId, { root, look, arrive: 0, age: 0, fall: null });
+    this.crates.set(crateId, { root, look, arrive: settled ? 1 : 0, age: 0, fall: null });
   }
 
   /** The server rolled this crate: its seam takes the rarity colour its unbox will play in. */

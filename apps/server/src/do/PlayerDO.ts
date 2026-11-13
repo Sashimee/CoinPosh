@@ -10,10 +10,10 @@ import {
   extendCascade,
   fusion,
   fusionValue,
+  mintedCoinMicros,
   openingHeap,
   repriceReserved,
   upgradeLines,
-  upgradeStat,
   type CascadeChain,
   type UpgradeLevelMap,
 } from '@coinposh/economy';
@@ -22,6 +22,8 @@ import {
   nextCoinTier,
   StateResponseSchema,
   type ApiError,
+  type AscendRequest,
+  type AscendResponse,
   type Claim,
   type ClaimResult,
   type ClaimsRequest,
@@ -37,6 +39,9 @@ import {
   type NudgeResponse,
   type PlayerId,
   TableSessionIdSchema,
+  VenueIdSchema,
+  CURRENCIES,
+  type VenueId,
   type StateQuery,
   type StateResponse,
   type CratePoseTuple,
@@ -63,8 +68,6 @@ import type { Env } from '../env.ts';
 import { ApiFailure } from '../http/errors.ts';
 import {
   Entities,
-  HOME_VENUE,
-  mintedMicros,
   newTableSessionId,
   publicCoin,
   publicCrate,
@@ -73,6 +76,7 @@ import {
   type StoredCoin,
 } from './entities.ts';
 import {
+  ACCOUNTS,
   commit,
   ConservationError,
   ledgerBalance,
@@ -80,7 +84,20 @@ import {
   openWallet,
   readWallet,
   type CommitContext,
+  type Leg,
 } from './ledger.ts';
+import {
+  applyAscension,
+  buyFamilyOffice,
+  currentVenue,
+  familyOfficeEffect,
+  isFamilyOfficeLine,
+  lifetimeBullion,
+  readFamilyOfficeLevels,
+  unlockedVenues,
+  type AscendHost,
+  type AscensionCommit,
+} from '../routes/ascend.ts';
 import {
   quoteUpgrade,
   readUpgradeLevels,
@@ -151,6 +168,8 @@ export interface ConservationReport {
   readonly tableValue: number;
   readonly tableCrates: number;
   readonly ledgerCratesOnTable: number;
+  /** Every currency's wallet balance equals its ledger legs, and its legs sum to zero. */
+  readonly currenciesConserved: boolean;
   readonly conserved: boolean;
 }
 
@@ -184,13 +203,20 @@ function present<T>(items: readonly (T | undefined)[]): T[] {
   return items.filter((item): item is T => item !== undefined);
 }
 
-function startingCoins(): number {
-  const line = upgradeLines.find((candidate) => candidate.effect.stat === 'startingCoins');
-  if (line === undefined) throw new Error('Economy config has no startingCoins upgrade line.');
-  return upgradeStat(line, 0);
+function settleLegs(
+  from: 'table' | 'buffer',
+  unit: Leg['unit'],
+  amount: number,
+  ref: string,
+): Leg[] {
+  if (amount === 0) return [];
+  return [
+    { account: from, unit, delta: -amount, ref },
+    { account: 'house', unit, delta: amount, ref },
+  ];
 }
 
-export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
+export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendHost {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
 
@@ -225,7 +251,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       openWallet(this.sql);
       commit(
         this.sql,
-        new LedgerTx('grant.starting').move('mint', 'wallet', 'coins', startingCoins(), null),
+        new LedgerTx('grant.starting').move('mint', 'wallet', 'coins', this.startingCoins(), null),
         { at: now, idempotencyKey: null },
       );
       this.seedOpeningHeap(now);
@@ -258,7 +284,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       return { committed: this.latestSeq() !== before, layout };
     });
     if (committed) await this.scheduleFlush(now);
-    const loadout = Array.from({ length: HOME_VENUE.charmSockets }, (_, socket) => ({
+    const venue = currentVenue(this.sql);
+    const loadout = Array.from({ length: venue.charmSockets }, (_, socket) => ({
       socket,
       charmId: null,
     }));
@@ -266,7 +293,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       ...Object.fromEntries(
         upgradeLines.filter((line) => line.scope === 'venue').map((line) => [line.id, 0]),
       ),
-      ...this.levels(),
+      ...readUpgradeLevels(this.sql, this.venueId()),
     };
     const state = {
       serverTime: now,
@@ -278,7 +305,13 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       },
       wallet: readWallet(this.sql),
       flags: DEFAULT_FEATURE_FLAGS,
-      venue: { id: HOME_VENUE.id, unlocked: [HOME_VENUE.id], upgrades, loadout },
+      venue: {
+        id: venue.id,
+        unlocked: unlockedVenues(this.sql),
+        upgrades,
+        loadout,
+        lifetimeBullion: lifetimeBullion(this.sql),
+      },
       table: { ...this.snapshot(), session: this.tableSession(), layout },
       inventory: { charms: [], safes: [], scratchCards: [] },
       offline: null,
@@ -287,6 +320,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
         clientSeed: this.requireMeta('fair_client_seed'),
         nonce: Number(this.requireMeta('fair_nonce')),
       },
+      familyOffice: readFamilyOfficeLevels(this.sql),
     };
     return { ok: true, replayed: false, body: StateResponseSchema.parse(state) };
   }
@@ -335,15 +369,19 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
    */
   async buyUpgrade(command: Command<UpgradeBuyRequest>): Promise<DoResult<UpgradeBuyResponse>> {
     return this.mutate(command, (now) => {
-      const quote = quoteUpgrade(this.levels(), readWallet(this.sql), command.body);
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      if (isFamilyOfficeLine(command.body.lineId)) {
+        return this.applyFamilyOffice(command.body, context);
+      }
+      const quote = quoteUpgrade(this.levels(), readWallet(this.sql), command.body, this.venueId());
       recordUpgrade(this.sql, quote);
       this.repriceBuffer();
       commit(
         this.sql,
         new LedgerTx(UPGRADE_TX_KIND).move('wallet', 'house', quote.currency, quote.cost, null),
-        { at: now, idempotencyKey: command.idempotencyKey },
+        context,
       );
-      this.reserveBuffer({ at: now, idempotencyKey: command.idempotencyKey });
+      this.reserveBuffer(context);
       return {
         venueId: quote.venueId,
         lineId: command.body.lineId,
@@ -353,8 +391,42 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     });
   }
 
+  /**
+   * Ascends the current venue (02-ECONOMY, Venue Ascension). The client names only the venue it
+   * leaves; eligibility, Bullion and Gold Bars all come from the ledger and economy config. The
+   * old venue's coins on the table and in the prepaid buffer, and its crates on the table, go to
+   * the house in the same `ascend` transaction that resets its currencies (P-197), so nothing
+   * minted at the old venue can be claimed or dropped at the next one. The next venue opens
+   * with a fresh opening heap and a buffer prepaid from the Trust Fund's starting coins.
+   */
+  async ascend(command: Command<AscendRequest>): Promise<DoResult<AscendResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      const post: AscensionCommit = (kind, legs) => {
+        const tx = new LedgerTx(kind);
+        for (const leg of [...this.settleTableForAscension(now), ...legs]) {
+          tx.post(leg.account, leg.unit, leg.delta, leg.ref);
+        }
+        commit(this.sql, tx, context);
+      };
+      const result = applyAscension(this.sql, command.body, post, now);
+      this.clearCascadeChain();
+      this.sql.exec("DELETE FROM meta WHERE key = 'heap_seeded'");
+      this.seedOpeningHeap(now);
+      this.reserveBuffer(context);
+      return { ...result, wallet: readWallet(this.sql) };
+    });
+  }
+
   /** Double-entry totals next to the entity tables they must agree with. */
   conservation(): ConservationReport {
+    const wallet = readWallet(this.sql);
+    const currenciesConserved = CURRENCIES.every(
+      (currency) =>
+        ledgerBalance(this.sql, 'wallet', currency) === wallet[currency] &&
+        ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, currency), 0) ===
+          0,
+    );
     const ledger = {
       wallet: ledgerBalance(this.sql, 'wallet', 'coins'),
       buffer: ledgerBalance(this.sql, 'buffer', 'coins'),
@@ -362,7 +434,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       house: ledgerBalance(this.sql, 'house', 'coins'),
       mint: ledgerBalance(this.sql, 'mint', 'coins'),
     };
-    const walletCoins = readWallet(this.sql).coins;
+    const walletCoins = wallet.coins;
     const buffer = this.entities.coinsIn('buffer');
     const bufferPaid = buffer.reduce((total, coin) => total + coin.paid, 0);
     const tableValue = this.entities
@@ -375,7 +447,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       ledger.buffer === bufferPaid &&
       ledger.table === tableValue &&
       ledgerCratesOnTable === tableCrates &&
-      ledger.wallet + ledger.buffer + ledger.table + ledger.house + ledger.mint === 0;
+      ledger.wallet + ledger.buffer + ledger.table + ledger.house + ledger.mint === 0 &&
+      currenciesConserved;
     return {
       walletCoins,
       ledger,
@@ -384,6 +457,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
       tableValue,
       tableCrates,
       ledgerCratesOnTable,
+      currenciesConserved,
       conserved,
     };
   }
@@ -708,7 +782,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     droppedTick: Tick | null,
     at: EpochMs,
   ): StoredCoin {
-    const micros = mintedMicros(tier, levels);
+    const micros = this.mintedMicros(tier, levels);
     const credit = creditMintMicros(micros, this.mintCarry());
     this.setMeta('mint_carry', String(credit.carry));
     return this.entities.mintCoin(tier, credit.value, micros, state, droppedTick, at);
@@ -722,7 +796,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const reserved = this.entities.coinsIn('buffer').filter((coin) => coin.tier === DROP_TIER);
     const repriced = repriceReserved(
       reserved.map((coin) => ({ value: coin.value, micros: storedMicros(coin) })),
-      mintedMicros(DROP_TIER, this.levels()),
+      this.mintedMicros(DROP_TIER, this.levels()),
       this.mintCarry(),
     );
     reserved.forEach((coin, i) => {
@@ -1105,8 +1179,65 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     }
   }
 
+  /**
+   * Buys a Family Office level for Gold Bars. Old Money raises the value of every coin minted
+   * from now on, so the reserved buffer is re-minted at it, and the buffer is topped up so the
+   * returned wallet is final.
+   */
+  private applyFamilyOffice(body: UpgradeBuyRequest, context: CommitContext): UpgradeBuyResponse {
+    const venueId = this.venueId();
+    if (body.venueId !== venueId) {
+      throw new ApiFailure(
+        'forbidden',
+        `The Family Office is reached from the current venue ${venueId}, not ${body.venueId}.`,
+      );
+    }
+    const bought = buyFamilyOffice(this.sql, body, context);
+    this.repriceBuffer();
+    this.reserveBuffer(context);
+    return { ...bought, wallet: readWallet(this.sql) };
+  }
+
+  /**
+   * Settles the venue being left: every coin on the table and in the buffer and every crate on
+   * the table goes to the house. Returns the legs for the ascension's transaction.
+   */
+  private settleTableForAscension(now: EpochMs): Leg[] {
+    const legs: Leg[] = [];
+    for (const coin of this.entities.coinsIn('table')) {
+      this.entities.settleCoin(coin.id, 'lost', now);
+      legs.push(...settleLegs('table', 'coins', coin.value, coin.id));
+    }
+    for (const coin of this.entities.coinsIn('buffer')) {
+      legs.push(...settleLegs('buffer', 'coins', coin.paid, coin.id));
+    }
+    this.sql.exec("UPDATE coins SET state = 'lost', settled_at = ? WHERE state = 'buffer'", now);
+    for (const crate of this.entities.cratesOnTable()) {
+      this.entities.settleCrate(crate.id, 'lost', now);
+      legs.push(...settleLegs('table', 'crate', 1, crate.id));
+    }
+    return legs;
+  }
+
+  private venueId(): VenueId {
+    return VenueIdSchema.parse(currentVenue(this.sql).id);
+  }
+
+  /** The current venue's levels plus the Family Office's, which apply at every venue. */
   private levels(): UpgradeLevelMap {
-    return readUpgradeLevels(this.sql, HOME_VENUE.id);
+    return {
+      ...readUpgradeLevels(this.sql, this.venueId()),
+      ...readFamilyOfficeLevels(this.sql),
+    };
+  }
+
+  /** A coin of `tier` minted now at the current venue, in millionths. */
+  private mintedMicros(tier: CoinTier, levels: UpgradeLevelMap): number {
+    return mintedCoinMicros(tierDef(tier), currentVenue(this.sql), levels);
+  }
+
+  private startingCoins(): number {
+    return Math.floor(familyOfficeEffect(readFamilyOfficeLevels(this.sql), 'startingCoins'));
   }
 
   private latestSeq(): number | null {

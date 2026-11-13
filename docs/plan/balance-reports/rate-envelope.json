@@ -17,26 +17,26 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 300
+          "max": 295
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 1252
+          "max": 853
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 127
+          "max": 119
         },
         "crates": {
           "windowMs": 300000,
-          "max": 28
+          "max": 27
         }
       },
       "mean": {
         "drops": 8,
-        "falls": 14.54,
-        "fallValue": 42.51,
-        "fusions": 15.46,
+        "falls": 14.44,
+        "fallValue": 42.55,
+        "fusions": 15.56,
         "crates": 6
       }
     },
@@ -61,26 +61,26 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 503
+          "max": 495
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 4700
+          "max": 3202
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 150
+          "max": 141
         },
         "crates": {
           "windowMs": 300000,
-          "max": 34
+          "max": 32
         }
       },
       "mean": {
         "drops": 9.44,
-        "falls": 24.36,
-        "fallValue": 159.55,
-        "fusions": 25.9,
+        "falls": 24.2,
+        "fallValue": 159.72,
+        "fusions": 26.07,
         "crates": 7.08
       }
     },
@@ -91,7 +91,7 @@
         "levels": {
           "pusherSpeed": 14,
           "dropRate": 12,
-          "coinValue": 12,
+          "coinValue": 13,
           "crateChance": 6,
           "vaultCapacity": 2,
           "fusionWindow": 5,
@@ -108,26 +108,26 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 751
+          "max": 739
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 12414
+          "max": 8958
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 216
+          "max": 203
         },
         "crates": {
           "windowMs": 300000,
-          "max": 45
+          "max": 44
         }
       },
       "mean": {
         "drops": 10.88,
-        "falls": 26.71,
-        "fallValue": 421.48,
-        "fusions": 48.36,
+        "falls": 26.4,
+        "fallValue": 446.83,
+        "fusions": 48.67,
         "crates": 9.63
       }
     },
@@ -155,25 +155,25 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 1785
+          "max": 1756
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 106189
+          "max": 72410
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 59.5,
-        "fallValue": 3605.29,
+        "fallValue": 3611.79,
         "fusions": 119,
         "crates": 16.8
       }
@@ -203,25 +203,25 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2100
+          "max": 2065
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 154802
+          "max": 105559
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 70,
-        "fallValue": 5255.79,
+        "fallValue": 5265.27,
         "fusions": 140,
         "crates": 16.8
       }
@@ -233,7 +233,7 @@
         "levels": {
           "pusherSpeed": 50,
           "dropRate": 25,
-          "coinValue": 63,
+          "coinValue": 64,
           "crateChance": 20,
           "vaultCapacity": 4,
           "offlineHours": 10,
@@ -251,25 +251,25 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2100
+          "max": 2065
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 184675
+          "max": 127782
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 70,
-        "fallValue": 6270.07,
+        "fallValue": 6373.75,
         "fusions": 140,
         "crates": 16.8
       }
@@ -299,32 +299,32 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2100
+          "max": 2065
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 203686
+          "max": 138893
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 70,
-        "fallValue": 6915.51,
+        "fallValue": 6927.98,
         "fusions": 140,
         "crates": 16.8
       }
     },
     {
       "label": "rivieraYacht before Ascension",
-      "activeSeconds": 11817,
+      "activeSeconds": 11784,
       "table": {
         "levels": {
           "pusherSpeed": 50,
@@ -347,25 +347,25 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2100
+          "max": 2065
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 206402
+          "max": 140745
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 70,
-        "fallValue": 7007.72,
+        "fallValue": 7020.36,
         "fusions": 140,
         "crates": 16.8
       }
@@ -395,39 +395,39 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2100
+          "max": 2065
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 285160
+          "max": 194450
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 70,
-        "fallValue": 9681.72,
+        "fallValue": 9699.18,
         "fusions": 140,
         "crates": 16.8
       }
     },
     {
       "label": "salonDeParis entry",
-      "activeSeconds": 11818,
+      "activeSeconds": 11785,
       "table": {
         "levels": {
           "oldMoney": 3,
           "trustFund": 1
         },
         "venue": "salonDeParis",
-        "charms": 72,
+        "charms": 71,
         "albumBonus": 0.13
       },
       "limits": {
@@ -437,32 +437,32 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 300
+          "max": 295
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 4562
+          "max": 3108
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 127
+          "max": 119
         },
         "crates": {
           "windowMs": 300000,
-          "max": 28
+          "max": 27
         }
       },
       "mean": {
         "drops": 8,
-        "falls": 14.54,
-        "fallValue": 154.87,
-        "fusions": 15.46,
+        "falls": 14.44,
+        "fallValue": 155.03,
+        "fusions": 15.56,
         "crates": 6
       }
     },
     {
       "label": "salonDeParis before Ascension",
-      "activeSeconds": 31366,
+      "activeSeconds": 31303,
       "table": {
         "levels": {
           "pusherSpeed": 50,
@@ -477,7 +477,7 @@
           "trustFund": 1
         },
         "venue": "salonDeParis",
-        "charms": 184,
+        "charms": 183,
         "albumBonus": 0.13
       },
       "limits": {
@@ -487,25 +487,25 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2100
+          "max": 2065
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 682653
+          "max": 465499
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 70,
-        "fallValue": 23177.37,
+        "fallValue": 23219.16,
         "fusions": 140,
         "crates": 16.8
       }
@@ -537,25 +537,25 @@
         },
         "falls": {
           "windowMs": 30000,
-          "max": 2100
+          "max": 2065
         },
         "fallValue": {
           "windowMs": 30000,
-          "max": 779115
+          "max": 531276
         },
         "fusions": {
           "windowMs": 60000,
-          "max": 445
+          "max": 417
         },
         "crates": {
           "windowMs": 300000,
-          "max": 79
+          "max": 76
         }
       },
       "mean": {
         "drops": 14,
         "falls": 70,
-        "fallValue": 26452.43,
+        "fallValue": 26500.13,
         "fusions": 140,
         "crates": 16.8
       }

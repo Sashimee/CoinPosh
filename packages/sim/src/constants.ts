@@ -73,5 +73,16 @@ export const SOLVER = {
  *   ea9d594fbf71f999 (was 5507fe238035656a), brink heap idle 072b5a62115e9410 (was
  *   fdccb1a574c9357a) and after a drop 6175e869dcccfcba (was 819ef376edaf2fbe). Tables
  *   without mechanics hash as before.
+ * - 9: a chute drop is fresh only within the chute's stream allowance (FUSION_TUNING.
+ *   streamTicks, streamBurst, P-375); past it, in a long pour, it lands idle, and the
+ *   allowance is hashed with the mechanics. Drops 15 ticks apart or more play as before:
+ *   with the allowance left out of the hash, every pin below except the fused heap
+ *   (drops every 12 ticks) kept its version 8 value. Fused heap 4ae928f009fdd808 (was
+ *   da6a4538eb0aafb7), Demo table with fusion c5ffb7081eb3fb15 (was 76da6b166c971a12),
+ *   mechanics digest d5688c30416cbd16 (was ea9d594fbf71f999), fusionWindow session
+ *   fd308a340f0c7773 (was e03a2b8ca2026950), brink heap idle 6c602ade506fd461 (was
+ *   e187aa35c6006a60) and after a drop 06ae7e37ea2fa3d8 (was e17b6bddb59510d6); a 90 s
+ *   Demo pour at 6 ticks hashes 9e48160a1fda528e. Tables without mechanics hash as
+ *   before.
  */
-export const SIM_VERSION = 8;
+export const SIM_VERSION = 9;

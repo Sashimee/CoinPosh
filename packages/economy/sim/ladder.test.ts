@@ -242,7 +242,7 @@ describe('ladder targets', () => {
 describe('economy model calibration', () => {
   it('keeps the model’s fusion bonus per drop within tolerance of the style it plays like', () => {
     const result = evaluateLadder(simModel, bonusMultiplier);
-    expect(result.calibration.style).toBe('aimed');
+    expect(result.calibration.style).toBe('aimedPinpoint');
     const measured = result.calibration.fusionBonusPerDrop;
     expect(measured).toBeGreaterThan(0);
     expect(Math.abs(result.modelFusionBonusPerDrop / measured - 1)).toBeLessThanOrEqual(
