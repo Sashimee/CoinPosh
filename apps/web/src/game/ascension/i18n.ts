@@ -1,5 +1,5 @@
 import type { VenueId } from '@coinposh/shared';
-import { LANGUAGES, type I18n, type Language, type ResourceTree } from '../../i18n/index.ts';
+import { LANGUAGES, type I18n, type Language, type ResourceTree } from '../../i18n/core.ts';
 import type { AscensionRejection } from './events.ts';
 
 export const ASCENSION_NAMESPACE = 'gameAscension';
@@ -32,6 +32,7 @@ interface AscensionStrings extends ResourceTree {
   familyOfficeSubtitle: string;
   level: string;
   maxed: string;
+  maxedLabel: string;
   buyLabel: string;
   goldBars: string;
   skip: string;
@@ -70,6 +71,7 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
     familyOfficeSubtitle: 'Permanent upgrades, kept through every ascension.',
     level: 'Lv {{level}}',
     maxed: 'Max',
+    maxedLabel: '{{line}} is at its highest level',
     buyLabel: 'Buy level {{level}} of {{line}} for {{price}} Gold Bars',
     goldBars: 'Gold Bars',
     skip: 'Tap to skip',
@@ -119,6 +121,7 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
     familyOfficeSubtitle: 'Améliorations permanentes, conservées à chaque ascension.',
     level: 'Niv. {{level}}',
     maxed: 'Max',
+    maxedLabel: '{{line}} est à son niveau maximal',
     buyLabel: 'Acheter le niveau {{level}} de {{line}} pour {{price}} lingots d’or',
     goldBars: 'Lingots d’or',
     skip: 'Touchez pour passer',
@@ -168,6 +171,7 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
     familyOfficeSubtitle: 'Dauerhafte Verbesserungen, die jeden Aufstieg überdauern.',
     level: 'St. {{level}}',
     maxed: 'Max',
+    maxedLabel: '{{line}} hat die höchste Stufe erreicht',
     buyLabel: 'Stufe {{level}} von {{line}} für {{price}} Goldbarren kaufen',
     goldBars: 'Goldbarren',
     skip: 'Tippen zum Überspringen',
@@ -208,6 +212,10 @@ export function venueKey(venueId: VenueId): string {
 /** Family Office line names live with the upgrades panel's strings in the default namespace. */
 export function lineNameKey(lineId: string): string {
   return `upgrades.line.${lineId}.name`;
+}
+
+export function lineDescriptionKey(lineId: string): string {
+  return `upgrades.line.${lineId}.description`;
 }
 
 export function registerAscensionStrings(i18n: I18n): void {
