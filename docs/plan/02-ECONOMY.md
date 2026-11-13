@@ -92,6 +92,102 @@ that bound, which is why the cooldown is 120 s. fast-check proves the allowance 
 empty Vault, keeps grants a cooldown apart, honours the daily cap and never beats its ceiling.
 The pacing targets are untouched: the mean-rate sim player never goes broke.
 
+## Quests, streaks and the Season Pass (T-3.05)
+
+Numbers and rules: `packages/economy/src/config/quests.ts` (`questConfig`, `drawQuestSet`,
+`questPeriod`, `advanceStreak`) and `packages/economy/src/config/season.ts` (`seasonTrack`,
+`seasonPremiumUnlocked`). The season's length and price stay in `season`
+(`src/config/progression.ts`), which the balancing sim reads, so the track the UI shows and the
+Stars the sim counts are one number. The server rotates, tracks and pays; the client only shows
+what it reports.
+
+### Quests
+
+- **Periods:** daily quests reset at 00:00 UTC, weekly ones at Monday 00:00 UTC. A quest's
+  `expiresAt` is its period's end.
+- **Slots:** 3 daily and 3 weekly, always one easy, one medium and one hard.
+- **Rotation:** each period's set is drawn uniformly, with the server's seeded PRNG, among the
+  sets that give every slot a template of its difficulty, ask for three different metrics and
+  reuse no template from the previous period's set. The validator proves a set always exists.
+- **Metrics** (counted by the server from its own ledger): coins dropped, coins banked off the
+  ledge, Contact Fusions, Vault Crates opened, and (weekly) UTC days played.
+- **Rewards** are fixed per cadence and difficulty, so every draw is worth the same:
+
+| Quest | Daily reward | Weekly reward |
+|---|---|---|
+| Easy | 10 Pearls · 5 Stars | 40 Pearls · 1 Ticket · 10 Stars |
+| Medium | 15 Pearls · 1 Ticket · 5 Stars | 60 Pearls · 2 Tickets · 15 Stars |
+| Hard | 20 Pearls · 1 Key · 10 Stars | 100 Pearls · 2 Keys · 2 Tickets · 25 Stars |
+
+| Template pool | Easy | Medium | Hard |
+|---|---|---|---|
+| Daily | drop 500 · open 12 crates · bank 1,000 | drop 1,200 · open 25 crates · 40 fusions · bank 2,500 | drop 2,000 · open 70 crates · 75 fusions · bank 7,500 |
+| Weekly | drop 7,500 · open 300 crates | 350 fusions · bank 50,000 · play on 4 days | drop 16,000 · open 650 crates · 600 fusions · bank 75,000 |
+
+Targets are sized on the sim's slowest session: a new player's first 43 minutes (30 h ÷ 42
+days), slowest of five seeds, with the least-fusing physics style (0.0375 fusions per drop).
+`quests.test.ts` holds a daily easy quest to ≤ 10 min, medium to ≤ 20 min, hard to the session,
+and a weekly quest to 2–5 sessions (hard ones ≥ 3). Measured at the slowest seed, day one:
+
+| Minutes in | 10 | 20 | 27 | 35 | 43 |
+|---|---|---|---|---|---|
+| Drops | 587 | 1,286 | 1,865 | 2,537 | 3,209 |
+| Crates | 14 | 28 | 56 | 88 | 113 |
+| Coins banked | 1,160 | 2,991 | 5,017 | 7,805 | 10,832 |
+| Fusions | 22 | 48 | 70 | 95 | 120 |
+
+Tuning from that run: daily easy crates 15 → 12 and banked 1,500 → 1,000 (11 and 13 min on the
+slowest seed), daily medium crates 40 → 25 and banked 4,000 → 2,500 (24 min), weekly hard
+banked 80,000 → 75,000 (79,798 after five sessions, so a sixth was needed).
+
+### Daily streak
+
+- A UTC day with at least **1** daily quest claimed extends the streak by one day.
+- **Freezes:** start with **1**, hold at most **2**. Each missed day spends one automatically and
+  the streak survives (the missed day adds nothing). With too few freezes the streak restarts at
+  1 and the freezes are kept. Buy one for **50 Pearls** while below the cap.
+- **Milestones** (Pearls, Keys and Tickets only, never Stars, so the season counts play, not
+  calendar days):
+
+| Streak day | Reward | Freezes granted |
+|---|---|---|
+| 3 | 15 Pearls · 1 Ticket | 0 |
+| 7 | 40 Pearls · 1 Key · 2 Tickets | 1 |
+| 14 | 60 Pearls · 2 Keys · 2 Tickets | 1 |
+| 21 | 80 Pearls · 2 Keys · 3 Tickets | 1 |
+| 30 | 120 Pearls · 3 Keys · 5 Tickets | 1 |
+| every 7 days after 30 | 80 Pearls · 2 Keys · 3 Tickets | 1 |
+
+### Season Pass
+
+- **6 weeks, 50 free tiers, 350 Stars a tier** (17,500 Stars). Tier n unlocks at n × 350.
+- **Stars sources:** 1 per 25 drops, 2 per Vault Crate, 50 per album set (all in the sim), and
+  quests: 20 a day plus 50 a week, 1,140 a season (6.5 % of the track) for a player who claims
+  them all.
+- **Free rewards** repeat a ten-tier rhythm whose Pearls climb each decade: Pearls on odd steps
+  (15 / 20 / 25 + 5 a decade), Tickets at 2, 6 and 9, Keys at 4 and 8, 40 + 10 a decade Pearls
+  and a scratch card at 5, and a showpiece at 10 (80 + 20 a decade Pearls, 2 Keys, 2 Tickets).
+  Tier 50 is the crown: 300 Pearls, 5 Keys, 5 Tickets, 3 scratch cards. The whole free track
+  pays 1,490 Pearls, 23 Keys, 33 Tickets and 8 scratch cards.
+- **Premium rewards** double every free reward on the same tier. They are always defined so the
+  locked track renders, and pay only while `flags.monetization` and `flags.premiumSeasonTrack`
+  are both on (`seasonPremiumUnlocked`); `premiumUnlocked` is false otherwise.
+
+**Pacing proof** (`season.test.ts`, five seeds, the economy sim's player playing one 43-minute
+session a day with the offline vault claimed in between, held to the 25–35 h band of the
+`seasonFreeTrack` pacing row and to the 42-day season):
+
+| Reference player | Free track done at | Season day |
+|---|---|---|
+| Claims every quest | 25.9 – 26.4 h | 37 |
+| Never claims a quest | 27.4 – 27.8 h | 39 |
+
+Both finish inside the band with days to spare, so a few missed days do not cost the crown.
+Considered and rejected: 400 Stars a tier puts the quest player at 29.4–29.9 h, but only on the
+season's last day, and a player who skips quests (19,000 of 20,000 Stars) never finishes.
+T-3.07 owns the rebalance; the quest player sits 0.9 h above the band's floor, so a raise in the
+passive Stars rate (632 an active hour today) needs a matching raise in Stars per tier.
+
 ## Expansion economy (M10+, founder Q&A 2026-11-09)
 
 **Every number in this section is an initial target for economy-designer to tune**
