@@ -26,10 +26,20 @@ import {
 import { fromBase64Url, randomBase62, sha256Hex, utf8Bytes } from '../encoding.ts';
 import { NetworkError, type ApiOperation } from '../errors.ts';
 import type { Transport, WireRequest, WireResponse } from '../wire.ts';
+import {
+  DEMO_STORAGE_KEY,
+  browserSessionStorage,
+  consoleWarn,
+  decodeDemoBlob,
+  encodeDemoBlob,
+  type MockStorage,
+  type PersistWarn,
+} from './persist.ts';
 import { MOCK_RULES } from './rules.ts';
 import {
   MockFailure,
   MockWorld,
+  RestoreError,
   deviceThumbprint,
   type LedgerEntry,
   type MockPlayer,
@@ -41,6 +51,17 @@ export type MockNetwork = 'up' | 'down' | 'dropResponses';
 export interface MockServerOptions {
   /** Server time. Every rule reads this clock, never a timestamp the client sent. */
   readonly now?: () => number;
+  /**
+   * Where the world survives a reload of this tab. Defaults to the browser's sessionStorage
+   * (none outside a browser); `null` keeps the world in memory only.
+   */
+  readonly storage?: MockStorage | null;
+  /** How a storage problem is reported; the world then plays on from memory. */
+  readonly onPersistWarning?: PersistWarn;
+  /** How long after the last request the world is written; every request in a burst restarts it. */
+  readonly persistDelayMs?: number;
+  /** Whose `pagehide` and `visibilitychange` flush the world at once. Defaults to `window`. */
+  readonly lifecycle?: EventTarget | null;
 }
 
 export interface MockServer {
@@ -50,6 +71,74 @@ export interface MockServer {
   /** Responses currently held for replay, to show the store stays bounded. */
   retainedReplays(): number;
   setNetwork(network: MockNetwork): void;
+  /** Whether this server picked up a world an earlier page in this tab left in storage. */
+  readonly restored: boolean;
+  /** Writes the world now, or right after the request running at the moment finishes. */
+  flush(): void;
+}
+
+const DEFAULT_PERSIST_DELAY_MS = 250;
+
+interface Persistence {
+  readonly world: MockWorld;
+  readonly restored: boolean;
+  /** Called between requests only, so a write never catches a handler between two awaits. */
+  readonly save: () => void;
+}
+
+/**
+ * Picks up the world this tab left behind, or starts a fresh one. Anything wrong with the
+ * stored world, from a blocked storage to a blob that does not add up, is warned about and
+ * dropped: Demo Mode must always boot.
+ */
+function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persistence {
+  if (storage === null) return { world: new MockWorld(), restored: false, save: () => undefined };
+  let world: MockWorld | null = null;
+  let raw: string | null = null;
+  try {
+    raw = storage.getItem(DEMO_STORAGE_KEY);
+  } catch (error) {
+    warn('CoinPosh demo: the saved session could not be read, so this one starts fresh.', error);
+  }
+  if (raw !== null) {
+    const decoded = decodeDemoBlob(raw);
+    if (decoded.ok) {
+      try {
+        world = MockWorld.restore(decoded.world);
+      } catch (error) {
+        if (!(error instanceof RestoreError)) throw error;
+        warn(`CoinPosh demo: the saved session was dropped for a fresh one. ${error.message}`);
+      }
+    } else {
+      warn(`CoinPosh demo: the saved session was dropped for a fresh one: ${decoded.reason}.`);
+    }
+    if (world === null) {
+      try {
+        storage.removeItem(DEMO_STORAGE_KEY);
+      } catch (error) {
+        warn('CoinPosh demo: the dropped session could not be cleared from storage.', error);
+      }
+    }
+  }
+  const restored = world !== null;
+  const live = world ?? new MockWorld();
+  let failing = false;
+  return {
+    world: live,
+    restored,
+    save() {
+      try {
+        storage.setItem(DEMO_STORAGE_KEY, encodeDemoBlob(live.serialize()));
+        failing = false;
+      } catch (error) {
+        // One warning per run of failures: a full quota fails every write until space frees up.
+        if (!failing) {
+          warn('CoinPosh demo: this session could not be saved, so a reload may lose it.', error);
+        }
+        failing = true;
+      }
+    },
+  };
 }
 
 interface StoredResponse {
@@ -206,7 +295,10 @@ async function importVerifyKey(jwk: DevicePublicKey): Promise<CryptoKey> {
  */
 export function createMockServer(options: MockServerOptions = {}): MockServer {
   const now = options.now ?? (() => Date.now());
-  const world = new MockWorld();
+  const warn = options.onPersistWarning ?? consoleWarn;
+  const storage = options.storage === undefined ? browserSessionStorage(warn) : options.storage;
+  const persistence = openPersistence(storage, warn);
+  const world = persistence.world;
   const accessTokens = new Map<string, { playerId: PlayerId; expiresAt: number }>();
   const refreshTokens = new Map<string, RefreshRecord>();
   const tableReplays = new ReplayStore(MOCK_RULES.claimExpiryMs, Infinity);
@@ -317,12 +409,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const player = record === undefined ? undefined : world.player(record.playerId);
       if (record === undefined || player === undefined)
         refuse('unauthorized', 'Unknown refresh token.');
-      await verify(player.deviceKey, request, idempotencyKey, bodySha256);
+      const key = player.deviceKey;
+      if (key === null) refuse('unauthorized', 'That player has no device signed in.');
+      await verify(key, request, idempotencyKey, bodySha256);
       return {
         scope: `player:${player.id}`,
         player,
         devicePublicKey: null,
-        key: player.deviceKey,
+        key,
         refresh: record,
       };
     }
@@ -335,8 +429,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       refuse('unauthorized', 'Missing or unknown access token.');
     if (at >= access.expiresAt)
       refuse('token_expired', 'The access token has expired; refresh it.');
-    await verify(player.deviceKey, request, idempotencyKey, bodySha256);
-    return { scope: `player:${player.id}`, player, devicePublicKey: null, key: player.deviceKey };
+    const key = player.deviceKey;
+    if (key === null) refuse('unauthorized', 'That player has no device signed in.');
+    await verify(key, request, idempotencyKey, bodySha256);
+    return { scope: `player:${player.id}`, player, devicePublicKey: null, key };
   }
 
   async function runAuth(
@@ -355,9 +451,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       usedTurnstile.add(turnstileToken);
       const devicePublicKey = auth.devicePublicKey;
       if (devicePublicKey === null) throw new Error('Mock: guest sign-up lost its device key.');
-      const existing = world.playerByDevice(deviceThumbprint(devicePublicKey));
       const player =
-        existing ??
+        world.bindDevice(devicePublicKey, auth.key) ??
         (await world.createPlayer(
           PlayerIdSchema.parse(crypto.randomUUID()),
           devicePublicKey,
@@ -514,13 +609,58 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     return response;
   }
 
+  /*
+   * Writes are debounced and only ever run between requests. Tokens, replay stores, Turnstile
+   * tokens and rate windows are deliberately not stored: the client's tokens and outbox live in
+   * page memory and die with the reload, and a seeded page would replay the same idempotency
+   * keys. Every guard against spending a coin or crate twice lives in the world, which is stored.
+   */
+  const persistDelayMs = options.persistDelayMs ?? DEFAULT_PERSIST_DELAY_MS;
+  let inFlight = 0;
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let saveWhenIdle = false;
+
+  function saveNow(): void {
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = null;
+    if (inFlight > 0) {
+      saveWhenIdle = true;
+      return;
+    }
+    saveWhenIdle = false;
+    persistence.save();
+  }
+
+  function scheduleSave(): void {
+    if (storage === null) return;
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveNow, persistDelayMs);
+  }
+
+  const lifecycle =
+    options.lifecycle === undefined
+      ? typeof window === 'undefined'
+        ? null
+        : window
+      : options.lifecycle;
+  if (storage !== null && lifecycle !== null) {
+    // A mobile browser may discard a hidden tab and reload it later, without a pagehide.
+    lifecycle.addEventListener('visibilitychange', saveNow);
+    lifecycle.addEventListener('pagehide', saveNow);
+  }
+
   async function handleSafely(request: WireRequest): Promise<WireResponse> {
+    inFlight += 1;
     try {
       return await process(request);
     } catch (error) {
       if (error instanceof Refusal) return error.response;
       const message = error instanceof Error ? error.message : String(error);
       return fail('internal', `Mock server bug: ${message}`);
+    } finally {
+      inFlight -= 1;
+      if (saveWhenIdle) saveNow();
+      else scheduleSave();
     }
   }
 
@@ -546,6 +686,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     retainedReplays: () => tableReplays.size + otherReplays.size,
     setNetwork(next) {
       network = next;
+    },
+    restored: persistence.restored,
+    flush: () => {
+      if (storage !== null) saveNow();
     },
   };
 }
