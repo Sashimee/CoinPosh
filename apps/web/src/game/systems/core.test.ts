@@ -163,7 +163,7 @@ function setup(options: { backlog?: readonly SimEventBatch[]; heap?: readonly Mi
     bounds: BOUNDS,
     now: () => time.now,
     ...(backlog ? { simBacklog: backlog } : {}),
-    ...(heap ? { openingHeap: heap } : {}),
+    ...(heap ? { tableCoins: heap } : {}),
   });
   const sync = (): void => {
     core.sync(NULL_TARGET);
@@ -530,6 +530,23 @@ describe('systems core: the sim event stream', () => {
     leave(3, FRONT);
     leave(0, FRONT);
     expect(table.falls.map((f) => f.coinId)).toEqual([coin(1).id, coin(101).id]);
+  });
+
+  it('names the server coin of each table body until it falls, for the table snapshot', () => {
+    const { core, sim, sync, leave } = setup({ heap: [coin(101), coin(102)] });
+    sim.layHeap(2);
+    sync();
+    core.drop(0);
+    sync();
+    expect([0, 1, 2, 3].map((id) => core.coinOf(id))).toEqual([
+      coin(101).id,
+      coin(102).id,
+      coin(1).id,
+      null,
+    ]);
+    leave(1, FRONT);
+    expect(core.coinOf(1)).toBeNull();
+    expect(core.coinOf(0)).toBe(coin(101).id);
   });
 
   it('counts three heap coins off the front inside the window as a Chic cascade', () => {
