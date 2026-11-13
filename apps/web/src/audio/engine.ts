@@ -72,7 +72,7 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
   const burst = new BurstLimiter();
   const variator = new ImpactVariator(rng);
 
-  const lifecycle = manageAudioLifecycle(ctx, gestureTarget, document);
+  const lifecycle = manageAudioLifecycle(ctx, gestureTarget, document, window);
   let comboTier = 0;
   let track: Promise<MusicTrack> | null = null;
   let musicRequest = 0;

@@ -183,9 +183,24 @@ const TABLE_CENTRE = new Vector3(0, 0.01, -0.08);
  * to about 1.4x their size, so the brightest part stays within about three coins.
  */
 export const COMPACT_FUSION = {
-  flash: { core: 0.042, halo: 0.056 },
-  ringRadius: 0.036,
-  implosionDensity: 0.45,
+  flash: { core: 0.034, halo: 0.046 },
+  ringRadius: 0.03,
+  implosionDensity: 0.4,
+  glowPeak: 0.1,
+} as const;
+
+/**
+ * The full set piece's size, metres, seconds and ms. Kept well under a table-wide burst so
+ * even the rare gold-or-better beat reads as a crisp accent (founder report #182): on a
+ * portrait phone the ring and halo stay under 40 % of the screen width, since they land in
+ * the same frame as the Chic stamp and the Cascade card, yet the ring is twice the compact one.
+ */
+export const FULL_FUSION = {
+  hitStopMs: 40,
+  flash: { core: 0.07, halo: 0.11 },
+  rings: { first: 0.06, second: 0.045 },
+  glow: { peak: 0.7, release: 0.35 },
+  kick: { shake: 0.18, fov: 1.4 },
 } as const;
 
 interface ActiveTrail {
@@ -375,12 +390,12 @@ export class Vfx {
 
   /**
    * Three coins sucked into a white-gold flash, tiered by how rare the moment is (see
-   * `FusionDirector`). Full, for the first fusion and gold-or-better results: the frame
+   * `FusionDirector`). Full, for at most one gold-or-better result per 3 s: the frame
    * tightens (FOV in) as streaks spiral to the centre, then hit-stop, a flash, a double
    * shockwave ring, a spark corona, shake + FOV kick, a bloom surge and a haptic thud.
-   * Compact, for the routine copper and silver ones: the same spiral, then a warm flash and
-   * a crown of sparks about three coins wide, a small ring, a bloom nudge and a tap; no
-   * hit-stop or camera, so a busy table does not wash out or judder.
+   * Compact, for every copper and silver one and the rest: the same spiral, then a warm
+   * flash and a crown of sparks about three coins wide, a small ring, a bloom nudge and a
+   * tap; no hit-stop or camera, so a busy table does not wash out or judder.
    */
   fusion(options: FusionOptions): void {
     this.assertLive();
@@ -397,15 +412,15 @@ export class Vfx {
       options.tier,
       full ? 1 : COMPACT_FUSION.implosionDensity,
     );
-    if (juice.cameraKick) this.kick.kick({ fov: -0.8, dolly: 0.004 });
+    if (full) this.kick.kick({ fov: -0.5, dolly: 0.003 });
     this.glowEnvelope.add({
-      peak: full ? 0.25 : 0.06,
+      peak: full ? 0.15 : 0.05,
       attack: FUSION_TIMING.implode,
       release: 0.05,
     });
     this.haptics.pulse('tick');
     this.timeline.at(FUSION_TIMING.implode, () => {
-      if (full) this.fusionImpact(center, options.tier, juice.cameraKick);
+      if (full) this.fusionImpact(center, options.tier);
       else this.fusionCompactImpact(center, options.tier);
       options.onImpact?.();
     });
@@ -634,37 +649,38 @@ export class Vfx {
     this.writePost(0);
   }
 
-  private fusionImpact(center: Vector3, tier: CoinTier, cameraKick: boolean): void {
-    this.warp.hitStop(60);
+  private fusionImpact(center: Vector3, tier: CoinTier): void {
+    const { flash, rings, glow, kick } = FULL_FUSION;
+    this.warp.hitStop(FULL_FUSION.hitStopMs);
     this.flashes.spawn(center, {
       color: VFX_COLORS.whiteGold,
-      size: 0.18,
-      intensity: 6,
-      duration: 0.32,
+      size: flash.core,
+      intensity: 4,
+      duration: 0.26,
     });
     this.flashes.spawn(center, {
       color: fusionHalo(tier),
-      size: 0.34,
-      intensity: 2.2,
-      duration: 0.5,
+      size: flash.halo,
+      intensity: 1.6,
+      duration: 0.38,
       delay: 0.03,
     });
     this.shockwaves.spawn(center, {
       color: VFX_COLORS.whiteGold,
-      radius: 0.16,
-      intensity: 3.2,
-      duration: 0.55,
+      radius: rings.first,
+      intensity: 2.4,
+      duration: 0.42,
     });
     this.shockwaves.spawn(center, {
       color: VFX_COLORS.champagne,
-      radius: 0.12,
-      intensity: 2,
-      duration: 0.6,
+      radius: rings.second,
+      intensity: 1.5,
+      duration: 0.46,
       delay: FUSION_TIMING.ringGap,
     });
     fusionImpact(this.context(this.sparks), vec(center), tier);
-    if (cameraKick) this.kick.kick({ shake: 0.32, fov: 2.4, dolly: -0.006 });
-    this.glowEnvelope.add({ peak: 1.2, attack: 0.03, release: 0.6 });
+    this.kick.kick({ ...kick, dolly: -0.004 });
+    this.glowEnvelope.add({ peak: glow.peak, attack: 0.03, release: glow.release });
     this.haptics.pulse('thud');
   }
 
@@ -673,24 +689,24 @@ export class Vfx {
     this.flashes.spawn(center, {
       color: VFX_COLORS.whiteGold,
       size: flash.core,
-      intensity: 3.4,
-      duration: 0.24,
+      intensity: 2.6,
+      duration: 0.2,
     });
     this.flashes.spawn(center, {
       color: VFX_COLORS.gold,
       size: flash.halo,
-      intensity: 1.3,
-      duration: 0.34,
+      intensity: 1,
+      duration: 0.28,
       delay: 0.02,
     });
     this.shockwaves.spawn(center, {
       color: VFX_COLORS.champagne,
       radius: COMPACT_FUSION.ringRadius,
-      intensity: 1.6,
-      duration: 0.36,
+      intensity: 1.3,
+      duration: 0.3,
     });
     fusionSpark(this.context(this.sparks), vec(center), tier);
-    this.glowEnvelope.add({ peak: 0.14, attack: 0.03, release: 0.22 });
+    this.glowEnvelope.add({ peak: COMPACT_FUSION.glowPeak, attack: 0.03, release: 0.18 });
     this.haptics.pulse('tap');
   }
 
