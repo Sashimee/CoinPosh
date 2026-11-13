@@ -1,4 +1,5 @@
 import type { CrateId, Rarity, Roll, Wallet } from '@coinposh/shared';
+import { CRATE_RIDE } from '@coinposh/sim/snapshot';
 import { abs, dot, exp, mix, normalLocal, positionLocal, uniform, vec3, vec4 } from 'three/tsl';
 import {
   AdditiveBlending,
@@ -22,7 +23,6 @@ import { easeInOutCubic, easeInQuad, easeOutCubic, lerp } from '../../vfx/easing
 import type { HapticPattern } from '../../vfx/haptics.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS, VFX_COLORS } from '../../vfx/palette.ts';
 import {
-  CRATE_SIZE,
   UnboxAssets,
   UnboxCinematic,
   type UnboxBeat,
@@ -40,9 +40,9 @@ const TRAY_FLOOR_Y = -RIVIERA_TABLE.trayDepth;
 const TRAY_Z = RIVIERA_TABLE.fieldFrontZ + 0.035;
 const BURST_DUCK_S = 2.2;
 /** The ride hands the crate over at about this pitch as it goes over the lip. */
-const MAX_FALL_TILT = 1.1;
+const MAX_FALL_TILT = CRATE_RIDE.maxTilt;
 
-const S = CRATE_SIZE;
+const S = CRATE_RIDE.size;
 /** The lid line, where the unbox later splits the crate: the seam glows along it. */
 const SEAM_Y = S * 0.74;
 const CAP = S * 0.22;

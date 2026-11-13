@@ -6,6 +6,7 @@ export {
   SimBridge,
   type BridgeEndpoint,
   type SimBridgeOptions,
+  type SimBridgeSnapshot,
   type SimBridgeStats,
   type SimEventListener,
   type SimReadyInfo,
@@ -23,4 +24,8 @@ export {
   type FusionEvent,
   type NudgeDirection,
   type OpeningHeap,
+  type RestoreEntry,
+  type SimRestore,
+  type SimTableSnapshot,
+  type SnapshotPose,
 } from './sim-api.ts';

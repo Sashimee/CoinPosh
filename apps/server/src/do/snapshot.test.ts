@@ -235,7 +235,7 @@ describe('POST /v1/table/snapshot pipeline', () => {
       const response = await session.call('/v1/table/drop', {
         body: { session: 'session_SomeOtherTabTab00', x: 0, tick: 8_000 },
       });
-      expect(response.status).toBe(200);
+      await expectError(response, 409, 'session_superseded');
       expect(await accept(session, body(table, { tick: 60 }))).toMatchObject({ seq: 1 });
     });
   });
