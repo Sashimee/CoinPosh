@@ -152,7 +152,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.02 | todo | | Waits on T-2.05. Charm models & effects |
 | T-3.03 | todo | | Waits on T-2.05. Collection Album + Heirloom coins |
 | T-3.04 | in progress (parts merged: P-384, P-380) | task/T-3.04 (merge 33f6a67) | Venue Ascension (prestige) + Family Office: server-validated reset route and Gold Bars/Family Office logic (apps/server/src/routes/ascend.ts), ascension screen (apps/web/src/game/ascension) and 3 s ascend cinematic (apps/web/src/vfx/cinematics/ascend) (fa08c97); wiring follow-ups P-378..P-387 in POLISH; pnpm check green after merge; parts merged: P-384 (a499843), P-380 (c03c6a7); parts pending: P-385 |
-| T-3.05 | todo | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag) |
+| T-3.05-p1 | done | task/T-3.05-p1 (merge 1865458) | Quest, streak and season numbers in packages/economy (config/quests.ts, config/season.ts, 02-ECONOMY.md) (b226137); pnpm check green after merge |
+| T-3.05 | in progress (parts merged: T-3.05-p1) | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag). Parts T-3.05-p1, T-3.05-p2, T-3.05-p3. Parts merged: T-3.05-p1 (merge 1865458); parts pending: T-3.05-p2, T-3.05-p3 |
 | T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
 | T-10.01 | done | task/T-10.01 (merge 75e63f3) | Account link contracts: packages/shared/src/api/account.ts, accountEndpoints in endpoints.ts, new error codes (e91c834); wiring into `endpoints`, fixtures and Demo mock queued as P-281 for T-10.03; pnpm check green after merge |
