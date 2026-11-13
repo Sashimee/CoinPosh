@@ -1,4 +1,5 @@
 import {
+  ACCOUNT_ENDPOINT_NAMES,
   DevicePublicKeySchema,
   DeviceSignatureSchema,
   EMPTY_BODY_SHA256,
@@ -6,6 +7,7 @@ import {
   HEADERS,
   IdempotencyKeySchema,
   PlayerIdSchema,
+  accountEndpoints,
   canonicalRequest,
   endpoints,
   errorEnvelope,
@@ -13,19 +15,26 @@ import {
   requiresIdempotencyKey,
   tableSnapshotEndpoint,
   validationErrorEnvelope,
+  type AccountEndpointName,
+  type AccountLinkRequest,
+  type AccountNonceRequest,
+  type AccountUnlinkRequest,
   type DevicePublicKey,
   type Endpoint,
   type ErrorCode,
   type ErrorEnvelope,
   type IdempotencyKey,
+  type IdentityProvider,
   type PlayerId,
   type Sha256Hex,
+  type SignInRequest,
   type StateQuery,
   type TableSnapshotRequest,
 } from '@coinposh/shared';
 import { fromBase64Url, randomBase62, sha256Hex, utf8Bytes } from '../encoding.ts';
 import { NetworkError, type ApiOperation } from '../errors.ts';
 import type { Transport, WireRequest, WireResponse } from '../wire.ts';
+import type { MockAccounts, MockIdentityProvider } from './account.ts';
 import {
   DEMO_STORAGE_KEY,
   browserSessionStorage,
@@ -69,12 +78,24 @@ export interface MockServerOptions {
   readonly lifecycle?: EventTarget | null;
 }
 
+/** The sessionStorage key the Demo account links live under, next to the world they point into. */
+export const DEMO_ACCOUNT_STORAGE_KEY = 'coinposh.demo.account';
+
 export interface MockServer {
   readonly transport: Transport;
   readonly world: MockWorld;
+  /**
+   * Google and Apple links in this Demo world, kept and checked as the server keeps them. They
+   * load with the first account request, so guest play never downloads them.
+   */
+  accounts(): Promise<MockAccounts>;
+  /** The clearly fake provider whose tokens the Demo sign-in buttons hand back. */
+  identity(): Promise<MockIdentityProvider>;
   ledger(): readonly LedgerEntry[];
   /** Responses currently held for replay, to show the store stays bounded. */
   retainedReplays(): number;
+  /** Single-use sign-in and nonce keys still remembered, to show that set stays bounded too. */
+  retainedBurnedKeys(): number;
   setNetwork(network: MockNetwork): void;
   /** Whether this server picked up a world an earlier page in this tab left in storage. */
   readonly restored: boolean;
@@ -87,8 +108,17 @@ export interface MockServer {
 
 const DEFAULT_PERSIST_DELAY_MS = 250;
 
+interface DemoAccounts {
+  readonly accounts: MockAccounts;
+  readonly identity: MockIdentityProvider;
+  /** The blob storage now holds for these links, so an unchanged set is not rewritten. */
+  readonly stored: string;
+  readonly encode: () => string;
+}
+
 interface Persistence {
   readonly world: MockWorld;
+  readonly accounts: () => Promise<DemoAccounts>;
   readonly restored: boolean;
   /**
    * Encodes the world as it stands; called between requests only, so it never catches a
@@ -104,11 +134,17 @@ interface Persistence {
  * stored world, from a blocked storage to a blob that does not add up, is warned about and
  * dropped: Demo Mode must always boot.
  */
-function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persistence {
+function openPersistence(
+  storage: MockStorage | null,
+  warn: PersistWarn,
+  now: () => number,
+): Persistence {
   if (storage === null) {
+    const world = new MockWorld();
     const noop = () => undefined;
     return {
-      world: new MockWorld(),
+      world,
+      accounts: once(() => loadAccounts(null, warn, world, now, { restore: null, held: null })),
       restored: false,
       capture: noop,
       writeCaptured: noop,
@@ -116,9 +152,11 @@ function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persis
   }
   let world: MockWorld | null = null;
   let raw: string | null = null;
+  let storageFailed = false;
   try {
     raw = storage.getItem(DEMO_STORAGE_KEY);
   } catch (error) {
+    storageFailed = true;
     warn('CoinPosh demo: the saved session could not be read, so this one starts fresh.', error);
   }
   if (raw !== null) {
@@ -137,24 +175,41 @@ function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persis
       try {
         storage.removeItem(DEMO_STORAGE_KEY);
       } catch (error) {
+        storageFailed = true;
         warn('CoinPosh demo: the dropped session could not be cleared from storage.', error);
       }
     }
   }
   const restored = world !== null;
   const live = world ?? new MockWorld();
+  const held = storedAccounts(storage, warn, restored, storageFailed);
+  let loaded: DemoAccounts | null = null;
+  let accountsWritten = '';
+  const accounts = once(async () => {
+    const opened = await loadAccounts(storage, warn, live, now, held);
+    loaded = opened;
+    accountsWritten = opened.stored;
+    return opened;
+  });
   let failing = false;
   let captured: string | null = null;
   let unwritten = false;
+  let capturedAccounts: string | null = null;
   const capture = (): void => {
     captured = encodeDemoBlob(live.serialize());
     unwritten = true;
+    if (loaded !== null) capturedAccounts = loaded.encode();
   };
   const writeCaptured = (): void => {
-    if (captured === null || !unwritten) return;
+    const accountsDue = capturedAccounts === accountsWritten ? null : capturedAccounts;
+    if (captured === null || (!unwritten && accountsDue === null)) return;
     try {
-      storage.setItem(DEMO_STORAGE_KEY, captured);
+      if (unwritten) storage.setItem(DEMO_STORAGE_KEY, captured);
       unwritten = false;
+      if (accountsDue !== null) {
+        storage.setItem(DEMO_ACCOUNT_STORAGE_KEY, accountsDue);
+        accountsWritten = accountsDue;
+      }
       failing = false;
     } catch (error) {
       // One warning per run of failures: a full quota fails every write until space frees up.
@@ -164,7 +219,96 @@ function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persis
       failing = true;
     }
   };
-  return { world: live, restored, capture, writeCaptured };
+  return { world: live, accounts, restored, capture, writeCaptured };
+}
+
+/** One shared load; a failed one is tried again by the next caller. */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => {
+    pending ??= load().catch((error: unknown) => {
+      pending = null;
+      throw error;
+    });
+    return pending;
+  };
+}
+
+interface HeldAccounts {
+  /** The stored links to restore into the world once the account code loads. */
+  readonly restore: string | null;
+  /** What storage still holds after links that could not be kept failed to clear. */
+  readonly held: string | null;
+}
+
+/**
+ * Links only mean something in the world they were made in, so they load with it or not at all.
+ * Only the blob is read here; it is decoded and checked when the account code loads.
+ */
+function storedAccounts(
+  storage: MockStorage,
+  warn: PersistWarn,
+  restored: boolean,
+  storageFailed: boolean,
+): HeldAccounts {
+  // Storage already refused this page and said so; the links of a dropped world are left for
+  // the next restore to refuse against the world that replaces it.
+  if (storageFailed) return { restore: null, held: null };
+  let raw: string | null;
+  try {
+    raw = storage.getItem(DEMO_ACCOUNT_STORAGE_KEY);
+  } catch (error) {
+    warn(
+      'CoinPosh demo: the saved account links could not be read, so this session starts unlinked.',
+      error,
+    );
+    return { restore: null, held: null };
+  }
+  if (raw === null) return { restore: null, held: null };
+  if (restored) return { restore: raw, held: null };
+  return { restore: null, held: dropAccounts(storage, warn, raw) };
+}
+
+/** Clears stored links; returns what storage still holds when that failed. */
+function dropAccounts(storage: MockStorage, warn: PersistWarn, raw: string): string | null {
+  try {
+    storage.removeItem(DEMO_ACCOUNT_STORAGE_KEY);
+    return null;
+  } catch (error) {
+    warn('CoinPosh demo: the dropped account links could not be cleared from storage.', error);
+    return raw;
+  }
+}
+
+async function loadAccounts(
+  storage: MockStorage | null,
+  warn: PersistWarn,
+  world: MockWorld,
+  now: () => number,
+  stored: HeldAccounts,
+): Promise<DemoAccounts> {
+  const { MockAccounts, MockIdentityProvider, decodeAccountsBlob, encodeAccountsBlob } =
+    await import('./account.ts');
+  const identity = new MockIdentityProvider(now);
+  const opened = (accounts: MockAccounts, blob: string | null): DemoAccounts => {
+    const encode = () => encodeAccountsBlob(accounts.serialize());
+    return { accounts, identity, stored: blob ?? encode(), encode };
+  };
+  const raw = stored.restore;
+  if (raw === null || storage === null)
+    return opened(new MockAccounts(world, identity), stored.held);
+  const decoded = decodeAccountsBlob(raw);
+  if (decoded.ok) {
+    try {
+      return opened(MockAccounts.restore(decoded.accounts, world, identity), raw);
+    } catch (error) {
+      if (!(error instanceof RestoreError)) throw error;
+      warn(`CoinPosh demo: the saved account links were dropped. ${error.message}`);
+    }
+  } else {
+    warn(`CoinPosh demo: the saved account links were dropped: ${decoded.reason}.`);
+  }
+  return opened(new MockAccounts(world, identity), dropAccounts(storage, warn, raw));
 }
 
 interface StoredResponse {
@@ -173,8 +317,16 @@ interface StoredResponse {
   readonly at: number;
 }
 
+type MockOperation = ApiOperation | AccountEndpointName;
+
+const ACCOUNT_OPERATIONS: ReadonlySet<MockOperation> = new Set(ACCOUNT_ENDPOINT_NAMES);
+
+function isAccountOperation(name: MockOperation): name is AccountEndpointName {
+  return ACCOUNT_OPERATIONS.has(name);
+}
+
 /** Endpoints whose bodies carry sim ticks, so any replay past `claimExpiryMs` is refused anyway. */
-const TICK_GATED: ReadonlySet<ApiOperation> = new Set([
+const TICK_GATED: ReadonlySet<MockOperation> = new Set([
   'tableDrop',
   'tableClaims',
   'tableNudge',
@@ -186,11 +338,18 @@ const TICK_GATED: ReadonlySet<ApiOperation> = new Set([
  * Operations whose refusals are not kept for replay, as on the server: a snapshot refused as
  * rate limited or stale may be sent again under its key once the reason is gone.
  */
-const REPLAYS_SUCCESS_ONLY: ReadonlySet<ApiOperation> = new Set(['tableSnapshot']);
+const REPLAYS_SUCCESS_ONLY: ReadonlySet<MockOperation> = new Set(['tableSnapshot']);
 
-const ROUTES: readonly (readonly [ApiOperation, Endpoint])[] = [
+/**
+ * Keys that work once, as `burnAuthKey` makes them on the server: a captured signed sign-in or
+ * nonce request is refused when sent again rather than answered with its tokens or nonce.
+ */
+const BURNS_KEY: ReadonlySet<MockOperation> = new Set(['accountNonce', 'authSignIn']);
+
+const ROUTES: readonly (readonly [MockOperation, Endpoint])[] = [
   ...ENDPOINT_NAMES.map((name) => [name, endpoints[name]] as const),
   ['tableSnapshot', tableSnapshotEndpoint],
+  ...ACCOUNT_ENDPOINT_NAMES.map((name) => [name, accountEndpoints[name]] as const),
 ];
 
 /**
@@ -231,13 +390,63 @@ class ReplayStore {
   }
 }
 
-interface RefreshRecord {
+/**
+ * Single-use keys, oldest first. A key is forgotten `idempotencyTtlMs` after it was burned: by
+ * then the nonce and ID token it carried expired long ago (`nonceTtlMs`, `idTokenTtlMs`), so a
+ * replay is still refused, and the set stays bounded by the request envelope.
+ */
+class BurnedKeys {
+  readonly #burnedAt = new Map<IdempotencyKey, number>();
+  readonly #ttlMs: number;
+
+  constructor(ttlMs: number) {
+    this.#ttlMs = ttlMs;
+  }
+
+  get size(): number {
+    return this.#burnedAt.size;
+  }
+
+  /** Burns the key; false when it was already burned and is still remembered. */
+  burn(key: IdempotencyKey, now: number): boolean {
+    for (const [burned, at] of this.#burnedAt) {
+      if (at > now - this.#ttlMs) break;
+      this.#burnedAt.delete(burned);
+    }
+    if (this.#burnedAt.has(key)) return false;
+    this.#burnedAt.set(key, now);
+    return true;
+  }
+}
+
+/** A session handed to one device key: tokens are bound to the key they were issued to. */
+interface DeviceGrant {
   readonly playerId: PlayerId;
+  readonly key: CryptoKey;
+  readonly device: string;
+  /** The provider whose sign-in admitted this device; `null` for the device that made the save. */
+  readonly via: IdentityProvider | null;
+}
+
+interface RefreshRecord extends DeviceGrant {
   revoked: boolean;
 }
 
+interface AccessRecord extends DeviceGrant {
+  readonly expiresAt: number;
+}
+
+interface Authenticated {
+  readonly scope: string;
+  readonly player: MockPlayer | null;
+  readonly devicePublicKey: DevicePublicKey | null;
+  readonly key: CryptoKey;
+  readonly device: string;
+  readonly refresh?: RefreshRecord;
+}
+
 interface Route {
-  readonly name: ApiOperation;
+  readonly name: MockOperation;
   readonly endpoint: Endpoint;
   readonly params: Record<string, string> | null;
 }
@@ -323,10 +532,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const now = options.now ?? (() => Date.now());
   const warn = options.onPersistWarning ?? consoleWarn;
   const storage = options.storage === undefined ? browserSessionStorage(warn) : options.storage;
-  const persistence = openPersistence(storage, warn);
+  const persistence = openPersistence(storage, warn, now);
   const world = persistence.world;
-  const accessTokens = new Map<string, { playerId: PlayerId; expiresAt: number }>();
+  const accessTokens = new Map<string, AccessRecord>();
   const refreshTokens = new Map<string, RefreshRecord>();
+  const burnedKeys = new BurnedKeys(MOCK_RULES.idempotencyTtlMs);
   const tableReplays = new ReplayStore(MOCK_RULES.claimExpiryMs, Infinity);
   const otherReplays = new ReplayStore(MOCK_RULES.idempotencyTtlMs, MOCK_RULES.idempotencyRetained);
   const usedTurnstile = new Set<string>();
@@ -334,19 +544,19 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   let network: MockNetwork = 'up';
   let queue: Promise<unknown> = Promise.resolve();
 
-  function issueTokens(player: MockPlayer) {
+  /** Rotation is per device: one device signing in never signs another out. */
+  function issueTokens(grant: DeviceGrant) {
     for (const record of refreshTokens.values()) {
-      if (record.playerId === player.id) record.revoked = true;
+      if (record.playerId === grant.playerId && record.device === grant.device) {
+        record.revoked = true;
+      }
     }
     const accessToken = `at_${randomBase62(40)}`;
     const refreshToken = `rt_${randomBase62(48)}`;
-    accessTokens.set(accessToken, {
-      playerId: player.id,
-      expiresAt: now() + MOCK_RULES.accessTokenTtlMs,
-    });
-    refreshTokens.set(refreshToken, { playerId: player.id, revoked: false });
+    accessTokens.set(accessToken, { ...grant, expiresAt: now() + MOCK_RULES.accessTokenTtlMs });
+    refreshTokens.set(refreshToken, { ...grant, revoked: false });
     return {
-      playerId: player.id,
+      playerId: grant.playerId,
       accessToken,
       accessTokenTtlMs: MOCK_RULES.accessTokenTtlMs,
       refreshToken,
@@ -358,6 +568,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       if (record.playerId === playerId) record.revoked = true;
     for (const [token, record] of accessTokens)
       if (record.playerId === playerId) accessTokens.delete(token);
+  }
+
+  /** Unlinking a provider signs out every other device that reached the save through it. */
+  function revokeAdmitted(playerId: PlayerId, provider: IdentityProvider, keep: string): void {
+    const admitted = (grant: DeviceGrant) =>
+      grant.playerId === playerId && grant.via === provider && grant.device !== keep;
+    for (const record of refreshTokens.values()) if (admitted(record)) record.revoked = true;
+    for (const [token, record] of accessTokens) if (admitted(record)) accessTokens.delete(token);
   }
 
   async function verify(
@@ -408,44 +626,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     return parsed.data;
   }
 
-  async function authenticate(
-    found: Route,
-    request: WireRequest,
-    body: unknown,
-    idempotencyKey: IdempotencyKey | null,
-    bodySha256: Sha256Hex,
-    at: number,
-  ) {
-    if (found.name === 'authGuest') {
-      const devicePublicKey = DevicePublicKeySchema.parse(
-        (body as { devicePublicKey: unknown }).devicePublicKey,
-      );
-      const key = await importVerifyKey(devicePublicKey);
-      await verify(key, request, idempotencyKey, bodySha256);
-      return {
-        scope: `device:${deviceThumbprint(devicePublicKey)}`,
-        player: null,
-        devicePublicKey,
-        key,
-      };
-    }
-    if (found.name === 'authRefresh') {
-      const { refreshToken } = body as { refreshToken: string };
-      const record = refreshTokens.get(refreshToken);
-      const player = record === undefined ? undefined : world.player(record.playerId);
-      if (record === undefined || player === undefined)
-        refuse('unauthorized', 'Unknown refresh token.');
-      const key = player.deviceKey;
-      if (key === null) refuse('unauthorized', 'That player has no device signed in.');
-      await verify(key, request, idempotencyKey, bodySha256);
-      return {
-        scope: `player:${player.id}`,
-        player,
-        devicePublicKey: null,
-        key,
-        refresh: record,
-      };
-    }
+  function bearer(request: WireRequest, at: number): { access: AccessRecord; player: MockPlayer } {
     const authorization = header(request, HEADERS.authorization);
     const token =
       authorization?.startsWith('Bearer ') === true ? authorization.slice('Bearer '.length) : null;
@@ -455,15 +636,64 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       refuse('unauthorized', 'Missing or unknown access token.');
     if (at >= access.expiresAt)
       refuse('token_expired', 'The access token has expired; refresh it.');
-    const key = player.deviceKey;
-    if (key === null) refuse('unauthorized', 'That player has no device signed in.');
-    await verify(key, request, idempotencyKey, bodySha256);
-    return { scope: `player:${player.id}`, player, devicePublicKey: null, key };
+    return { access, player };
+  }
+
+  async function authenticate(
+    found: Route,
+    request: WireRequest,
+    body: unknown,
+    idempotencyKey: IdempotencyKey | null,
+    bodySha256: Sha256Hex,
+    at: number,
+  ): Promise<Authenticated> {
+    if (found.name === 'authRefresh') {
+      const { refreshToken } = body as { refreshToken: string };
+      const record = refreshTokens.get(refreshToken);
+      const player = record === undefined ? undefined : world.player(record.playerId);
+      if (record === undefined || player === undefined)
+        refuse('unauthorized', 'Unknown refresh token.');
+      await verify(record.key, request, idempotencyKey, bodySha256);
+      return {
+        scope: `player:${player.id}`,
+        player,
+        devicePublicKey: null,
+        key: record.key,
+        device: record.device,
+        refresh: record,
+      };
+    }
+    if (found.endpoint.auth === 'none') {
+      const devicePublicKey = DevicePublicKeySchema.parse(
+        (body as { devicePublicKey: unknown }).devicePublicKey,
+      );
+      const key = await importVerifyKey(devicePublicKey);
+      await verify(key, request, idempotencyKey, bodySha256);
+      const device = deviceThumbprint(devicePublicKey);
+      if (found.name === 'accountNonce' && (body as AccountNonceRequest).purpose === 'link') {
+        if (bearer(request, at).access.device !== device) {
+          refuse(
+            'unauthorized',
+            'This access token belongs to another device key. Sign the request with the key it was issued to.',
+          );
+        }
+      }
+      return { scope: `device:${device}`, player: null, devicePublicKey, key, device };
+    }
+    const { access, player } = bearer(request, at);
+    await verify(access.key, request, idempotencyKey, bodySha256);
+    return {
+      scope: `player:${player.id}`,
+      player,
+      devicePublicKey: null,
+      key: access.key,
+      device: access.device,
+    };
   }
 
   async function runAuth(
     name: 'authGuest' | 'authRefresh',
-    auth: Awaited<ReturnType<typeof authenticate>>,
+    auth: Authenticated,
     body: unknown,
     at: number,
   ) {
@@ -486,10 +716,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           locale,
           at,
         ));
-      return issueTokens(player);
+      return issueTokens({ playerId: player.id, key: auth.key, device: auth.device, via: null });
     }
     const player = auth.player;
-    const record = 'refresh' in auth ? auth.refresh : undefined;
+    const record = auth.refresh;
     if (player === null || record === undefined)
       throw new Error('Mock: refresh lost its token record.');
     if (record.revoked) {
@@ -500,7 +730,60 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         'That refresh token was already rotated; sign in again.',
       );
     }
-    return issueTokens(player);
+    return issueTokens(record);
+  }
+
+  function signedInPlayer(auth: Authenticated, name: AccountEndpointName): MockPlayer {
+    if (auth.player === null)
+      throw new Error(`Mock: ${name} reached its handler without a player.`);
+    return auth.player;
+  }
+
+  /** No account request carries a value: links map identities, sign-ins hand out sessions. */
+  async function runAccount(
+    name: AccountEndpointName,
+    auth: Authenticated,
+    body: unknown,
+    at: number,
+  ): Promise<unknown> {
+    const { accounts } = await persistence.accounts();
+    switch (name) {
+      case 'accountNonce': {
+        const { provider, purpose } = body as AccountNonceRequest;
+        return accounts.issueNonce({ provider, purpose, device: auth.device, now: at });
+      }
+      case 'authSignIn': {
+        const request = body as SignInRequest;
+        const signIn = await accounts.signIn(request, auth.device, at);
+        const tokens = issueTokens({
+          playerId: signIn.owner.id,
+          key: auth.key,
+          device: auth.device,
+          via: signIn.firstDevice ? null : request.provider,
+        });
+        return {
+          ...tokens,
+          account: signIn.account,
+          ...(signIn.choice === undefined ? {} : { choice: signIn.choice }),
+        };
+      }
+      case 'accountLink':
+        return accounts.link(
+          signedInPlayer(auth, name),
+          body as AccountLinkRequest,
+          auth.device,
+          at,
+        );
+      case 'accountUnlink': {
+        const player = signedInPlayer(auth, name);
+        const { provider } = body as AccountUnlinkRequest;
+        const account = accounts.unlink(player, provider, auth.device, at);
+        revokeAdmitted(player.id, provider, auth.device);
+        return account;
+      }
+      case 'account':
+        return accounts.account(signedInPlayer(auth, name).id);
+    }
   }
 
   /** Mirrors the server: replay only inside the window, never a bundle whose session was revoked since. */
@@ -551,11 +834,19 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const auth = await authenticate(found, request, body, idempotencyKey, bodySha256, at);
     enforceEnvelope(auth.scope, at);
 
+    const burnsKey = BURNS_KEY.has(found.name);
+    if (burnsKey && idempotencyKey !== null && !burnedKeys.burn(idempotencyKey, at)) {
+      return fail(
+        'idempotency_key_reused',
+        'This Idempotency-Key was already used to sign in. Sign the request again with a new key.',
+      );
+    }
+
     tableReplays.prune(at);
     otherReplays.prune(at);
     const replays = TICK_GATED.has(found.name) ? tableReplays : otherReplays;
     const fingerprint = `${request.method} ${request.path} ${bodySha256}`;
-    const storeKey = idempotencyKey === null ? null : `${auth.scope}:${idempotencyKey}`;
+    const storeKey = idempotencyKey === null || burnsKey ? null : `${auth.scope}:${idempotencyKey}`;
     const stored =
       storeKey === null ? undefined : (tableReplays.get(storeKey) ?? otherReplays.get(storeKey));
     if (stored !== undefined) {
@@ -571,7 +862,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     let response: WireResponse;
     try {
       let result: unknown;
-      if (found.name === 'authGuest' || found.name === 'authRefresh') {
+      if (isAccountOperation(found.name)) {
+        result = await runAccount(found.name, auth, body, at);
+      } else if (found.name === 'authGuest' || found.name === 'authRefresh') {
         result = await runAuth(found.name, auth, body, at);
       } else {
         const player = auth.player;
@@ -721,8 +1014,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   return {
     transport,
     world,
+    accounts: async () => (await persistence.accounts()).accounts,
+    identity: async () => (await persistence.accounts()).identity,
     ledger: () => world.ledger,
     retainedReplays: () => tableReplays.size + otherReplays.size,
+    retainedBurnedKeys: () => burnedKeys.size,
     setNetwork(next) {
       network = next;
     },
