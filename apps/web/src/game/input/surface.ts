@@ -27,10 +27,12 @@ export interface InputSurfaceOptions {
 }
 
 export interface InputSurface {
-  /** A finger or the drop key is down. */
+  /** A finger or the drop key is down on a touch that can still drop, pour or nudge. */
   readonly pressed: boolean;
   /** Call once per frame so a held finger can become a pour. */
   tick(): void;
+  /** Cancels a running pour and spends the touch in progress: only a fresh press acts again. */
+  interrupt(): void;
   dispose(): void;
 }
 
@@ -185,10 +187,13 @@ export function bindInputSurface(
 
   return {
     get pressed() {
-      return gestures.active;
+      return gestures.live;
     },
     tick() {
       run(gestures.tick(now()));
+    },
+    interrupt() {
+      run(gestures.interrupt());
     },
     dispose() {
       for (const dispose of disposers.splice(0)) dispose();

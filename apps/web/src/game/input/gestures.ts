@@ -86,6 +86,21 @@ export class GestureRecognizer {
     return this.#down.size > 0;
   }
 
+  /** True while the fingers down can still drop, pour or nudge. */
+  get live(): boolean {
+    return this.active && this.#state.kind !== 'spent';
+  }
+
+  /**
+   * Something else took the screen: a running pour is cancelled, and the touch in progress does
+   * nothing more, not even drop on lift, until every finger is up and a new one comes down.
+   */
+  interrupt(): GestureAction[] {
+    const actions: GestureAction[] = this.pouring ? [{ kind: 'pourCancel' }] : [];
+    if (this.active) this.#state = { kind: 'spent' };
+    return actions;
+  }
+
   down(id: number, x: number, y: number, at: number): GestureAction[] {
     this.#down.add(id);
     const state = this.#state;
