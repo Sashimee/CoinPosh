@@ -86,57 +86,141 @@ export interface AudioLifecycle {
  * iOS Safari and Capacitor webviews can drop a context to 'suspended' or 'interrupted' at any
  * time, before or after the first tap. Each drop arms a fresh gesture handle, and every handle
  * feeds the same `whenUnlocked`, so nothing waiting on the first unlock is stranded by a re-arm.
+ *
+ * Tab switches are reconciled against the page's current visibility instead of being replayed
+ * event by event: suspend() and resume() settle asynchronously, so a hide/show pair inside one
+ * task could otherwise leave the context suspended on a visible page. A resume that is refused
+ * or never settles is retried on focus and pageshow, and a gesture handle stays armed meanwhile,
+ * so audio is back once the tab returns, plus at most one tap.
+ *
+ * `page` is `window` in the app: the source of `focus`, `pageshow` and `pagehide`.
  */
 export function manageAudioLifecycle(
   ctx: LifecycleContext,
   gestureTarget: EventTarget,
   visibility: VisibilitySource,
+  page: EventTarget,
 ): AudioLifecycle {
   let resolveUnlocked: () => void = () => undefined;
   const whenUnlocked = new Promise<void>((resolve) => {
     resolveUnlocked = resolve;
   });
-  let suspendedForVisibility = false;
+  let everUnlocked = false;
+  let pageHidden = false;
   let disposed = false;
   const running = () => ctx.state === 'running';
+  const hidden = () => pageHidden || visibility.visibilityState === 'hidden';
+
+  const markUnlocked = () => {
+    everUnlocked = true;
+    resolveUnlocked();
+  };
 
   const arm = (): UnlockHandle => {
     const handle = armUnlock(ctx, gestureTarget);
-    void handle.unlocked.then(resolveUnlocked);
+    void handle.unlocked.then(() => {
+      if (!disposed) markUnlocked();
+    });
     return handle;
   };
   let unlock = arm();
 
-  const rearmIfLocked = () => {
-    if (disposed || running() || suspendedForVisibility) return;
+  const armGesture = () => {
+    if (disposed || running()) return;
     unlock.disarm();
     if (ctx.state !== 'closed') unlock = arm();
   };
 
-  const onVisibility = () => {
-    if (visibility.visibilityState === 'hidden') {
-      if (!running()) return;
-      suspendedForVisibility = true;
-      ctx.suspend().catch((error: unknown) => {
-        console.warn('Audio: suspend() on page hide failed; audio keeps running.', error);
-      });
-      return;
-    }
-    if (!suspendedForVisibility) return;
-    suspendedForVisibility = false;
-    ctx.resume().then(rearmIfLocked, rearmIfLocked);
+  let resumeAttempts = 0;
+  let resumePending = false;
+  const resume = () => {
+    const attempt = ++resumeAttempts;
+    resumePending = true;
+    const settled = () => {
+      if (attempt === resumeAttempts) resumePending = false;
+    };
+    ctx.resume().then(
+      () => {
+        settled();
+        if (disposed) return;
+        if (hidden()) reconcile(false);
+        else armGesture();
+      },
+      (error: unknown) => {
+        settled();
+        if (disposed) return;
+        console.warn(
+          'Audio: resume() was refused; retrying on the next tap, focus or pageshow.',
+          error,
+        );
+        armGesture();
+      },
+    );
   };
 
-  ctx.addEventListener('statechange', rearmIfLocked);
-  visibility.addEventListener('visibilitychange', onVisibility);
+  const suspend = () => {
+    ctx.suspend().then(
+      () => {
+        if (!disposed && !hidden()) reconcile(false);
+      },
+      (error: unknown) => {
+        console.warn('Audio: suspend() on page hide failed; audio keeps running.', error);
+      },
+    );
+  };
+
+  /**
+   * A context that never ran is left to the gesture handle: only a gesture may start it. Page
+   * events retry a resume still pending, since iOS can leave one unsettled forever; a settling
+   * suspend() does not, so it never doubles up on the resume that show already sent.
+   */
+  function reconcile(retryPending: boolean): void {
+    if (disposed || ctx.state === 'closed') return;
+    if (hidden()) {
+      if (running()) suspend();
+      return;
+    }
+    if (everUnlocked && !running() && (retryPending || !resumePending)) resume();
+  }
+  const onPageEvent = () => {
+    reconcile(true);
+  };
+
+  const onStateChange = () => {
+    if (disposed) return;
+    if (running()) {
+      unlock.disarm();
+      markUnlocked();
+      return;
+    }
+    armGesture();
+  };
+  const onPageHide = () => {
+    pageHidden = true;
+    reconcile(true);
+  };
+  const onPageShow = () => {
+    pageHidden = false;
+    reconcile(true);
+  };
+
+  if (running()) markUnlocked();
+  ctx.addEventListener('statechange', onStateChange);
+  visibility.addEventListener('visibilitychange', onPageEvent);
+  page.addEventListener('focus', onPageEvent);
+  page.addEventListener('pageshow', onPageShow);
+  page.addEventListener('pagehide', onPageHide);
 
   return {
     whenUnlocked,
     dispose() {
       disposed = true;
       unlock.disarm();
-      ctx.removeEventListener('statechange', rearmIfLocked);
-      visibility.removeEventListener('visibilitychange', onVisibility);
+      ctx.removeEventListener('statechange', onStateChange);
+      visibility.removeEventListener('visibilitychange', onPageEvent);
+      page.removeEventListener('focus', onPageEvent);
+      page.removeEventListener('pageshow', onPageShow);
+      page.removeEventListener('pagehide', onPageHide);
     },
   };
 }

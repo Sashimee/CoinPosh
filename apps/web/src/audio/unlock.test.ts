@@ -110,13 +110,21 @@ describe('armUnlock', () => {
 
 type LifecycleState = AudioContextState | 'interrupted';
 
-/** Mirrors a browser context: every state change fires 'statechange'. */
+/**
+ * Mirrors a browser context: every state change fires 'statechange'. With `deferred`, suspend()
+ * and resume() only take effect when `settle()` runs them, in call order, like the control
+ * messages a real AudioContext queues. With `hang`, resume() never settles (iOS after a call).
+ */
 class FakeLifecycleContext extends EventTarget implements LifecycleContext {
   private current: LifecycleState = 'suspended';
+  private readonly queue: (() => void)[] = [];
   readonly sampleRate = 48000;
   readonly destination = {} as AudioNode;
   resumeCalls = 0;
+  suspendCalls = 0;
   refuse = false;
+  hang = false;
+  deferred = false;
 
   get state(): LifecycleState {
     return this.current;
@@ -130,14 +138,36 @@ class FakeLifecycleContext extends EventTarget implements LifecycleContext {
 
   resume(): Promise<void> {
     this.resumeCalls++;
+    if (this.hang) return new Promise<void>(() => undefined);
     if (this.refuse) return Promise.reject(new Error('NotAllowedError'));
-    this.set('running');
-    return Promise.resolve();
+    return this.apply('running');
   }
 
   suspend(): Promise<void> {
-    this.set('suspended');
-    return Promise.resolve();
+    this.suspendCalls++;
+    return this.apply('suspended');
+  }
+
+  async settle(): Promise<void> {
+    for (let round = 0; round < 10; round++) {
+      await flush();
+      if (this.queue.length === 0) return;
+      while (this.queue.length > 0) this.queue.shift()?.();
+    }
+    throw new Error('FakeLifecycleContext: suspend/resume kept re-queuing for 10 rounds.');
+  }
+
+  private apply(state: LifecycleState): Promise<void> {
+    if (!this.deferred) {
+      this.set(state);
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(() => {
+        this.set(state);
+        resolve();
+      });
+    });
   }
 
   createBuffer(): AudioBuffer {
@@ -166,14 +196,19 @@ function setup() {
   const ctx = new FakeLifecycleContext();
   const target = new EventTarget();
   const doc = new FakeDocument();
-  const lifecycle = manageAudioLifecycle(ctx, target, doc);
+  const page = new EventTarget();
+  const lifecycle = manageAudioLifecycle(ctx, target, doc, page);
   const onUnlocked = vi.fn();
   void lifecycle.whenUnlocked.then(onUnlocked);
   const tap = async () => {
     target.dispatchEvent(new Event('touchend'));
     await flush();
   };
-  return { ctx, target, doc, lifecycle, onUnlocked, tap };
+  const fire = async (type: 'focus' | 'pageshow' | 'pagehide') => {
+    page.dispatchEvent(new Event(type));
+    await flush();
+  };
+  return { ctx, target, doc, page, lifecycle, onUnlocked, tap, fire };
 }
 
 describe('manageAudioLifecycle', () => {
@@ -274,14 +309,17 @@ describe('manageAudioLifecycle', () => {
   });
 
   it('stops reacting to state, visibility and gestures once disposed', async () => {
-    const { ctx, doc, lifecycle, tap } = setup();
+    const { ctx, doc, lifecycle, tap, fire } = setup();
     lifecycle.dispose();
     ctx.set('interrupted');
     await tap();
     doc.show('hidden');
     doc.show('visible');
-    await flush();
+    await fire('pagehide');
+    await fire('pageshow');
+    await fire('focus');
     expect(ctx.resumeCalls).toBe(0);
+    expect(ctx.suspendCalls).toBe(0);
   });
 
   it('does not arm a gesture unlock on a closed context', async () => {
@@ -289,5 +327,195 @@ describe('manageAudioLifecycle', () => {
     ctx.set('closed');
     await tap();
     expect(ctx.resumeCalls).toBe(0);
+  });
+});
+
+describe('manageAudioLifecycle tab-switch races (#184)', () => {
+  const quietWarnings = () => vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+  async function unlockedSetup() {
+    const env = setup();
+    await env.tap();
+    expect(env.ctx.state).toBe('running');
+    return env;
+  }
+
+  it.each(['suspended', 'interrupted'] as const)(
+    'brings audio back on show when the system %s the context before the tab was hidden',
+    async (state) => {
+      const { ctx, doc } = await unlockedSetup();
+      ctx.set(state);
+      doc.show('hidden');
+      await flush();
+      expect(ctx.suspendCalls).toBe(0);
+      doc.show('visible');
+      await flush();
+      expect(ctx.state).toBe('running');
+      expect(ctx.resumeCalls).toBe(2);
+    },
+  );
+
+  it('keeps a gesture armed while hidden and suspended so one tap recovers a refused show', async () => {
+    const warn = quietWarnings();
+    const { ctx, doc, tap } = await unlockedSetup();
+    ctx.set('suspended');
+    doc.show('hidden');
+    ctx.refuse = true;
+    doc.show('visible');
+    await flush();
+    expect(ctx.state).toBe('suspended');
+    ctx.refuse = false;
+    await tap();
+    expect(ctx.state).toBe('running');
+    warn.mockRestore();
+  });
+
+  it('ends running when hide and show land in one task before suspend() settles', async () => {
+    const { ctx, doc } = await unlockedSetup();
+    ctx.deferred = true;
+    doc.show('hidden');
+    doc.show('visible');
+    await ctx.settle();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('ends suspended after hide/show/hide in one task, then runs again on show', async () => {
+    const { ctx, doc } = await unlockedSetup();
+    ctx.deferred = true;
+    doc.show('hidden');
+    doc.show('visible');
+    doc.show('hidden');
+    await ctx.settle();
+    expect(ctx.state).toBe('suspended');
+    doc.show('visible');
+    await ctx.settle();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('re-suspends when a resume from show settles after the tab was hidden again', async () => {
+    const { ctx, doc } = await unlockedSetup();
+    doc.show('hidden');
+    await flush();
+    ctx.deferred = true;
+    doc.show('visible');
+    doc.show('hidden');
+    await ctx.settle();
+    expect(ctx.state).toBe('suspended');
+    doc.show('visible');
+    await ctx.settle();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('retries a refused resume on focus without needing a tap', async () => {
+    const warn = quietWarnings();
+    const { ctx, doc, fire } = await unlockedSetup();
+    doc.show('hidden');
+    ctx.refuse = true;
+    doc.show('visible');
+    await flush();
+    expect(ctx.state).toBe('suspended');
+    expect(warn).toHaveBeenCalledOnce();
+    ctx.refuse = false;
+    await fire('focus');
+    expect(ctx.state).toBe('running');
+    expect(ctx.resumeCalls).toBe(3);
+    warn.mockRestore();
+  });
+
+  it('retries a refused resume on pageshow', async () => {
+    const warn = quietWarnings();
+    const { ctx, doc, fire } = await unlockedSetup();
+    doc.show('hidden');
+    ctx.refuse = true;
+    doc.show('visible');
+    await flush();
+    ctx.refuse = false;
+    await fire('pageshow');
+    expect(ctx.state).toBe('running');
+    warn.mockRestore();
+  });
+
+  it('does not spin on a resume that keeps being refused', async () => {
+    const warn = quietWarnings();
+    const { ctx, doc } = await unlockedSetup();
+    doc.show('hidden');
+    ctx.refuse = true;
+    doc.show('visible');
+    for (let i = 0; i < 5; i++) await flush();
+    expect(ctx.resumeCalls).toBe(2);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('recovers from a resume that never settles with one tap', async () => {
+    const { ctx, doc, tap } = await unlockedSetup();
+    doc.show('hidden');
+    ctx.hang = true;
+    doc.show('visible');
+    await flush();
+    expect(ctx.state).toBe('suspended');
+    ctx.hang = false;
+    await tap();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('retries a resume that never settled when the window regains focus', async () => {
+    const { ctx, doc, fire } = await unlockedSetup();
+    doc.show('hidden');
+    ctx.hang = true;
+    doc.show('visible');
+    await flush();
+    ctx.hang = false;
+    await fire('focus');
+    expect(ctx.state).toBe('running');
+  });
+
+  it('suspends on pagehide and resumes on a bfcache pageshow with no visibilitychange', async () => {
+    const { ctx, fire } = await unlockedSetup();
+    await fire('pagehide');
+    expect(ctx.state).toBe('suspended');
+    await fire('pageshow');
+    expect(ctx.state).toBe('running');
+    expect(ctx.resumeCalls).toBe(2);
+  });
+
+  it('resumes on a bfcache pageshow after the frozen page was hidden and its context dropped', async () => {
+    const { ctx, doc, fire } = await unlockedSetup();
+    doc.show('hidden');
+    await fire('pagehide');
+    ctx.set('interrupted');
+    doc.visibilityState = 'visible';
+    await fire('pageshow');
+    expect(ctx.state).toBe('running');
+  });
+
+  it('stays suspended between pagehide and pageshow even if the document reports visible', async () => {
+    const { ctx, fire } = await unlockedSetup();
+    await fire('pagehide');
+    await fire('focus');
+    expect(ctx.state).toBe('suspended');
+    expect(ctx.resumeCalls).toBe(1);
+  });
+
+  it('never resumes a context that no gesture has unlocked', async () => {
+    const { ctx, doc, fire, onUnlocked, tap } = setup();
+    doc.show('hidden');
+    await fire('pagehide');
+    doc.show('visible');
+    await fire('pageshow');
+    await fire('focus');
+    expect(ctx.resumeCalls).toBe(0);
+    await tap();
+    expect(onUnlocked).toHaveBeenCalledOnce();
+  });
+
+  it('drops the gesture listeners once a show resume gets the context running', async () => {
+    const { ctx, doc, tap } = await unlockedSetup();
+    doc.show('hidden');
+    doc.show('visible');
+    await flush();
+    expect(ctx.resumeCalls).toBe(2);
+    await tap();
+    expect(ctx.resumeCalls).toBe(2);
   });
 });
