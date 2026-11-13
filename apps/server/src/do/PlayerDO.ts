@@ -33,6 +33,8 @@ import {
   type EpochMs,
   type ErrorCode,
   type Locale,
+  type NudgeRequest,
+  type NudgeResponse,
   type PlayerId,
   TableSessionIdSchema,
   type StateQuery,
@@ -295,12 +297,26 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
 
   async claims(command: Command<ClaimsRequest>): Promise<DoResult<ClaimsResponse>> {
     return this.mutate(command, (now) => {
+      this.requireLease(command.body.session);
       const results = command.body.claims.map((claim) => {
         const result = this.applyClaim(claim, command.idempotencyKey, now);
-        if (result.status === 'accepted') this.raiseSessionTick(command.body.session, claim.tick);
+        if (result.status === 'accepted') this.raiseSessionTick(claim.tick);
         return result;
       });
       return { results, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /**
+   * A nudge under the table's lease. The server meters no decorum until its numbers move into
+   * packages/economy (#15), so it answers with the table's decorum and freeze as stored, and a
+   * nudge never moves value.
+   */
+  async nudge(command: Command<NudgeRequest>): Promise<DoResult<NudgeResponse>> {
+    return this.mutate(command, () => {
+      this.requireLease(command.body.session);
+      const { decorum, frozenUntil } = this.snapshot();
+      return { decorum, frozenUntil };
     });
   }
 
@@ -502,7 +518,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
     const context = { at: now, idempotencyKey };
     const levels = this.levels();
     const cost = tierDef(DROP_TIER).value;
-    this.raiseSessionTick(body.session, body.tick);
+    this.requireLease(body.session);
+    this.raiseSessionTick(body.tick);
     const reserved = body.coinId === undefined ? null : this.bufferedCoin(body.coinId);
     const prepaid = reserved?.paid ?? 0;
     const due = Math.max(0, cost - prepaid);
@@ -914,12 +931,7 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
    * snapshot row and the anomaly counters only: never the wallet, ledger, coins or crates.
    */
   private applySnapshot(body: TableSnapshotRequest, now: EpochMs): TableSnapshotResponse {
-    if (this.meta('table_session') !== body.session) {
-      throw new ApiFailure(
-        'session_superseded',
-        'Another tab or device has booted this table since. Reload to play here.',
-      );
-    }
+    this.requireLease(body.session);
     const stored = readTableSnapshot(this.sql);
     const previous = stored?.session === body.session ? stored : null;
     const floorTick = Math.max(
@@ -1070,12 +1082,24 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost {
   }
 
   /**
-   * A snapshot may never be older than a drop or claim the server already settled in this
-   * session. A table op that names another session leaves the mark alone.
+   * The newest boot holds the table's lease (#85): two sims writing one table would each
+   * claim, drop and pose coins the other had already moved. A table op from any other session
+   * is refused before it writes anything, and so is one naming no session, so a client that
+   * leaves the field out cannot slip past the fence while the contract still allows it.
    */
-  private raiseSessionTick(session: TableSessionId | undefined, tick: Tick): void {
+  private requireLease(session: TableSessionId | undefined): void {
     const current = this.meta('table_session');
-    if (current === null || (session !== undefined && session !== current)) return;
+    if (session !== undefined && session === current) return;
+    throw new ApiFailure(
+      'session_superseded',
+      session === undefined
+        ? 'This table op names no table session. Send the session from the latest GET /v1/state?hydrate=boot.'
+        : 'Another tab or device has booted this table since. Reload to play here.',
+    );
+  }
+
+  /** A snapshot may never be older than a drop or claim the server already settled in this session. */
+  private raiseSessionTick(tick: Tick): void {
     if (tick > Number(this.meta('table_session_max_tick') ?? 0)) {
       this.setMeta('table_session_max_tick', String(tick));
     }

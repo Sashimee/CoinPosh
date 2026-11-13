@@ -3,7 +3,15 @@ import { endpoints, type ClaimsResponse, type DropResponse } from '@coinposh/sha
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { newIdempotencyKey, newSession, send, type Session } from '../test/client.ts';
-import { claims, dropAsClient, expectConserved, playerStub, reload, state } from '../test/game.ts';
+import {
+  claims,
+  dropAsClient,
+  expectConserved,
+  playerStub,
+  reload,
+  state,
+  tableSession,
+} from '../test/game.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
 const COPPER = coinTiers[0];
@@ -137,11 +145,12 @@ describe('cascade multiplier on the server', () => {
     const dropped = await dropAsClient(session, 4);
     const first = frontFalls(dropped.slice(0, 3), (i) => 10 + i);
     const key = newIdempotencyKey();
+    const lease = await tableSession(session);
     const request = () =>
       send(session.device, endpoints.tableClaims.path, {
         accessToken: session.tokens.accessToken,
         idempotencyKey: key,
-        body: { claims: first },
+        body: { session: lease, claims: first },
       });
     const once = await request();
     expect(once.status, await once.clone().text()).toBe(200);
