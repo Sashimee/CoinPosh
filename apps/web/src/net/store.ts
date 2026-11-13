@@ -7,6 +7,8 @@ export interface KeyValueStore {
   get(key: string): Promise<unknown>;
   set(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<void>;
+  /** Every key held, in no particular order. */
+  keys(): Promise<string[]>;
 }
 
 export function memoryStore(): KeyValueStore {
@@ -21,6 +23,7 @@ export function memoryStore(): KeyValueStore {
       values.delete(key);
       return Promise.resolve();
     },
+    keys: () => Promise.resolve([...values.keys()]),
   };
 }
 
@@ -77,5 +80,9 @@ export function indexedDbStore(
     delete: async (key) => {
       await run('readwrite', (store) => store.delete(key));
     },
+    keys: async () =>
+      (await run('readonly', (store) => store.getAllKeys())).filter(
+        (key): key is string => typeof key === 'string',
+      ),
   };
 }

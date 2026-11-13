@@ -11,18 +11,20 @@ import {
   errorEnvelope,
   errorStatus,
   requiresIdempotencyKey,
+  tableSnapshotEndpoint,
   validationErrorEnvelope,
   type DevicePublicKey,
   type Endpoint,
-  type EndpointName,
   type ErrorCode,
   type ErrorEnvelope,
   type IdempotencyKey,
   type PlayerId,
   type Sha256Hex,
+  type StateQuery,
+  type TableSnapshotRequest,
 } from '@coinposh/shared';
 import { fromBase64Url, randomBase62, sha256Hex, utf8Bytes } from '../encoding.ts';
-import { NetworkError } from '../errors.ts';
+import { NetworkError, type ApiOperation } from '../errors.ts';
 import type { Transport, WireRequest, WireResponse } from '../wire.ts';
 import { MOCK_RULES } from './rules.ts';
 import {
@@ -57,12 +59,24 @@ interface StoredResponse {
 }
 
 /** Endpoints whose bodies carry sim ticks, so any replay past `claimExpiryMs` is refused anyway. */
-const TICK_GATED: ReadonlySet<EndpointName> = new Set([
+const TICK_GATED: ReadonlySet<ApiOperation> = new Set([
   'tableDrop',
   'tableClaims',
   'tableNudge',
   'tableInputs',
+  'tableSnapshot',
 ]);
+
+/**
+ * Operations whose refusals are not kept for replay, as on the server: a snapshot refused as
+ * rate limited or stale may be sent again under its key once the reason is gone.
+ */
+const REPLAYS_SUCCESS_ONLY: ReadonlySet<ApiOperation> = new Set(['tableSnapshot']);
+
+const ROUTES: readonly (readonly [ApiOperation, Endpoint])[] = [
+  ...ENDPOINT_NAMES.map((name) => [name, endpoints[name]] as const),
+  ['tableSnapshot', tableSnapshotEndpoint],
+];
 
 /**
  * Responses kept for replay, oldest first. Server time only moves forward, so the front of the
@@ -108,7 +122,7 @@ interface RefreshRecord {
 }
 
 interface Route {
-  readonly name: EndpointName;
+  readonly name: ApiOperation;
   readonly endpoint: Endpoint;
   readonly params: Record<string, string> | null;
 }
@@ -151,8 +165,7 @@ function header(request: WireRequest, name: string): string | null {
 
 function route(method: string, pathWithQuery: string): Route | null {
   const [path = ''] = pathWithQuery.split('?');
-  for (const name of ENDPOINT_NAMES) {
-    const endpoint: Endpoint = endpoints[name];
+  for (const [name, endpoint] of ROUTES) {
     if (endpoint.method !== method) continue;
     const keys: string[] = [];
     const pattern = endpoint.path.replace(/:([A-Za-z]+)/g, (_segment, key: string) => {
@@ -453,19 +466,31 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             body: validationErrorEnvelope(params.error, 'Path parameters are invalid.'),
           };
         }
+        let query: StateQuery = {};
         if (found.endpoint.query !== undefined) {
           const [, search = ''] = request.path.split('?');
-          const query = found.endpoint.query.safeParse(
+          const parsed = found.endpoint.query.safeParse(
             Object.fromEntries(new URLSearchParams(search)),
           );
-          if (!query.success) {
+          if (!parsed.success) {
             return {
               status: errorStatus('validation_failed'),
-              body: validationErrorEnvelope(query.error, 'Query parameters are invalid.'),
+              body: validationErrorEnvelope(parsed.error, 'Query parameters are invalid.'),
             };
           }
+          query = parsed.data as StateQuery;
         }
-        result = await world.handle(player, found.name, body as never, params?.data as never, at);
+        result =
+          found.name === 'tableSnapshot'
+            ? world.snapshot(player, body as TableSnapshotRequest, at)
+            : await world.handle(
+                player,
+                found.name,
+                body as never,
+                params?.data as never,
+                at,
+                query,
+              );
         world.touch(player, at);
       }
       const checked = found.endpoint.response.safeParse(result);
@@ -478,9 +503,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       response = { status: 200, body: JSON.parse(JSON.stringify(checked.data)) as unknown };
     } catch (error) {
       if (!(error instanceof MockFailure)) throw error;
-      response = fail(error.code, error.message);
+      response = fail(
+        error.code,
+        error.message,
+        error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs },
+      );
     }
-    if (storeKey !== null) replays.set(storeKey, { fingerprint, response, at });
+    const replayable = response.status === 200 || !REPLAYS_SUCCESS_ONLY.has(found.name);
+    if (storeKey !== null && replayable) replays.set(storeKey, { fingerprint, response, at });
     return response;
   }
 
