@@ -1,5 +1,5 @@
 import { crateSpawn } from '@coinposh/economy';
-import type { DropResponse, StateResponse, TableSessionId } from '@coinposh/shared';
+import type { DropResponse, PoseTuple, StateResponse, TableSessionId } from '@coinposh/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ApiRequestError } from '../errors.ts';
 import { newIdempotencyKey } from '../request.ts';
@@ -128,6 +128,39 @@ describe('Demo Mode boot (hydrate=boot)', () => {
       pose: contractGrid([drop.coin.id])[0],
     });
     expect(entries('refund.table')).toEqual([]);
+    expectConserved();
+  });
+
+  it('stores only poses a boot lays together, so it refunds no coin the snapshot posed', async () => {
+    const state = await boot();
+    const [first, second] = await dropBuffered(state, 2);
+    if (first === undefined || second === undefined) throw new Error('No drops.');
+    const [atFirst, atSecond] = contractGrid([first.coin.id, second.coin.id]);
+    if (atFirst === undefined || atSecond === undefined) throw new Error('No grid poses.');
+    const upload = async (seq: number, coins: PoseTuple[]) => {
+      time.advance(1_000);
+      await alice.client.snapshot(
+        {
+          session: session(state),
+          seq,
+          tick: simTick(),
+          pusher: { tickInCycle: 0 },
+          coins,
+          crates: [],
+        },
+        { idempotencyKey: newIdempotencyKey() },
+      );
+    };
+    await upload(1, [atFirst, atSecond]);
+    // The second coin left out of the next sample keeps its last pose, where the first now rests.
+    await upload(2, [[first.coin.id, ...atSecond.slice(1)] as PoseTuple]);
+    const posed = new Set<string>(
+      server.world.player(requirePlayerId(alice))?.tableSnapshot?.poses.map((pose) => pose[0]),
+    );
+    await boot();
+    const refunded = entries('refund.table').map((entry) => entry.ref);
+    expect(refunded.filter((ref) => ref !== null && posed.has(ref))).toEqual([]);
+    expect(posed.has(first.coin.id)).toBe(true);
     expectConserved();
   });
 

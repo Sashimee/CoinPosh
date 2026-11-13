@@ -1128,6 +1128,16 @@ export class MockWorld {
       accepted.set(id, pose);
     }
 
+    // A pose kept from the last snapshot was judged against that pusher tick and those
+    // neighbours: it is stored only if a boot would still lay it beside the fresh poses, which
+    // go first so a stale pose never displaces one. A boot then refunds no coin it was handed.
+    const carried = tableCoins.filter((id) => !accepted.has(id) && coinsBefore.has(id));
+    const restorable = judgePoses(
+      [...accepted.keys(), ...carried],
+      present([...accepted.values(), ...carried.map((id) => coinsBefore.get(id))]),
+      body.pusher.tickInCycle,
+    ).ok;
+
     let implausibleCrates = 0;
     const tableCrates = this.#tableCrates(player);
     const cratesOnTable = new Map(tableCrates.map((record) => [record.crate.id, record]));
@@ -1172,7 +1182,7 @@ export class MockWorld {
       seq: body.seq,
       tick: body.tick,
       pusherTick: body.pusher.tickInCycle,
-      poses: present(tableCoins.map((id) => accepted.get(id) ?? coinsBefore.get(id))),
+      poses: present(tableCoins.map((id) => restorable.get(id))),
       cratePoses: present(
         tableCrates.map(
           (record) => acceptedCrates.get(record.crate.id) ?? cratesBefore.get(record.crate.id),
