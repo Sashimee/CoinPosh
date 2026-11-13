@@ -27,6 +27,13 @@
       "title": "Disponible : {{name}}",
       "hint": "Touchez pour acheter votre première amélioration.",
       "aria": "{{name}} est disponible à l'achat. Ouvrir les améliorations"
+    },
+    "wallet": {
+      "label": "Bourse",
+      "gain": "+{{value}}",
+      "pearlsAria": "Perles : {{value}}",
+      "keysAria": "Clés : {{value}}",
+      "ticketsAria": "Tickets : {{value}}"
     }
   },
   "combo": {

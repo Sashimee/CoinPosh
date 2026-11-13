@@ -1,9 +1,14 @@
-import type { CrateId } from '@coinposh/shared';
+import type { CrateId, Currency, Roll, Wallet } from '@coinposh/shared';
 import type { Object3D, PerspectiveCamera } from 'three/webgpu';
 import type { UiApp } from '../../app/index.ts';
 import { createBus, type Bus } from '../../app/bus.ts';
 import type { UiState } from '../../app/state.ts';
 import { watch, type Store } from '../../app/store.ts';
+import {
+  walletPayoutFor,
+  type PayoutLine,
+  type WalletPayout,
+} from '../../ui/components/balancePlaque.ts';
 import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
 import type { CameraPreset } from '../../scene/venues/riviera/layout.ts';
@@ -15,7 +20,7 @@ import { CrateController, type CrateControllerOptions, type CrateSimPort } from 
 import type { CrateEvents } from './events.ts';
 import { bindArrivalHint, mountArrivalHint } from './hint.ts';
 import { registerCratesStrings } from './i18n.ts';
-import type { AlbumProgressMap } from './loot.ts';
+import { rewardLines, type AlbumProgressMap } from './loot.ts';
 import { mountCrateReveal, type CrateReveal } from './revealCard.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
 
@@ -45,6 +50,71 @@ export interface CratesMountOptions {
 }
 
 const COLLECT = '[data-testid="crate-collect"]';
+const CARD_LINES = '.cp-crate-lines > li';
+
+/** The currency a roll credits, which the HUD keeps off its readouts until the player collects. */
+export function rollCredit(roll: Roll): Partial<Record<Currency, number>> {
+  const credit: Partial<Record<Currency, number>> = {};
+  for (const line of rewardLines(roll.rewards)) {
+    if (line.kind === 'currency') credit[line.currency] = line.amount;
+  }
+  return credit;
+}
+
+/** The card's currency lines, each with the `<li>` it is drawn in, in the card's order. */
+export function payoutLines(roll: Roll, card: CardLines | null): readonly PayoutLine[] {
+  const items = card ? [...card.querySelectorAll(CARD_LINES)] : [];
+  return rewardLines(roll.rewards).flatMap((line, index): PayoutLine[] =>
+    line.kind === 'currency'
+      ? [{ currency: line.currency, amount: line.amount, source: items[index] ?? null }]
+      : [],
+  );
+}
+
+type CardLines = Pick<ParentNode, 'querySelectorAll'>;
+
+export interface CratePayout {
+  opened(crateId: CrateId, roll: Roll): void;
+  /** The crate's card is up in front of the player, or back after a sheet closed over it. */
+  shown(crateId: CrateId): void;
+  /** A sheet covers the card: an uncollected card is not left up while it is out of sight. */
+  hidden(crateId: CrateId): void;
+  collected(crateId: CrateId, roll: Roll, wallet: Wallet, card: CardLines | null): void;
+  /** The card went away (dismissed, skipped, dropped): release the crate if it was not collected. */
+  gone(crateId: CrateId): void;
+  dispose(): void;
+}
+
+/**
+ * A crate's credit from its open to its collect. The hold starts at the open, its cap only once
+ * the card is on screen, and a crate that leaves without a collect shows its credit at once.
+ */
+export function trackCratePayout(payout: WalletPayout): CratePayout {
+  const unpaid = new Set<CrateId>();
+  const gone = (crateId: CrateId): void => {
+    if (unpaid.delete(crateId)) payout.release(crateId);
+  };
+  return {
+    opened(crateId, roll) {
+      unpaid.add(crateId);
+      payout.hold(crateId, rollCredit(roll));
+    },
+    shown(crateId) {
+      if (unpaid.has(crateId)) payout.arm(crateId);
+    },
+    hidden(crateId) {
+      if (unpaid.has(crateId)) payout.disarm(crateId);
+    },
+    collected(crateId, roll, wallet, card) {
+      unpaid.delete(crateId);
+      payout.collect(crateId, { wallet, lines: payoutLines(roll, card) });
+    },
+    gone,
+    dispose() {
+      for (const crateId of [...unpaid]) gone(crateId);
+    },
+  };
+}
 
 /** Holds the unbox while any sheet is open and lets it go the moment the last one closes. */
 export function holdWhileSheetOpen(
@@ -117,6 +187,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   const table = new TableCrateView(options.stage.scene);
   const albums = new Map<CrateId, AlbumProgressMap>();
   const reveals = new Map<CrateId, CrateReveal>();
+  const payout = trackCratePayout(walletPayoutFor(options.ui.store));
   const controller = new CrateController({
     table: options.net.table,
     client: options.net.client,
@@ -132,17 +203,23 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     vfx: options.vfx ?? null,
     haptics: options.haptics ?? null,
     card: (opened, controls) => {
-      const reveal = mountCrateReveal({
-        ui: options.ui,
-        host: options.host,
-        rarity: opened.roll.rarity,
-        roll: opened.roll,
-        album: albums.get(opened.crateId) ?? null,
-        reducedMotion: reducedMotion(),
-        inventoryTarget: options.inventoryTarget,
-        onSkip: controls.skip,
-        onCollect: controls.collect,
-      });
+      let reveal: CrateReveal;
+      try {
+        reveal = mountCrateReveal({
+          ui: options.ui,
+          host: options.host,
+          rarity: opened.roll.rarity,
+          roll: opened.roll,
+          album: albums.get(opened.crateId) ?? null,
+          reducedMotion: reducedMotion(),
+          inventoryTarget: options.inventoryTarget,
+          onSkip: controls.skip,
+          onCollect: controls.collect,
+        });
+      } catch (error) {
+        payout.gone(opened.crateId);
+        throw error;
+      }
       reveals.set(opened.crateId, reveal);
       const unbindEscape = bindEscapeCollect(reveal.el.ownerDocument, {
         ready: () => reveal.shown && !director.held && reveals.get(opened.crateId) === reveal,
@@ -156,13 +233,17 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
         },
         show: () => {
           reveal.show();
+          if (!director.held) payout.shown(opened.crateId);
         },
         hold: (held) => {
           holdReveal(reveal, held);
+          if (held) payout.hidden(opened.crateId);
+          else if (reveal.shown) payout.shown(opened.crateId);
         },
         dispose: () => {
           unbindEscape();
           reveal.dispose();
+          payout.gone(opened.crateId);
         },
       };
     },
@@ -202,6 +283,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       events.emit('crate:stinger', { cue: 'fall', rarity: null, step: 1, duckSeconds: 0 });
     }),
     events.on('crate:opened', ({ crateId, roll, wallet }) => {
+      payout.opened(crateId, roll);
       const at = table.landing(crateId) ?? trayLanding(0);
       director.enqueue({ crateId, roll, wallet, at });
     }),
@@ -209,7 +291,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       albums.set(crateId, progress);
       reveals.get(crateId)?.setAlbum(progress);
     }),
-    events.on('crate:collected', ({ crateId }) => {
+    events.on('crate:collected', ({ crateId, roll, wallet }) => {
+      payout.collected(crateId, roll, wallet, reveals.get(crateId)?.el ?? null);
       albums.delete(crateId);
       reveals.delete(crateId);
     }),
@@ -246,6 +329,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       if (disposed) return;
       disposed = true;
       for (const off of disposers.splice(0)) off();
+      payout.dispose();
       albums.clear();
       reveals.clear();
       director.dispose();
