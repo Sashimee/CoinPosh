@@ -73,7 +73,10 @@ export interface MockServer {
   setNetwork(network: MockNetwork): void;
   /** Whether this server picked up a world an earlier page in this tab left in storage. */
   readonly restored: boolean;
-  /** Writes the world now, or right after the request running at the moment finishes. */
+  /**
+   * Writes the world now. Mid-request it stores the state the last finished request left at
+   * once, then the newer one right after the running request finishes.
+   */
   flush(): void;
 }
 
@@ -82,8 +85,12 @@ const DEFAULT_PERSIST_DELAY_MS = 250;
 interface Persistence {
   readonly world: MockWorld;
   readonly restored: boolean;
-  /** Called between requests only, so a write never catches a handler between two awaits. */
+  /** Encodes and writes the world; called between requests only, so it never catches a handler between two awaits. */
   readonly save: () => void;
+  /** Encodes the world as it stands between requests, for {@link writeCaptured} to store later. */
+  readonly capture: () => void;
+  /** Writes the last captured blob if it is not stored yet, without touching the live world. */
+  readonly writeCaptured: () => void;
 }
 
 /**
@@ -92,7 +99,16 @@ interface Persistence {
  * dropped: Demo Mode must always boot.
  */
 function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persistence {
-  if (storage === null) return { world: new MockWorld(), restored: false, save: () => undefined };
+  if (storage === null) {
+    const noop = () => undefined;
+    return {
+      world: new MockWorld(),
+      restored: false,
+      save: noop,
+      capture: noop,
+      writeCaptured: noop,
+    };
+  }
   let world: MockWorld | null = null;
   let raw: string | null = null;
   try {
@@ -123,21 +139,35 @@ function openPersistence(storage: MockStorage | null, warn: PersistWarn): Persis
   const restored = world !== null;
   const live = world ?? new MockWorld();
   let failing = false;
+  let captured: string | null = null;
+  let unwritten = false;
+  const capture = (): void => {
+    captured = encodeDemoBlob(live.serialize());
+    unwritten = true;
+  };
+  const writeCaptured = (): void => {
+    if (captured === null || !unwritten) return;
+    try {
+      storage.setItem(DEMO_STORAGE_KEY, captured);
+      unwritten = false;
+      failing = false;
+    } catch (error) {
+      // One warning per run of failures: a full quota fails every write until space frees up.
+      if (!failing) {
+        warn('CoinPosh demo: this session could not be saved, so a reload may lose it.', error);
+      }
+      failing = true;
+    }
+  };
   return {
     world: live,
     restored,
     save() {
-      try {
-        storage.setItem(DEMO_STORAGE_KEY, encodeDemoBlob(live.serialize()));
-        failing = false;
-      } catch (error) {
-        // One warning per run of failures: a full quota fails every write until space frees up.
-        if (!failing) {
-          warn('CoinPosh demo: this session could not be saved, so a reload may lose it.', error);
-        }
-        failing = true;
-      }
+      capture();
+      writeCaptured();
     },
+    capture,
+    writeCaptured,
   };
 }
 
@@ -624,6 +654,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (saveTimer !== null) clearTimeout(saveTimer);
     saveTimer = null;
     if (inFlight > 0) {
+      // A hidden page may never run again, so the last state between requests is stored now.
+      persistence.writeCaptured();
       saveWhenIdle = true;
       return;
     }
@@ -659,8 +691,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return fail('internal', `Mock server bug: ${message}`);
     } finally {
       inFlight -= 1;
-      if (saveWhenIdle) saveNow();
-      else scheduleSave();
+      if (saveWhenIdle) {
+        saveNow();
+      } else {
+        if (inFlight === 0) persistence.capture();
+        scheduleSave();
+      }
     }
   }
 

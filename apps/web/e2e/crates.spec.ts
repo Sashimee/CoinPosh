@@ -297,6 +297,23 @@ async function unbox(page: Page, motion: Motion, skip: Skip): Promise<Unboxed> {
   return unboxed;
 }
 
+/** The sessionStorage key apps/web/src/net/mock/persist.ts keeps the Demo world under. */
+const DEMO_STORAGE_KEY = 'coinposh.demo.world';
+
+/**
+ * A same-tab reload keeps the Demo world (P-449), so the next boot of this page would pick up
+ * the crate already won. The navigation's pagehide writes the world after any clear from the
+ * old page, so the clear runs in the new document, once, before the app reads storage.
+ */
+async function startFreshDemoSession(page: Page): Promise<void> {
+  await page.addInitScript((key: string) => {
+    const marker = 'e2e.crates.fresh-session';
+    if (sessionStorage.getItem(marker) !== null) return;
+    sessionStorage.setItem(marker, '1');
+    sessionStorage.removeItem(key);
+  }, DEMO_STORAGE_KEY);
+}
+
 /** The unbox on the shipped Demo Mode game: real taps, sim, pusher, crate controller and card. */
 test.describe('crate unbox (P-183)', () => {
   test('a falling crate opens, a tap skips the veil to the card, Collect flies it to the inventory', async ({
@@ -310,6 +327,7 @@ test.describe('crate unbox (P-183)', () => {
   }) => {
     test.setTimeout(240_000);
     const reduced = await unbox(page, 'reduced', 'escape');
+    await startFreshDemoSession(page);
     const full = await unbox(page, 'full', 'escape');
     expect(full, 'same Demo seed, same crate roll and fairness commitment').toEqual(reduced);
   });

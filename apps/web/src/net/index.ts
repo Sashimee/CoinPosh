@@ -67,7 +67,8 @@ const LIVE_NUDGES_STAY_LOCAL =
 /**
  * Boots the net layer. With `VITE_API_URL` set it talks to the Workers API and keeps the
  * session and offline queue in IndexedDB. Without it, Demo Mode runs the same contracts
- * against an in-browser server held in memory: unranked, and gone when the tab closes.
+ * against an in-browser server whose world lives in the tab's sessionStorage: unranked, kept
+ * across a reload of the same tab, and gone when the tab closes.
  */
 export async function createNet(options: NetOptions): Promise<Net> {
   const mode = options.mode ?? currentNetMode();

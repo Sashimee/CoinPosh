@@ -380,8 +380,8 @@ test.describe('full loop in Demo Mode at 390x844 (T-1.18)', () => {
       sheet = await openSheet(page, 'upgrades');
       await expect(
         sheet.locator(`.cp-upgrade[data-line="${CHEAPEST_COIN_LINE.id}"] .cp-upgrade-level`),
-        'Demo Mode keeps no progress across a reload (01-ARCHITECTURE.md), only the settings',
-      ).toHaveText('Lv 0');
+        'the bought level survives a same-tab reload of Demo Mode (P-449)',
+      ).toHaveText('Lv 1');
     });
   });
 });

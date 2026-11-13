@@ -286,26 +286,54 @@ describe('Demo persistence: the world survives a reload of the tab', () => {
     }
   });
 
-  it('defers a flush asked for mid-request until the request has finished', async () => {
+  it('stores the last finished state at once on a mid-request pagehide, then the new one after', async () => {
     const lifecycle = new EventTarget();
     let hideMidRequest = false;
-    let writesDuring: number | null = null;
+    let duringHide: { writes: number; tableSession: string | null | undefined } | null = null;
     const now = () => {
       if (hideMidRequest) {
         hideMidRequest = false;
         lifecycle.dispatchEvent(new Event('pagehide'));
-        writesDuring = storage.writes;
+        duringHide = {
+          writes: storage.writes,
+          tableSession: storedWorld().players[0]?.tableSession,
+        };
+      }
+      return time.now();
+    };
+    const tab = await Tab.open(page({ now, lifecycle, persistDelayMs: 60_000 }));
+    const first = await tab.player.client.call('state', { query: { hydrate: 'boot' } });
+    const writesBefore = storage.writes;
+    hideMidRequest = true;
+    const booted = await tab.player.client.call('state', { query: { hydrate: 'boot' } });
+    expect(session(booted)).not.toBe(session(first));
+    expect(duringHide, 'the hidden page stores the state the previous request left').toEqual({
+      writes: writesBefore + 1,
+      tableSession: session(first),
+    });
+    expect(storage.writes).toBe(writesBefore + 2);
+    expect(storedWorld().players[0]?.tableSession).toBe(session(booted));
+  });
+
+  it('does not rewrite an unchanged captured state on a second mid-request pagehide', async () => {
+    const lifecycle = new EventTarget();
+    let hides = 0;
+    let writesDuring: number[] = [];
+    const now = () => {
+      for (; hides > 0; hides--) {
+        lifecycle.dispatchEvent(new Event('pagehide'));
+        writesDuring.push(storage.writes);
       }
       return time.now();
     };
     const tab = await Tab.open(page({ now, lifecycle, persistDelayMs: 60_000 }));
     await tab.player.client.call('state');
     const writesBefore = storage.writes;
-    hideMidRequest = true;
-    const booted = await tab.player.client.call('state', { query: { hydrate: 'boot' } });
-    expect(writesDuring).toBe(writesBefore);
-    expect(storage.writes).toBe(writesBefore + 1);
-    expect(storedWorld().players[0]?.tableSession).toBe(session(booted));
+    hides = 2;
+    writesDuring = [];
+    await tab.player.client.call('state');
+    expect(writesDuring).toEqual([writesBefore + 1, writesBefore + 1]);
+    expect(storage.writes).toBe(writesBefore + 2);
   });
 });
 

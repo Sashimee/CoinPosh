@@ -33,6 +33,7 @@ interface StoredCoin {
 }
 
 interface StoredPlayer {
+  readonly wallet: { readonly coins: number };
   readonly coins: readonly StoredCoin[];
   readonly crates: readonly StoredCrate[];
   readonly openedCrates: readonly string[];
@@ -55,14 +56,39 @@ interface StoredWorld {
   readonly players: readonly StoredPlayer[];
 }
 
-async function storedWorld(page: Page): Promise<StoredWorld | null> {
-  const raw = await page.evaluate((key) => sessionStorage.getItem(key), DEMO_STORAGE_KEY);
+/** Where each new document copies the world the previous page left, before the app reads it. */
+const LEFT_BEHIND_KEY = 'e2e.demo-reload.left-behind';
+
+async function storedWorld(page: Page, key = DEMO_STORAGE_KEY): Promise<StoredWorld | null> {
+  const raw = await page.evaluate((k) => sessionStorage.getItem(k), key);
   if (raw === null) return null;
   return (JSON.parse(raw) as { world: StoredWorld }).world;
 }
 
+/**
+ * The old page keeps playing until its pagehide writes the world, so what the reload restores
+ * is only known in the new document: this copies it aside before any app script runs.
+ */
+async function keepWorldLeftBehind(page: Page): Promise<void> {
+  await page.addInitScript(
+    ([from, to]) => {
+      const left = sessionStorage.getItem(from);
+      if (left === null) sessionStorage.removeItem(to);
+      else sessionStorage.setItem(to, left);
+    },
+    [DEMO_STORAGE_KEY, LEFT_BEHIND_KEY] as const,
+  );
+}
+
 async function storedPlayer(page: Page): Promise<StoredPlayer | undefined> {
   return (await storedWorld(page))?.players[0];
+}
+
+/** What the plaque shows for a stored player: the wallet plus the prepaid drop buffer. */
+function storedVault(player: StoredPlayer): number {
+  return player.coins
+    .filter((record) => record.place === 'buffer')
+    .reduce((sum, record) => sum + record.coin.value, player.wallet.coins);
 }
 
 /** What the Vault moved by since `fromSeq`; a prepaid drop only moves coins into the buffer. */
@@ -70,6 +96,19 @@ function vaultMoves(world: StoredWorld | null, fromSeq: number): StoredEntry[] {
   return (world?.ledger ?? []).filter(
     (entry) => entry.seq >= fromSeq && entry.reason !== 'drop.prepay',
   );
+}
+
+/**
+ * Coins the restored sim was laid with at boot: every pose and heap slot the server handed back.
+ * Unlike the live count it does not move as the pusher drops and fuses coins after the boot.
+ */
+async function restoredCoins(page: Page): Promise<number> {
+  const restored = await page.evaluate(() => {
+    const counts = (window.__coinposh as { restored?: unknown } | undefined)?.restored;
+    return counts as { poses: number; heapSlots: number } | null | undefined;
+  });
+  if (!restored) throw new Error('The reloaded page reported no restored table to count');
+  return restored.poses + restored.heapSlots;
 }
 
 async function tableCoins(page: Page): Promise<number> {
@@ -94,23 +133,39 @@ async function settle(page: Page): Promise<StoredPlayer> {
   const reveal = page.getByTestId('crate-reveal');
   const fromSeq = (await storedPlayer(page))?.tableSnapshot?.seq ?? 0;
   let player: StoredPlayer | undefined;
-  await expect
-    .poll(
-      async () => {
-        if ((await reveal.count()) > 0) {
-          await page.keyboard.press('Escape');
-          return false;
-        }
-        player = await storedPlayer(page);
-        return (
-          player !== undefined &&
-          (player.tableSnapshot?.seq ?? 0) >= fromSeq + 2 &&
-          player.crates.every((record) => record.state !== 'openable')
-        );
-      },
-      { timeout: 90_000, intervals: [1_000] },
-    )
-    .toBe(true);
+  let reveals = 0;
+  const seen = async (): Promise<string> =>
+    JSON.stringify({
+      fromSeq,
+      snapshotSeq: player?.tableSnapshot?.seq ?? null,
+      crates: player?.crates.map((record) => record.state) ?? null,
+      reveals,
+      counts: (await probe(page)).counts,
+    });
+  try {
+    await expect
+      .poll(
+        async () => {
+          if ((await reveal.count()) > 0) {
+            reveals += 1;
+            await page.keyboard.press('Escape');
+            return false;
+          }
+          player = await storedPlayer(page);
+          return (
+            player !== undefined &&
+            (player.tableSnapshot?.seq ?? 0) >= fromSeq + 2 &&
+            player.crates.every((record) => record.state !== 'openable')
+          );
+        },
+        { timeout: 90_000, intervals: [1_000] },
+      )
+      .toBe(true);
+  } catch (error) {
+    throw new Error(`The Demo table never settled into storage: ${await seen()}`, {
+      cause: error,
+    });
+  }
   if (player === undefined) throw new Error('The Demo world never reached the tab storage.');
   return player;
 }
@@ -120,6 +175,7 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
   browser,
 }, testInfo) => {
   test.setTimeout(240_000);
+  await keepWorldLeftBehind(page);
   await bootGame(page);
   const freshVault = await vaultBalance(page);
   const freshCoins = await tableCoins(page);
@@ -128,15 +184,15 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
     await tapDrop(page);
     await page.waitForTimeout(TAP_EVERY_MS);
   }
-  const stored = await settle(page);
-  const fromSeq = (await storedWorld(page))?.nextSeq ?? 0;
-  const vault = await vaultBalance(page);
+  // Drops are prepaid from the buffer, so the Vault first moves when the pusher lands a credit.
+  await expect
+    .poll(() => vaultBalance(page), {
+      message: 'the 30 taps earn a credit to carry across the reload',
+      timeout: 60_000,
+    })
+    .not.toBe(freshVault);
+  await settle(page);
   const coins = await tableCoins(page);
-  expect(vault).not.toBe(freshVault);
-  const unposedCoins = unposed(stored);
-  const refundCap = new Map(
-    unposedCoins.map((record) => [record.coin.id, Math.min(record.paid, record.coin.value)]),
-  );
 
   await page.reload();
   await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
@@ -144,6 +200,19 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
     polling: 16,
   });
   await expect(page.locator('#coinposh-demo-banner')).toBeVisible();
+  // The plaque counts credits up as they land, so the Vault, the ledger position and the table
+  // all come from the one world the old page left behind.
+  const world = await storedWorld(page, LEFT_BEHIND_KEY);
+  const left = world?.players[0];
+  if (world === null || left === undefined) {
+    throw new Error('The reload found no Demo world left behind by the page before it.');
+  }
+  const fromSeq = world.nextSeq;
+  const vault = storedVault(left);
+  const unposedCoins = unposed(left);
+  const refundCap = new Map(
+    unposedCoins.map((record) => [record.coin.id, Math.min(record.paid, record.coin.value)]),
+  );
   // The Vault comes back as it was, moved only by what the boot rules and the restored table
   // do: a coin no snapshot posed (the client leaves some fused coins out of its snapshots) is
   // refunded at most what it cost, and coins on the lip fall as play resumes.
@@ -169,8 +238,13 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
     type: 'vault moves after the reload',
     description: `${String(refunds.length)} of ${String(unposedCoins.length)} unposed coins refunded, ${String(falls.length)} falls`,
   });
+  const restored = await restoredCoins(page);
+  expect(restored, 'the server lays every table coin it kept, less the refunded unposed ones').toBe(
+    left.coins.filter((record) => record.place === 'table').length - refunds.length,
+  );
   expect(
-    Math.abs((await tableCoins(page)) - (coins - refunds.length - falls.length)),
+    Math.abs(restored - (coins - refunds.length)),
+    'the reloaded table holds the coins the player last saw, within the snapshot tolerance',
   ).toBeLessThanOrEqual(COIN_TOLERANCE);
 
   const context = await browser.newContext({ viewport: page.viewportSize() });
