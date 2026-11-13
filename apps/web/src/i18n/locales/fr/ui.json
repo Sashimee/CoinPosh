@@ -80,6 +80,9 @@
     "pending": "Confirmation…",
     "buyAria": "Acheter {{name}} niveau {{level}} pour {{cost}}",
     "cannotAfford": "Fonds insuffisants",
+    "heldBack_one": "{{value}} pièce encore dans la rampe",
+    "heldBack_many": "{{value}} pièces encore dans la rampe",
+    "heldBack_other": "{{value}} pièces encore dans la rampe",
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",

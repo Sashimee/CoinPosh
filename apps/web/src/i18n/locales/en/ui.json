@@ -76,6 +76,8 @@
     "pending": "Confirming…",
     "buyAria": "Buy {{name}} level {{level}} for {{cost}}",
     "cannotAfford": "Not enough funds",
+    "heldBack_one": "{{value}} coin still in the drop rail",
+    "heldBack_other": "{{value}} coins still in the drop rail",
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",

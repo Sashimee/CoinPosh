@@ -57,7 +57,10 @@ export interface UiApp {
   readonly bannerSlot: HTMLElement;
   readonly settings: Settings;
   attachAudio(audio: UiAudio | null): void;
-  /** Balances exactly as the server (or the Demo Mode mock) reported them. */
+  /**
+   * Balances exactly as the server (or the Demo Mode mock) reported them. `coins` is the Vault
+   * as shown; `spendableCoins`, the part of it the server can spend, defaults to all of it.
+   */
   setWallet(wallet: Wallet & { readonly provisional?: boolean }): void;
   setCascade(count: number): void;
   setDecorum(decorum: DecorumState): void;
@@ -184,8 +187,16 @@ export function mountApp(options: MountOptions): UiApp {
     },
     attachAudio,
     setWallet(wallet) {
+      const coins = requireCount('coins', wallet.coins);
+      const spendableCoins = requireCount('spendableCoins', wallet.spendableCoins ?? coins);
+      if (spendableCoins > coins) {
+        throw new RangeError(
+          `spendableCoins (${spendableCoins}) cannot exceed the coins shown (${coins}); pass the wallet as coins and only the spendable part as spendableCoins`,
+        );
+      }
       store.setState({
-        coins: requireCount('coins', wallet.coins),
+        coins,
+        spendableCoins,
         goldBars: requireCount('goldBars', wallet.goldBars),
         provisional: wallet.provisional ?? false,
       });

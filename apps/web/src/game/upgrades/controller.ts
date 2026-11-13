@@ -101,7 +101,11 @@ export function bindUpgrades(options: BindUpgradesOptions): () => void {
       return;
     }
     if (!live) return;
-    ui.setWallet({ coins: response.wallet.coins, goldBars: response.wallet.goldBars });
+    ui.setWallet({
+      coins: response.wallet.coins,
+      spendableCoins: response.wallet.coins,
+      goldBars: response.wallet.goldBars,
+    });
     ui.resolveUpgrade({ ...ui.store.getState().upgradeLevels, [response.lineId]: response.level });
     events.emit('upgrade:purchased', {
       lineId: response.lineId,

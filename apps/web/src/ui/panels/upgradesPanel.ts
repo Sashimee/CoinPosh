@@ -66,6 +66,8 @@ export interface UpgradeRowCopy {
   readonly buyLabel: string;
   /** Empty once the line is maxed. */
   readonly price: string;
+  /** Why a price the Vault covers cannot be paid yet; empty when nothing is held back. */
+  readonly heldBack: string;
 }
 
 /** Every string a row shows that changes with its level or the pending purchase. */
@@ -84,12 +86,19 @@ export function upgradeRowCopy(
           next: formatStat(t, view.format, view.nextValue, language),
         });
   const level = t('upgrades.level', { level: view.level });
-  if (view.maxed) return { effect, level, buyLabel: t('upgrades.maxed'), price: '' };
+  if (view.maxed) return { effect, level, buyLabel: t('upgrades.maxed'), price: '', heldBack: '' };
   return {
     effect,
     level,
     buyLabel: pending ? t('upgrades.pending') : t('upgrades.buy'),
     price: formatPrice(view.cost ?? 0, language),
+    heldBack:
+      view.heldBack > 0
+        ? t('upgrades.heldBack', {
+            count: view.heldBack,
+            value: formatInteger(view.heldBack, language),
+          })
+        : '',
   };
 }
 
@@ -110,12 +119,22 @@ function fitWithin(button: HTMLElement, parts: readonly HTMLElement[]): void {
 }
 
 function sameRow(a: UpgradeRow, b: UpgradeRow): boolean {
-  return a.level === b.level && a.affordable === b.affordable && a.cost === b.cost;
+  return (
+    a.level === b.level &&
+    a.affordable === b.affordable &&
+    a.cost === b.cost &&
+    a.heldBack === b.heldBack
+  );
 }
 
 function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
   const name = h('span', { class: 'cp-upgrade-name' });
   const description = h('span', { class: 'cp-upgrade-desc' });
+  const heldBack = h('span', {
+    class: 'cp-upgrade-desc cp-upgrade-held',
+    attrs: { 'data-testid': `upgrade-held-${line.id}`, hidden: '' },
+  });
+  heldBack.style.color = 'var(--cp-gold-brushed)';
   const effect = h('span', { class: 'cp-upgrade-effect' });
   const levelText = h('span', { class: 'cp-upgrade-level' });
   const levelBar = h(
@@ -156,6 +175,7 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
       { class: 'cp-upgrade-text' },
       name,
       description,
+      heldBack,
       h('span', { class: 'cp-upgrade-meta' }, effect, pipBar),
     ),
     buy,
@@ -184,10 +204,7 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
 
   const current = (): UpgradeRow => {
     const state = ctx.store.getState();
-    return upgradeRow(line, state.upgradeLevels[line.id] ?? 0, {
-      coins: state.coins,
-      goldBars: state.goldBars,
-    });
+    return upgradeRow(line, state.upgradeLevels[line.id] ?? 0, state);
   };
 
   const paint = (view: UpgradeRow): void => {
@@ -199,6 +216,9 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
     description.textContent = tr(ctx, `upgrades.line.${line.id}.description`);
     const copy = upgradeRowCopy((key, values) => tr(ctx, key, values), view, language, pending);
     effect.textContent = copy.effect;
+    description.hidden = copy.heldBack !== '';
+    heldBack.hidden = copy.heldBack === '';
+    heldBack.textContent = copy.heldBack;
     levelText.textContent = copy.level;
     pipBar.setAttribute(
       'aria-label',
@@ -238,7 +258,9 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
     });
     buy.setAttribute(
       'aria-label',
-      view.affordable || pending ? label : `${label}. ${tr(ctx, 'upgrades.cannotAfford')}`,
+      view.affordable || pending
+        ? label
+        : `${label}. ${copy.heldBack || tr(ctx, 'upgrades.cannotAfford')}`,
     );
   };
 

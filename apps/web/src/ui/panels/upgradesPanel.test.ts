@@ -191,6 +191,7 @@ describe('upgradeRowCopy', () => {
       level: 'Lv 1',
       buyLabel: 'Buy',
       price: String(first.cost),
+      heldBack: '',
     });
     expect(upgradeRowCopy(t, first, 'en', true).buyLabel).toBe('Confirming…');
     const maxed = upgradeRow(line, line.maxLevel, { coins: 0, goldBars: 0 });
@@ -199,8 +200,37 @@ describe('upgradeRowCopy', () => {
       level: `Lv ${line.maxLevel}`,
       buyLabel: 'Maxed',
       price: '',
+      heldBack: '',
     });
   });
+
+  it.each([
+    ['en', /9 coins still in the drop rail/, /1 coin still in the drop rail/],
+    ['fr', /9 pièces encore dans la rampe/, /1 pièce encore dans la rampe/],
+    ['de', /9 Münzen noch in der Fallrinne/, /1 Münze noch in der Fallrinne/],
+  ] as const)(
+    '%s explains a price the Vault covers but the drop rail still holds',
+    (language, many, one) => {
+      const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
+      const t = i18n.t.bind(i18n);
+      const line = upgradeLines.find((candidate) => candidate.id === 'pusherSpeed');
+      if (!line) throw new Error('economy has no pusherSpeed line');
+      const price = upgradeRow(line, 0, { coins: 0, goldBars: 0 }).cost ?? 0;
+      const held = upgradeRow(line, 0, {
+        coins: price + 4,
+        spendableCoins: price - 5,
+        goldBars: 0,
+      });
+      expect(held.affordable).toBe(false);
+      expect(upgradeRowCopy(t, held, language, false).heldBack).toMatch(many);
+      const single = upgradeRow(line, 0, { coins: price, spendableCoins: price - 1, goldBars: 0 });
+      expect(upgradeRowCopy(t, single, language, false).heldBack).toMatch(one);
+      const ready = upgradeRow(line, 0, { coins: price + 4, spendableCoins: price, goldBars: 0 });
+      expect(upgradeRowCopy(t, ready, language, false).heldBack).toBe('');
+      const short = upgradeRow(line, 0, { coins: price - 1, spendableCoins: 0, goldBars: 0 });
+      expect(upgradeRowCopy(t, short, language, false).heldBack).toBe('');
+    },
+  );
 });
 
 describe('upgrades sheet sections', () => {

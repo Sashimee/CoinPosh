@@ -34,14 +34,12 @@ export interface Hud {
   readonly bannerSlot: HTMLElement;
 }
 
-/** The dock badge counts only lines the Upgrades sheet lists, so every number has a BUY behind it. */
+/**
+ * The dock badge counts only lines the Upgrades sheet lists, and only those the server can pay
+ * for from spendable coins, so every number has a BUY behind it that goes through.
+ */
 export function dockAffordableCount(state: NudgeWallet): number {
-  return affordableCount(
-    upgradeRows(UPGRADE_SHEET_LINES, state.upgradeLevels, {
-      coins: state.coins,
-      goldBars: state.goldBars,
-    }),
-  );
+  return affordableCount(upgradeRows(UPGRADE_SHEET_LINES, state.upgradeLevels, state));
 }
 
 function createBadge(ctx: UiContext): HTMLElement {

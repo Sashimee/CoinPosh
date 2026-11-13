@@ -1,4 +1,4 @@
-import { upgradeLines } from '@coinposh/economy';
+import { upgradeCost, upgradeLines } from '@coinposh/economy';
 import { describe, expect, it } from 'vitest';
 import { upgradeRow } from '../app/model.ts';
 import { dockAffordableCount } from './hud.ts';
@@ -19,6 +19,27 @@ describe('dockAffordableCount', () => {
     expect(dockAffordableCount({ coins: RICH, goldBars: RICH, upgradeLevels: {} })).toBe(
       venue.length,
     );
+  });
+
+  it('counts only what spendable coins can buy, not coins still in the drop rail', () => {
+    const cheapest = Math.min(...venue.map((line) => upgradeCost(line, 0)));
+    const shown = cheapest + 4;
+    expect(
+      dockAffordableCount({
+        coins: shown,
+        spendableCoins: cheapest - 5,
+        goldBars: 0,
+        upgradeLevels: {},
+      }),
+    ).toBe(0);
+    expect(
+      dockAffordableCount({
+        coins: shown,
+        spendableCoins: cheapest,
+        goldBars: 0,
+        upgradeLevels: {},
+      }),
+    ).toBeGreaterThan(0);
   });
 
   it('drops maxed venue lines and shows nothing on an empty wallet', () => {

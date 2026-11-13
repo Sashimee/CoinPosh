@@ -502,7 +502,8 @@ interface VaultTracker {
 /**
  * The Vault shows every coin the player holds: the server's wallet, the pre-minted drop buffer
  * (already paid for out of the wallet, so the wallet alone reads low), and winnings still
- * waiting for the server's answer, shimmering while any are.
+ * waiting for the server's answer, shimmering while any are. Only the wallet is spendable, so
+ * upgrade prices are checked against it alone.
  *
  * TableSync says how many coins are buffered but not what they are worth, so the worth comes
  * from server coins seen here: the snapshot's buffer, oldest first as drops take them, and for
@@ -524,6 +525,7 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
     app.setWallet({
       ...balance.wallet,
       coins: balance.wallet.coins + buffered + balance.provisionalCoins,
+      spendableCoins: balance.wallet.coins,
       provisional: balance.provisionalCoins > 0,
     });
   };
