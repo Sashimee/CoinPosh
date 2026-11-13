@@ -1,6 +1,7 @@
-import { upgradeLines } from '@coinposh/economy';
+import { upgradeLines, type UpgradeLineDef } from '@coinposh/economy';
+import type { Wallet } from '../../app/model.ts';
 import type { SettingsStorage } from '../../app/settings.ts';
-import { watch } from '../../app/store.ts';
+import { watch, type Store } from '../../app/store.ts';
 import { feedback, tr, type UiContext } from '../context.ts';
 import { fromMarkup, h, restartAnimation } from '../dom.ts';
 import { icon } from '../icons.ts';
@@ -10,7 +11,11 @@ import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { announcementHoldFor, type AnnouncementHold } from './announcementHold.ts';
 import { makePressable } from './pressable.ts';
-import { createFirstUpgradeNudge, hasBeenActivated } from './upgradeNudgeTrigger.ts';
+import {
+  createFirstUpgradeNudge,
+  hasBeenActivated,
+  nudgeStillAffordable,
+} from './upgradeNudgeTrigger.ts';
 
 /** The line folds away after this long; the dock keeps its glow until Upgrades is opened. */
 export const HINT_LINGER_MS = 6_000;
@@ -46,6 +51,34 @@ export function foldNudgeOnCue(
   return cancel;
 }
 
+export interface NudgeWallet extends Wallet {
+  readonly upgradeLevels: Readonly<Record<string, number>>;
+}
+
+/**
+ * Folds the line, once, the moment the suggested upgrade is no longer affordable (or at once
+ * if it already is not), so a tap on the hint never lands on a greyed-out BUY. Every tap
+ * spends a coin, so a balance that just cleared the price can slip under it while it is read.
+ * Returns a cancel.
+ */
+export function foldWhenOutOfReach<S extends NudgeWallet>(
+  store: Store<S>,
+  lineId: string,
+  fold: () => void,
+  lines: readonly UpgradeLineDef[] = upgradeLines,
+): () => void {
+  if (!nudgeStillAffordable(lines, lineId, store.getState())) {
+    fold();
+    return () => undefined;
+  }
+  const stop = store.subscribe((state) => {
+    if (nudgeStillAffordable(lines, lineId, state)) return;
+    stop();
+    fold();
+  });
+  return stop;
+}
+
 export interface UpgradeNudgeOptions {
   /** The dock's Upgrades button: it pulses once, then keeps a gold glow until it is opened. */
   readonly trigger: HTMLElement;
@@ -62,7 +95,9 @@ const CHEVRON =
 /**
  * The Concierge's one-time word that the first upgrade is affordable: a line under the
  * balance, a single pulse on the Upgrades button, and a tap that opens the sheet on that line.
- * It retires the moment it fires (or the profile already owns an upgrade), across reloads.
+ * It waits for headroom so the BUY it points at is still lit when the sheet opens, and folds
+ * the moment the line slips out of reach. It retires the moment it fires (or the profile
+ * already owns an upgrade), across reloads.
  */
 export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions): HTMLElement {
   const title = h('span', { class: 'cp-upgrade-hint-title' });
@@ -95,6 +130,8 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
   const hold = announcementHoldFor(ctx.store);
   let cancelLinger = (): void => undefined;
   let folding = false;
+  let cancelReach = (): void => undefined;
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const paint = (): void => {
     if (!lineId) return;
@@ -107,6 +144,7 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
     lineId = id;
     paint();
     notice.hidden = false;
+    notice.inert = false;
     drop.jump(0);
     void drop.to(1);
     trigger.classList.add('is-hinted');
@@ -117,11 +155,13 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
     // Before the first gesture audio is still locked and Chrome logs an error for vibrate().
     if (hasBeenActivated(navigator)) feedback(ctx, 'open');
     cancelLinger = foldNudgeOnCue(hold, fold);
+    cancelReach = foldWhenOutOfReach(ctx.store, id, dismiss);
   };
   const fold = (): void => {
     cancelLinger();
     if (notice.hidden || folding) return;
     folding = true;
+    notice.inert = true;
     void drop.to(0, SPRINGS.snappy).then(() => {
       folding = false;
       notice.hidden = true;
@@ -130,17 +170,36 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
   const dismiss = (): void => {
     if (!lineId) return;
     lineId = null;
+    cancelReach();
     trigger.classList.remove('is-hinted', 'is-beckoning');
     fold();
   };
+  const armWake = (): void => {
+    if (wakeTimer !== null) clearTimeout(wakeTimer);
+    wakeTimer = null;
+    const { wakeAt } = nudge;
+    if (wakeAt === null) return;
+    wakeTimer = setTimeout(
+      () => {
+        wakeTimer = null;
+        evaluate();
+      },
+      Math.max(0, wakeAt - performance.now()),
+    );
+  };
+
   const evaluate = (): void => {
     const state = ctx.store.getState();
-    const id = nudge.evaluate({
-      coins: state.coins,
-      goldBars: state.goldBars,
-      upgradeLevels: state.upgradeLevels,
-      playable: options.playable(),
-    });
+    const id = nudge.evaluate(
+      {
+        coins: state.coins,
+        goldBars: state.goldBars,
+        upgradeLevels: state.upgradeLevels,
+        playable: options.playable(),
+      },
+      performance.now(),
+    );
+    armWake();
     if (!id) return;
     if (state.panel === 'upgrades') options.reveal(id);
     else show(id);
@@ -148,6 +207,8 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
 
   makePressable(notice, ctx, {
     feedback: 'open',
+    enabled: () =>
+      lineId !== null && nudgeStillAffordable(upgradeLines, lineId, ctx.store.getState()),
     onPress() {
       options.openUpgrades();
     },
@@ -204,6 +265,8 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
   );
   ctx.own(ctx.loc.bind(paint));
   ctx.own(() => {
+    if (wakeTimer !== null) clearTimeout(wakeTimer);
+    cancelReach();
     cancelLinger();
     drop.stop();
   });
