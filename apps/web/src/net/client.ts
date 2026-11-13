@@ -1,17 +1,26 @@
 import {
+  buildPath,
   endpoints,
   requiresIdempotencyKey,
+  tableSnapshotEndpoint,
   type Endpoint,
   type EndpointName,
   type EndpointResponse,
   type IdempotencyKey,
+  type TableSnapshotRequest,
+  type TableSnapshotResponse,
 } from '@coinposh/shared';
 import type { ServerClock } from './clock.ts';
 import type { DeviceKey } from './device.ts';
-import { ApiRequestError, isAuthExpired, isRetryable } from './errors.ts';
-import { newIdempotencyKey, readResponse, signRequest, type CallInput } from './request.ts';
+import { ApiRequestError, isAuthExpired, isRetryable, type ApiOperation } from './errors.ts';
+import {
+  newIdempotencyKey,
+  readEndpointResponse,
+  signEndpointRequest,
+  type CallInput,
+} from './request.ts';
 import type { Session } from './session.ts';
-import type { Transport } from './wire.ts';
+import type { Transport, WireRequest } from './wire.ts';
 
 export interface CallOptions {
   /**
@@ -52,6 +61,15 @@ const realSleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
+function isBootQuery(query: unknown): boolean {
+  return (
+    typeof query === 'object' &&
+    query !== null &&
+    'hydrate' in query &&
+    (query as { hydrate?: unknown }).hydrate === 'boot'
+  );
+}
+
 export function backoffDelay(
   attempt: number,
   policy: RetryPolicy,
@@ -68,6 +86,7 @@ export class ApiClient {
   readonly #retry: RetryPolicy;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #jitter: () => number;
+  #bootGate: (() => Promise<void>) | null = null;
 
   constructor(deps: ApiClientDeps) {
     this.#deps = deps;
@@ -76,9 +95,73 @@ export class ApiClient {
     this.#jitter = deps.jitter ?? Math.random;
   }
 
+  /**
+   * Runs before every `hydrate=boot` state call and must settle first, so play queued by an
+   * earlier page reaches the server before the boot rotates the table session and refunds what
+   * it cannot lay again. A rejection fails the boot call, which its caller retries.
+   */
+  setBootGate(gate: (() => Promise<void>) | null): void {
+    this.#bootGate = gate;
+  }
+
   async call<N extends EndpointName>(name: N, ...args: CallArgs<N>): Promise<EndpointResponse<N>> {
     const [input = {} as CallInput<N>, options = {}] = args;
-    const endpoint: Endpoint = endpoints[name];
+    if (name === 'state' && isBootQuery(input.query)) await this.#bootGate?.();
+    const path = (buildPath as (n: EndpointName, params?: unknown) => string)(name, input.params);
+    return (await this.#send(name, endpoints[name], path, input, options)) as EndpointResponse<N>;
+  }
+
+  /** Uploads one table snapshot: positions only, through the same retry and re-auth as `call`. */
+  async snapshot(body: TableSnapshotRequest, options: CallOptions): Promise<TableSnapshotResponse> {
+    return (await this.#send(
+      'tableSnapshot',
+      tableSnapshotEndpoint,
+      tableSnapshotEndpoint.path,
+      { body },
+      options,
+    )) as TableSnapshotResponse;
+  }
+
+  /**
+   * Signs a snapshot upload now with the current access token, to be sent later by
+   * {@link sendKeepalive} from `pagehide`, where there is no time left to sign anything.
+   */
+  async presignSnapshot(
+    body: TableSnapshotRequest,
+    idempotencyKey: IdempotencyKey,
+  ): Promise<WireRequest> {
+    const request = await signEndpointRequest(
+      'tableSnapshot',
+      tableSnapshotEndpoint,
+      tableSnapshotEndpoint.path,
+      { body },
+      { idempotencyKey, accessToken: await this.#deps.session.accessToken() },
+      this.#deps.device,
+    );
+    return { ...request, keepalive: true };
+  }
+
+  /**
+   * Fires a pre-signed request without waiting for it. The page is going away, so nobody reads
+   * the answer: the op it carries stays in the outbox and is resent under the same key on the
+   * next load, which the server replays or refuses as stale.
+   */
+  sendKeepalive(request: WireRequest): void {
+    this.#deps.transport(request).catch(() => undefined);
+  }
+
+  /** Called with each new access token, so a pre-signed request can be signed again. */
+  onTokenRefresh(listener: () => void): () => void {
+    return this.#deps.session.onTokens(listener);
+  }
+
+  async #send(
+    name: ApiOperation,
+    endpoint: Endpoint,
+    path: string,
+    input: { readonly body?: unknown; readonly query?: unknown },
+    options: CallOptions,
+  ): Promise<unknown> {
     const idempotencyKey = requiresIdempotencyKey(endpoint)
       ? (options.idempotencyKey ?? newIdempotencyKey())
       : null;
@@ -88,13 +171,15 @@ export class ApiClient {
       try {
         const accessToken =
           endpoint.auth === 'bearer' ? await this.#deps.session.accessToken() : null;
-        const request = await signRequest(
+        const request = await signEndpointRequest(
           name,
+          endpoint,
+          path,
           input,
           { idempotencyKey, accessToken },
           this.#deps.device,
         );
-        const response = readResponse(name, await this.#deps.transport(request));
+        const response = readEndpointResponse(name, endpoint, await this.#deps.transport(request));
         this.#observe(response);
         return response;
       } catch (error) {

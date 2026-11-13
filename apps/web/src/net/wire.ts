@@ -8,6 +8,8 @@ export interface WireRequest {
   readonly headers: Readonly<Record<string, string>>;
   /** The exact JSON bytes that were hashed and signed; `null` for GET. */
   readonly body: string | null;
+  /** Lets the request outlive the page, for the last snapshot sent on `pagehide`. */
+  readonly keepalive?: boolean;
 }
 
 export interface WireResponse {
@@ -38,6 +40,7 @@ export function fetchTransport(
         body: request.body,
         credentials: 'omit',
         cache: 'no-store',
+        keepalive: request.keepalive === true,
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {

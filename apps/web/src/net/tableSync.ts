@@ -1,26 +1,39 @@
-import type {
-  Claim,
-  ClaimResult,
-  CoinId,
-  CrateId,
-  DropResponse,
-  EpochMs,
-  FallEdge,
-  Fraction,
-  IdempotencyKey,
-  MintedCoin,
-  NudgeDirection,
-  StateResponse,
-  TableCrate,
-  Tick,
-  Wallet,
+import {
+  TableSnapshotRequestSchema,
+  type Claim,
+  type ClaimResult,
+  type CoinId,
+  type CrateId,
+  type CratePoseTuple,
+  type DropResponse,
+  type EpochMs,
+  type FallEdge,
+  type Fraction,
+  type IdempotencyKey,
+  type MintedCoin,
+  type NudgeDirection,
+  type PoseTuple,
+  type StateResponse,
+  type TableCrate,
+  type TableSessionId,
+  type Tick,
+  type Wallet,
 } from '@coinposh/shared';
 import { backoffDelay, type ApiClient, type RetryPolicy } from './client.ts';
 import { CoinBuffer } from './coinBuffer.ts';
 import type { Connectivity, Scheduler } from './connectivity.ts';
-import { NetworkError, isRetryable } from './errors.ts';
-import type { ClaimsOp, Outbox, OutboxOp } from './outbox.ts';
+import { ApiRequestError, NetworkError, isRetryable } from './errors.ts';
+import {
+  noPartitionLocks,
+  opSession,
+  type ClaimsOp,
+  type Outbox,
+  type OutboxOp,
+  type PartitionLocks,
+  type SnapshotOp,
+} from './outbox.ts';
 import { ContractViolationError, newIdempotencyKey } from './request.ts';
+import type { WireRequest } from './wire.ts';
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline';
 
@@ -53,8 +66,30 @@ export type TableEvent =
       readonly frozenUntil: EpochMs | null;
     }
   | { readonly type: 'nudgeRejected'; readonly error: unknown }
+  | {
+      readonly type: 'snapshotSettled';
+      readonly seq: number;
+      readonly stored: number;
+      readonly ignored: number;
+    }
+  /** The server is rate limiting snapshots: send the next one no sooner than this. */
+  | { readonly type: 'snapshotDeferred'; readonly retryAfterMs: number }
+  | { readonly type: 'snapshotRejected'; readonly error: unknown }
+  /**
+   * Another tab or device booted this table. Stop input and offer a reload: drops, nudges and
+   * snapshots are refused from now on, and only claims for what already fell are still sent.
+   */
+  | { readonly type: 'sessionSuperseded'; readonly session: TableSessionId }
   | { readonly type: 'balance'; readonly balance: Balance }
   | { readonly type: 'status'; readonly status: SyncStatus; readonly pending: number };
+
+/** Where the sim says the table rests now, in the wire's units and the server's ids. */
+export interface SnapshotCapture {
+  readonly tick: Tick;
+  readonly pusher: { readonly tickInCycle: number };
+  readonly coins: readonly PoseTuple[];
+  readonly crates: readonly CratePoseTuple[];
+}
 
 export interface DropTicket {
   readonly key: IdempotencyKey;
@@ -77,6 +112,8 @@ export interface TableSyncDeps {
    * send them. The live server has no nudge endpoint yet, so live mode passes a reason.
    */
   readonly localNudges?: string | null;
+  /** Marks this page's table session as live, so another page leaves its queue alone. */
+  readonly locks?: PartitionLocks;
 }
 
 const DEFAULT_CLAIM_BATCH_MS = 120;
@@ -103,6 +140,12 @@ export class TableSync {
   #nudgeSkipLogged = false;
   /** A pending resume: re-hydrate once the op queued last before it (if any) has been sent. */
   #resync: { readonly after: OutboxOp | undefined } | null = null;
+  #session: TableSessionId | null = null;
+  #superseded = false;
+  #snapshotSeq = 0;
+  /** The pending snapshot signed ahead of time, for `pagehide`. */
+  #keepalive: { readonly op: SnapshotOp; readonly request: WireRequest } | null = null;
+  readonly #unsubscribeTokens: () => void;
 
   constructor(deps: TableSyncDeps) {
     this.#deps = deps;
@@ -117,6 +160,10 @@ export class TableSync {
       this.#cancelTimer();
       this.#kick(0);
     });
+    this.#unsubscribeTokens = deps.client.onTokenRefresh(() => {
+      const pending = this.#deps.outbox.pendingSnapshot();
+      if (pending !== undefined) this.#presign(pending);
+    });
   }
 
   get status(): SyncStatus {
@@ -125,6 +172,16 @@ export class TableSync {
 
   get pending(): number {
     return this.#deps.outbox.size;
+  }
+
+  /** The table session this page plays, once a state named one. */
+  get session(): TableSessionId | null {
+    return this.#session;
+  }
+
+  /** True once another tab or device booted the table; see `sessionSuperseded`. */
+  get superseded(): boolean {
+    return this.#superseded;
   }
 
   get bufferSize(): number {
@@ -166,7 +223,22 @@ export class TableSync {
     return this.flush();
   }
 
+  /**
+   * Sends everything queued, by this page or an earlier one, before a `hydrate=boot` call: the
+   * boot refunds every coin it cannot lay again, so drops, claims and the last snapshot must be
+   * on the server first. Rejects while anything is still queued, so the boot is retried.
+   */
+  async drainBeforeBoot(): Promise<void> {
+    await this.flush();
+    if (this.#deps.outbox.size > 0) {
+      throw new NetworkError(
+        `CoinPosh net: ${this.#deps.outbox.size} queued table ops have not reached the server yet; booting now would refund their coins. Retry the boot once online.`,
+      );
+    }
+  }
+
   #adopt(state: StateResponse): void {
+    this.#adoptSession(state);
     this.#wallet = state.wallet;
     this.#onTable.clear();
     for (const coin of state.table.coins) this.#onTable.set(coin.id, coin);
@@ -180,6 +252,7 @@ export class TableSync {
    * online, and offline there is nothing to drop (`null`) until the buffer is refilled.
    */
   drop(x: number, tick: Tick): DropTicket | null {
+    if (this.#superseded) return null;
     const coin = this.#buffer.take();
     if (coin === null && this.#status === 'offline') return null;
     const key = newIdempotencyKey();
@@ -188,7 +261,7 @@ export class TableSync {
       kind: 'drop',
       key,
       sent: false,
-      body: coin === null ? { x, tick } : { x, tick, coinId: coin.id },
+      body: { ...this.#sessionField(), x, tick, ...(coin === null ? {} : { coinId: coin.id }) },
       coin,
     });
     return { key, coin };
@@ -212,7 +285,7 @@ export class TableSync {
    * and one replayed after reconnecting would land on a table that has moved on.
    */
   nudge(tick: Tick, direction: NudgeDirection): boolean {
-    if (this.#status === 'offline') return false;
+    if (this.#status === 'offline' || this.#superseded) return false;
     const localReason = this.#deps.localNudges ?? null;
     if (localReason !== null) {
       if (!this.#nudgeSkipLogged) console.info(`CoinPosh net: nudges are not sent. ${localReason}`);
@@ -223,9 +296,63 @@ export class TableSync {
       kind: 'nudge',
       key: newIdempotencyKey(),
       sent: false,
-      body: { tick, direction },
+      body: { ...this.#sessionField(), tick, direction },
     });
     return true;
+  }
+
+  /**
+   * Queues where the sim says the table rests, replacing a snapshot not sent yet, behind every
+   * drop and claim already queued. Returns `false` when there is no session to name, the table
+   * is open elsewhere, or the capture does not fit the contract (reported to `onError`).
+   */
+  snapshot(capture: SnapshotCapture): boolean {
+    const session = this.#session;
+    if (session === null || this.#superseded || this.#closed) return false;
+    const parsed = TableSnapshotRequestSchema.safeParse({
+      session,
+      seq: this.#snapshotSeq + 1,
+      tick: capture.tick,
+      pusher: { tickInCycle: capture.pusher.tickInCycle },
+      coins: capture.coins,
+      crates: capture.crates,
+    });
+    if (!parsed.success) {
+      this.#deps.onError?.(
+        new ContractViolationError(
+          `CoinPosh net: refusing to queue a table snapshot outside its contract: ${parsed.error.message}`,
+          { cause: parsed.error },
+        ),
+      );
+      return false;
+    }
+    this.#snapshotSeq = parsed.data.seq;
+    const op: SnapshotOp = {
+      kind: 'snapshot',
+      key: newIdempotencyKey(),
+      sent: false,
+      body: parsed.data,
+    };
+    void this.#deps.outbox.pushSnapshot(op);
+    this.#presign(op);
+    this.#setStatus(this.#status === 'offline' ? 'offline' : 'syncing');
+    this.#kick(0);
+    return true;
+  }
+
+  /**
+   * The page is going away: send the queued snapshot with the request signed ahead of time,
+   * since nothing can be signed or awaited now. It goes only when nothing is queued before it,
+   * so it never overtakes a drop or claim; otherwise it waits in the outbox for the next load.
+   */
+  pagehide(): void {
+    const keepalive = this.#keepalive;
+    if (keepalive === null || this.#deps.outbox.head() !== keepalive.op || keepalive.op.sent) {
+      return;
+    }
+    this.#keepalive = null;
+    void this.#deps.outbox.seal(keepalive.op);
+    this.#deps.client.sendKeepalive(keepalive.request);
   }
 
   /** Sends everything queued now; resolves once the outbox is empty or the server is unreachable. */
@@ -240,6 +367,7 @@ export class TableSync {
   close(): void {
     this.#closed = true;
     this.#unsubscribeOnline();
+    this.#unsubscribeTokens();
     this.#cancelTimer();
   }
 
@@ -249,11 +377,13 @@ export class TableSync {
   }
 
   #claim(claim: Claim, estimate: number): void {
-    if (!this.#deps.outbox.appendClaim(claim, estimate)) {
+    const session = this.#session ?? undefined;
+    if (!this.#deps.outbox.appendClaim(claim, estimate, session)) {
       void this.#deps.outbox.push({
         kind: 'claims',
         key: newIdempotencyKey(),
         sent: false,
+        ...(session === undefined ? {} : { session }),
         claims: [claim],
         estimates: [estimate],
       });
@@ -298,19 +428,24 @@ export class TableSync {
       const op = outbox.head();
       if (op === undefined) break;
       if (!op.sent) await outbox.seal(op);
+      if (this.#keepalive?.op === op) this.#keepalive = null;
       try {
         await this.#send(op);
       } catch (error) {
+        if (op.kind === 'snapshot' && this.#snapshotRefused(op, error)) {
+          await outbox.remove(op);
+          continue;
+        }
         if (isRetryable(error)) {
           this.#retryLater(error);
           return;
         }
-        await outbox.shift();
+        await outbox.remove(op);
         this.#reject(op, error);
         continue;
       }
       this.#failures = 0;
-      await outbox.shift();
+      await outbox.remove(op);
       this.#emitBalance();
     }
     if (outbox.size === 0 && this.#resync === null) this.#setStatus('synced');
@@ -339,7 +474,16 @@ export class TableSync {
       case 'claims':
         this.#applyClaims(
           op,
-          await client.call('tableClaims', { body: { claims: op.claims } }, options),
+          await client.call(
+            'tableClaims',
+            {
+              body: {
+                ...(op.session === undefined ? {} : { session: op.session }),
+                claims: op.claims,
+              },
+            },
+            options,
+          ),
         );
         return;
       case 'nudge': {
@@ -347,7 +491,76 @@ export class TableSync {
         this.#emit({ type: 'nudgeSettled', ...result });
         return;
       }
+      case 'snapshot': {
+        const result = await client.snapshot(op.body, options);
+        this.#emit({ type: 'snapshotSettled', ...result });
+        return;
+      }
     }
+  }
+
+  /**
+   * The answers that end a snapshot without blocking the queue: a newer one is already stored
+   * (stale), the server wants fewer (rate limited: the next capture goes later), or another page
+   * owns the table now. Each one only ever loses a pose, never value.
+   */
+  #snapshotRefused(op: SnapshotOp, error: unknown): boolean {
+    if (!(error instanceof ApiRequestError)) return false;
+    switch (error.code) {
+      case 'stale_snapshot':
+        return true;
+      case 'rate_limited':
+        this.#emit({ type: 'snapshotDeferred', retryAfterMs: error.retryAfterMs ?? 0 });
+        return true;
+      case 'session_superseded':
+        if (op.body.session === this.#session) this.#supersede();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  #adoptSession(state: StateResponse): void {
+    const session = state.table.session;
+    if (session === undefined) return;
+    const boot = state.table.layout !== null && state.table.layout !== undefined;
+    if (this.#session === null || boot) {
+      if (session !== this.#session) {
+        this.#snapshotSeq = 0;
+        void this.#deps.outbox.discardUnsentSnapshots();
+      }
+      this.#session = session;
+      this.#superseded = false;
+      (this.#deps.locks ?? noPartitionLocks).hold(session);
+      return;
+    }
+    if (session !== this.#session) this.#supersede();
+  }
+
+  #supersede(): void {
+    const session = this.#session;
+    if (this.#superseded || session === null) return;
+    this.#superseded = true;
+    this.#keepalive = null;
+    void this.#deps.outbox.discardUnsentSnapshots();
+    this.#emit({ type: 'sessionSuperseded', session });
+  }
+
+  #sessionField(): { session?: TableSessionId } {
+    return this.#session === null ? {} : { session: this.#session };
+  }
+
+  #presign(op: SnapshotOp): void {
+    this.#deps.client.presignSnapshot(op.body, op.key).then(
+      (request) => {
+        if (this.#deps.outbox.pendingSnapshot() === op && !this.#superseded) {
+          this.#keepalive = { op, request };
+        }
+      },
+      (error: unknown) => {
+        if (!(error instanceof NetworkError)) this.#deps.onError?.(error);
+      },
+    );
   }
 
   #applyDrop(op: Extract<OutboxOp, { kind: 'drop' }>, response: DropResponse): void {
@@ -387,6 +600,13 @@ export class TableSync {
 
   #reject(op: OutboxOp, error: unknown): void {
     if (error instanceof ContractViolationError) this.#deps.onError?.(error);
+    if (
+      error instanceof ApiRequestError &&
+      error.code === 'session_superseded' &&
+      opSession(op) === this.#session
+    ) {
+      this.#supersede();
+    }
     switch (op.kind) {
       case 'drop':
         if (op.coin !== null) {
@@ -400,6 +620,10 @@ export class TableSync {
         break;
       case 'nudge':
         this.#emit({ type: 'nudgeRejected', error });
+        break;
+      case 'snapshot':
+        this.#deps.onError?.(error);
+        this.#emit({ type: 'snapshotRejected', error });
         break;
     }
     this.#emitBalance();
