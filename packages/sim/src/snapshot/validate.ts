@@ -6,7 +6,7 @@ import {
   type PusherMotion,
   pusherExtension,
 } from '../table/pusher.ts';
-import { COIN_MATERIAL } from '../table/tuning.ts';
+import { COIN_MATERIAL, CRATE_BODY } from '../table/tuning.ts';
 import {
   type Box,
   type Disc,
@@ -300,8 +300,7 @@ export function validateSnapshot(
   return { ok, dropped };
 }
 
-const CRATE_SIZE = 0.042;
-const CRATE_HALF = CRATE_SIZE / 2;
+const CRATE_HALF = CRATE_BODY.size / 2;
 
 /**
  * A crate's ride across the table, in metres and seconds: the crate is a kinematic
@@ -319,7 +318,7 @@ const CRATE_HALF = CRATE_SIZE / 2;
  * - sideLimit: its centre stays this far from the middle, inside the walls.
  */
 export const CRATE_RIDE = {
-  size: CRATE_SIZE,
+  size: CRATE_BODY.size,
   spawnZ: PUSHER.frontZ - 0.01,
   stepZ: PUSHER.frontZ + PUSHER.stroke,
   carry: 0.6,
