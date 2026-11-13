@@ -72,7 +72,7 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
       stale: 'Your venue changed. Refreshing.',
       locked: 'That venue is still locked.',
       unaffordable: 'Not enough Gold Bars.',
-      offline: 'No connection. Nothing was spent; try again.',
+      offline: 'No connection. Try again; you won’t be charged twice.',
       error: 'The house could not do that. Try again.',
     },
     venue: {
@@ -117,7 +117,7 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
       stale: 'Votre salon a changé. Actualisation.',
       locked: 'Ce salon est encore verrouillé.',
       unaffordable: 'Pas assez de lingots d’or.',
-      offline: 'Pas de connexion. Rien n’a été dépensé ; réessayez.',
+      offline: 'Pas de connexion. Réessayez ; vous ne serez pas débité deux fois.',
       error: 'La maison n’a pas pu le faire. Réessayez.',
     },
     venue: {
@@ -162,7 +162,7 @@ export const ASCENSION_STRINGS: Readonly<Record<Language, AscensionStrings>> = {
       stale: 'Ihr Salon hat sich geändert. Wird aktualisiert.',
       locked: 'Dieser Salon ist noch gesperrt.',
       unaffordable: 'Nicht genug Goldbarren.',
-      offline: 'Keine Verbindung. Nichts wurde ausgegeben; bitte erneut versuchen.',
+      offline: 'Keine Verbindung. Bitte erneut versuchen; es wird nicht doppelt abgebucht.',
       error: 'Das Haus konnte das nicht tun. Bitte erneut versuchen.',
     },
     venue: {

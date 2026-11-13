@@ -174,7 +174,7 @@ describe('Bullion and eligibility come from server state only', () => {
         failureCode(() => applyAscension(sql, ascend(RIVIERA.id), postToLedger(sql, 2), 2)),
       ).toBe('not_ready');
       expect(readWallet(sql)).toEqual(before);
-      expect(currentVenue(sql)?.id).toBe(RIVIERA.id);
+      expect(currentVenue(sql).id).toBe(RIVIERA.id);
     });
   });
 
@@ -215,7 +215,7 @@ describe('applyAscension', () => {
       expect(after.coins).toBe(upgradeStat(line('trustFund'), 0));
       expect(after.bullion).toBe(0);
       expect(readUpgradeLevels(sql, RIVIERA.id)).toMatchObject({ coinValue: 0 });
-      expect(currentVenue(sql)?.id).toBe(PARIS.id);
+      expect(currentVenue(sql).id).toBe(PARIS.id);
       expect(unlockedVenues(sql)).toEqual([RIVIERA.id, PARIS.id]);
       expect(lifetimeBullion(sql)).toBe(0);
       for (const unit of ['coins', 'goldBars'] as const) {
@@ -261,6 +261,55 @@ describe('applyAscension', () => {
       expect(failureCode(() => quoteAscension(sql, ascend(PARIS.id)))).toBe('not_ready');
       win(sql, valueForBullion(1));
       expect(quoteAscension(sql, ascend(PARIS.id)).goldBars).toBe(ascension.goldBarScale);
+    });
+  });
+
+  it('keeps the final venue current and starts it anew on every later ascension', async () => {
+    await withPlayer((sql) => {
+      const ordered = [...venues].sort((a, b) => a.order - b.order);
+      const last = ordered[ordered.length - 1];
+      if (last === undefined) throw new Error('economy has no venues');
+      ordered.forEach((venue, index) => {
+        expect(currentVenue(sql).id).toBe(venue.id);
+        win(sql, valueForBullion(venue.bullionThreshold));
+        const result = applyAscension(
+          sql,
+          ascend(venue.id),
+          postToLedger(sql, 10 + index),
+          10 + index,
+        );
+        expect(result.unlockedVenueId).toBe(ordered[index + 1]?.id ?? null);
+      });
+      expect(currentVenue(sql).id).toBe(last.id);
+      expect(unlockedVenues(sql)).toEqual(ordered.map((venue) => venue.id));
+      expect(lifetimeBullion(sql)).toBe(0);
+
+      expect(
+        failureCode(() => applyAscension(sql, ascend(last.id), postToLedger(sql, 20), 20)),
+      ).toBe('not_ready');
+      win(sql, valueForBullion(last.bullionThreshold * 4));
+      const bars = readWallet(sql).goldBars;
+      const again = applyAscension(sql, ascend(last.id), postToLedger(sql, 21), 21);
+
+      expect(again).toEqual({
+        venueId: last.id,
+        goldBarsGranted: ascensionGoldBars(
+          last.bullionThreshold * 4,
+          last.bullionThreshold,
+          ascension,
+        ),
+        unlockedVenueId: null,
+      });
+      expect(readWallet(sql).goldBars).toBe(bars + again.goldBarsGranted);
+      expect(currentVenue(sql).id).toBe(last.id);
+      expect(lifetimeBullion(sql)).toBe(0);
+      expect(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM ascensions').one().n).toBe(
+        ordered.length + 1,
+      );
+      expect(
+        failureCode(() => applyAscension(sql, ascend(last.id), postToLedger(sql, 22), 22)),
+      ).toBe('not_ready');
+      expect(failureCode(() => quoteAscension(sql, ascend(RIVIERA.id)))).toBe('conflict');
     });
   });
 

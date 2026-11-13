@@ -42,12 +42,14 @@ import { UPGRADE_TX_KIND } from './upgrades.ts';
 
 /**
  * PlayerDO tables for Venue Ascension and The Family Office. `ascensions` is append-only: one
- * row per venue left behind, carrying the ledger position it closed, so Bullion for the next
- * venue only counts winnings after it. Family Office levels are global and never reset.
+ * row per ascension, carrying the ledger position it closed, so Bullion for the next run only
+ * counts winnings after it. The final venue can be ascended again and again, so a venue may
+ * appear more than once. Family Office levels are global and never reset.
  */
 export const ASCENSION_SQL = `
   CREATE TABLE IF NOT EXISTS ascensions (
-    venue_id         TEXT PRIMARY KEY,
+    seq              INTEGER PRIMARY KEY,
+    venue_id         TEXT NOT NULL,
     ledger_seq       INTEGER NOT NULL CHECK (ledger_seq >= 0),
     lifetime_bullion INTEGER NOT NULL CHECK (lifetime_bullion >= 0),
     gold_bars        INTEGER NOT NULL CHECK (gold_bars >= 0),
@@ -109,14 +111,23 @@ interface AscensionRow extends Record<string, SqlStorageValue> {
 
 function ascendedRows(sql: SqlStorage): AscensionRow[] {
   return sql
-    .exec<AscensionRow>('SELECT venue_id, ledger_seq FROM ascensions ORDER BY ledger_seq')
+    .exec<AscensionRow>('SELECT venue_id, ledger_seq FROM ascensions ORDER BY seq')
     .toArray();
 }
 
-/** The venue the player is pushing toward: the first one, in unlock order, not yet ascended. */
-export function currentVenue(sql: SqlStorage): VenueDef | null {
+function finalVenue(): VenueDef {
+  const last = ORDERED_VENUES.at(-1);
+  if (last === undefined) throw new Error('Economy config lists no venues.');
+  return last;
+}
+
+/**
+ * The venue the player is pushing toward: the first one, in unlock order, not yet ascended.
+ * Once every venue is ascended the final venue stays current and starts anew on each ascension.
+ */
+export function currentVenue(sql: SqlStorage): VenueDef {
   const ascended = new Set(ascendedRows(sql).map((row) => row.venue_id));
-  return ORDERED_VENUES.find((venue) => !ascended.has(venue.id)) ?? null;
+  return ORDERED_VENUES.find((venue) => !ascended.has(venue.id)) ?? finalVenue();
 }
 
 /** Venues the player can open: every one ascended plus the current one. */
@@ -179,9 +190,6 @@ export interface AscensionQuote {
  */
 export function quoteAscension(sql: SqlStorage, body: AscendRequest): AscensionQuote {
   const venue = currentVenue(sql);
-  if (venue === null) {
-    throw new ApiFailure('conflict', 'Every venue is already ascended.');
-  }
   if (body.venueId !== venue.id) {
     const ascended = ascendedRows(sql).some((row) => row.venue_id === body.venueId);
     throw new ApiFailure(
@@ -221,7 +229,11 @@ function move(
   ];
 }
 
-/** The ascension's legs: balanced per currency, wallet balances never go negative. */
+/**
+ * The ascension's legs: balanced per currency, wallet balances never go negative.
+ * TODO(economy-designer, lead-architect): grant the 1,000 Repute an ascension earns (02-ECONOMY)
+ * here once economy config defines the award and the ledger has a Repute unit.
+ */
 export function ascensionLegs(quote: AscensionQuote, wallet: Wallet): Leg[] {
   const ref = quote.venue.id;
   return [
