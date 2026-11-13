@@ -1,4 +1,4 @@
-import type { Camera, Scene, WebGPURenderer } from 'three/webgpu';
+import type { Camera, Object3D, Scene, WebGPURenderer } from 'three/webgpu';
 import type { RenderBackend } from '../../backend.ts';
 import {
   createPostPipeline,
@@ -13,10 +13,16 @@ import {
   type QualityGovernor,
   type ResolvedQuality,
 } from './adaptiveQuality.ts';
-import { runBenchmark } from './benchmark.ts';
-import { deferBenchmark, type DeferredBenchmark, type IdleScheduler } from './deferredBenchmark.ts';
+import { runBenchmark, runInterruptibleBenchmark } from './benchmark.ts';
+import {
+  deferBenchmark,
+  type DeferredBenchmark,
+  type IdleScheduler,
+  type InputSource,
+} from './deferredBenchmark.ts';
 import { assertFrameTimestamp } from './frameClock.ts';
 import { createGpuFrameTimer } from './gpuTimer.ts';
+import { precompileScene } from './precompile.ts';
 import { browserStore, type KeyValueStore } from './storage.ts';
 import type { QualityProfile, QualityTier } from './tiers.ts';
 import {
@@ -64,6 +70,8 @@ export interface AdaptiveRenderingOptions extends PostPipelineOptions {
   readonly visibility?: VisibilitySource | null;
   /** Idle moments for a deferred benchmark; defaults to `requestIdleCallback`. */
   readonly whenIdle?: IdleScheduler;
+  /** Player input a deferred benchmark waits out; defaults to the window, `null` for none. */
+  readonly input?: InputSource | null;
 }
 
 export interface AdaptiveRendering {
@@ -79,10 +87,18 @@ export interface AdaptiveRendering {
   /**
    * Replaces `renderer.render(scene, camera)` in the animation loop. Call it last in the
    * frame, with the requestAnimationFrame timestamp, so the time from that timestamp to the
-   * end of this call measures the frame's main-thread work. While a deferred benchmark runs
-   * it draws nothing and the canvas keeps the previous frame.
+   * end of this call measures the frame's main-thread work. While a deferred benchmark or a
+   * `precompile` runs it draws nothing and the canvas keeps the previous frame.
    */
   render(nowMs: number): void;
+  /**
+   * Compiles the materials under `root` for the live tier and the scene's lights without
+   * drawing, so its first `render` links no shaders. `camera` decides what is compiled through
+   * its layers. Frames are held meanwhile: the compile yields to the main thread between
+   * objects, and a frame drawn in each gap would cost more than the compile itself.
+   * It resolves early on `dispose()`: a renderer that lost its device never finishes it.
+   */
+  precompile(root: Object3D, camera: Camera): Promise<void>;
   /** Releases the post graph; `render` throws afterwards. Call before rebuilding the renderer. */
   dispose(): void;
 }
@@ -127,9 +143,14 @@ export async function createAdaptiveRendering(
     store,
     ...(options.onTierChange === undefined ? {} : { onTierChange: options.onTierChange }),
   });
+  let disposed = false;
   const benchmark: DeferredBenchmark | null = session.pending
     ? deferBenchmark({
-        run: () => runBenchmark(renderer, now),
+        run: async (interrupted) => {
+          const result = await runInterruptibleBenchmark(renderer, interrupted, now);
+          if (result === null && !disposed) post.setLook(post.look);
+          return result;
+        },
         onResult: (result) => {
           post.setLook(post.look);
           session.settle(result);
@@ -142,6 +163,7 @@ export async function createAdaptiveRendering(
           );
         },
         ...(options.whenIdle === undefined ? {} : { whenIdle: options.whenIdle }),
+        ...(options.input === undefined ? {} : { input: options.input }),
       })
     : null;
   const gpuTimer = createGpuFrameTimer(renderer);
@@ -155,7 +177,11 @@ export async function createAdaptiveRendering(
   let lastCpuMs: number | null = null;
   let clockChecked = false;
   let held = false;
-  let disposed = false;
+  let precompiling = 0;
+  let released: () => void = () => undefined;
+  const disposedSignal = new Promise<void>((resolve) => {
+    released = resolve;
+  });
   return {
     post,
     get governor() {
@@ -178,7 +204,7 @@ export async function createAdaptiveRendering(
         assertFrameTimestamp(nowMs, builtAt, now());
         clockChecked = true;
       }
-      if (benchmark?.running === true) {
+      if (benchmark?.running === true || precompiling > 0) {
         held = true;
         return;
       }
@@ -194,9 +220,22 @@ export async function createAdaptiveRendering(
       lastCpuMs = Number.isFinite(busy) && busy >= 0 ? busy : null;
       benchmark?.frameRendered();
     },
+    async precompile(root, everyLayerCamera) {
+      if (disposed) return;
+      precompiling += 1;
+      try {
+        await Promise.race([
+          precompileScene(renderer, scene, root, everyLayerCamera, post.profile),
+          disposedSignal,
+        ]);
+      } finally {
+        precompiling -= 1;
+      }
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
+      released();
       benchmark?.cancel();
       stopWatchingVisibility();
       gpuTimer?.dispose();

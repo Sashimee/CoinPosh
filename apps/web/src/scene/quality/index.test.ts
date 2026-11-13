@@ -7,16 +7,23 @@ import { saveQuality, type KeyValueStore } from './storage.ts';
 import { QUALITY_PROFILES, type QualityProfile } from './tiers.ts';
 
 const calls: string[] = [];
-const runBenchmark = vi.fn<() => Promise<BenchmarkResult>>();
+const runBenchmark = vi.fn<(interrupted: () => boolean) => Promise<BenchmarkResult | null>>();
 
 vi.mock('./benchmark.ts', () => ({
   runBenchmark: () => {
     calls.push('benchmark');
-    return runBenchmark();
+    return runBenchmark(() => false);
+  },
+  runInterruptibleBenchmark: (_renderer: unknown, interrupted: () => boolean) => {
+    calls.push('benchmark');
+    return runBenchmark(interrupted);
   },
 }));
 
 vi.mock('./gpuTimer.ts', () => ({ createGpuFrameTimer: () => null }));
+
+const precompileScene = vi.fn<() => Promise<void>>();
+vi.mock('./precompile.ts', () => ({ precompileScene: () => precompileScene() }));
 
 vi.mock('../post/postPipeline.ts', () => ({
   createPostPipeline: (
@@ -121,6 +128,7 @@ function boot(options: { store?: KeyValueStore | null; startMs?: number } = {}) 
     now: time.now,
     visibility: null,
     whenIdle: idle.whenIdle,
+    input: null,
   });
   return { adaptive, time, idle, onTierChange };
 }
@@ -128,6 +136,56 @@ function boot(options: { store?: KeyValueStore | null; startMs?: number } = {}) 
 beforeEach(() => {
   calls.length = 0;
   runBenchmark.mockReset();
+  precompileScene.mockReset();
+});
+
+describe('AdaptiveRendering.precompile', () => {
+  it('holds frames until the compile is done, then draws again', async () => {
+    let finish!: () => void;
+    precompileScene.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { adaptive, time } = boot();
+    const rendering = await adaptive;
+    let settled = false;
+    const compiling = rendering.precompile({} as Scene, {} as Camera).then(() => {
+      settled = true;
+    });
+    calls.length = 0;
+    rendering.render(time.advance(16));
+    expect(calls).toEqual([]);
+    expect(settled).toBe(false);
+
+    finish();
+    await compiling;
+    rendering.render(time.advance(16));
+    expect(calls).toEqual(['render']);
+  });
+
+  it('passes a failed compile on and still draws afterwards', async () => {
+    precompileScene.mockRejectedValue(new Error('pipeline creation failed'));
+    const { adaptive, time } = boot();
+    const rendering = await adaptive;
+    await expect(rendering.precompile({} as Scene, {} as Camera)).rejects.toThrow(
+      'pipeline creation failed',
+    );
+    calls.length = 0;
+    rendering.render(time.advance(16));
+    expect(calls).toEqual(['render']);
+  });
+
+  it('resolves on dispose when the lost renderer never finishes compiling', async () => {
+    precompileScene.mockReturnValue(new Promise(() => undefined));
+    const { adaptive } = boot();
+    const rendering = await adaptive;
+    const compiling = rendering.precompile({} as Scene, {} as Camera);
+    rendering.dispose();
+    await expect(compiling).resolves.toBeUndefined();
+    await expect(rendering.precompile({} as Scene, {} as Camera)).resolves.toBeUndefined();
+    expect(precompileScene).toHaveBeenCalledOnce();
+  });
 });
 
 describe('createAdaptiveRendering with a deferred benchmark', () => {
@@ -166,6 +224,28 @@ describe('createAdaptiveRendering with a deferred benchmark', () => {
     rendering.render(time.advance(1800));
     expect(calls).toEqual(['render']);
     expect(rendering.governor.smoothedFrameMs).toBeNull();
+  });
+
+  it('restores the look and draws again after a run cut short by input, then retries', async () => {
+    runBenchmark.mockResolvedValueOnce(null).mockResolvedValueOnce(HIGH);
+    const { adaptive, time, idle, onTierChange } = boot();
+    const rendering = await adaptive;
+    for (let i = 0; i < BENCHMARK_AFTER_FRAMES; i++) rendering.render(time.advance(16));
+    idle.fire();
+    await vi.waitFor(() => {
+      expect(idle.queued).toHaveLength(1);
+    });
+    expect(calls.slice(-2)).toEqual(['benchmark', 'look:own']);
+    expect(onTierChange).not.toHaveBeenCalled();
+    calls.length = 0;
+    rendering.render(time.advance(16));
+    expect(calls).toEqual(['render']);
+
+    idle.fire();
+    await vi.waitFor(() => {
+      expect(onTierChange).toHaveBeenCalledWith(QUALITY_PROFILES.high);
+    });
+    expect(runBenchmark).toHaveBeenCalledTimes(2);
   });
 
   it('renders a first frame held past a second after the build without throwing', async () => {

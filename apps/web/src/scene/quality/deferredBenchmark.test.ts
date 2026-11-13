@@ -3,9 +3,13 @@ import type { BenchmarkResult } from './benchmark.ts';
 import {
   BENCHMARK_AFTER_FRAMES,
   BENCHMARK_IDLE_TIMEOUT_MS,
+  BENCHMARK_INPUT_QUIET_MS,
+  BENCHMARK_MAX_ATTEMPTS,
   browserIdle,
   deferBenchmark,
   type IdleScheduler,
+  type InputSource,
+  type TimerScheduler,
 } from './deferredBenchmark.ts';
 
 const HIGH: BenchmarkResult = { tier: 'high', complete: true, msPerFrame: 3, samples: [3] };
@@ -39,15 +43,60 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function setup(run: () => Promise<BenchmarkResult>) {
+/** A clock, timers and player input the test drives by hand. */
+function manualWorld() {
+  let time = 10_000;
+  const timers: { at: number; callback: () => void; cancelled: boolean }[] = [];
+  const listeners = new Set<() => void>();
+  const after: TimerScheduler = (callback, delayMs) => {
+    const entry = { at: time + delayMs, callback, cancelled: false };
+    timers.push(entry);
+    return () => {
+      entry.cancelled = true;
+    };
+  };
+  const input: InputSource = (listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  return {
+    now: () => time,
+    after,
+    input,
+    listeners,
+    pendingTimers: () => timers.filter((entry) => !entry.cancelled),
+    advance(ms: number) {
+      time += ms;
+      for (const entry of timers.splice(0)) {
+        if (entry.cancelled) continue;
+        if (entry.at <= time) entry.callback();
+        else timers.push(entry);
+      }
+    },
+    press() {
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+function setup(run: (interrupted: () => boolean) => Promise<BenchmarkResult | null>) {
   const idle = manualIdle();
+  const world = manualWorld();
   const onResult = vi.fn<(result: BenchmarkResult) => void>();
   const onError = vi.fn<(error: unknown) => void>();
-  const benchmark = deferBenchmark({ run, onResult, onError, whenIdle: idle.whenIdle });
+  const benchmark = deferBenchmark({
+    run,
+    onResult,
+    onError,
+    whenIdle: idle.whenIdle,
+    input: world.input,
+    now: world.now,
+    after: world.after,
+  });
   const frames = (count: number) => {
     for (let i = 0; i < count; i++) benchmark.frameRendered();
   };
-  return { idle, onResult, onError, benchmark, frames };
+  return { idle, world, onResult, onError, benchmark, frames };
 }
 
 describe('deferBenchmark', () => {
@@ -180,6 +229,7 @@ describe('deferBenchmark', () => {
       },
       onError,
       whenIdle: idle.whenIdle,
+      input: null,
       afterFrames: 1,
     });
     benchmark.frameRendered();
@@ -187,6 +237,127 @@ describe('deferBenchmark', () => {
     await vi.waitFor(() => {
       expect(onError).toHaveBeenCalledWith(failure);
     });
+  });
+});
+
+describe('deferBenchmark input gating', () => {
+  it('waits until the player has been quiet before asking for idle time', () => {
+    const run = vi.fn(() => Promise.resolve(HIGH));
+    const { idle, world, benchmark, frames } = setup(run);
+    world.press();
+    world.advance(400);
+    frames(BENCHMARK_AFTER_FRAMES);
+    expect(benchmark.state).toBe('quiet-wait');
+    expect(idle.queued).toHaveLength(0);
+
+    world.advance(BENCHMARK_INPUT_QUIET_MS - 400 - 1);
+    expect(benchmark.state).toBe('quiet-wait');
+    world.press();
+    world.advance(1);
+    expect(benchmark.state).toBe('quiet-wait');
+
+    world.advance(BENCHMARK_INPUT_QUIET_MS);
+    expect(benchmark.state).toBe('idle-wait');
+    idle.fire();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('goes back to waiting when input lands between the idle request and its callback', () => {
+    const run = vi.fn(() => Promise.resolve(HIGH));
+    const { idle, world, benchmark, frames } = setup(run);
+    frames(BENCHMARK_AFTER_FRAMES);
+    expect(benchmark.state).toBe('idle-wait');
+    world.press();
+    idle.fire();
+    expect(run).not.toHaveBeenCalled();
+    expect(benchmark.state).toBe('quiet-wait');
+    world.advance(BENCHMARK_INPUT_QUIET_MS);
+    idle.fire();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('tells the run it was interrupted, releases the renderer and retries once quiet', async () => {
+    const seen: (() => boolean)[] = [];
+    const runs = [deferred<BenchmarkResult | null>(), deferred<BenchmarkResult | null>()];
+    const { idle, world, onResult, onError, benchmark, frames } = setup((interrupted) => {
+      seen.push(interrupted);
+      const next = runs[seen.length - 1];
+      if (!next) throw new Error('unexpected extra run');
+      return next.promise;
+    });
+    frames(BENCHMARK_AFTER_FRAMES);
+    idle.fire();
+    expect(seen[0]?.()).toBe(false);
+    world.press();
+    expect(seen[0]?.()).toBe(true);
+    runs[0]?.resolve(null);
+    await vi.waitFor(() => {
+      expect(benchmark.state).toBe('quiet-wait');
+    });
+    expect(benchmark.running).toBe(false);
+    expect(onError).not.toHaveBeenCalled();
+
+    world.advance(BENCHMARK_INPUT_QUIET_MS);
+    idle.fire();
+    expect(seen[1]?.()).toBe(false);
+    runs[1]?.resolve(HIGH);
+    await vi.waitFor(() => {
+      expect(onResult).toHaveBeenCalledWith(HIGH);
+    });
+    expect(world.listeners.size).toBe(0);
+  });
+
+  it('gives up on the provisional tier after repeated interruptions', async () => {
+    const run = vi.fn(() => Promise.resolve(null));
+    const { idle, world, onResult, onError, benchmark, frames } = setup(run);
+    frames(BENCHMARK_AFTER_FRAMES);
+    for (let attempt = 1; attempt <= BENCHMARK_MAX_ATTEMPTS; attempt++) {
+      world.press();
+      world.advance(BENCHMARK_INPUT_QUIET_MS);
+      expect(benchmark.state).toBe('idle-wait');
+      idle.fire();
+      expect(run).toHaveBeenCalledTimes(attempt);
+      await vi.waitFor(() => {
+        expect(benchmark.state).not.toBe('running');
+      });
+    }
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(String(onError.mock.calls[0]?.[0])).toMatch(/interrupted by player input 3 times/);
+    expect(onResult).not.toHaveBeenCalled();
+    expect(benchmark.state).toBe('done');
+    expect(world.listeners.size).toBe(0);
+    idle.fire();
+    expect(run).toHaveBeenCalledTimes(BENCHMARK_MAX_ATTEMPTS);
+  });
+
+  it('stops listening and drops its quiet timer when cancelled', () => {
+    const run = vi.fn(() => Promise.resolve(HIGH));
+    const { world, benchmark, frames } = setup(run);
+    world.press();
+    frames(BENCHMARK_AFTER_FRAMES);
+    expect(world.pendingTimers()).toHaveLength(1);
+    benchmark.cancel();
+    expect(world.pendingTimers()).toHaveLength(0);
+    expect(world.listeners.size).toBe(0);
+    world.advance(BENCHMARK_INPUT_QUIET_MS);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('runs straight away on a page without input', () => {
+    const run = vi.fn(() => Promise.resolve(HIGH));
+    const idle = manualIdle();
+    const benchmark = deferBenchmark({
+      run,
+      onResult: vi.fn(),
+      onError: vi.fn(),
+      whenIdle: idle.whenIdle,
+      input: null,
+      afterFrames: 1,
+    });
+    benchmark.frameRendered();
+    idle.fire();
+    expect(run).toHaveBeenCalledOnce();
   });
 });
 

@@ -6,6 +6,7 @@ import {
   WebGPURenderer,
   type ColorRepresentation,
   type LightShadow,
+  type Object3D,
 } from 'three/webgpu';
 import { detectBackend, fallbackBackend, reportBackend, type RenderBackend } from './backend.ts';
 import {
@@ -27,7 +28,10 @@ import { rivieraTokens, rivieraTones } from './scene/venues/riviera/palette.ts';
 
 const CAMERA_NEAR = 0.05;
 // Until the first frame the canvas is see-through, so it shows this instead of a black void;
-// the clear colour and scene background carry the same lacquer once frames start.
+// the clear colour and scene background carry the same lacquer once frames start. The stage
+// lets one frame commit with it before starting the renderer: WebGL2 setup, the emboss bake and
+// the post compile run without yielding, and until the next commit the page shows what it last
+// committed, the bare black canvas.
 const BACKDROP = rivieraTokens['navy-lacquer'];
 const BACKDROP_CSS = [
   `radial-gradient(120% 70% at 50% 40%, ${rivieraTones.feltSheen}8c 0%, transparent 72%)`,
@@ -73,6 +77,13 @@ export interface Stage {
   onFrame(listener: FrameListener): () => void;
   observeSize(listener: SizeListener): () => void;
   onTierChange(listener: TierListener): () => void;
+  /**
+   * Compiles every material under `root` for the live tier and the scene's lights, on every
+   * camera layer, so objects still held back on another layer draw their first frame without
+   * linking shaders. Call it once the venue is assembled and lit, right before revealing it.
+   * It never rejects and resolves on a renderer rebuild, so the reveal can always follow it.
+   */
+  precompile(root: Object3D): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -198,6 +209,7 @@ export async function createStage(
   };
 
   try {
+    await frameCommitted();
     active = await start(canvas, options.backend ?? backendRequestedBy(location.search));
   } catch (error) {
     coins.dispose();
@@ -245,6 +257,19 @@ export async function createStage(
     onTierChange(listener) {
       tierListeners.add(listener);
       return () => tierListeners.delete(listener);
+    },
+    async precompile(root) {
+      const everyLayer = camera.clone();
+      everyLayer.layers.enableAll();
+      const compiling = active;
+      try {
+        await compiling.adaptive.precompile(root, everyLayer);
+      } catch (error) {
+        console.warn(
+          `[CoinPosh] Shader precompile failed on ${compiling.backend}; the venue compiles on its first frame instead`,
+          error,
+        );
+      }
     },
     async dispose() {
       disposed = true;
@@ -360,6 +385,15 @@ async function stopRenderer(active: ActiveRenderer): Promise<void> {
 /** `?webgl` starts on WebGL2, as the venue, post and vfx previews do. */
 export function backendRequestedBy(search: string): RenderBackend {
   return new URLSearchParams(search).has('webgl') ? 'webgl2' : 'webgpu';
+}
+
+/** Resolves after the browser has rendered and committed the next frame. */
+function frameCommitted(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      setTimeout(resolve, 0);
+    });
+  });
 }
 
 function wait(ms: number): Promise<void> {
