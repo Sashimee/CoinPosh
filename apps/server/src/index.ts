@@ -8,6 +8,7 @@ import { corsMiddleware } from './http/cors.ts';
 import { ApiFailure } from './http/errors.ts';
 import { originGuardMiddleware, requestIdMiddleware } from './http/signed.ts';
 import { createAccountRoutes } from './routes/account.ts';
+import { createAscendRoutes } from './routes/ascend.ts';
 import { authRoutes } from './routes/auth.ts';
 import { playerStub, tableRoutes } from './routes/table.ts';
 import { createUpgradeRoutes } from './routes/upgrades.ts';
@@ -35,6 +36,7 @@ export function createApp(deps: AppDeps) {
   app.route('/', createAccountRoutes({ jwks: new JwksCache(deps.fetchJwks) }));
   app.route('/', tableRoutes);
   app.route('/', createUpgradeRoutes(playerStub));
+  app.route('/', createAscendRoutes(playerStub));
 
   app.notFound((c) => c.json(errorEnvelope('not_found', 'No such route.'), 404));
 

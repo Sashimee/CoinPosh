@@ -103,8 +103,8 @@ describe('the v1 upgrade tree', () => {
   it('prices every level from upgradeCost, so the first level costs the base price', () => {
     for (const id of UPGRADE_LINE_IDS_V1) {
       const line = economyLine(id);
-      expect(quoteUpgrade({}, RICH, buy(id, 1)).cost).toBe(line.baseCost);
-      const quote = quoteUpgrade({ [id]: 3 }, RICH, buy(id, 4));
+      expect(quoteUpgrade({}, RICH, buy(id, 1), HOME_VENUE.id).cost).toBe(line.baseCost);
+      const quote = quoteUpgrade({ [id]: 3 }, RICH, buy(id, 4), HOME_VENUE.id);
       expect(quote).toEqual({
         venueId: HOME_VENUE.id,
         lineId: id,
@@ -118,47 +118,70 @@ describe('the v1 upgrade tree', () => {
   it('sells when the wallet holds exactly the price and refuses one coin short', () => {
     const line = economyLine('dropRate');
     const price = upgradeCost(line, 2);
-    expect(quoteUpgrade({ dropRate: 2 }, wallet(price), buy('dropRate', 3)).cost).toBe(price);
     expect(
-      failureCode(() => quoteUpgrade({ dropRate: 2 }, wallet(price - 1), buy('dropRate', 3))),
+      quoteUpgrade({ dropRate: 2 }, wallet(price), buy('dropRate', 3), HOME_VENUE.id).cost,
+    ).toBe(price);
+    expect(
+      failureCode(() =>
+        quoteUpgrade({ dropRate: 2 }, wallet(price - 1), buy('dropRate', 3), HOME_VENUE.id),
+      ),
     ).toBe('insufficient_funds');
   });
 
   it('answers conflict to a stale, replayed or skipped-ahead level instead of charging', () => {
-    expect(failureCode(() => quoteUpgrade({ coinValue: 4 }, RICH, buy('coinValue', 4)))).toBe(
-      'conflict',
-    );
-    expect(failureCode(() => quoteUpgrade({ coinValue: 4 }, RICH, buy('coinValue', 3)))).toBe(
-      'conflict',
-    );
-    expect(failureCode(() => quoteUpgrade({ coinValue: 4 }, RICH, buy('coinValue', 6)))).toBe(
-      'conflict',
-    );
+    expect(
+      failureCode(() => quoteUpgrade({ coinValue: 4 }, RICH, buy('coinValue', 4), HOME_VENUE.id)),
+    ).toBe('conflict');
+    expect(
+      failureCode(() => quoteUpgrade({ coinValue: 4 }, RICH, buy('coinValue', 3), HOME_VENUE.id)),
+    ).toBe('conflict');
+    expect(
+      failureCode(() => quoteUpgrade({ coinValue: 4 }, RICH, buy('coinValue', 6), HOME_VENUE.id)),
+    ).toBe('conflict');
   });
 
   it('refuses to go past the max level from config', () => {
     const line = economyLine('vaultCapacity');
     expect(
-      quoteUpgrade({ vaultCapacity: line.maxLevel - 1 }, RICH, buy(line.id, line.maxLevel)).level,
+      quoteUpgrade(
+        { vaultCapacity: line.maxLevel - 1 },
+        RICH,
+        buy(line.id, line.maxLevel),
+        HOME_VENUE.id,
+      ).level,
     ).toBe(line.maxLevel);
     expect(
       failureCode(() =>
-        quoteUpgrade({ vaultCapacity: line.maxLevel }, RICH, buy(line.id, line.maxLevel + 1)),
+        quoteUpgrade(
+          { vaultCapacity: line.maxLevel },
+          RICH,
+          buy(line.id, line.maxLevel + 1),
+          HOME_VENUE.id,
+        ),
       ),
     ).toBe('conflict');
   });
 
   it('does not sell lines outside the v1 tree, global lines or made-up ones', () => {
     for (const id of ['fusionWindow', 'decorumCapacity', 'oldMoney', 'goldPlated']) {
-      expect(failureCode(() => quoteUpgrade({}, RICH, buy(id, 1)))).toBe('not_found');
+      expect(failureCode(() => quoteUpgrade({}, RICH, buy(id, 1), HOME_VENUE.id))).toBe(
+        'not_found',
+      );
     }
   });
 
-  it('refuses venues the player has not unlocked', () => {
-    const locked = venues[1];
-    expect(failureCode(() => quoteUpgrade({}, RICH, buy('pusherSpeed', 1, locked.id)))).toBe(
+  it('sells venue upgrades only at the current venue the server names', () => {
+    const [home, next] = [venues[0], venues[1]];
+    expect(failureCode(() => quoteUpgrade({}, RICH, buy('pusherSpeed', 1, next.id), home.id))).toBe(
       'forbidden',
     );
+    expect(failureCode(() => quoteUpgrade({}, RICH, buy('pusherSpeed', 1, home.id), next.id))).toBe(
+      'forbidden',
+    );
+    expect(quoteUpgrade({}, RICH, buy('pusherSpeed', 1, next.id), next.id)).toMatchObject({
+      venueId: next.id,
+      level: 1,
+    });
   });
 
   it('reads effects through upgradeStat at the stored level', () => {
@@ -179,11 +202,21 @@ describe('upgrade levels in PlayerDO storage', () => {
       expect(readUpgradeLevels(sql, HOME_VENUE.id)).toEqual(
         Object.fromEntries(UPGRADE_LINE_IDS_V1.map((id) => [id, 0])),
       );
-      const rich = quoteUpgrade(readUpgradeLevels(sql, HOME_VENUE.id), RICH, buy('dropRate', 1));
+      const rich = quoteUpgrade(
+        readUpgradeLevels(sql, HOME_VENUE.id),
+        RICH,
+        buy('dropRate', 1),
+        HOME_VENUE.id,
+      );
       recordUpgrade(sql, rich);
       recordUpgrade(
         sql,
-        quoteUpgrade(readUpgradeLevels(sql, HOME_VENUE.id), RICH, buy('dropRate', 2)),
+        quoteUpgrade(
+          readUpgradeLevels(sql, HOME_VENUE.id),
+          RICH,
+          buy('dropRate', 2),
+          HOME_VENUE.id,
+        ),
       );
       expect(readUpgradeLevels(sql, HOME_VENUE.id)).toMatchObject({ dropRate: 2, pusherSpeed: 0 });
       const other = venues[1];
@@ -201,7 +234,12 @@ describe('upgrade levels in PlayerDO storage', () => {
       if (pricey === undefined) throw new Error('expected a v1 line above the starting grant');
       expect(
         failureCode(() =>
-          quoteUpgrade(readUpgradeLevels(sql, HOME_VENUE.id), real, buy(pricey.id, 1)),
+          quoteUpgrade(
+            readUpgradeLevels(sql, HOME_VENUE.id),
+            real,
+            buy(pricey.id, 1),
+            HOME_VENUE.id,
+          ),
         ),
       ).toBe('insufficient_funds');
     });
