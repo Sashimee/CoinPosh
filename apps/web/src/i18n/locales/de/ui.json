@@ -25,6 +25,13 @@
       "title": "{{name}} ist bereit",
       "hint": "Tippen Sie, um Ihr erstes Upgrade zu kaufen.",
       "aria": "{{name}} ist jetzt kaufbar. Upgrades öffnen"
+    },
+    "wallet": {
+      "label": "Börse",
+      "gain": "+{{value}}",
+      "pearlsAria": "Perlen: {{value}}",
+      "keysAria": "Schlüssel: {{value}}",
+      "ticketsAria": "Tickets: {{value}}"
     }
   },
   "combo": {
