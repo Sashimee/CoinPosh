@@ -73,8 +73,6 @@
     "title": "Améliorations",
     "subtitle": "Raffinez la table, un caprice à la fois.",
     "venueSection": "Le Yacht",
-    "globalSection": "Le Family Office",
-    "globalHint": "Payé en lingots d'or. Conservé à chaque Ascension.",
     "level": "Niv. {{level}}",
     "levelAria": "Niveau {{level}} sur {{max}}",
     "maxed": "Max",

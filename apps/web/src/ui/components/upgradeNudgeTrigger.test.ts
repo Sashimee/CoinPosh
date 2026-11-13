@@ -14,6 +14,7 @@ import {
   type FirstUpgradeNudge,
   type NudgeSnapshot,
 } from './upgradeNudgeTrigger.ts';
+import { UPGRADE_SHEET_LINES } from '../panels/upgradesPanel.ts';
 
 class MemoryStorage implements SettingsStorage {
   readonly items = new Map<string, string>();
@@ -291,6 +292,16 @@ describe('first-upgrade headroom', () => {
     const nudge = fresh();
     const id = offer(nudge, snapshot({ goldBars: barPrice }));
     expect(barLines.map((candidate) => candidate.id)).toContain(id);
+  });
+
+  it('never points at a Family Office line when given only the lines the sheet lists', () => {
+    const barLines = upgradeLines.filter((candidate) => candidate.currency === 'goldBars');
+    const barPrice = Math.max(...barLines.map((candidate) => upgradeCost(candidate, 0)));
+    const nudge = createFirstUpgradeNudge(UPGRADE_SHEET_LINES, new MemoryStorage());
+    expect(offer(nudge, snapshot({ goldBars: barPrice }))).toBe(null);
+    expect(offer(nudge, snapshot({ goldBars: barPrice, coins: roomy }), 10_000)).toBe(
+      cheapestCoinLine?.id,
+    );
   });
 });
 

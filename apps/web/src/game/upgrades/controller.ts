@@ -30,7 +30,8 @@ export type UpgradeUi = Pick<
 export interface BindUpgradesOptions {
   readonly ui: UpgradeUi;
   readonly api: UpgradeApi;
-  readonly venueId: VenueId;
+  /** A getter follows the venue the player is on, which changes when they ascend. */
+  readonly venueId: VenueId | (() => VenueId);
   readonly events: Bus<UpgradeEvents>;
   readonly newKey?: () => IdempotencyKey;
   /** Re-reads GET /v1/state; called when the levels on screen turned out to be stale. */
@@ -70,7 +71,8 @@ function freshKey(): IdempotencyKey {
  * from the server, and nothing on screen changes until they do.
  */
 export function bindUpgrades(options: BindUpgradesOptions): () => void {
-  const { ui, api, venueId, events } = options;
+  const { ui, api, events, venueId: venue } = options;
+  const venueId = typeof venue === 'function' ? venue : () => venue;
   const newKey = options.newKey ?? freshKey;
   let live = true;
 
@@ -89,7 +91,7 @@ export function bindUpgrades(options: BindUpgradesOptions): () => void {
     events.emit('upgrade:requested', { lineId, level });
     let response: UpgradeBuyResponse;
     try {
-      const body = endpoints.upgradesBuy.body.parse({ venueId, lineId, level });
+      const body = endpoints.upgradesBuy.body.parse({ venueId: venueId(), lineId, level });
       response = await api.buy(body, newKey());
     } catch (error) {
       if (!live) return;
