@@ -37,9 +37,8 @@ declare global {
 /**
  * Waits inside the page for the table to take drops, arms the first-drop timer and resolves with
  * the coin ledger as soon as a sync has counted the opening heap, which at the playable mark it
- * may not have yet. Waiting from the test instead costs a probe round trip per step while the
- * main thread is busy with the first venue frames: on SwiftShader the test then tapped 1.3 to
- * 2.5 s after the playable mark, harness lag a player's thumb does not add.
+ * may not have yet. Waiting from the test instead costs a probe round trip per step, each queued
+ * behind the first venue frames after playable, which on SwiftShader last up to a second or two.
  *
  * The bridge writes `stats.coins` on every sync, so an accessor on that field stamps the very
  * sync that counts the new coin. The pointerdown's own timestamp marks the tap, so a tap that
@@ -138,7 +137,10 @@ interface BootRun {
   readonly playableMs: number;
   /** The app's `coinposh:boot:stage` mark: the renderer is up and its first frame compiled. */
   readonly stageMs: number;
-  /** From the playable mark to the test's tap: harness latency a player's thumb would not add. */
+  /**
+   * From the playable mark to the test's tap. The tap waits for the first sync after playable,
+   * so this is mostly the first venue frame, during which a player's tap would queue as well.
+   */
   readonly tapLagMs: number;
   readonly tapMs: number;
   readonly firstDropMs: number;

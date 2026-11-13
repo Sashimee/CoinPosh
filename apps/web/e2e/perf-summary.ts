@@ -24,6 +24,8 @@ interface FramesRun {
 interface BootRun {
   readonly statistic?: string;
   readonly playableMs: number;
+  readonly stageMs: number;
+  readonly tapLagMs: number;
   readonly firstDropMs: number;
   readonly tapToDropMs: number;
   readonly longestFrameAfterTapMs: number;
@@ -68,7 +70,9 @@ if (!boot && !frames) lines.push('No perf report was written: the perf project d
 lines.push('| Metric | Measured | Budget | Status |', '| --- | ---: | ---: | --- |');
 if (boot) {
   lines.push(
+    `| Navigation to stage | ${fixed(boot.stageMs, 0)} ms | | |`,
     `| Navigation to playable | ${fixed(boot.playableMs, 0)} ms | | |`,
+    `| Playable to tap | ${fixed(boot.tapLagMs, 0)} ms | | |`,
     `| Navigation to first drop${boot.statistic ? ` (${boot.statistic})` : ''} | ${fixed(boot.firstDropMs, 0)} ms | < ${String(boot.budgetMs)} ms | ${verdict(boot.firstDropMs < boot.budgetMs)} |`,
     `| Tap to first drop in the sim | ${fixed(boot.tapToDropMs, 0)} ms | | |`,
     `| Longest frame in 1.5 s after the tap | ${fixed(boot.longestFrameAfterTapMs, 0)} ms | | |`,
@@ -94,6 +98,7 @@ if (boot) {
     ...distribution('Boot', boot, [
       ['navigation to first drop', (run) => run.firstDropMs, 'ms'],
       ['navigation to playable', (run) => run.playableMs, 'ms'],
+      ['playable to tap', (run) => run.tapLagMs, 'ms'],
       ['longest frame after the tap', (run) => run.longestFrameAfterTapMs, 'ms'],
     ]),
   );
