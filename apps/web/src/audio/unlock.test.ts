@@ -459,6 +459,44 @@ describe('manageAudioLifecycle tab-switch races (#184)', () => {
     expect(ctx.state).toBe('running');
   });
 
+  it('resumes on a hide/show race after a hung resume was recovered by a tap', async () => {
+    const { ctx, doc, tap } = await unlockedSetup();
+    doc.show('hidden');
+    ctx.hang = true;
+    doc.show('visible');
+    await flush();
+    ctx.hang = false;
+    await tap();
+    expect(ctx.state).toBe('running');
+    ctx.deferred = true;
+    doc.show('hidden');
+    doc.show('visible');
+    await ctx.settle();
+    expect(ctx.state).toBe('running');
+  });
+
+  it('warns once per refusal streak and again after the context has run', async () => {
+    const warn = quietWarnings();
+    const { ctx, doc, fire } = await unlockedSetup();
+    doc.show('hidden');
+    ctx.refuse = true;
+    doc.show('visible');
+    await flush();
+    await fire('focus');
+    expect(ctx.resumeCalls).toBe(3);
+    expect(ctx.state).toBe('suspended');
+    expect(warn).toHaveBeenCalledOnce();
+    ctx.refuse = false;
+    await fire('focus');
+    expect(ctx.state).toBe('running');
+    doc.show('hidden');
+    ctx.refuse = true;
+    doc.show('visible');
+    await flush();
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
   it('retries a resume that never settled when the window regains focus', async () => {
     const { ctx, doc, fire } = await unlockedSetup();
     doc.show('hidden');

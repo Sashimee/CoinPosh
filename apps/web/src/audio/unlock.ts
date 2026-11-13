@@ -133,6 +133,7 @@ export function manageAudioLifecycle(
 
   let resumeAttempts = 0;
   let resumePending = false;
+  let refusalWarned = false;
   const resume = () => {
     const attempt = ++resumeAttempts;
     resumePending = true;
@@ -149,10 +150,13 @@ export function manageAudioLifecycle(
       (error: unknown) => {
         settled();
         if (disposed) return;
-        console.warn(
-          'Audio: resume() was refused; retrying on the next tap, focus or pageshow.',
-          error,
-        );
+        if (!refusalWarned) {
+          refusalWarned = true;
+          console.warn(
+            'Audio: resume() was refused; retrying on the next tap, focus or pageshow.',
+            error,
+          );
+        }
         armGesture();
       },
     );
@@ -189,6 +193,9 @@ export function manageAudioLifecycle(
   const onStateChange = () => {
     if (disposed) return;
     if (running()) {
+      resumePending = false;
+      resumeAttempts++;
+      refusalWarned = false;
       unlock.disarm();
       markUnlocked();
       reconcile(false);
