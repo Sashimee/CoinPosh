@@ -13,7 +13,14 @@ export const JUICE_ITEMS = {
 export type JuiceItem = keyof typeof JUICE_ITEMS;
 
 export type VfxEffect =
-  'dropTrail' | 'contactSparks' | 'fusion' | 'fusionCompact' | 'cascade' | 'obscene' | 'numberPop';
+  | 'dropTrail'
+  | 'contactSparks'
+  | 'fusion'
+  | 'fusionMid'
+  | 'fusionCompact'
+  | 'cascade'
+  | 'obscene'
+  | 'numberPop';
 
 export interface EffectJuice {
   /** Items this module delivers on its own, before T-1.10 adds the sound. */
@@ -51,14 +58,21 @@ export const EFFECT_JUICE: Readonly<Record<VfxEffect, EffectJuice>> = {
       'hapticOrShake',
     ],
     scope:
-      'The full treatment, for gold-or-better results only and at most one fusion every 3 s; gold-or-better fusions inside that window, and every copper and silver one, play the compact variant.',
+      'The full treatment, for the first fusion of the session, the first of each tier, and diamond and up at most once per 20 s; never two within 3 s or three within 30 s (a held-back first plays on the next fusion of its tier). Routine gold and platinum play the mid variant, routine copper and silver the compact one.',
     reduced:
       'Particles drift in instead of spiralling, the ring blooms in place, no shake or FOV kick; the hit-stop stays.',
+  },
+  fusionMid: {
+    items: ['particles', 'lightResponse', 'squashOvershoot', 'hapticOrShake'],
+    scope:
+      'Routine gold and platinum, and diamond and up inside the 20 s rest: a brighter flash haloed in the tier metal, a small double ring, a double spark crown and a tap, no hit-stop or camera. Another mid within 0.9 s plays compact. The tier-up chime is the audio half.',
+    reduced:
+      'Fewer sparks as slow glints, the flash brightens without its pop, both rings bloom in place at half strength, a tap.',
   },
   fusionCompact: {
     items: ['particles', 'lightResponse', 'squashOvershoot', 'hapticOrShake'],
     scope:
-      'Every copper and silver fusion, and gold-or-better ones inside the 3 s rest: a warm white-gold flash about three coins wide with a tap, no hit-stop or camera. The tier-up chime is the audio half.',
+      'Routine copper and silver fusions, and gold-or-better ones right after a mid: a warm white-gold flash about three coins wide with a tap, no hit-stop or camera. The tier-up chime is the audio half.',
     reduced:
       'Fewer sparks as slow glints, the flash brightens without its pop, the small ring blooms in place.',
   },
