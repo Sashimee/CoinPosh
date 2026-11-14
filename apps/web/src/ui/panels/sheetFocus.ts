@@ -6,6 +6,10 @@ export interface FocusScope {
   contains(node: Node | null): boolean;
 }
 
+export interface Inertable {
+  inert: boolean;
+}
+
 export interface KeyLike {
   readonly key: string;
   readonly defaultPrevented: boolean;
@@ -22,15 +26,18 @@ export interface FocusDocument {
 export interface SheetFocusHandle {
   opened(): void;
   /**
-   * Call when the sheet starts closing. The returned function, run once the close animation
-   * ends, hands focus back to `trigger` unless the user has already moved on.
+   * Call when the sheet starts closing. Its controls go inert and focus goes back to `trigger`
+   * at once, unless the user had already moved on, so no key or tap aimed at the shrinking sheet
+   * can press anything in it. Run the returned function once the close animation ends: it hands
+   * focus back again if it was dropped on the body in the meantime.
    */
   closing(trigger: Focusable | null): () => void;
   dispose(): void;
 }
 
 export interface SheetFocus {
-  register(scope: FocusScope, dismiss: () => void): SheetFocusHandle;
+  /** `controls` goes inert while the sheet is closing or closed; it defaults to none. */
+  register(scope: FocusScope, dismiss: () => void, controls?: Inertable): SheetFocusHandle;
 }
 
 interface Entry {
@@ -61,12 +68,14 @@ export function createSheetFocus(doc: FocusDocument): SheetFocus {
   };
 
   return {
-    register(scope, dismiss) {
+    register(scope, dismiss, controls) {
       const entry: Entry = { scope, dismiss };
+      if (controls) controls.inert = true;
       if (registered++ === 0) doc.addEventListener('keydown', onKeyDown);
       let disposed = false;
       return {
         opened() {
+          if (controls) controls.inert = false;
           remove(entry);
           stack.push(entry);
           opens++;
@@ -74,12 +83,15 @@ export function createSheetFocus(doc: FocusDocument): SheetFocus {
         closing(trigger) {
           remove(entry);
           const opensAtClose = opens;
-          return () => {
+          const handBack = (): void => {
             const active = doc.activeElement;
             const stillInside = active !== null && scope.contains(active);
             const abandoned = (active === null || active === doc.body) && opens === opensAtClose;
             if (stillInside || abandoned) trigger?.focus({ preventScroll: true });
           };
+          handBack();
+          if (controls) controls.inert = true;
+          return handBack;
         },
         dispose() {
           if (disposed) return;
