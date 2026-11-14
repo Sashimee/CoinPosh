@@ -5,7 +5,9 @@ import { COIN } from './coin.ts';
 import { FIXED_DT, SIM_VERSION, SOLVER, TICK_RATE_HZ } from './constants.ts';
 import type { SimInput } from './inputs.ts';
 import type { FusionEvent, FusionRules, MechanicsConfig } from './mechanics/index.ts';
-import { Sim, type SimEvents } from './sim.ts';
+import type { AnyPropSpec } from './props/index.ts';
+import type { PropEvent } from './props/world.ts';
+import { type RestoreEntry, Sim, type SimEvents, type SimRestore } from './sim.ts';
 import { FUSION_TUNING } from './mechanics/tuning.ts';
 import { DEFAULT_PUSHER_MOTION, type FallEvent, PUSHER, TABLE_SOLVER } from './table/index.ts';
 
@@ -615,5 +617,271 @@ describe('opening heap and mechanics', () => {
         expect(sim.hash()).toMatchInlineSnapshot(`"c5ffb7081eb3fb15"`);
       }
     }
+  });
+});
+
+describe('props', () => {
+  const UPRIGHT = { x: 0, y: 0, z: 0, w: 1 } as const;
+
+  const SLIDER_PROP: AnyPropSpec = {
+    id: 7,
+    kind: 'slider',
+    shape: { kind: 'box', halfExtents: { x: 0.01, y: 0.006, z: 0.01 } },
+    mass: 0,
+    pose: { translation: { x: 0.1, y: 0.006, z: 0.02 }, rotation: UPRIGHT },
+    params: {
+      friction: 0.4,
+      restitution: 0.1,
+      stroke: { x: -0.04, z: 0 },
+      periodTicks: 240,
+      phaseTicks: 0,
+    },
+  };
+
+  const ATTRACTOR_PROP: AnyPropSpec = {
+    id: 3,
+    kind: 'attractor',
+    shape: { kind: 'cylinder', halfHeight: 0.005, radius: 0.01 },
+    mass: 0,
+    pose: { translation: { x: -0.06, y: 0.005, z: 0 }, rotation: UPRIGHT },
+    params: { reach: 0.06, pull: 0.02, tiers: [], stirs: false },
+  };
+
+  const POCKET_PROP: AnyPropSpec = {
+    id: 1,
+    kind: 'pocket',
+    shape: { kind: 'box', halfExtents: { x: 0.05, y: 0.02, z: 0.04 } },
+    mass: 0,
+    pose: { translation: { x: 0, y: 0.08, z: -0.17 }, rotation: UPRIGHT },
+    params: { take: true, tag: 'pot', tiers: [] },
+  };
+
+  const WEIGHT_PROP: AnyPropSpec = {
+    id: 5,
+    kind: 'weight',
+    shape: { kind: 'ball', radius: 0.008 },
+    mass: 0.02,
+    pose: { translation: { x: 0, y: 0.008, z: 0.046 }, rotation: UPRIGHT },
+    params: { friction: 0.3, restitution: 0.1, linearDamping: 0, angularDamping: 0 },
+  };
+
+  async function createWithProps(
+    props: readonly AnyPropSpec[],
+    restore?: SimRestore,
+  ): Promise<Sim> {
+    const sim = await Sim.create(restore ? { seed: SEED, props, restore } : { seed: SEED, props });
+    live.push(sim);
+    return sim;
+  }
+
+  function stepTo(
+    sim: Sim,
+    ticks: number,
+    inputsAt: (tick: number) => SimInput[] = scriptedInputs,
+  ): PropEvent[] {
+    const events: PropEvent[] = [];
+    while (sim.tick < ticks) {
+      events.push(...sim.step(inputsAt(sim.tick)).props);
+    }
+    return events;
+  }
+
+  it('leaves a Sim without props hashing and snapshotting as before', async () => {
+    const plain = await createSim();
+    const empty = await createWithProps([]);
+    expect(empty.hash()).toBe(plain.hash());
+    expect(empty.props()).toEqual([]);
+    expect('props' in empty.snapshot()).toBe(false);
+    for (let tick = 0; tick < 120; tick += 1) {
+      const inputs = scriptedInputs(tick);
+      expect(empty.step(inputs).props).toEqual([]);
+      plain.step(inputs);
+    }
+    expect(empty.hash()).toBe(plain.hash());
+  });
+
+  it('steps a mover along its path and reports it in props()', async () => {
+    const sim = await createWithProps([SLIDER_PROP]);
+    const [home] = sim.props();
+    expect(home).toMatchObject({ id: 7, kind: 'slider', present: true });
+    expect(home?.translation.x).toBeCloseTo(0.1, 9);
+    stepTo(sim, 120, () => []);
+    const [out] = sim.props();
+    expect(out?.translation.x).toBeCloseTo(0.06, 6);
+    expect(out?.translation.z).toBeCloseTo(0.02, 6);
+    stepTo(sim, 240, () => []);
+    expect(sim.props()[0]?.translation.x).toBeCloseTo(0.1, 6);
+  });
+
+  it('lets a pocket take a dropped coin, with an enter event and no fall', async () => {
+    const sim = await createWithProps([POCKET_PROP]);
+    const before = sim.coinCount;
+    sim.step([{ kind: 'dropCoin', xMm: 0 }]);
+    expect(sim.coinCount).toBe(before + 1);
+    const dropped = Math.max(...sim.coins().map((coin) => coin.id));
+    const events: PropEvent[] = [];
+    const falls: number[] = [];
+    while (sim.tick < 60 && events.length === 0) {
+      const result = sim.step([]);
+      events.push(...result.props);
+      falls.push(...result.falls.map((fall) => fall.coinId));
+    }
+    expect(events).toEqual([
+      {
+        kind: 'prop.enter',
+        coinId: dropped,
+        propId: 1,
+        tick: sim.tick,
+        consumed: true,
+        tag: 'pot',
+      },
+    ]);
+    expect(falls).toEqual([]);
+    expect(sim.coinCount).toBe(before);
+    expect(sim.coins().some((coin) => coin.id === dropped)).toBe(false);
+  });
+
+  it('drops a dynamic prop shoved over the front edge and reports it once', async () => {
+    const sim = await createWithProps([WEIGHT_PROP]);
+    const events: PropEvent[] = [];
+    while (sim.tick < 600 && events.length === 0) {
+      events.push(
+        ...sim.step(sim.tick % 30 === 0 ? [{ kind: 'nudge', direction: 'forward' }] : []).props,
+      );
+    }
+    expect(events).toEqual([{ kind: 'prop.fall', propId: 5, tick: sim.tick, edge: 'front' }]);
+    expect(sim.props()[0]?.present).toBe(false);
+    expect(stepTo(sim, sim.tick + 60, () => [])).toEqual([]);
+    expect(sim.snapshot().props).toEqual([{ id: 5, clock: sim.tick }]);
+  });
+
+  describe('a two-prop minute', () => {
+    interface PropReplay {
+      readonly sim: Sim;
+      readonly checkpoints: string[];
+      readonly events: PropEvent[];
+    }
+
+    let pair: Promise<readonly [PropReplay, PropReplay]> | undefined;
+
+    function replays(): Promise<readonly [PropReplay, PropReplay]> {
+      pair ??= Promise.all([
+        Sim.create({ seed: SEED, props: [SLIDER_PROP, ATTRACTOR_PROP] }),
+        Sim.create({ seed: SEED, props: [ATTRACTOR_PROP, SLIDER_PROP] }),
+      ]).then(([a, b]) => [
+        { sim: a, checkpoints: [], events: [] },
+        { sim: b, checkpoints: [], events: [] },
+      ]);
+      return pair;
+    }
+
+    function play(replay: PropReplay, ticks: number): void {
+      const { sim } = replay;
+      while (sim.tick < ticks) {
+        replay.events.push(...sim.step(scriptedInputs(sim.tick)).props);
+        if (sim.tick % HASH_INTERVAL === 0) {
+          replay.checkpoints.push(sim.hash());
+        }
+      }
+    }
+
+    afterAll(async () => {
+      if (pair) {
+        for (const replay of await pair) {
+          replay.sim.dispose();
+        }
+      }
+    });
+
+    for (const half of [TICKS / 2, TICKS]) {
+      it(`replays bit for bit to tick ${half}, whatever order the config lists the props in`, async () => {
+        const [reference, replica] = await replays();
+        play(reference, half);
+        play(replica, half);
+        expect(replica.checkpoints).toEqual(reference.checkpoints);
+        expect(replica.events).toEqual(reference.events);
+      });
+    }
+
+    it('diverges from the same minute without props and pins the hash', async () => {
+      const [reference] = await replays();
+      expect(reference.sim.tick).toBe(TICKS);
+      const plain = await referenceTo(TICKS);
+      expect(reference.checkpoints).toHaveLength(plain.length);
+      expect(reference.checkpoints.at(-1)).not.toBe(plain.at(-1));
+      // Changing this value breaks replay audits of every input log on a table with props.
+      expect(reference.checkpoints.at(-1)).toMatchInlineSnapshot(`"6c4dfd0b3e9f1fbb"`);
+    });
+  });
+
+  describe('snapshot and restore', () => {
+    const PROPS = [SLIDER_PROP, WEIGHT_PROP];
+
+    function entries(sim: Sim): RestoreEntry[] {
+      return sim.snapshot().coins.map((pose) => ({ kind: 'pose', pose }));
+    }
+
+    it('keeps each clock and the dynamic prop pose, and restores them', async () => {
+      const sim = await createWithProps(PROPS);
+      stepTo(sim, 150);
+      const saved = sim.snapshot();
+      expect(saved.props?.map((prop) => prop.id)).toEqual([5, 7]);
+      expect(saved.props?.[0]?.pose).toBeDefined();
+      expect(saved.props?.[1]).toEqual({ id: 7, clock: 150 });
+      const restore = {
+        pusherTickInCycle: saved.pusherTickInCycle,
+        coins: entries(sim),
+        props: saved.props ?? [],
+      };
+      const a = await createWithProps(PROPS, restore);
+      const b = await createWithProps(PROPS, restore);
+      expect(a.snapshot()).toEqual(saved);
+      expect(a.props()[1]?.translation.x).toBeCloseTo(
+        sim.props()[1]?.translation.x ?? Number.NaN,
+        6,
+      );
+      stepTo(a, 120);
+      stepTo(b, 120);
+      expect(a.hash()).toBe(b.hash());
+    });
+
+    it('starts every prop afresh when the restore has no props', async () => {
+      const sim = await createWithProps(PROPS);
+      stepTo(sim, 60);
+      const restored = await createWithProps(PROPS, {
+        pusherTickInCycle: sim.snapshot().pusherTickInCycle,
+        coins: entries(sim),
+      });
+      expect(restored.snapshot().props?.map((prop) => prop.clock)).toEqual([0, 0]);
+    });
+
+    it('refuses prop state that does not match the config', async () => {
+      const sim = await createWithProps(PROPS);
+      const saved = sim.snapshot();
+      const base = { pusherTickInCycle: saved.pusherTickInCycle, coins: entries(sim) };
+      const props = saved.props ?? [];
+      const weight = props[0];
+      if (!weight?.pose) {
+        throw new Error('the weight snapshot has no pose');
+      }
+      await expect(
+        createWithProps(PROPS, { ...base, props: [...props, { id: 9, clock: 0 }] }),
+      ).rejects.toThrow(/9/);
+      await expect(createWithProps(PROPS, { ...base, props: props.slice(0, 1) })).rejects.toThrow(
+        /7/,
+      );
+      await expect(
+        createWithProps(PROPS, {
+          ...base,
+          props: [weight, { id: 7, clock: 0, pose: weight.pose }],
+        }),
+      ).rejects.toThrow(/pose/);
+      await expect(
+        createWithProps(PROPS, { ...base, props: [weight, { id: 7, clock: -1 }] }),
+      ).rejects.toThrow(/clock/);
+      await expect(createWithProps([], { ...base, props })).rejects.toThrow(
+        /options\.props has none/,
+      );
+    });
   });
 });
