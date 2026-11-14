@@ -1,4 +1,4 @@
-import { stewardAllowance } from '@coinposh/economy';
+import { openingHeap, stewardAllowance } from '@coinposh/economy';
 import { affordableCount, upgradeRows } from '../app/model.ts';
 import type { NudgeWallet } from './components/upgradeNudge.ts';
 import type { PanelId } from '../app/state.ts';
@@ -72,11 +72,70 @@ function createBadge(ctx: UiContext): HTMLElement {
 
 const POSTER_ID = 'cp-poster';
 /** Outlasts the poster's CSS cross-fade, so it is removed even if `transitionend` never fires. */
-const POSTER_FADE_MS = 1000;
+const POSTER_FADE_MS = 600;
+/**
+ * The poster is the settled opening heap (scripts/capture-poster.ts), so it waits until the
+ * live table holds nearly as many coins; leaving earlier shows the heap filling in.
+ */
+const POSTER_HEAP_SHARE = 0.9;
+/**
+ * The poster shows the pusher retracted, where a fresh table starts. A software renderer's shader
+ * stall can let the sim run on under the poster, so it also waits for the pusher to come back.
+ * The pusher spends about a quarter of its cycle under this stroke, a second at 60 Hz, so frames
+ * that slow still land in it.
+ */
+const POSTER_PUSHER_STROKE = 0.15;
+/**
+ * Two 240-tick pusher cycles, counted from the first frame after the stall, so a pusher that
+ * never retracts cannot strand the poster.
+ */
+const POSTER_POSE_WAIT_TICKS = 480;
 
-interface BootProbe {
-  readonly sim: { readonly renderTick: number } | null;
+export interface BootProbe {
+  readonly sim: {
+    readonly renderTick: number;
+    readonly coins: number;
+    /** 0 retracted to 1 at full stroke (SimBridgeStats). */
+    readonly pusherStroke: number;
+  } | null;
   readonly playable: boolean;
+  /** How the booted table was laid; null while no sim runs or it had no table to lay. */
+  readonly restored: { readonly poses: number; readonly heapSlots: number } | null;
+}
+
+/**
+ * The coins the live table must show before the poster may leave: 90 % of the opening heap,
+ * or of a restored table that holds fewer, so a played-down table never strands the poster.
+ */
+export function posterHeapTarget(restored: BootProbe['restored']): number {
+  const laid = restored ? restored.poses + restored.heapSlots : 0;
+  return Math.ceil(Math.min(laid, openingHeap.coins) * POSTER_HEAP_SHARE);
+}
+
+/**
+ * Returns a per-frame check that turns true on the second lit frame drawing enough of the laid
+ * table to match the poster, with the pusher back where the poster shows it: the first such frame
+ * also links the coins' shaders, and the stall that follows it stays under the poster instead of
+ * freezing the table mid-fade.
+ */
+export function createPosterGate(probe: BootProbe): () => boolean {
+  let heapTick: number | null = null;
+  let poseFromTick: number | null = null;
+  return () => {
+    const { sim } = probe;
+    if (!sim || sim.renderTick <= 0 || sim.coins < posterHeapTarget(probe.restored)) {
+      heapTick = null;
+      poseFromTick = null;
+      return false;
+    }
+    heapTick ??= sim.renderTick;
+    if (sim.renderTick <= heapTick) return false;
+    poseFromTick ??= sim.renderTick;
+    return (
+      sim.pusherStroke <= POSTER_PUSHER_STROKE ||
+      sim.renderTick - poseFromTick >= POSTER_POSE_WAIT_TICKS
+    );
+  };
 }
 
 function retirePoster(poster: HTMLElement): void {
@@ -94,8 +153,9 @@ function retirePoster(poster: HTMLElement): void {
 }
 
 /**
- * The first frame that syncs sim coins is the first one drawn with the venue lit, so the poster
- * from index.html leaves on it. Without a probe (the UI preview) there is no boot to wait for.
+ * Wakes the side meters once the table takes drops, and retires the poster from index.html once
+ * the live table matches it; either may come first. Without a probe (the UI preview) there is no
+ * boot to wait for.
  */
 function followBoot(ctx: UiContext, meters: HTMLElement, onPlayable: () => void): void {
   const probe: BootProbe | undefined = window.__coinposh;
@@ -103,16 +163,20 @@ function followBoot(ctx: UiContext, meters: HTMLElement, onPlayable: () => void)
   meters.classList.add('is-waiting');
   meters.inert = true;
   let poster = document.getElementById(POSTER_ID);
+  let waiting = true;
+  const posterMayLeave = createPosterGate(probe);
   const stop = schedule(() => {
-    if (poster && (probe.playable || (probe.sim?.renderTick ?? 0) > 0)) {
+    if (poster && posterMayLeave()) {
       retirePoster(poster);
       poster = null;
     }
-    if (!probe.playable) return true;
-    meters.classList.remove('is-waiting');
-    meters.inert = false;
-    onPlayable();
-    return false;
+    if (waiting && probe.playable) {
+      waiting = false;
+      meters.classList.remove('is-waiting');
+      meters.inert = false;
+      onPlayable();
+    }
+    return waiting || poster !== null;
   });
   ctx.own(() => {
     stop();
