@@ -153,6 +153,27 @@ export class RestoreError extends Error {
   }
 }
 
+/** The rule behind an `over_envelope` claim refusal. */
+export type EnvelopeCheck =
+  | 'clock_ahead'
+  | 'tick_order'
+  | 'fall_travel'
+  | 'fall_same_tick'
+  | 'fall_window'
+  | 'fusion_settle'
+  | 'fusion_window';
+
+export interface EnvelopeRefusal {
+  readonly kind: Claim['kind'];
+  readonly tick: number;
+  readonly check: EnvelopeCheck;
+  /** The numbers the check compared, for a person reading a failed run. */
+  readonly detail: string;
+}
+
+/** Refusals kept per player, newest last; a run that needs more is already broken. */
+const ENVELOPE_REFUSALS_RETAINED = 200;
+
 export interface LedgerEntry {
   readonly seq: number;
   readonly at: number;
@@ -523,6 +544,8 @@ export class MockWorld {
   readonly #claimedThisPage = new Set<CrateId>();
   /** Table snapshots accepted per player in this page life; never stored, like the claims above. */
   readonly #acceptedSnapshots = new Map<PlayerId, number>();
+  /** Every `over_envelope` claim refusal of this page life and the check behind it; never stored. */
+  readonly #envelopeRefusals = new Map<PlayerId, EnvelopeRefusal[]>();
 
   /**
    * A seeded Demo page replays the same `crypto` stream after every reload, so ids minted in a
@@ -647,6 +670,24 @@ export class MockWorld {
   /** How many table snapshots this page life accepted from the player, for the Demo test handle. */
   acceptedSnapshots(id: PlayerId): number {
     return this.#acceptedSnapshots.get(id) ?? 0;
+  }
+
+  /** The claims this page life refused as `over_envelope` for the player, oldest first. */
+  envelopeRefusals(id: PlayerId): readonly EnvelopeRefusal[] {
+    return [...(this.#envelopeRefusals.get(id) ?? [])];
+  }
+
+  #noteEnvelopeRefusal(id: PlayerId, refusal: EnvelopeRefusal): void {
+    let refusals = this.#envelopeRefusals.get(id);
+    if (refusals === undefined) {
+      refusals = [];
+      this.#envelopeRefusals.set(id, refusals);
+    }
+    refusals.push(refusal);
+    if (refusals.length > ENVELOPE_REFUSALS_RETAINED) refusals.shift();
+    console.warn(
+      `[CoinPosh Demo] ${refusal.kind} claim refused (${refusal.check}): ${refusal.detail}`,
+    );
   }
 
   player(id: PlayerId): MockPlayer | undefined {
@@ -1768,7 +1809,7 @@ export class MockWorld {
 
   /**
    * Claims are checked against server state only: the tick must map to fresh server time and
-   * move forward, the coin must have had time to reach the edge since it spawned, and falls and
+   * not fall behind the last coin claim, the coin must have had time to reach the edge since it spawned, and falls and
    * fusions stay inside a sliding window of plausible throughput (01-ARCHITECTURE.md Layer 2).
    */
   #claim(player: MockPlayer, claim: Claim, now: number): ClaimResult {
@@ -1778,11 +1819,17 @@ export class MockWorld {
       status: 'rejected',
       reason,
     });
+    const refuse = (check: EnvelopeCheck, detail: string): ClaimResult => {
+      this.#noteEnvelopeRefusal(player.id, { kind: claim.kind, tick: claim.tick, check, detail });
+      return reject('over_envelope');
+    };
     const verdict = this.#tickClock(player, claim.tick, now);
-    if (verdict === 'ahead') return reject('over_envelope');
+    if (verdict === 'ahead') {
+      return refuse('clock_ahead', `tick ${claim.tick} maps past server time plus the slack`);
+    }
     if (verdict === 'expired') return reject('expired');
     if (player.lastClaimTick !== null && claim.tick < player.lastClaimTick) {
-      return reject('over_envelope');
+      return refuse('tick_order', `tick ${claim.tick} < last claim tick ${player.lastClaimTick}`);
     }
     switch (claim.kind) {
       case 'fall': {
@@ -1797,15 +1844,20 @@ export class MockWorld {
           return reject('not_on_table');
         }
         const travel = pushTravelTicks(MIN_FALL_TICKS[record.origin], levelMap(player));
-        if (claim.tick < record.spawnTick + travel) return reject('over_envelope');
+        if (claim.tick < record.spawnTick + travel) {
+          return refuse(
+            'fall_travel',
+            `${record.origin} coin spawned at ${record.spawnTick} fell at ${claim.tick}, under ${travel} ticks`,
+          );
+        }
         const { maxPerTick } = MOCK_RULES.fallEnvelope;
         const max = envelopeMax(player, MOCK_RULES.fallEnvelope.max, rateEnvelope.falls);
         const sameTick = player.recentFalls.filter((tick) => tick === claim.tick).length;
-        if (
-          sameTick >= maxPerTick ||
-          !admitToWindow(player.recentFalls, claim.tick, FALL_WINDOW_TICKS, max)
-        ) {
-          return reject('over_envelope');
+        if (sameTick >= maxPerTick) {
+          return refuse('fall_same_tick', `${sameTick} falls already claimed at ${claim.tick}`);
+        }
+        if (!admitToWindow(player.recentFalls, claim.tick, FALL_WINDOW_TICKS, max)) {
+          return refuse('fall_window', `${max} falls already inside ${FALL_WINDOW_TICKS} ticks`);
         }
         player.recentFalls.push(claim.tick);
         player.lastClaimTick = claim.tick;
@@ -1846,16 +1898,15 @@ export class MockWorld {
         if (records.some((record) => record.coin.tier !== tier)) return reject('tier_mismatch');
         const next = nextCoinTier(tier);
         if (next === null) return reject('max_tier');
-        if (
-          unsettled ||
-          !admitToWindow(
-            player.recentFusions,
-            claim.tick,
-            FUSION_WINDOW_TICKS,
-            envelopeMax(player, MOCK_RULES.fusionEnvelope.max, rateEnvelope.fusions),
-          )
-        ) {
-          return reject('over_envelope');
+        if (unsettled) {
+          return refuse('fusion_settle', `an input spawned under ${MIN_FUSION_TICKS} ticks ago`);
+        }
+        const fusionMax = envelopeMax(player, MOCK_RULES.fusionEnvelope.max, rateEnvelope.fusions);
+        if (!admitToWindow(player.recentFusions, claim.tick, FUSION_WINDOW_TICKS, fusionMax)) {
+          return refuse(
+            'fusion_window',
+            `${fusionMax} fusions already inside ${FUSION_WINDOW_TICKS} ticks`,
+          );
         }
         player.recentFusions.push(claim.tick);
         player.lastClaimTick = claim.tick;
@@ -1875,6 +1926,8 @@ export class MockWorld {
         return { status: 'accepted', credited: 0, cascade: null, minted };
       }
       case 'crate': {
+        // The client claims a crate at its newest sim tick but settles coin falls at the trailing
+        // render tick, so a crate claim must not push the tick floor past falls still in flight.
         const record = player.crates.get(claim.crateId);
         if (record === undefined) {
           return reject(
@@ -1888,11 +1941,9 @@ export class MockWorld {
           if (claim.tick < record.spawnTick) return reject('not_on_table');
           record.relaidIn = null;
           this.#claimedThisPage.add(claim.crateId);
-          player.lastClaimTick = claim.tick;
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
         }
         if (claim.tick < record.spawnTick) return reject('not_on_table');
-        player.lastClaimTick = claim.tick;
         if (claim.edge === 'front') {
           record.state = 'openable';
           this.#claimedThisPage.add(claim.crateId);
