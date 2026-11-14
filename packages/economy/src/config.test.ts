@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { economyConfig } from './config/index.ts';
+import { bootBankroll, economyConfig } from './config/index.ts';
 import { ODDS_SCALE, formatPercent, oddsRows, oddsTotal } from './odds.ts';
 import { upgradeStat } from './formulas.ts';
 import { validateEconomyConfig } from './validate.ts';
@@ -88,6 +88,31 @@ describe('shipped economy config', () => {
       expect(line.growth).toBeGreaterThanOrEqual(1.12);
       expect(line.growth).toBeLessThanOrEqual(1.18);
     }
+  });
+});
+
+describe('first-boot bankroll (P-617)', () => {
+  const trustFund = economyConfig.upgradeLines.find((l) => l.effect.stat === 'startingCoins');
+  if (trustFund === undefined) throw new Error('No startingCoins upgrade line');
+  const startingCoins = Math.floor(upgradeStat(trustFund, 0));
+  const dropValue = economyConfig.coinTiers[0].value;
+  const DEMO_BUFFER = 12;
+
+  it('leaves at least 20 spendable coins on the plaque after either host pre-pays its buffer', () => {
+    expect(bootBankroll.spendableCoins).toBeGreaterThanOrEqual(20);
+    for (const bufferSize of [DEMO_BUFFER, bootBankroll.dropBufferCoins]) {
+      expect(startingCoins - bufferSize * dropValue).toBeGreaterThanOrEqual(20);
+    }
+    expect(startingCoins - bootBankroll.dropBufferCoins * dropValue).toBe(
+      bootBankroll.spendableCoins,
+    );
+  });
+
+  it('prices the cheapest coin upgrade above the starting coins, so the first one is earned', () => {
+    const cheapest = Math.min(
+      ...economyConfig.upgradeLines.filter((l) => l.currency === 'coins').map((l) => l.baseCost),
+    );
+    expect(cheapest).toBeGreaterThan(startingCoins);
   });
 });
 

@@ -77,9 +77,17 @@ function pourEverything(dropsPerSecond: number, seed: number, withAllowance: boo
   return { brokeAt, resumedAt, player };
 }
 
+const STARTING_COINS =
+  economyConfig.upgradeLines.find((l) => l.effect.stat === 'startingCoins')?.effect.base ?? 0;
+/**
+ * The slowest pour that empties the starting Vault inside the deadline. One tick of slack: the
+ * sim drops on whole 1 s ticks and its drop carry is a float.
+ */
+const SLOWEST_FULL_POUR = STARTING_COINS / (POUR_DEADLINE_SECONDS - simModel.tickSeconds);
+
 describe("Steward's allowance in the economy sim", () => {
   it('reproduces the playtest dead end without it: a poured-out Vault never drops again', () => {
-    const run = pourEverything(simModel.baseDropsPerSecond, 1, false);
+    const run = pourEverything(SLOWEST_FULL_POUR, 1, false);
     expect(run.brokeAt).not.toBeNull();
     expect(run.brokeAt).toBeLessThanOrEqual(POUR_DEADLINE_SECONDS);
     expect(run.resumedAt).toBeNull();
@@ -87,13 +95,9 @@ describe("Steward's allowance in the economy sim", () => {
 
   it('lets a player who pours everything in the first 30 s drop again within 20 s', () => {
     const fastestTap = 4;
-    const startingCoins =
-      economyConfig.upgradeLines.find((l) => l.effect.stat === 'startingCoins')?.effect.base ?? 0;
-    // One tick of slack: the sim drops on whole 1 s ticks and its drop carry is a float.
-    const slowestFullPour = startingCoins / (POUR_DEADLINE_SECONDS - simModel.tickSeconds);
     fc.assert(
       fc.property(
-        fc.double({ min: slowestFullPour, max: fastestTap, noNaN: true }),
+        fc.double({ min: SLOWEST_FULL_POUR, max: fastestTap, noNaN: true }),
         fc.integer(),
         (dropsPerSecond, seed) => {
           const run = pourEverything(dropsPerSecond, seed, true);

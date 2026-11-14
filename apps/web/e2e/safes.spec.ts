@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { FULL_SAFE } from '../src/vfx/cinematics/safe/plan.ts';
 import { bootGame, expect, probe, test, vaultBalance } from './fixtures.ts';
 
 const DEMO_STORAGE_KEY = 'coinposh.demo.world';
@@ -190,10 +191,17 @@ test.describe('Safes sheet (P-544)', () => {
 
     const before = { vault: await vaultBalance(page), server: await serverWallet(page) };
     await rows.first().getByTestId('safe-open-timer').click();
-    const collect = page.getByTestId('safe-collect');
-    await expect(collect).toBeVisible({ timeout: 30_000 });
     await expect.poll(async () => (await probe(page)).counts.safesOpened).toBe(1);
-    await collect.click();
+    // The contents collect themselves FULL_SAFE.autoCollectMs after they settle, so Collect is
+    // pressed the moment they do: a slow expect poll here races the auto-collect and loses.
+    await page.waitForFunction(
+      () =>
+        document.querySelector<HTMLElement>('[data-testid="safe-cinematic"]')?.dataset.phase ===
+        'settled',
+      null,
+      { polling: 16, timeout: 30_000 },
+    );
+    await page.getByTestId('safe-collect').click({ timeout: FULL_SAFE.autoCollectMs });
     await expect.poll(async () => (await probe(page)).counts.safesCollected).toBe(1);
 
     const after = await serverWallet(page);

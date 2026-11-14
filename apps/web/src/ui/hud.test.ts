@@ -8,6 +8,11 @@ import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../i18n/index.ts';
 import {
   createPosterGate,
   dockAffordableCount,
+  HANDOVER_DWELL_MS,
+  HANDOVER_MAX_STEPS,
+  HANDOVER_STEP_MS,
+  InHandHandover,
+  type InHandView,
   inHandCopy,
   posterHeapTarget,
   safesTriggerBeckons,
@@ -255,5 +260,182 @@ describe('setInHand', () => {
       setInHand(store, 0);
       setInHand(store, 12);
     }).not.toThrow();
+  });
+});
+
+/** A handover on a hand-cranked clock, with the plaque and the hand read the way trackVault does. */
+function handoverRig(options: { reduced?: boolean } = {}) {
+  let now = 0;
+  const due: { at: number; run: () => void; live: boolean }[] = [];
+  let target = 0;
+  let total = 0;
+  let holding = false;
+  const views: (InHandView & { plaque: number })[] = [];
+  const read = (): InHandView => {
+    const view = hand.view(target, total, holding);
+    views.push({ ...view, plaque: total - view.coins });
+    return view;
+  };
+  const hand: InHandHandover = new InHandHandover({
+    changed: () => {
+      read();
+    },
+    reducedMotion: () => options.reduced ?? false,
+    later(ms, run) {
+      const entry = { at: now + ms, run, live: true };
+      due.push(entry);
+      return () => {
+        entry.live = false;
+      };
+    },
+  });
+  return {
+    hand,
+    views,
+    /** The table reports a buffer of `inHand` beside a Vault of `vault`, with or without a hold. */
+    report(next: { vault: number; inHand: number; holding?: boolean }): InHandView {
+      target = next.inHand;
+      total = next.vault + next.inHand;
+      holding = next.holding ?? holding;
+      return read();
+    },
+    advance(ms: number): void {
+      const until = now + ms;
+      for (;;) {
+        const next = due
+          .filter((entry) => entry.live && entry.at <= until)
+          .sort((a, b) => a.at - b.at)[0];
+        if (!next) break;
+        next.live = false;
+        now = next.at;
+        next.run();
+      }
+      now = until;
+    },
+  };
+}
+
+describe('InHandHandover', () => {
+  it('follows the buffer one for one while no payout holds the plaque', () => {
+    const rig = handoverRig();
+    expect(rig.report({ vault: 20, inHand: 12 })).toEqual({
+      coins: 12,
+      held: false,
+      handover: false,
+    });
+    expect(rig.report({ vault: 21, inHand: 11 }).coins).toBe(11);
+  });
+
+  it('keeps the hand from before the hold behind a reveal, never 0, and the refill on the plaque', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 4, inHand: 8 });
+    expect(rig.report({ vault: 12, inHand: 0, holding: true })).toEqual({
+      coins: 8,
+      held: true,
+      handover: false,
+    });
+    expect(rig.views.at(-1)?.plaque).toBe(4);
+    const paid = rig.report({ vault: 24, inHand: 0 });
+    expect(paid.coins, 'the hand still reads what it read before the hold').toBe(8);
+    expect(rig.views.at(-1)?.plaque).toBe(16);
+  });
+
+  it('takes the drops made during a hold out of the hand, not out of the plaque', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 10, inHand: 6 });
+    rig.report({ vault: 10, inHand: 6, holding: true });
+    rig.hand.spent(1);
+    expect(rig.report({ vault: 10, inHand: 5 }).coins).toBe(5);
+    rig.hand.spent(1);
+    expect(rig.report({ vault: 9, inHand: 5 }).coins, 'a refill stays on the plaque').toBe(4);
+    expect(rig.views.at(-1)?.plaque).toBe(10);
+  });
+
+  it('never shows more in hand than the Vault and the hand hold together', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 0, inHand: 8 });
+    expect(rig.report({ vault: 0, inHand: 3, holding: true }).coins).toBe(3);
+  });
+
+  it('holds the payout on the plaque for the dwell, then hands the refill over in steps', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 0, inHand: 0 });
+    rig.report({ vault: 0, inHand: 0, holding: true });
+    rig.report({ vault: 12, inHand: 0 });
+    rig.report({ vault: 0, inHand: 12 });
+    const released = rig.report({ vault: 0, inHand: 12, holding: false });
+    expect(released).toEqual({ coins: 0, held: true, handover: false });
+    rig.advance(HANDOVER_DWELL_MS - 1);
+    expect(
+      rig.views.every((view) => view.coins === 0),
+      'nothing moves during the dwell',
+    ).toBe(true);
+    rig.advance(1 + HANDOVER_STEP_MS * HANDOVER_MAX_STEPS);
+    const steps = rig.views.filter((view) => view.handover);
+    expect(steps).toHaveLength(HANDOVER_MAX_STEPS);
+    expect(steps.map((view) => view.coins)).toEqual([2, 4, 6, 8, 10, 12]);
+    expect(steps.map((view) => view.plaque)).toEqual([10, 8, 6, 4, 2, 0]);
+    expect(rig.views.slice(3).every((view) => view.coins + view.plaque === 12)).toBe(true);
+    expect(rig.views.at(-1)).toEqual({ coins: 12, held: false, handover: false, plaque: 0 });
+  });
+
+  it('hands a refill that arrives during the dwell over too', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 0, inHand: 0 });
+    rig.report({ vault: 5, inHand: 0, holding: true });
+    rig.report({ vault: 5, inHand: 0, holding: false });
+    rig.advance(400);
+    expect(rig.report({ vault: 0, inHand: 5 }).coins).toBe(0);
+    rig.advance(HANDOVER_DWELL_MS);
+    expect(rig.views.filter((view) => view.handover).length).toBeGreaterThan(0);
+    rig.advance(HANDOVER_STEP_MS * HANDOVER_MAX_STEPS);
+    expect(rig.views.at(-1)).toMatchObject({ coins: 5, held: false });
+  });
+
+  it('under reduced motion hands the refill over in one step', () => {
+    const rig = handoverRig({ reduced: true });
+    rig.report({ vault: 0, inHand: 0 });
+    rig.report({ vault: 0, inHand: 12, holding: true });
+    rig.report({ vault: 0, inHand: 12, holding: false });
+    rig.advance(HANDOVER_DWELL_MS);
+    const steps = rig.views.filter((view) => view.handover);
+    expect(steps).toEqual([{ coins: 12, held: true, handover: true, plaque: 0 }]);
+    expect(rig.views.at(-1)).toMatchObject({ coins: 12, held: false });
+  });
+
+  it('ends quietly when the hold let go with no refill to hand over', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 4, inHand: 12 });
+    rig.report({ vault: 4, inHand: 12, holding: true });
+    rig.report({ vault: 16, inHand: 12, holding: false });
+    rig.advance(HANDOVER_DWELL_MS);
+    expect(rig.views.some((view) => view.handover)).toBe(false);
+    expect(rig.views.at(-1)).toEqual({ coins: 12, held: false, handover: false, plaque: 16 });
+  });
+
+  it('pins the hand again when a new hold starts mid-handover', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 0, inHand: 0 });
+    rig.report({ vault: 0, inHand: 12, holding: true });
+    rig.report({ vault: 0, inHand: 12, holding: false });
+    rig.advance(HANDOVER_DWELL_MS + HANDOVER_STEP_MS);
+    const midway = rig.views.at(-1)?.coins ?? 0;
+    expect(midway).toBeGreaterThan(0);
+    expect(midway).toBeLessThan(12);
+    expect(rig.report({ vault: 0, inHand: 12, holding: true }).coins).toBe(midway);
+    rig.advance(HANDOVER_DWELL_MS * 3);
+    expect(rig.views.at(-1)?.coins, 'no step runs while the new hold lasts').toBe(midway);
+  });
+
+  it('dispose cancels a pending handover', () => {
+    const rig = handoverRig();
+    rig.report({ vault: 0, inHand: 0 });
+    rig.report({ vault: 0, inHand: 12, holding: true });
+    rig.report({ vault: 0, inHand: 12, holding: false });
+    rig.hand.dispose();
+    const seen = rig.views.length;
+    rig.advance(HANDOVER_DWELL_MS * 2);
+    expect(rig.views).toHaveLength(seen);
+    expect(rig.hand.held).toBe(false);
   });
 });
