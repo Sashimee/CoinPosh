@@ -114,7 +114,7 @@ import {
 } from '@coinposh/sim/snapshot';
 import { randomBase62 } from '../encoding.ts';
 import { newSeed, nextRoll, reveal, type FairSeedState } from './fair.ts';
-import type { PersistedPlayer, PersistedWorld } from './persist.ts';
+import { FeatureIdSchema, type PersistedPlayer, type PersistedWorld } from './persist.ts';
 import { MOCK_RULES } from './rules.ts';
 import {
   CHUTE_POSE,
@@ -526,6 +526,57 @@ function envelopeMax(
   return Math.ceil(base * scale - 1e-9);
 }
 
+/**
+ * Why `value` would not come back from `JSON.stringify` then `JSON.parse` as it went in, or null
+ * when it would. A feature's state must survive a reload exactly, so anything JSON drops or
+ * rewrites (undefined, a Date, NaN, a class instance) is refused instead of quietly changing.
+ */
+function jsonLoss(value: unknown, path: string, open: Set<object>): string | null {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && !Object.is(value, -0) ? null : `${path} is ${String(value)}`;
+  }
+  if (typeof value === 'function') return `${path} is a function`;
+  if (typeof value !== 'object') return `${path} is ${typeof value}`;
+  if (open.has(value)) return `${path} refers back to itself`;
+  const proto: unknown = Object.getPrototypeOf(value);
+  const isArray = Array.isArray(value);
+  if (isArray ? proto !== Array.prototype : proto !== Object.prototype && proto !== null) {
+    const name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+    return `${path} is a ${typeof name === 'string' && name !== '' ? name : 'class instance'}, not plain data`;
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) return `${path} has symbol keys`;
+  open.add(value);
+  try {
+    if (isArray) {
+      const items = value as unknown[];
+      for (let i = 0; i < items.length; i++) {
+        if (!(i in items)) return `${path}[${i}] is a hole`;
+        const loss = jsonLoss(items[i], `${path}[${i}]`, open);
+        if (loss !== null) return loss;
+      }
+      return null;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      if (key === '__proto__') return `${path} has a __proto__ key`;
+      const loss = jsonLoss(item, `${path}.${key}`, open);
+      if (loss !== null) return loss;
+    }
+    return null;
+  } finally {
+    open.delete(value);
+  }
+}
+
+/** Why `featureId` cannot store `value`, or null when it can. */
+function featureStateIssue(featureId: string, value: unknown): string | null {
+  if (!FeatureIdSchema.safeParse(featureId).success) {
+    return `"${featureId}" is not a feature id; use lowercase letters, digits, ".", "_" or "-", starting with a letter`;
+  }
+  const loss = jsonLoss(value, featureId, new Set());
+  return loss === null ? null : `${featureId} state cannot be stored because ${loss}`;
+}
+
 function emptyWallet(): Wallet {
   return { coins: 0, bullion: 0, goldBars: 0, pearls: 0, keys: 0, tickets: 0, stars: 0 };
 }
@@ -539,6 +590,8 @@ export class MockWorld {
   readonly #byDevice = new Map<string, PlayerId>();
   /** Page lives this world was restored through; 0 for a world that started in this page. */
   #epoch = 0;
+  /** Each feature module's state, kept as its JSON so no caller can mutate a stored value. */
+  readonly #features = new Map<string, string>();
   /**
    * Openable crates whose claim this page life accepted. The client that holds that claim may
    * still have its open in flight, so an in-page re-boot must not lay the crate back at the lip.
@@ -567,7 +620,32 @@ export class MockWorld {
       ledger: this.#ledger.map((entry) => ({ ...entry, delta: { ...entry.delta } })),
       checkpoints: [...this.#checkpoints].map(([id, wallet]) => [id, { ...wallet }]),
       players: [...this.#players.values()].map(persistPlayer),
+      features: Object.fromEntries(
+        [...this.#features].map(([id, json]) => [id, JSON.parse(json) as unknown]),
+      ),
     };
+  }
+
+  /** A fresh copy of the state `featureId` last stored, or undefined when it stored none. */
+  featureState(featureId: string): unknown {
+    const json = this.#features.get(featureId);
+    return json === undefined ? undefined : (JSON.parse(json) as unknown);
+  }
+
+  /**
+   * Stores a feature module's state with the world, so it is saved in the same write as the
+   * ledger its rewards credit. `undefined` clears the slot; any other value must be plain JSON
+   * data, or this throws naming the feature.
+   */
+  setFeatureState(featureId: string, value: unknown): void {
+    const issue = featureStateIssue(featureId, value === undefined ? null : value);
+    if (issue !== null) {
+      throw new Error(
+        `Mock feature state: ${issue}. Store plain JSON data: objects, arrays, strings, finite numbers, booleans or null.`,
+      );
+    }
+    if (value === undefined) this.#features.delete(featureId);
+    else this.#features.set(featureId, JSON.stringify(value));
   }
 
   /**
@@ -600,6 +678,11 @@ export class MockWorld {
       }
       lastSeq = entry.seq;
       world.#ledger.push({ ...entry, delta: { ...entry.delta } });
+    }
+    for (const [featureId, value] of Object.entries(data.features)) {
+      const issue = featureStateIssue(featureId, value);
+      if (issue !== null) throw new RestoreError(`feature ${issue}`);
+      world.#features.set(featureId, JSON.stringify(value));
     }
     for (const player of world.#players.values()) {
       const replayed = world.ledgerCheckpoint(player.id);
