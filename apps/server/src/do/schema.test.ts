@@ -7,6 +7,7 @@ import { newSession } from '../test/client.ts';
 import { claims, dropAsClient, expectConserved, playerStub, reload, state } from '../test/game.ts';
 import { mintedValue } from './entities.ts';
 import { PlayerDO, PREMINT_BUFFER_TARGET } from './PlayerDO.ts';
+import { grantScratchCard } from '../routes/scratch.ts';
 import { MIGRATIONS } from './schema.ts';
 
 const COPPER = coinTiers[0];
@@ -294,6 +295,50 @@ describe('a player stored before Venue Ascension', () => {
       lifetimeBullion: 0,
     });
     expect(booted.familyOffice).toEqual({ oldMoney: 0, privateCourier: 0, trustFund: 1 });
+    await expectConserved(session);
+  });
+});
+
+describe('a player stored before scratch cards', () => {
+  it('gets the scratch_cards table on construction, holding no cards, and keeps cards once granted', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_live: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      const objects = () =>
+        sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger', 'index') AND name LIKE 'scratch\\_cards%' ESCAPE '\\' ORDER BY name",
+          )
+          .toArray()
+          .map((row) => row.name);
+      const migrated = objects();
+      expect(migrated).toEqual([
+        'scratch_cards',
+        'scratch_cards_no_delete',
+        'scratch_cards_reveal_once',
+        'scratch_cards_state',
+      ]);
+      sql.exec('DROP TABLE scratch_cards');
+      const before = migrationIndex('CREATE TABLE IF NOT EXISTS scratch_cards');
+      expect(before).toBe(migrationIndex('CREATE TABLE IF NOT EXISTS safes') + 1);
+      sql.exec('UPDATE schema_version SET version = ?', before);
+      expect(objects()).toEqual([]);
+
+      new PlayerDO(ctx, env);
+      expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
+        version: MIGRATIONS.length,
+      });
+      expect(objects()).toEqual(migrated);
+      expect(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM scratch_cards').one().n).toBe(0);
+
+      grantScratchCard(sql, { source: 'quest:migrated' }, { at: Date.now(), idempotencyKey: null });
+      sql.exec('UPDATE schema_version SET version = ?', before);
+      new PlayerDO(ctx, env);
+      expect(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM scratch_cards').one().n).toBe(1);
+    });
+
+    expect((await state(session)).inventory.scratchCards).toHaveLength(1);
     await expectConserved(session);
   });
 });

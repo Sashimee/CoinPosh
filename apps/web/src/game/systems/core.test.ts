@@ -723,6 +723,249 @@ describe('systems core: the sim event stream', () => {
     expect(table.falls.map((f) => f.coinId)).toEqual([coin(77, 'silver').id, coin(4).id]);
   });
 
+  it('claims a fusion of coins the frame never drew, one dropped only once its mint landed', () => {
+    const { core, sim, table, advance, dropCoins, sync, leave } = setup();
+    const fusions = record(core, 'coin:fusion');
+    const center = { x: 0, y: 0.1, z: 0 };
+    dropCoins(1);
+    expect(core.drop(0)).toBe(true);
+    advance(MIN_TICKS_BETWEEN_DROPS);
+    table.next = { coin: null };
+    expect(core.drop(0)).toBe(true);
+    advance(MIN_TICKS_BETWEEN_DROPS);
+    expect(sim.drops).toHaveLength(2);
+    table.emit({ type: 'dropSettled', key: key(3), coin: coin(30), spawnedCrates: [] });
+    expect(sim.drops).toHaveLength(3);
+    const fusedId = sim.spawn();
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: sim.stats.tick,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId,
+          position: center,
+        },
+      ],
+    });
+    expect(table.fusions).toEqual([[coin(1).id, coin(2).id, coin(30).id]]);
+    expect(fusions.map((f) => f.claimed)).toEqual([true]);
+
+    for (const id of [0, 1, 2]) sim.bodies.delete(id);
+    expect(core.drop(0)).toBe(true);
+    sync();
+    expect(core.coinOf(fusedId)).toBeNull();
+    expect(core.coinOf(fusedId + 1)).toBe(coin(4).id);
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(1).id, coin(2).id, coin(30).id], tick: 0 },
+      result: { status: 'accepted', credited: 0, cascade: null, minted: coin(77, 'silver') },
+    });
+    leave(fusedId + 1, FRONT);
+    leave(fusedId, FRONT);
+    expect(table.falls.map((f) => f.coinId)).toEqual([coin(4).id, coin(77, 'silver').id]);
+    expect(table.fusions).toHaveLength(1);
+  });
+
+  it('pairs a dropped coin that fell before any frame drew it with its own coin', () => {
+    const { core, sim, table, advance, sync, leave } = setup();
+    const fell = record(core, 'coin:fell');
+    for (let i = 0; i < 2; i += 1) {
+      expect(core.drop(0)).toBe(true);
+      advance(MIN_TICKS_BETWEEN_DROPS);
+    }
+    sim.stats.renderTick = sim.stats.tick;
+    sim.emit({ falls: [{ coinId: 0, edge: 'left', tick: sim.stats.tick }] });
+    sim.bodies.delete(0);
+    sync();
+    leave(1, FRONT);
+    expect(table.falls.map((f) => [f.coinId, f.edge])).toEqual([
+      [coin(1).id, 'left'],
+      [coin(2).id, 'front'],
+    ]);
+    expect(fell.map((f) => f.coin?.id)).toEqual([coin(1).id, coin(2).id]);
+  });
+
+  it('chains a fusion onto a fused coin whose own claim has not settled yet', () => {
+    const heap = [coin(101), coin(102), coin(103), coin(104, 'silver'), coin(105, 'silver')];
+    const { core, sim, table, sync, leave } = setup({ heap });
+    const fusions = record(core, 'coin:fusion');
+    const center = { x: 0, y: 0.1, z: 0 };
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.tick = 100;
+    const silver = sim.spawn();
+    const gold = sim.spawn();
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: 100,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId: silver,
+          position: center,
+        },
+        {
+          kind: 'fusion',
+          tick: 101,
+          ids: [silver, 3, 4],
+          tier: 'silver',
+          into: 'gold',
+          fusedId: gold,
+          position: center,
+        },
+      ],
+    });
+    expect(table.fusions).toEqual([[coin(101).id, coin(102).id, coin(103).id]]);
+    expect(fusions.map((f) => f.claimed)).toEqual([true, false]);
+
+    for (const id of [0, 1, 2, 3, 4]) sim.bodies.delete(id);
+    sync();
+    sim.bodies.delete(silver);
+    sync();
+    expect(table.fusions).toHaveLength(1);
+
+    sim.stats.tick = 130;
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 100 },
+      result: { status: 'accepted', credited: 0, cascade: null, minted: coin(77, 'silver') },
+    });
+    expect(table.fusions).toEqual([
+      [coin(101).id, coin(102).id, coin(103).id],
+      [coin(77, 'silver').id, coin(104, 'silver').id, coin(105, 'silver').id],
+    ]);
+    expect(table.fusionTicks).toEqual([100, 130]);
+    expect(core.coinOf(silver)).toBeNull();
+
+    table.emit({
+      type: 'claimSettled',
+      claim: {
+        kind: 'fusion',
+        coinIds: [coin(77, 'silver').id, coin(104, 'silver').id, coin(105, 'silver').id],
+        tick: 130,
+      },
+      result: { status: 'accepted', credited: 0, cascade: null, minted: coin(88, 'gold') },
+    });
+    leave(gold, FRONT);
+    expect(table.falls.map((f) => f.coinId)).toEqual([coin(88, 'gold').id]);
+  });
+
+  it('claims the fall of a fused coin that left before its own claim settled once it does', () => {
+    const heap = [coin(101), coin(102), coin(103), coin(104), coin(105), coin(106)];
+    const { core, sim, table, sync, leave } = setup({ heap });
+    const fell = record(core, 'coin:fell');
+    const center = { x: 0, y: 0.1, z: 0 };
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.tick = 100;
+    const kept = sim.spawn();
+    const refused = sim.spawn();
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: 100,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId: kept,
+          position: center,
+        },
+        {
+          kind: 'fusion',
+          tick: 100,
+          ids: [3, 4, 5],
+          tier: 'copper',
+          into: 'silver',
+          fusedId: refused,
+          position: center,
+        },
+      ],
+    });
+    for (const id of [0, 1, 2, 3, 4, 5]) sim.bodies.delete(id);
+    sync();
+    sim.stats.tick = 140;
+    leave(kept, FRONT);
+    leave(refused, FRONT);
+    expect(fell).toEqual([]);
+    expect(table.falls).toEqual([]);
+
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(104).id, coin(105).id, coin(106).id], tick: 100 },
+      result: { status: 'rejected', reason: 'over_envelope' },
+    });
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 100 },
+      result: { status: 'accepted', credited: 0, cascade: null, minted: coin(77, 'silver') },
+    });
+    expect(fell.map((f) => f.coin?.id ?? null)).toEqual([null, coin(77, 'silver').id]);
+    expect(table.falls).toEqual([{ coinId: coin(77, 'silver').id, tick: 140, edge: 'front' }]);
+    expect(core.coinOf(kept)).toBeNull();
+  });
+
+  it('drops a held fusion, and the fusions chained on it, once an input can never be claimed', () => {
+    const heap = [coin(101), coin(102), coin(103), coin(104, 'silver'), coin(105, 'silver')];
+    const { core, sim, table, sync, leave } = setup({ heap });
+    const fell = record(core, 'coin:fell');
+    const center = { x: 0, y: 0.1, z: 0 };
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.tick = 100;
+    const silver = sim.spawn();
+    const gold = sim.spawn();
+    const platinum = sim.spawn();
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: 100,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId: silver,
+          position: center,
+        },
+        {
+          kind: 'fusion',
+          tick: 101,
+          ids: [silver, 3, 4],
+          tier: 'silver',
+          into: 'gold',
+          fusedId: gold,
+          position: center,
+        },
+        {
+          kind: 'fusion',
+          tick: 102,
+          ids: [gold, 50, 51],
+          tier: 'gold',
+          into: 'platinum',
+          fusedId: platinum,
+          position: center,
+        },
+      ],
+    });
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 100 },
+      result: { status: 'rejected', reason: 'over_envelope' },
+    });
+    expect(table.fusions).toHaveLength(1);
+    for (const id of [0, 1, 2, 3, 4, silver, gold]) sim.bodies.delete(id);
+    sync();
+    leave(platinum, FRONT);
+    expect(table.fusions).toHaveLength(1);
+    expect(table.falls).toEqual([]);
+    expect(fell.map((f) => f.coin)).toEqual([null]);
+  });
+
   it('voices the hardest contacts of a batch on the surfaces the audio knows', () => {
     const { core, sim } = setup();
     const contacts = record(core, 'coin:contact');

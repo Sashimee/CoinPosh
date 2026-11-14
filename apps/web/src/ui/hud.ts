@@ -1,10 +1,10 @@
 import { openingHeap, stewardAllowance } from '@coinposh/economy';
 import { affordableCount, upgradeRows } from '../app/model.ts';
 import type { NudgeWallet } from './components/upgradeNudge.ts';
-import type { PanelId } from '../app/state.ts';
+import type { PanelId, UiState } from '../app/state.ts';
 import { browserStorage } from '../app/settings.ts';
-import { watch } from '../app/store.ts';
-import { formatInteger } from '../i18n/index.ts';
+import { createStore, watch, type Store } from '../app/store.ts';
+import { formatInteger, type InterpolationValues, type Language } from '../i18n/index.ts';
 import { createBalancePlaque } from './components/balancePlaque.ts';
 import { createComboLadder } from './components/comboLadder.ts';
 import { createConciergeNotice, createDecorumMeter } from './components/decorumMeter.ts';
@@ -399,9 +399,146 @@ function isTableTap(event: PointerEvent): boolean {
   return !(event.target instanceof Element && event.target.closest('.cp-ui-host'));
 }
 
+/** Out of coins to drop: the Vault and the coins in hand together cannot pay for one. */
+export function vaultIsEmpty(vaultCoins: number, inHandCoins: number): boolean {
+  return vaultCoins + inHandCoins < stewardAllowance.emptyBelowCoins;
+}
+
+interface InHandState {
+  readonly coins: number;
+}
+
+// TODO(app owner): carry the drop buffer in UiState and UiApp.setWallet; until then it rides
+// beside the UI store it belongs to, so each mounted HUD reads its own.
+const inHandByStore = new WeakMap<Store<UiState>, Store<InHandState>>();
+
+function inHandStore(store: Store<UiState>): Store<InHandState> {
+  let found = inHandByStore.get(store);
+  if (!found) {
+    found = createStore<InHandState>({ coins: 0 });
+    inHandByStore.set(store, found);
+  }
+  return found;
+}
+
+/**
+ * Reports the worth of the pre-minted drop buffer to the HUD mounted on `store`: coins already
+ * paid for out of the wallet, so they sit beside the Vault plaque, never inside its figure.
+ */
+export function setInHand(store: Store<UiState>, coins: number): void {
+  if (!Number.isFinite(coins) || coins < 0) {
+    throw new RangeError(`setInHand: coins in hand must be a finite number ≥ 0, got ${coins}`);
+  }
+  inHandStore(store).setState({ coins });
+}
+
+/** What the in-hand readout under the plaque says for `coins`. */
+export interface InHandCopy {
+  readonly label: string;
+  readonly value: string;
+  /** The whole readout in words, for screen readers. */
+  readonly spoken: string;
+}
+
+export function inHandCopy(
+  t: (key: string, values?: InterpolationValues) => string,
+  coins: number,
+  language: Language,
+): InHandCopy {
+  const value = formatInteger(coins, language);
+  return {
+    label: t('hud.inHand.label'),
+    value,
+    spoken: t('hud.inHand.aria', { count: coins, value }),
+  };
+}
+
+/** A refill landing in hand springs the readout; a drop leaving it dips the coin. */
+const IN_HAND_POP_VELOCITY = 3;
+const IN_HAND_DIP: Keyframe[] = [
+  { translate: '0 0', opacity: 1 },
+  { offset: 0.45, translate: '0 5px', opacity: 0.25 },
+  { translate: '0 0', opacity: 1 },
+];
+const IN_HAND_DIP_MS = 320;
+
+/**
+ * The drop buffer as a small tab tucked under the Vault plaque: coin, count and "In hand". It
+ * stays out of sight until the buffer first holds coins, then keeps its place and dims when
+ * the buffer runs dry, so a refill never shifts the HUD.
+ */
+function createInHandReadout(ctx: UiContext): HTMLElement {
+  const coin = icon('coin');
+  coin.setAttribute('style', 'width: 12px; height: 12px');
+  const value = h('span', { attrs: { 'aria-hidden': 'true' } });
+  const label = h('span', { attrs: { 'aria-hidden': 'true' } });
+  Object.assign(label.style, {
+    fontFamily: 'var(--cp-font-ui)',
+    fontSize: '9px',
+    fontWeight: '700',
+    letterSpacing: '0.24em',
+    textTransform: 'uppercase',
+    color: 'var(--cp-gold-brushed)',
+  });
+  const spoken = h('span', { class: 'cp-sr-only' });
+  const readout = h(
+    'div',
+    { class: 'cp-chip', attrs: { 'data-testid': 'hud-in-hand', role: 'group', hidden: '' } },
+    coin,
+    value,
+    label,
+    spoken,
+  );
+  Object.assign(readout.style, {
+    pointerEvents: 'none',
+    gap: '5px',
+    marginTop: '-4px',
+    padding: '3px 11px 4px 9px',
+    fontSize: '13px',
+    borderColor: 'var(--cp-hairline-soft)',
+    transition: 'opacity 240ms ease',
+  });
+  const pop = new SpringValue(1, SPRINGS.pop, (scale) => {
+    readout.style.scale = scale === 1 ? '' : String(scale);
+  });
+  const inHand = inHandStore(ctx.store);
+
+  const paint = (coins: number): void => {
+    const copy = inHandCopy((key, values) => tr(ctx, key, values), coins, ctx.i18n.language);
+    value.textContent = copy.value;
+    label.textContent = copy.label;
+    spoken.textContent = copy.spoken;
+    readout.style.opacity = coins > 0 ? '' : '0.45';
+  };
+  ctx.own(
+    watch(
+      inHand,
+      (s) => s.coins,
+      (coins, previous) => {
+        if (coins > 0) readout.hidden = false;
+        paint(coins);
+        if (previous === undefined || readout.hidden) return;
+        if (coins > previous) pop.kick(IN_HAND_POP_VELOCITY);
+        else if (coins < previous && !isReducedMotion()) {
+          coin.animate(IN_HAND_DIP, { duration: IN_HAND_DIP_MS, easing: 'ease-out' });
+        }
+      },
+    ),
+  );
+  ctx.own(
+    ctx.loc.bind(() => {
+      paint(inHand.getState().coins);
+    }),
+  );
+  ctx.own(() => {
+    pop.stop();
+  });
+  return readout;
+}
+
 /**
  * Dims the plaque and has the Concierge point at the ledge while the Vault the server reports
- * cannot pay for a drop. It only reads the balance: refilling an empty Vault is the server's
+ * and the coins in hand cannot pay for a drop. It only reads the balance: refilling an empty Vault is the server's
  * Steward's allowance (02-ECONOMY.md), and its credit clears this like any other.
  */
 function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElement {
@@ -428,7 +565,8 @@ function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElemen
   ctx.loc.text(title, () => tr(ctx, 'hud.vaultEmpty.title'));
   ctx.loc.text(hint, () => tr(ctx, 'hud.vaultEmpty.hint'));
 
-  const isEmpty = (): boolean => ctx.store.getState().coins < stewardAllowance.emptyBelowCoins;
+  const inHand = inHandStore(ctx.store);
+  const isEmpty = (): boolean => vaultIsEmpty(ctx.store.getState().coins, inHand.getState().coins);
   let shown = false;
   let settle: ReturnType<typeof setTimeout> | undefined;
   let asked: ReturnType<typeof setTimeout> | undefined;
@@ -464,19 +602,20 @@ function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElemen
     }, ASKED_MS);
   };
 
-  ctx.own(
-    watch(
-      ctx.store,
-      () => isEmpty(),
-      (empty) => {
-        if (!empty) hide();
-        else if (!shown && isPlayable()) {
-          clearTimeout(settle);
-          settle = setTimeout(show, EMPTY_SETTLE_MS);
-        }
-      },
-    ),
-  );
+  let empty: boolean | undefined;
+  const follow = (): void => {
+    const now = isEmpty();
+    if (now === empty) return;
+    empty = now;
+    if (!now) hide();
+    else if (!shown && isPlayable()) {
+      clearTimeout(settle);
+      settle = setTimeout(show, EMPTY_SETTLE_MS);
+    }
+  };
+  follow();
+  ctx.own(ctx.store.subscribe(follow));
+  ctx.own(inHand.subscribe(follow));
   ctx.own(
     listen(
       window,
@@ -594,6 +733,7 @@ export function createHud(ctx: UiContext): Hud {
     { class: 'cp-hud-top' },
     bannerSlot,
     plaque,
+    createInHandReadout(ctx),
     createVaultEmptyNotice(ctx, plaque),
     createUpgradeNudge(ctx, {
       trigger: upgradesButton,

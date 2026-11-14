@@ -71,6 +71,16 @@ export const BUNDLE_BUDGETS = {
    * tolerance still fails.
    */
   otherLazyJs: 113 * 1024,
+  /**
+   * The safes dock (T-2.01-p3): controller, countdowns and strings behind the HUD's Safes badge,
+   * imported once the table is up. 6.3 kB gzip on 2026-11-14.
+   */
+  safesDock: 6.5 * 1024,
+  /**
+   * The safes sheet and the dial-and-door cinematic, imported on the first Safes press.
+   * 6.6 kB gzip on 2026-11-14.
+   */
+  safesSheet: 7 * 1024,
 } as const;
 
 /** P-124: a budget fails once exceeded by more than this share. */

@@ -10,6 +10,8 @@ export {
 export * from './layout.ts';
 export * from './mechanics/index.ts';
 export { Xoshiro128ss, type PrngState } from './prng.ts';
+export * from './props/index.ts';
+export { type PropEvent, type PropState } from './props/world.ts';
 export { loadRapier } from './rapier.ts';
 export {
   Sim,

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { newSession, type Session } from '../test/client.ts';
 import { claims, drop, dropAsClient, expectConserved, playerStub, state } from '../test/game.ts';
 import { ASCEND_TX_KIND } from '../routes/ascend.ts';
+import { SCRATCH_GRANT_TX_KIND, SCRATCH_REVEAL_TX_KIND } from '../routes/scratch.ts';
 import { commit, ConservationError, LedgerTx, TX_KINDS } from './ledger.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
@@ -82,6 +83,36 @@ describe('LedgerTx', () => {
     expect(() => {
       tx.assertBalanced();
     }).toThrow(/coins legs sum to -1/);
+  });
+
+  it('refuses a scratch card the mint did not issue, or a reveal that pays without retiring the card', () => {
+    expect(TX_KINDS).toEqual(
+      expect.arrayContaining([SCRATCH_GRANT_TX_KIND, SCRATCH_REVEAL_TX_KIND]),
+    );
+    const conjured = new LedgerTx(SCRATCH_GRANT_TX_KIND).post('inventory', 'scratchCard', 1, null);
+    expect(() => {
+      conjured.assertBalanced();
+    }).toThrow(/scratch.grant is unbalanced: scratchCard legs sum to 1/);
+    const paidForCoins = new LedgerTx(SCRATCH_REVEAL_TX_KIND)
+      .post('inventory', 'scratchCard', -1, null)
+      .post('wallet', 'coins', 1, null);
+    expect(() => {
+      paidForCoins.assertBalanced();
+    }).toThrow(/scratchCard legs sum to -1/);
+  });
+
+  it('keeps scratch cards out of the wallet', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) => {
+      expect(() => {
+        commit(
+          ctx.storage.sql,
+          new LedgerTx(SCRATCH_GRANT_TX_KIND).move('mint', 'wallet', 'scratchCard', 1, null),
+          { at: Date.now(), idempotencyKey: null },
+        );
+      }).toThrow(/wallet only holds currencies, not scratchCard/);
+    });
   });
 
   it('lists ascensions as their own kind and holds them to the same per-unit balance', () => {

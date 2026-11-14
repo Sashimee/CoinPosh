@@ -19,6 +19,12 @@
     "balanceAria": "Solde du coffre : {{value}}",
     "goldBarsAria": "Lingots d'or : {{value}}",
     "provisional": "En attente de la maison",
+    "inHand": {
+      "label": "En main",
+      "aria_one": "{{value}} pièce en main, déjà payée et prête à lancer",
+      "aria_many": "{{value}} pièces en main, déjà payées et prêtes à lancer",
+      "aria_other": "{{value}} pièces en main, déjà payées et prêtes à lancer"
+    },
     "vaultEmpty": {
       "title": "Coffre vide",
       "hint": "Vos pièces au bord sont encore en jeu. Regardez-les tomber."
@@ -83,9 +89,6 @@
     "pending": "Confirmation…",
     "buyAria": "Acheter {{name}} niveau {{level}} pour {{cost}}",
     "cannotAfford": "Fonds insuffisants",
-    "heldBack_one": "{{value}} pièce encore dans la rampe",
-    "heldBack_many": "{{value}} pièces encore dans la rampe",
-    "heldBack_other": "{{value}} pièces encore dans la rampe",
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",

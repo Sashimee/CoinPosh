@@ -5,11 +5,10 @@ import type { HapticPattern } from '../../app/feedback.ts';
 import { walletPayoutFor, type PayoutLine } from '../../ui/components/balancePlaque.ts';
 import type { InterpolationValues } from '../../i18n/index.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
-import {
-  SafeCinematic,
-  type SafeAudioPort,
-  type SafeCinematicEvents,
-  type SafeCinematicLine,
+import type {
+  SafeAudioPort,
+  SafeCinematicEvents,
+  SafeCinematicLine,
 } from '../../vfx/cinematics/safe/index.ts';
 import { cratesKey, registerCratesStrings } from '../crates/i18n.ts';
 import { rewardLines } from '../crates/loot.ts';
@@ -19,8 +18,9 @@ import { createSafesController, type SafesApi, type SafesController } from './co
 import type { SafeEvents } from './events.ts';
 import { registerSafesStrings, safesKey, safeTypeKey, type SafesKey } from './i18n.ts';
 import { createSafeOpener, type OpenedSafe, type SafePlayHooks } from './opener.ts';
-import { showSafesPanel, type SafesPanel } from './panel.ts';
+import type { SafesPanel } from './panel.ts';
 import { provisionalKeys } from './plan.ts';
+import type * as SafesSheet from './safesSheet.ts';
 
 const SYNC_RETRY_MS = 1_000;
 const READY_SLACK_MS = 20;
@@ -52,7 +52,7 @@ export interface SafesMountOptions {
 export interface SafesModule {
   readonly events: Bus<SafeEvents>;
   readonly controller: SafesController;
-  /** Opens the safes sheet; it remembers the focused trigger and gives focus back on close. */
+  /** Opens the safes sheet, once its chunk has loaded on the first call; it remembers the focused trigger and gives focus back on close. */
   open(): void;
   close(): void;
   readonly isOpen: boolean;
@@ -92,6 +92,10 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
   let locked = new Set<SafeId>();
   let announced: { count: number; ready: number } | null = null;
   let disposed = false;
+  // The sheet and the cinematic load on the first press; the dock badge and timers need neither.
+  let sheet: typeof SafesSheet | null = null;
+  let sheetLoading: Promise<void> | null = null;
+  let openWhenLoaded = false;
 
   const t = (key: SafesKey, values?: InterpolationValues) => ui.i18n.t(safesKey(key), values);
   const cratesT: CratesT = (key, values) => ui.i18n.t(cratesKey(key), values);
@@ -137,11 +141,18 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
   };
 
   const closePanel = () => {
+    openWhenLoaded = false;
     panel?.dispose();
     panel = null;
   };
 
   const play = ({ safe, safeId, method, roll, wallet }: OpenedSafe, hooks: SafePlayHooks) => {
+    if (sheet === null) {
+      throw new Error(
+        'CoinPosh safes: a safe opened before the safes sheet loaded; opens must come from the sheet.',
+      );
+    }
+    const { SafeCinematic } = sheet;
     const lines = rewardLines(roll.rewards);
     const copies = lines.map((line) => rewardLineCopy(line, cratesT, ui.i18n.language));
     const cinematicLines: SafeCinematicLine[] = lines.map((line, index) => {
@@ -229,9 +240,35 @@ export function mountSafes(options: SafesMountOptions): SafesModule {
     if (!opener.request(safe, method)) ui.bus.emit('ui:feedback', { kind: 'deny' });
   };
 
+  const loadSheet = () => {
+    sheetLoading ??= import('./safesSheet.ts').then(
+      (loaded) => {
+        sheet = loaded;
+        if (openWhenLoaded) {
+          openWhenLoaded = false;
+          openPanel();
+        }
+      },
+      (error: unknown) => {
+        sheetLoading = null;
+        openWhenLoaded = false;
+        console.error(
+          'CoinPosh safes: the safes sheet did not load (network or a stale deploy); press Safes again to retry.',
+          error,
+        );
+        ui.bus.emit('ui:feedback', { kind: 'deny' });
+      },
+    );
+  };
+
   const openPanel = () => {
     if (disposed || panel !== null || opener.playing !== null) return;
-    panel = showSafesPanel({
+    if (sheet === null) {
+      openWhenLoaded = true;
+      loadSheet();
+      return;
+    }
+    panel = sheet.showSafesPanel({
       ui,
       host: options.host,
       serverNow: () => options.clock.now(),

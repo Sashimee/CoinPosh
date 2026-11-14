@@ -17,6 +17,11 @@
     "balanceAria": "Vault balance: {{value}}",
     "goldBarsAria": "Gold bars: {{value}}",
     "provisional": "Awaiting the house",
+    "inHand": {
+      "label": "In hand",
+      "aria_one": "{{value}} coin in hand, paid for and ready to drop",
+      "aria_other": "{{value}} coins in hand, paid for and ready to drop"
+    },
     "vaultEmpty": {
       "title": "Vault empty",
       "hint": "Your coins on the ledge are still in play. Watch them fall."
@@ -78,8 +83,6 @@
     "pending": "Confirming…",
     "buyAria": "Buy {{name}} level {{level}} for {{cost}}",
     "cannotAfford": "Not enough funds",
-    "heldBack_one": "{{value}} coin still in the drop rail",
-    "heldBack_other": "{{value}} coins still in the drop rail",
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",

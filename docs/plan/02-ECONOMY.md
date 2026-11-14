@@ -260,6 +260,100 @@ Casual Ascend V1 stays at 1.5 days. The margin: crate income could rise 20 % bef
 nears the 3 h floor (3 h 01 at × 1.2). Dropping the Exquisite Key leaves the casual player 2, 5,
 9, 12, 15, 18, 21 crate Keys by days 1–7 (was 8 … 71), all of which the safes now use.
 
+## Charms (T-3.01)
+
+Numbers and rules: `packages/economy/src/config/charms.ts` (`charms`, `charmKindOf`,
+`charmLevelForCopies`, `charmMasteryLevel`, `charmSetBonuses`, `charmEffect`,
+`charmLoadoutValueCapBp`). Kinds and tags are `CHARM_KINDS` / `SYNERGY_TAGS` in
+`packages/shared`; `validateEconomyConfig` rejects any catalog that breaks a rule below.
+
+Every parameter is an integer: `mm`, `mmPerS` (a velocity change), `ticks` (60 Hz sim ticks),
+`bp` (basis points) or `count`. The sim reads them as is, so replays stay bit-exact.
+
+### Kinds and tags
+
+Primary tag first. Every tag sits on exactly three kinds, so every 3-piece set fits venue 1's
+three sockets and no set needs a later venue.
+
+| Kind | Tags | What it does (level 1 → 10) | Boosted parameter |
+|---|---|---|---|
+| Golden Peg | gilded, kinetic | 2 pegs; every 20th → 12th coin that brushes one is gilded for +50 % → +100 % value | `gildBp` |
+| Velvet Ropes | service, magnetic | a 24 → 42 mm rope that turns edge-bound coins inward by 60 → 120 mm/s | `deflectMmPerS` |
+| Magnet Cufflinks | magnetic, gilded, fragrant | every 36 → 28 ticks, pulls 2 → 5 same-tier pairs within 30 → 48 mm together at 40 → 84 mm/s | `pullMmPerS` |
+| Brass Bumper | kinetic, gilded | kicks a coin it touches forward 150 → 260 mm/s, rearms in 45 → 28 ticks | `kickMmPerS` |
+| Butler | service, magnetic, fragrant | every 900 → 450 ticks sweeps 1 → 3 side-gutter coins back onto the bed | `periodTicks` |
+| Perfume Atomizer | fragrant, kinetic, service | every 720 → 450 ticks, a 60 → 104 mm wedge of coins pushed 100 → 180 mm/s | `pushMmPerS` |
+
+Why these tags: the cufflinks are gold and worn with cologne at the cuff; the Butler's dustpan
+is magnetic and he leaves a trail of scent; the atomizer's puff is a push. The tags follow the
+object, and the counts make every set reachable.
+
+### Levels, mastery and sets
+
+- **Levels** come from copies of one catalog id: level l at `copiesToLevel[l − 1]` =
+  1, 2, 4, 7, 12, 20, 32, 50, 76, 116 copies. An edition levels apart from its base kind.
+- **Mastery** level l (1–10) at `50 × 2^(l − 1)` server-accepted activations, +2 % (200 bp)
+  each, so +20 % at level 10.
+- **Sets** count distinct kinds per tag and take the highest tier reached. A kind slotted with
+  its edition counts once.
+
+| Tier | Effect boost | Value |
+|---|---|---|
+| 2 of a tag | +10 % | none |
+| 3 of a tag | +25 % | none, except Gilded 3: +2 % payout |
+
+- One charm takes at most +50 % from sets (`setBoostCapBp` 5,000; a Butler in a loadout with
+  Magnetic 3, Service 3 and Fragrant 3 would otherwise take +75 %). Mastery adds on top.
+- Boosts apply only to the kind's boosted parameter. `more` parameters scale up and round down,
+  `less` parameters divide the wait and round up, so rounding never pays more than the boost.
+
+**Why this curve** (`node sim/cli.ts --days 42 --players 40 --seed 1`, casual player, 50 active
+min a day): the casual player owns 14 charms at day 1, 123 at day 7, 250 at day 14, 510 at day 28
+and 776 at day 42, about 18.5 charm drops a day. At a 15 % share per base kind that is 2.8 copies
+a day, so level 5 lands at day 4, level 7 at day 11, level 8 at day 18, level 9 at day 27 and
+level 10 at day 42, the season's end. A level arrives every few days for the whole season and
+the last one is the season's capstone, not a week-one formality.
+
+### Value: charms move coins, only gilding mints
+
+The rate envelope budgets 6 % fall value per slotted charm (`rateEnvelope.fallValue.value
+.perCharm`). Physical charms (ropes, cufflinks, bumper, Butler, atomizer) have `valueCapBp` 0:
+they move coins that already exist and never add value. Only the Golden Peg (`valueCapBp` 600)
+and the Gilded 3 set (+200 bp) mint, and the server clamps the gilded extra to that cap per
+envelope window.
+
+- Expected Golden Peg uplift, assuming 40 % of falling coins brush a peg: level 1 1.0 %, level 10
+  3.3 %, with mastery 10 4.0 %, with the full +50 % set boost 5.7 %. All under its 6 % cap.
+- `validateEconomyConfig` checks every set of distinct kinds (2⁶ loadouts) and fast-check
+  checks random loadouts up to the largest venue's 7 sockets: no loadout may mint more than
+  6 % × charms slotted. The worst case, a Golden Peg plus two Gilded charms, may mint 8 % of a
+  budgeted 18 %.
+- No existing number changed, so every pacing target above still holds (first Charm p90 14 s).
+  T-3.01-p2 measures the real brush share in the sim against the 6 % budget.
+
+### Charm drops
+
+When a crate or safe rolls its `charmChance`, the server picks a charm id from `charms.drops`.
+The odds sum to exactly 100 % and are the ones the game shows.
+
+| Id | Plays as | Odds |
+|---|---|---|
+| `golden-peg` | Golden Peg | 15 % |
+| `velvet-ropes` | Velvet Ropes | 15 % |
+| `magnet-cufflinks` | Magnet Cufflinks | 15 % |
+| `brass-bumper` | Brass Bumper | 15 % |
+| `butler` | Butler | 15 % |
+| `perfume-atomizer` | Perfume Atomizer | 15 % |
+| `captainsBellCharm` | Butler (the bell that calls him) | 4 % |
+| `champagneBucketCharm` | Brass Bumper (the cork pop is a kick) | 4 % |
+| `pearlNecklaceCharm` | Magnet Cufflinks (a matched strand pulls like to like) | 2 % |
+
+Per kind: Golden Peg, Velvet Ropes and Perfume Atomizer 15 %, Magnet Cufflinks 17 %, Brass
+Bumper and Butler 19 %. The three editions keep their album ids, which saved inventories already
+hold, and `charmKindOf` maps each to the kind its theme names. The pearl necklace is the rare
+one (2 %) so the album's last charm stays a chase. Any id no table maps throws, and a test walks
+every season tier, quest, crate, safe, album entry and drop to prove each charm id resolves.
+
 ## Expansion economy (M10+, founder Q&A 2026-11-09)
 
 **Every number in this section is an initial target for economy-designer to tune**
