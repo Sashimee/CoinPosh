@@ -235,10 +235,11 @@
   background:
     repeating-linear-gradient(45deg, rgb(255 255 255 / 0.08) 0 2px, transparent 2px 9px),
     linear-gradient(135deg, #9da2ab, #e2e5ea 45%, #c3c7ce 55%, #8e939c);
+  opacity: var(--cp-scratch-cover, 1);
   pointer-events: none;
 }
 
-.cp-scratch[data-foil] .cp-scratch-cover {
+.cp-scratch[data-foil]:not([data-foil='none']) .cp-scratch-cover {
   display: none;
 }
 

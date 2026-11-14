@@ -22,6 +22,10 @@ import type { ScratchPoint } from './mask.ts';
 /** The canvas overhangs the window by this share of its width on every side, so flakes can fly. */
 export const SURFACE_MARGIN = 0.45;
 export const MASK_SIZE = 512;
+/** A second GPU context sits over the stage, so the foil's backing store stops short of DPR 2. */
+export const MAX_SURFACE_PIXEL_RATIO = 1.5;
+/** With nothing moving but the slow sheen, the foil redraws at this rate instead of every frame. */
+export const IDLE_FRAME_SECONDS = 1 / 15;
 const MAX_STAMPS_PER_FRAME = 256;
 const FLAKE_CAPACITY = 768;
 const GLINT_CAPACITY = 256;
@@ -50,9 +54,47 @@ export interface ScratchSurface {
   dispose(): void;
 }
 
+/** A surface that can go back into the pool: `reset` makes it a whole, unscratched card again. */
+export interface ReusableSurface extends ScratchSurface {
+  reset(): void;
+}
+
+/**
+ * Whether the foil must redraw this frame. Scratches, live particles, the dissolve and the
+ * pointer spotlight all draw every frame; the ambient sheen alone redraws at `IDLE_FRAME_SECONDS`.
+ */
+export function foilNeedsFrame(work: {
+  readonly stamps: number;
+  readonly particles: number;
+  readonly animating: boolean;
+  readonly sinceDraw: number;
+}): boolean {
+  return (
+    work.stamps > 0 || work.particles > 0 || work.animating || work.sinceDraw >= IDLE_FRAME_SECONDS
+  );
+}
+
+/** Frees a renderer and, on WebGL2, its context: three only loses contexts on canvases it made. */
+export async function releaseRenderer(
+  renderer: Pick<WebGPURenderer, 'backend' | 'dispose'>,
+  canvas: Pick<HTMLCanvasElement, 'width' | 'height'>,
+): Promise<void> {
+  const { backend } = renderer;
+  try {
+    await renderer.dispose();
+  } finally {
+    if (detectBackend(backend) === 'webgl2' && 'gl' in backend) {
+      const gl = backend.gl as WebGL2RenderingContext | null;
+      gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    }
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
 const NO_FLOOR: ParticleEnvironment['floor'] = { y: -100, minX: 1, maxX: 0, minZ: 1, maxZ: 0 };
 
-class GpuScratchSurface implements ScratchSurface {
+class GpuScratchSurface implements ReusableSurface {
   readonly kind: RenderBackend;
   private readonly mask = new RenderTarget(MASK_SIZE, MASK_SIZE, { depthBuffer: false });
   private readonly brushScene = new Scene();
@@ -72,6 +114,9 @@ class GpuScratchSurface implements ScratchSurface {
   private readonly turn = new Quaternion();
   private timeScale = 1;
   private elapsed = 0;
+  private sinceDraw = Infinity;
+  private animating = false;
+  private pointerOn = false;
   private maskReady = false;
 
   constructor(
@@ -121,15 +166,19 @@ class GpuScratchSurface implements ScratchSurface {
   }
 
   setPointer(point: ScratchPoint | null): void {
+    this.pointerOn = point !== null;
     if (point === null) this.uniforms.pointer.value.set(-10, -10);
     else this.uniforms.pointer.value.set(point.x, 1 - point.y);
+    this.sinceDraw = Infinity;
   }
 
   setClear(amount: number): void {
+    if (amount !== this.uniforms.clear.value) this.animating = true;
     this.uniforms.clear.value = amount;
   }
 
   setFade(amount: number): void {
+    if (amount !== this.uniforms.fade.value) this.animating = true;
     this.uniforms.fade.value = amount;
   }
 
@@ -139,8 +188,9 @@ class GpuScratchSurface implements ScratchSurface {
 
   resize(width: number, pixelRatio: number): void {
     const side = Math.max(1, width * (1 + 2 * SURFACE_MARGIN));
-    this.renderer.setPixelRatio(Math.min(pixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(pixelRatio, MAX_SURFACE_PIXEL_RATIO));
     this.renderer.setSize(side, side, false);
+    this.sinceDraw = Infinity;
     const half = 0.5 + SURFACE_MARGIN;
     this.camera.aspect = 1;
     this.camera.position.z = half / Math.tan((FOV * Math.PI) / 360);
@@ -171,6 +221,21 @@ class GpuScratchSurface implements ScratchSurface {
   frame(dt: number): void {
     const step = dt * this.timeScale;
     this.elapsed += step;
+    this.sinceDraw += dt;
+    const particles =
+      this.flakeSystem.simulation.liveEstimate +
+      this.glintSystem.simulation.liveEstimate +
+      this.flakeSystem.stats.emitted +
+      this.glintSystem.stats.emitted;
+    const draw = foilNeedsFrame({
+      stamps: this.queue.length + (this.maskReady ? 0 : 1),
+      particles,
+      animating: this.animating || this.pointerOn,
+      sinceDraw: this.sinceDraw,
+    });
+    this.animating = false;
+    if (!draw) return;
+    this.sinceDraw = 0;
     this.uniforms.time.value = this.elapsed;
     const autoClear = this.renderer.autoClear;
     this.renderer.autoClear = false;
@@ -185,6 +250,18 @@ class GpuScratchSurface implements ScratchSurface {
     this.renderer.render(this.scene, this.camera);
   }
 
+  reset(): void {
+    this.queue.length = 0;
+    this.maskReady = false;
+    this.timeScale = 1;
+    this.uniforms.clear.value = 0;
+    this.uniforms.fade.value = 0;
+    this.setPointer(null);
+    this.flakeSystem.clear();
+    this.glintSystem.clear();
+    this.canvas.remove();
+  }
+
   dispose(): void {
     this.flakeSystem.dispose();
     this.glintSystem.dispose();
@@ -194,7 +271,7 @@ class GpuScratchSurface implements ScratchSurface {
     this.foil.geometry.dispose();
     this.foil.material.dispose();
     this.mask.dispose();
-    void this.renderer.dispose();
+    void releaseRenderer(this.renderer, this.canvas);
   }
 }
 
@@ -202,7 +279,7 @@ class GpuScratchSurface implements ScratchSurface {
  * The last resort when no GPU backend starts: the foil is painted once and each stamp erases
  * with `destination-out`. No flakes, no dissolve, but the card stays playable.
  */
-class CanvasScratchSurface implements ScratchSurface {
+class CanvasScratchSurface implements ReusableSurface {
   readonly kind = 'canvas2d' as const;
   private readonly context: CanvasRenderingContext2D;
   private side = 1;
@@ -244,7 +321,7 @@ class CanvasScratchSurface implements ScratchSurface {
   readonly frame = (): void => undefined;
 
   resize(width: number, pixelRatio: number): void {
-    const ratio = Math.min(pixelRatio, 2);
+    const ratio = Math.min(pixelRatio, MAX_SURFACE_PIXEL_RATIO);
     this.side = Math.max(1, Math.round(width * (1 + 2 * SURFACE_MARGIN) * ratio));
     this.window = this.side / (1 + 2 * SURFACE_MARGIN);
     this.origin = SURFACE_MARGIN * this.window;
@@ -277,8 +354,105 @@ class CanvasScratchSurface implements ScratchSurface {
     c.globalCompositeOperation = 'source-over';
   }
 
+  reset(): void {
+    this.stamps.length = 0;
+    this.paint();
+    this.setFade(0);
+    this.canvas.remove();
+  }
+
   dispose(): void {
     this.stamps.length = 0;
+    this.canvas.width = 0;
+    this.canvas.height = 0;
+  }
+}
+
+/** A card's hold on a pooled surface; its `dispose` hands the surface back instead of freeing it. */
+class LeasedSurface implements ScratchSurface {
+  private held: ReusableSurface | null;
+
+  constructor(
+    surface: ReusableSurface,
+    private readonly giveBack: (surface: ReusableSurface) => void,
+  ) {
+    this.held = surface;
+    this.kind = surface.kind;
+    this.canvas = surface.canvas;
+  }
+
+  readonly kind: ScratchSurfaceKind;
+  readonly canvas: HTMLCanvasElement;
+
+  stamp(point: ScratchPoint, radius: number): void {
+    this.held?.stamp(point, radius);
+  }
+
+  flakes(spawns: readonly ParticleSpawn[]): void {
+    this.held?.flakes(spawns);
+  }
+
+  glints(spawns: readonly ParticleSpawn[]): void {
+    this.held?.glints(spawns);
+  }
+
+  setPointer(point: ScratchPoint | null): void {
+    this.held?.setPointer(point);
+  }
+
+  setClear(amount: number): void {
+    this.held?.setClear(amount);
+  }
+
+  setFade(amount: number): void {
+    this.held?.setFade(amount);
+  }
+
+  setTimeScale(scale: number): void {
+    this.held?.setTimeScale(scale);
+  }
+
+  frame(dt: number): void {
+    this.held?.frame(dt);
+  }
+
+  resize(width: number, pixelRatio: number): void {
+    this.held?.resize(width, pixelRatio);
+  }
+
+  dispose(): void {
+    const surface = this.held;
+    this.held = null;
+    if (surface !== null) this.giveBack(surface);
+  }
+}
+
+/**
+ * Keeps one started surface between cards. Collecting a card opens the next one at once, and a
+ * fresh renderer per card would pile up GPU contexts until the browser force-loses the oldest,
+ * which can be the stage's. A second card open at the same time gets its own surface, freed
+ * when it closes, so no more than one idle surface is ever kept.
+ */
+export class SurfacePool {
+  private idle: ReusableSurface | null = null;
+
+  constructor(private readonly start: () => Promise<ReusableSurface>) {}
+
+  async acquire(): Promise<ScratchSurface> {
+    const surface = this.idle ?? (await this.start());
+    if (this.idle === surface) this.idle = null;
+    surface.reset();
+    return new LeasedSurface(surface, (back) => {
+      back.reset();
+      if (this.idle === null) this.idle = back;
+      else back.dispose();
+    });
+  }
+
+  /** Frees the idle surface, if any; leased ones go when their card closes. */
+  drain(): void {
+    this.idle?.dispose();
+    this.idle = null;
   }
 }
 
@@ -290,7 +464,7 @@ async function startRenderer(
   try {
     await renderer.init();
   } catch (error) {
-    await renderer.dispose();
+    await releaseRenderer(renderer, canvas);
     throw error;
   }
   return renderer;
@@ -307,7 +481,7 @@ export interface SurfaceOptions {
  * Starts the best surface the device has: WebGPU, else WebGL2, else a 2D canvas. Each failed
  * attempt gets a fresh canvas, since a canvas that handed out one context cannot give another.
  */
-export async function createScratchSurface(options: SurfaceOptions = {}): Promise<ScratchSurface> {
+async function startScratchSurface(options: SurfaceOptions): Promise<ReusableSurface> {
   const attempts = options.forceCanvas ? [] : options.forceWebGL ? [true] : [false, true];
   for (const forceWebGL of attempts) {
     const canvas = document.createElement('canvas');
@@ -321,4 +495,17 @@ export async function createScratchSurface(options: SurfaceOptions = {}): Promis
     }
   }
   return new CanvasScratchSurface(document.createElement('canvas'));
+}
+
+const pools = new Map<string, SurfacePool>();
+
+/** A started surface for one card, reused from the last card when it has closed. */
+export function createScratchSurface(options: SurfaceOptions = {}): Promise<ScratchSurface> {
+  const key = `${String(options.forceCanvas ?? false)}:${String(options.forceWebGL ?? false)}`;
+  let pool = pools.get(key);
+  if (pool === undefined) {
+    pool = new SurfacePool(() => startScratchSurface(options));
+    pools.set(key, pool);
+  }
+  return pool.acquire();
 }

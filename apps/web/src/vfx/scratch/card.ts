@@ -175,6 +175,9 @@ export class ScratchCard {
   private readonly random: () => number;
   private readonly scrape = new ScrapeVoice();
   private surface: ScratchSurface | null = null;
+  /** No foil could start: the CSS cover stands in and fades away instead of being scratched. */
+  private foilless = false;
+  private pendingRevealAll = false;
   private answer: ScratchAnswer | null = null;
   private lineEls: HTMLElement[] = [];
   private current: ScratchCardPhase = 'sealed';
@@ -356,6 +359,11 @@ export class ScratchCard {
     this.setPhase('scratching');
     this.cta.textContent = this.options.labels.revealAll;
     this.cta.disabled = false;
+    if (this.foilless) {
+      this.pendingCell = null;
+      this.startClearing();
+      return;
+    }
     if (this.pendingCell !== null) {
       const cell = this.pendingCell;
       this.pendingCell = null;
@@ -368,6 +376,7 @@ export class ScratchCard {
     if (this.current !== 'revealing') return;
     this.flow.refuse();
     this.pendingCell = null;
+    this.pendingRevealAll = false;
     this.stroke = null;
     this.setPhase('sealed');
     this.cta.textContent = this.options.labels.scratch;
@@ -378,11 +387,20 @@ export class ScratchCard {
     this.cue(scratchCue('deny', null));
   }
 
-  /** "Reveal all": a wide brush sweeps the window, or (reduced motion) the foil fades. */
+  /**
+   * "Reveal all": a wide brush sweeps the window, or (reduced motion) the foil fades. Asked
+   * before the foil is up, it waits for it with the button held down.
+   */
   revealAll(): void {
-    if (this.current !== 'scratching' || this.surface === null) return;
+    if (this.current !== 'scratching') return;
     this.stroke = null;
-    if (this.timeline.autoRevealMs === 0) {
+    if (this.surface === null && !this.foilless) {
+      this.pendingRevealAll = true;
+      this.pendingCell = null;
+      this.cta.disabled = true;
+      return;
+    }
+    if (this.timeline.autoRevealMs === 0 || this.surface === null) {
       this.startClearing();
       return;
     }
@@ -432,9 +450,17 @@ export class ScratchCard {
       surface = await (this.options.surface ?? createScratchSurface)();
     } catch (error) {
       console.error(
-        'CoinPosh scratch: no foil surface could start; close the card and try again',
+        'CoinPosh scratch: no foil surface could start; the card fades its cover to show the prize',
         error,
       );
+      if (this.disposed) return;
+      this.foilless = true;
+      this.el.dataset.foil = 'none';
+      if (this.current === 'scratching') {
+        this.pendingCell = null;
+        this.pendingRevealAll = false;
+        this.startClearing();
+      }
       return;
     }
     if (this.disposed) {
@@ -449,7 +475,13 @@ export class ScratchCard {
     this.onResize();
     surface.frame(0);
     this.el.dataset.foil = surface.kind;
-    if (this.current === 'scratching' && this.pendingCell !== null) {
+    if (this.current !== 'scratching') return;
+    if (this.pendingRevealAll) {
+      this.pendingRevealAll = false;
+      this.revealAll();
+      return;
+    }
+    if (this.pendingCell !== null) {
       const cell = this.pendingCell;
       this.pendingCell = null;
       this.sweepCell(cell);
@@ -802,6 +834,9 @@ export class ScratchCard {
       const amount = clearAmount(this.phaseMs, timeline);
       if (timeline.reduced) this.surface?.setFade(amount);
       else this.surface?.setClear(amount);
+      if (this.foilless) style.setProperty('--cp-scratch-cover', (1 - amount).toFixed(3));
+    } else if (this.foilless && this.matchedMs() >= 0) {
+      style.setProperty('--cp-scratch-cover', '0');
     }
 
     const sinceMatch = this.matchedMs();
