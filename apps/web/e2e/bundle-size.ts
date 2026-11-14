@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { BUNDLE_BUDGETS, BUNDLE_TOLERANCE } from './budgets.ts';
@@ -12,6 +12,7 @@ import { APP_DIR } from './env.ts';
 
 const DIST = join(APP_DIR, 'dist');
 const ASSETS = join(DIST, 'assets');
+const FONTS = join(DIST, 'fonts');
 const BASE = '/';
 const WASM_BASE64 = /["'`](AGFzbQ[A-Za-z0-9+/=]+)["'`]/g;
 const STATIC_IMPORT = /\bimport\s*(?:[\w$\s{},*]+?\s*from\s*)?["']\.\/([\w.-]+\.js)["']/g;
@@ -147,6 +148,11 @@ function measure(): Measured {
   }
   if (wasmFiles.length === 0) fail('found no Rapier wasm, inlined or as a .wasm asset');
 
+  const fonts = existsSync(FONTS)
+    ? readdirSync(FONTS).filter((file) => file.endsWith('.woff2'))
+    : [];
+  if (fonts.length === 0) fail('no fonts/*.woff2 in dist; update the gate');
+
   const gz = (file: string): number => gzipBytes(read(file));
   const accounted = new Set([
     ...initial,
@@ -182,6 +188,12 @@ function measure(): Measured {
       label: 'Safes sheet (on tap)',
       files: safesSheet,
       bytes: sum(safesSheet, gz),
+    },
+    {
+      key: 'fonts',
+      label: 'Webfonts (woff2 as served)',
+      files: fonts,
+      bytes: sum(fonts, (file) => statSync(join(FONTS, file)).size),
     },
   ];
   return {
