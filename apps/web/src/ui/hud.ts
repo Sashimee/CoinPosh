@@ -16,6 +16,7 @@ import { createUpgradeNudge } from './components/upgradeNudge.ts';
 import { tr, type UiContext } from './context.ts';
 import { fromMarkup, h, listen, restartAnimation } from './dom.ts';
 import { icon } from './icons.ts';
+import { Localizer } from './localize.ts';
 import { schedule } from './motion/loop.ts';
 import { isReducedMotion } from './motion/reduced.ts';
 import { SPRINGS } from './motion/spring.ts';
@@ -68,6 +69,138 @@ function createBadge(ctx: UiContext): HTMLElement {
     }),
   );
   return badge;
+}
+
+/** What the Safes sheet owns: `ready` of the `count` safes open free on the server clock now. */
+export interface SafesTally {
+  readonly count: number;
+  readonly ready: number;
+}
+
+export type SafesTriggerState = 'empty' | 'locked' | 'ready';
+
+export function safesTriggerState(tally: SafesTally): SafesTriggerState {
+  if (tally.ready > 0) return 'ready';
+  return tally.count > 0 ? 'locked' : 'empty';
+}
+
+/** A safe coming off its timer is news; one opened, or a new locked one, is not. */
+export function safesTriggerBeckons(previous: SafesTally | null, next: SafesTally): boolean {
+  return previous !== null && next.ready > previous.ready;
+}
+
+const SAFES_BECKON_MS = 1100;
+const SAFES_BECKON_GLOW: Keyframe[] = [
+  { boxShadow: '0 0 0 0 rgb(var(--cp-gold-brushed-rgb) / 0), var(--cp-shadow)' },
+  {
+    offset: 0.3,
+    boxShadow:
+      '0 0 0 3px rgb(var(--cp-gold-brushed-rgb) / 0.75), 0 0 34px rgb(var(--cp-gold-brushed-rgb) / 0.8), var(--cp-shadow)',
+  },
+  { boxShadow: '0 0 0 0 rgb(var(--cp-gold-brushed-rgb) / 0), var(--cp-shadow)' },
+];
+/** The door's dial spins a notch either way, like a combination landing. */
+const SAFES_BECKON_DIAL: Keyframe[] = [
+  { rotate: '0deg' },
+  { offset: 0.35, rotate: '-28deg' },
+  { offset: 0.7, rotate: '14deg' },
+  { rotate: '0deg' },
+];
+
+export interface SafesTriggerOptions {
+  readonly ui: Pick<UiContext, 'store' | 'bus' | 'i18n'>;
+  /** The HUD dock the button joins. */
+  readonly dock: HTMLElement;
+  /** The button's name: the Safes sheet's own `gameSafes:open` string. */
+  readonly label: () => string;
+  readonly onPress: () => void;
+}
+
+export interface SafesTrigger {
+  readonly el: HTMLButtonElement;
+  /** Repaints the ready badge from the sheet's `safes:changed` tally. */
+  update(tally: SafesTally): void;
+  dispose(): void;
+}
+
+/**
+ * The dock's door to the Safes sheet: a safe whose coral badge counts the safes that open free
+ * right now. A safe coming off its timer pops the badge, flares the button gold and spins the
+ * dial; a press springs, clicks and buzzes like every dock button before the sheet opens.
+ */
+export function mountSafesTrigger(options: SafesTriggerOptions): SafesTrigger {
+  const disposers: (() => void)[] = [];
+  const loc = new Localizer(options.ui.i18n);
+  const ctx: UiContext = {
+    ...options.ui,
+    loc,
+    own: (dispose) => disposers.push(dispose),
+  };
+  const glyph = icon('safe');
+  const badge = h('span', {
+    class: 'cp-badge',
+    attrs: { 'data-testid': 'dock-safes-badge', 'aria-hidden': 'true', hidden: '' },
+  });
+  const el = h(
+    'button',
+    {
+      class: 'cp-dock-button cp-panel',
+      attrs: { type: 'button', 'data-testid': 'dock-safes', 'aria-haspopup': 'dialog' },
+    },
+    glyph,
+    badge,
+  );
+  const pop = new SpringValue(1, SPRINGS.pop, (value) => {
+    badge.style.scale = value === 1 ? '' : String(value);
+  });
+  let tally: SafesTally = { count: 0, ready: 0 };
+  let shown: SafesTally | null = null;
+
+  const paint = (): void => {
+    const label = options.label();
+    el.dataset.state = safesTriggerState(tally);
+    badge.hidden = tally.ready === 0;
+    badge.textContent = formatInteger(tally.ready, ctx.i18n.language);
+    el.title = label;
+    el.setAttribute(
+      'aria-label',
+      tally.ready === 0 ? label : tr(ctx, 'dock.safesReady', { label, count: tally.ready }),
+    );
+  };
+  const beckon = (): void => {
+    pop.kick(4);
+    if (isReducedMotion()) return;
+    el.animate(SAFES_BECKON_GLOW, { duration: SAFES_BECKON_MS, easing: 'ease-out' });
+    glyph.animate(SAFES_BECKON_DIAL, {
+      duration: SAFES_BECKON_MS * 0.7,
+      easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)',
+    });
+  };
+  disposers.push(loc.bind(paint));
+
+  makePressable(el, ctx, {
+    feedback: 'open',
+    onPress() {
+      options.onPress();
+    },
+  });
+
+  options.dock.append(el);
+  return {
+    el,
+    update(next) {
+      tally = { count: next.count, ready: next.ready };
+      paint();
+      if (safesTriggerBeckons(shown, tally)) beckon();
+      shown = tally;
+    },
+    dispose() {
+      for (const off of disposers.splice(0).reverse()) off();
+      pop.stop();
+      loc.dispose();
+      el.remove();
+    },
+  };
 }
 
 const POSTER_ID = 'cp-poster';

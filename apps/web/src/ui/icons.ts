@@ -10,6 +10,9 @@ const ICONS = {
   upgrades: svg(
     '<path d="M4 17.5 6.2 8l3.9 4.2L12 5.5l1.9 6.7L17.8 8l2.2 9.5Z"/><path d="M4.6 20.5h14.8"/><circle cx="12" cy="5.2" r=".6" fill="currentColor"/>',
   ),
+  safe: svg(
+    '<rect x="3.5" y="4" width="17" height="15" rx="2.4" fill="currentColor" fill-opacity=".16"/><circle cx="11" cy="11.5" r="3.6"/><path d="M11 7.9v1.3M11 13.8v1.3M7.4 11.5h1.3M13.3 11.5h1.3M17.4 9.4v4.2M6.6 19v1.6M17.4 19v1.6"/>',
+  ),
   close: svg('<path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/>'),
   bell: svg(
     '<path d="M5 17.5h14l-1.6-2.2V11a5.4 5.4 0 0 0-10.8 0v4.3Z"/><path d="M10.2 20.2a2 2 0 0 0 3.6 0M12 3.6v2"/>',
