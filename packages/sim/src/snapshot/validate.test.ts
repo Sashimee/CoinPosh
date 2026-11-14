@@ -75,6 +75,12 @@ const SHELF_Y = 3660;
 /** Over the lower tier, clear of everything at any rotation. */
 const MID_AIR: CoinPose['p'] = [0, 2000, 0];
 
+/** Coins a settled Demo table left asleep overhanging the lip, rejected before P-624. */
+const LIP_COINS: readonly CoinPose[] = [
+  { id: 0, p: [662, 142, 5303], q: [175, 22071, 141, 24218], rest: 'asleep' },
+  { id: 1, p: [5615, 458, 5055], q: [117, -13023, -153, 30067], rest: 'asleep' },
+];
+
 function pose(p: CoinPose['p'], overrides: Partial<CoinPose> = {}): CoinPose {
   return { id: 0, p, q: FLAT, rest: 'asleep', ...overrides };
 }
@@ -186,7 +192,7 @@ describe('checkPose', () => {
       [pose([-16650, FLOOR_Y, 3000]), pose([-16651, FLOOR_Y, 3000])],
       [pose([16650, SHELF_Y, -15000]), pose([16651, SHELF_Y, -15000])],
       [pose([0, SHELF_Y, -20650]), pose([0, SHELF_Y, -20651])],
-      [pose([0, FLOOR_Y, 5000]), pose([0, FLOOR_Y, 5001])],
+      [pose([0, FLOOR_Y, 6350]), pose([0, FLOOR_Y, 6351])],
       [pose([0, 22000, 0]), pose([0, 22001, 0])],
     ];
     for (const [inside, outside] of cases) {
@@ -195,7 +201,7 @@ describe('checkPose', () => {
     }
     expect(16650 * 1e-5).toBeCloseTo(PLAYFIELD.fieldHalfWidth - COIN.radius, 12);
     expect(-20650 * 1e-5).toBeCloseTo(BACKBOARD.frontZ + COIN.radius, 12);
-    expect(5000 * 1e-5).toBeCloseTo(PLAYFIELD.fieldFrontZ, 12);
+    expect(6350 * 1e-5).toBeCloseTo(PLAYFIELD.fieldFrontZ + COIN.radius, 12);
     expect(22000 * 1e-5).toBeCloseTo(PLAYFIELD.wallHeight, 12);
   });
 
@@ -221,6 +227,43 @@ describe('checkPose', () => {
     for (const p of falling) {
       expect(reason(p), p.p.join(', ')).toBe('out_of_bounds');
     }
+  });
+
+  it('accepts a coin the heap holds overhanging the lip, up to where none of it is over the floor', () => {
+    const lip = Math.round(PLAYFIELD.fieldFrontZ / 1e-5);
+    const tip = Math.round((PLAYFIELD.fieldFrontZ + COIN.radius) / 1e-5);
+    for (const observed of LIP_COINS) {
+      expect(observed.p[2], observed.p.join(', ')).toBeGreaterThan(lip);
+      expect(reason(observed), observed.p.join(', ')).toBeNull();
+      expect(reason(observed, 120), observed.p.join(', ')).toBeNull();
+    }
+    for (const z of [lip, lip + 1, lip + 300, tip - 1, tip]) {
+      expect(reason(pose([0, FLOOR_Y, z])), `flat at ${z}`).toBeNull();
+      expect(reason(pose([-16650, FLOOR_Y, z], { rest: 'awake' })), `awake at ${z}`).toBeNull();
+    }
+    for (const z of [tip + 1, tip + 2, lip + 2 * (tip - lip), 15000]) {
+      expect(reason(pose([0, FLOOR_Y, z])), `flat at ${z}`).toBe('out_of_bounds');
+      expect(reason(pose([16650, FLOOR_Y, z], { q: ON_EDGE_X })), `on edge at ${z}`).toBe(
+        'out_of_bounds',
+      );
+    }
+    expect(reason(pose([0, -100, lip + 300]))).toBe('out_of_bounds');
+  });
+
+  it('keeps every coin of a snapshot resting on the lip', () => {
+    const coins = LIP_COINS.map((p, id) => ({ ...p, id }));
+    const past = pose([0, FLOOR_Y, Math.round((PLAYFIELD.fieldFrontZ + COIN.radius) / 1e-5) + 1], {
+      id: 2,
+    });
+    const snapshot: SimTableSnapshot = {
+      version: 1,
+      pusherTickInCycle: 0,
+      coins: [...coins, past],
+    };
+    expect(validateSnapshot(snapshot)).toEqual({
+      ok: coins,
+      dropped: [{ id: 2, reason: 'out_of_bounds' }],
+    });
   });
 
   it('refuses poses a live table can leave past those limits: a coin over a gutter edge, one leaning on the backboard', () => {
