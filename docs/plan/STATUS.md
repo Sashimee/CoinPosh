@@ -269,7 +269,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-19.02 | todo | | Waits on T-19.01. Server: parental policy |
 | T-19.03 | todo | | Waits on T-6.02. Left-hand and Zen modes |
 | T-19.04 | todo | | Waits on T-19.03. Landscape tablet layout |
-| T-19.05 | todo | | Ready: deps done. Keyboard and mouse controls |
+| T-19.05 | done | task/T-19.05 (merge ad02892) | Keyboard and mouse controls: bindings, controls, focus and i18n under apps/web/src/game/input/keyboard (4bcc4db); pnpm check green after merge; mount wiring queued as P-674 for T-19.06 |
 | T-19.06 | todo | | Waits on T-19.02, T-19.04, T-19.05, T-18.08. Accessibility wiring and e2e |
 | T-20.01 | todo | | Waits on T-11.01, T-4.01. Community contracts |
 | T-20.02 | todo | | Waits on T-20.01, T-3.07. Community numbers |
