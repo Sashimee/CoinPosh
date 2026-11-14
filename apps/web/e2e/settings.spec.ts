@@ -91,3 +91,45 @@ test.describe('settings (P-54)', () => {
     expect(unexpectedErrors(pageErrors, testInfo)).toEqual([]);
   });
 });
+
+test.describe('account (T-10.04)', () => {
+  for (const { width, height } of [
+    { width: 360, height: 640 },
+    { width: 390, height: 844 },
+    { width: 1280, height: 800 },
+  ]) {
+    test(`a fake Demo sign-in links Google, then unlinks it, at ${width}x${height}`, async ({
+      page,
+      pageErrors,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height });
+      await bootGame(page, { query: '?quality=low' });
+      const sheet = await openSettings(page);
+      const section = sheet.getByTestId('account-section');
+      await expect(section).toBeVisible();
+      await expect(section.getByTestId('account-demo-note')).toContainText('fake');
+
+      const google = section.getByTestId('account-provider-google');
+      await expect(google).toHaveAttribute('data-state', 'demo');
+      await expect(google).toContainText('Fake Google');
+      await google.scrollIntoViewIfNeeded();
+      await reviewShot(page, `account-guest-${width}x${height}`);
+
+      await google.click();
+      const status = section.getByTestId('account-status');
+      await expect(status).toContainText('Google linked');
+      await expect(status).toHaveAttribute('data-tone', 'ok');
+      await expect(section.getByTestId('account-linked-google')).toBeVisible();
+      await expect(section.getByTestId('account-provider-google')).toHaveCount(0);
+      await reviewShot(page, `account-linked-${width}x${height}`);
+
+      await section.getByTestId('account-unlink-google').click();
+      await expect(section.getByTestId('account-unlink-confirm')).toBeVisible();
+      await section.getByTestId('account-unlink-confirm').click();
+      await expect(status).toContainText('Google unlinked');
+      await expect(section.getByTestId('account-linked-google')).toHaveCount(0);
+      await expect(section.getByTestId('account-provider-google')).toBeVisible();
+      expect(unexpectedErrors(pageErrors, testInfo)).toEqual([]);
+    });
+  }
+});

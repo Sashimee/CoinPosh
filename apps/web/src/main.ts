@@ -10,6 +10,7 @@ import {
   type AscensionHud,
 } from './game/ascension/index.ts';
 import { createTableRelay, type TableRelay } from './game/ascension/relay.ts';
+import { browserStorage } from './app/settings.ts';
 import type * as CratesApi from './game/crates/index.ts';
 import type * as SessionModule from './game/session/index.ts';
 import type {
@@ -33,6 +34,7 @@ import {
   NET_I18N_SOURCE,
   openingLayout,
   SnapshotCadence,
+  type AccountClient,
   type DemoBannerColors,
   type Net,
   type NetMode,
@@ -60,7 +62,9 @@ import {
 } from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
+import type { AccountUi } from './ui/account/index.ts';
 import { mountSafesTrigger } from './ui/hud.ts';
+import { settingsAccountSlot } from './ui/panels/settingsPanel.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
@@ -240,6 +244,10 @@ let audio: AudioEngine | null = null;
 let ascensionHud: AscensionHud | null = null;
 /** Mounted once the player's table has loaded. */
 let safesSheet: SafesSheet | null = null;
+/** Mounted once the player's table has loaded; its code loads after the table. */
+let accountUi: AccountUi | null = null;
+/** Re-lays the table on the save a sign-in moved onto; null until the scene plays. */
+let relayAccountSwap: ((state: StateResponse) => void) | null = null;
 
 const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
@@ -275,6 +283,12 @@ void hydrated
   .then((boot) => (boot ? mountSafesSheet(boot) : undefined))
   .catch((error: unknown) => {
     console.error('CoinPosh safes failed to mount; the game continues without Safes.', error);
+  });
+
+void hydrated
+  .then((boot) => (boot ? mountAccount(boot) : undefined))
+  .catch((error: unknown) => {
+    console.error('CoinPosh account UI failed to mount; guest play goes on without it.', error);
   });
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
@@ -886,36 +900,62 @@ async function bootScene(
   });
   if (uninstallDemo !== null) teardown.push(uninstallDemo);
 
-  const relay = createTableRelay<Laid>({
-    state: boot.state,
-    hold: () => {
-      probe.playable = false;
-      playing.scope.dispose();
-      view.use(playing.sim.bridge, playing.sim.bridge);
-    },
-    boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
-    lay: layFrom,
-    play: (laid) => {
-      playOn(laid);
-      markBoot('ascended');
-    },
-    discard: ({ scope }) => {
-      scope.dispose();
-    },
-    // The held sim's coins and crates are gone on the server, so play resumes on it with no
-    // crates riding; every coin dropped from here on is one the server will pay.
-    resume: (state, booted) => {
-      const { sim: held, layout: heldLayout } = playing;
-      if (booted) adoptState(state);
-      view.use(play(held, state, { ...heldLayout, crates: [] }), held.bridge);
-      probe.playable = true;
-    },
-    onError: (error) => {
-      console.error(
-        'CoinPosh ascension: the new venue could not be laid; play goes on on the old table.',
-        error,
-      );
-    },
+  const relayTable = (
+    state: StateResponse,
+    bootState: () => Promise<StateResponse>,
+    step: string,
+  ): TableRelay =>
+    createTableRelay<Laid>({
+      state,
+      hold: () => {
+        probe.playable = false;
+        playing.scope.dispose();
+        view.use(playing.sim.bridge, playing.sim.bridge);
+      },
+      boot: bootState,
+      lay: layFrom,
+      play: (laid) => {
+        playOn(laid);
+        markBoot(step);
+      },
+      discard: ({ scope }) => {
+        scope.dispose();
+      },
+      // The held sim's coins and crates are gone on the server, so play resumes on it with no
+      // crates riding; every coin dropped from here on is one the server will pay.
+      resume: (state, booted) => {
+        const { sim: held, layout: heldLayout } = playing;
+        if (booted) adoptState(state);
+        view.use(play(held, state, { ...heldLayout, crates: [] }), held.bridge);
+        probe.playable = true;
+      },
+      onError: (error) => {
+        console.error(
+          `CoinPosh ${step}: the new table could not be laid; play goes on on the old one.`,
+          error,
+        );
+      },
+    });
+  const relay = relayTable(
+    boot.state,
+    () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
+    'ascended',
+  );
+  let swapRelay: TableRelay | null = null;
+  relayAccountSwap = (state) => {
+    swapRelay?.dispose();
+    const next = relayTable(state, () => Promise.resolve(state), 'account-swapped');
+    swapRelay = next;
+    next
+      .bootState()
+      .then((booted) => next.layTable(booted))
+      .catch((error: unknown) => {
+        next.failed(error);
+      });
+  };
+  teardown.push(() => {
+    relayAccountSwap = null;
+    swapRelay?.dispose();
   });
   mountAscensionDoor(stage, boot, relay);
 }
@@ -956,7 +996,11 @@ function mountAscensionDoor(stage: Stage, boot: NetBoot, relay: TableRelay): voi
     },
   });
   ascensionHud = hud;
+  const stopPrompt = hud.events.on('ascension:completed', () => {
+    accountUi?.ascended();
+  });
   teardown.push(() => {
+    stopPrompt();
     ascensionHud = null;
     relay.dispose();
     hud.dispose();
@@ -1113,6 +1157,46 @@ async function warmSim(simModule: typeof SimWorkerModule): Promise<void> {
   } finally {
     spare.dispose();
   }
+}
+
+/** Optional Google and Apple sign-in in Settings, and the once-per-device nudge toward it. */
+async function mountAccount(boot: NetBoot): Promise<void> {
+  const { mountAccountUi } = await import('./ui/account/index.ts');
+  let subscribed: Promise<AccountClient> | null = null;
+  const client = (): Promise<AccountClient> =>
+    (subscribed ??= boot.net
+      .account()
+      .then((account) => {
+        teardown.push(
+          account.onSwap(({ state }) => {
+            if (relayAccountSwap) {
+              relayAccountSwap(state);
+              return;
+            }
+            ui.setUpgradeLevels(state.venue.upgrades);
+            boot.vault.adopted(state);
+            safesSheet?.adopt(state);
+          }),
+        );
+        return account;
+      })
+      .catch((error: unknown) => {
+        subscribed = null;
+        throw error;
+      }));
+  const mounted = mountAccountUi({
+    ui,
+    host: uiRoot,
+    slot: settingsAccountSlot(uiRoot),
+    client,
+    playing: () => probe.playable,
+    storage: browserStorage(),
+  });
+  accountUi = mounted;
+  teardown.push(() => {
+    accountUi = null;
+    mounted.dispose();
+  });
 }
 
 /** How the server laid the table, in every net mode; null without a table to lay. */

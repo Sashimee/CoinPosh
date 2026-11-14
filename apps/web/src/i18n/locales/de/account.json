@@ -1,0 +1,95 @@
+{
+  "title": "Fortschritt behalten",
+  "intro": {
+    "guest": "Dein Spielstand liegt nur auf diesem Gerät. Verknüpfe ein Konto, um ihn zu sichern und überall weiterzuspielen.",
+    "linked": "Dein Spielstand ist bei deinem Konto sicher. Melde dich auf jedem Gerät an, um weiterzuspielen."
+  },
+  "loading": "Dein Konto wird geprüft…",
+  "loadFailed": "Dein Konto konnte gerade nicht geprüft werden. Dein Spielstand bleibt auf diesem Gerät sicher.",
+  "retry": "Erneut versuchen",
+  "provider": {
+    "google": "Google",
+    "apple": "Apple"
+  },
+  "button": {
+    "link": {
+      "google": "Weiter mit Google",
+      "apple": "Weiter mit Apple"
+    },
+    "signin": {
+      "google": "Mit Google anmelden",
+      "apple": "Mit Apple anmelden"
+    },
+    "busy": "{{provider}} wird geöffnet…",
+    "ready": "Nochmal tippen, um {{provider}} zu öffnen",
+    "waiting": "Warte auf {{provider}}… zum Abbrechen tippen"
+  },
+  "demo": {
+    "badge": "Fake",
+    "link": "Fake-Anmeldung mit {{provider}}",
+    "signin": "Fake-Anmeldung mit {{provider}}",
+    "note": "Demo-Modus: Diese Anmeldungen sind nur vorgetäuscht (Fake). Sie erreichen nie Google oder Apple und gelten nur, solange dieser Tab offen ist."
+  },
+  "googleHint": "Wähle unten dein Google-Konto.",
+  "unavailable": "Die Anmeldung mit Google und Apple kommt bald. Bis dahin bleibt dein Spielstand auf diesem Gerät sicher.",
+  "unavailableOne": "Die Anmeldung mit {{provider}} kommt bald. Bis dahin bleibt dein Spielstand auf diesem Gerät sicher.",
+  "linked": {
+    "heading": "Verknüpfte Konten",
+    "since": "Verknüpft am {{date}}",
+    "unlink": "Trennen",
+    "unlinkAria": "{{provider}} trennen",
+    "confirm": "{{provider}} trennen?",
+    "confirmHint": "Dieser Spielstand bleibt auf diesem Gerät und bei jedem anderen verknüpften Konto.",
+    "confirmLast": "Das ist dein einziges verknüpftes Konto. Ohne es liegt dieser Spielstand nur noch auf diesem Gerät.",
+    "keep": "Behalten",
+    "confirmButton": "Trennen"
+  },
+  "status": {
+    "linked": "{{provider}} verknüpft. Dein Fortschritt ist sicher.",
+    "unlinked": "{{provider}} getrennt.",
+    "cancelled": "Nichts wurde geändert.",
+    "inUse": "Dieses {{provider}}-Konto hat schon einen anderen Spielstand.",
+    "invalidToken": "{{provider}} konnte nicht bestätigen, dass du es bist. Bitte versuche es erneut.",
+    "unavailable": "Die Anmeldung mit {{provider}} ist gerade nicht verfügbar. Dein Spielstand bleibt auf diesem Gerät sicher.",
+    "offline": "Du scheinst offline zu sein. Dein Spielstand ist sicher; versuche es erneut, sobald du verbunden bist.",
+    "failed": "Das hat nicht geklappt. Dein Spielstand ist sicher; bitte versuche es erneut.",
+    "signedIn": "Willkommen zurück. Dein Spielstand in {{venue}} liegt auf dem Tisch.",
+    "sameSave": "Du spielst diesen Spielstand bereits.",
+    "keptGuest": "Du spielst den Spielstand dieses Geräts. Der Konto-Spielstand bleibt bei deinem Konto.",
+    "swapFailed": "Du bist angemeldet, aber dein Spielstand ist noch nicht auf dem Tisch."
+  },
+  "switch": {
+    "offer": "Stattdessen diesen Spielstand spielen",
+    "open": "Spielstand auf einem anderen Gerät? Anmelden",
+    "title": "Bei einem gesicherten Spielstand anmelden",
+    "hint": "Wähle das Konto, mit dem dein anderer Spielstand verknüpft ist.",
+    "back": "Zurück"
+  },
+  "finish": "Wechsel abschließen",
+  "choice": {
+    "title": "Spielstand wählen",
+    "subtitle": "Spielstände werden nie zusammengeführt. Wähle den, mit dem du ab jetzt spielst.",
+    "options": "Spielstände zur Auswahl",
+    "device": "Auf diesem Gerät",
+    "account": "Bei deinem {{provider}}-Konto",
+    "venue": "Ort",
+    "goldBars": "Goldbarren",
+    "coins": "Münzen",
+    "lastPlayed": "Gespielt {{when}}",
+    "selected": "Gewählt",
+    "pick": "Wähle einen Spielstand, um fortzufahren.",
+    "warnDevice": "Der Konto-Spielstand bleibt bei deinem Konto. Dieses Gerät spielt als Gast weiter.",
+    "warnAccount": "Der Gast-Spielstand dieses Geräts bleibt zurück und lässt sich nicht wiederherstellen.",
+    "keepDevice": "Spielstand dieses Geräts behalten",
+    "keepAccount": "Konto-Spielstand spielen",
+    "busy": "Wird gewechselt…",
+    "summary": "{{save}}: {{venue}}. Goldbarren: {{goldBars}}. Münzen: {{coins}}. Gespielt {{when}}."
+  },
+  "prompt": {
+    "title": "Sichere diesen Spielstand",
+    "ascension": "Ein neuer Ort ist es wert, gesichert zu werden. Verknüpfe Google oder Apple, damit dir dieser Spielstand folgt.",
+    "playtime": "Das ist schon viel feines Spiel. Verknüpfe Google oder Apple, damit dir dieser Spielstand folgt.",
+    "action": "Fortschritt behalten",
+    "later": "Später"
+  }
+}

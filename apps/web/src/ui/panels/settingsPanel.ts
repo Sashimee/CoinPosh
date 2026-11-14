@@ -6,6 +6,19 @@ import { h } from '../dom.ts';
 import { icon, type IconName } from '../icons.ts';
 import { createSegmented, createSlider, createToggle } from '../components/controls.ts';
 
+const ACCOUNT_SLOT = 'settings-account-slot';
+
+/** The "Keep my progress" section mounts here once the account UI loads after the table. */
+export function settingsAccountSlot(root: ParentNode): HTMLElement {
+  const slot = root.querySelector<HTMLElement>(`[data-testid="${ACCOUNT_SLOT}"]`);
+  if (!slot) {
+    throw new Error(
+      `CoinPosh settings: the account slot ([data-testid="${ACCOUNT_SLOT}"]) is missing; mount the UI before the account section.`,
+    );
+  }
+  return slot;
+}
+
 function updateSettings(ctx: UiContext, patch: Partial<Settings>): void {
   ctx.store.setState((state) => ({ settings: { ...state.settings, ...patch } }));
 }
@@ -110,6 +123,7 @@ export function createSettingsPanel(ctx: UiContext): HTMLElement {
   return h(
     'div',
     { class: 'cp-settings' },
+    h('div', { class: 'cp-settings-account', attrs: { 'data-testid': ACCOUNT_SLOT } }),
     group(ctx, 'sound', 'settings.audio', ...sliders.map((s) => s.control.el), mono.el),
     group(ctx, 'feel', 'settings.feel', haptics.el, motion.el),
     group(ctx, 'display', 'settings.display', quality.el),
