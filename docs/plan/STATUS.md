@@ -349,6 +349,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-544 | done | task/P-544 (merge bf9df59) | Safes sheet mounted with a HUD trigger, ready badge and server wallet sync (folds P-545, P-546), with apps/web/e2e/safes.spec.ts and hud tests; review round (852be7a); pnpm check green after merge |
 | P-536 | done | task/P-536 (merge f378559) | Vault plaque shows spendable coins only; drop buffer as a separate 'in hand' readout, with apps/web/e2e/plaque-honesty.spec.ts (folds P-573, P-574) (6afeada); pnpm check green after merge; follow-ups P-609 to P-613 |
 | P-575 | done | task/P-575 (merge c8497a7) | core.ts fuse() holds fusions whose inputs are not yet bound and claims them once their mints land, pairing undrawn coins by sim id (248c132); unblocks T-92.09; follow-ups P-593, P-594; pnpm check green after merge |
+| P-580 | done | task/P-580 (merge 77fdae2) | VFX pipelines warmed before playable and after tier/renderer changes, with apps/web/e2e/shader-warmup.spec.ts and stage tests; review round (30e6978); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
