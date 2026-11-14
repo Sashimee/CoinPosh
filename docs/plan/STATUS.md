@@ -166,7 +166,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.05-p2 | blocked(review: not delivered, needs quest/streak/season TxKinds in ledger.ts and design calls on tier claims, scratch-card rewards and Season Stars) | | Nothing committed; server design ready once POLISH ledger and design items land |
 | T-3.05-p3 | blocked(review: not delivered, Demo quest claim cannot credit the ledger without a public MockWorld grant hook; quest book persistence needs a lead call) | | Nothing committed; re-run after the world.ts grant method and persistence option land (POLISH) |
 | T-3.05 | in progress (parts merged: T-3.05-p1) | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag). Parts T-3.05-p1, T-3.05-p2, T-3.05-p3. Parts merged: T-3.05-p1 (merge 1865458); parts pending: T-3.05-p2, T-3.05-p3 |
-| T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
+| T-3.06 | in progress (parts merged: T-3.06-p1 375bb8a) | task/T-3.06-p1 (merge 375bb8a) | Soirée Nights run mode; parts T-3.06-p1, T-3.06-p2; p2 pending |
+| T-3.06-p1 | done | task/T-3.06-p1 (merge 375bb8a) | Soirée Nights contract and numbers: shared API types, endpoints, economy config and 02-ECONOMY section (fc27c3b); pnpm check green after merge; follow-ups P-675 to P-680 |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
 | T-10.01 | done | task/T-10.01 (merge 75e63f3) | Account link contracts: packages/shared/src/api/account.ts, accountEndpoints in endpoints.ts, new error codes (e91c834); wiring into `endpoints`, fixtures and Demo mock queued as P-281 for T-10.03; pnpm check green after merge |
 | T-10.02 | done | task/T-10.02 (merge 695d63b) | Server: verify ID tokens, link, sign in on a new device (19c8550, POLISH.md hunk dropped after review); follow-ups P-304..P-306; P-292..P-294 already queued in POLISH.md; pnpm check green after merge |
