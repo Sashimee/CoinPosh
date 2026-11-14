@@ -1,0 +1,198 @@
+P-617 · starting bankroll · economy sim (seed 1, 100 players, 7 casual days) at feat/build-loop e139d42
+Regenerate: pnpm --filter @coinposh/economy sim --strict
+            pnpm --filter @coinposh/economy sim --heap-tier copper --return-ratio 0.9
+            pnpm --filter @coinposh/economy sim --envelope > docs/plan/balance-reports/rate-envelope.json
+
+Problem
+  Since P-536 the Vault plaque shows spendable coins only, and the pre-paid copper drop buffer
+  is the separate 'in hand' readout. Starting coins were 20, sized when the plaque showed the
+  buffer too, so a first boot opened on Vault 8 (Demo, 12-coin buffer) or Vault 4 (server,
+  16-coin buffer). Playtest on 7b54ff9: the plaque read 0 after 8 taps (about 3 s) while the
+  first payout landed at 16 s.
+
+Change
+  startingCoins (trustFund level 0)  20 -> 36  = bootBankroll.spendableCoins 20
+                                                + bootBankroll.dropBufferCoins 16 (larger host buffer)
+  pusherSpeed baseCost               25 -> 37  (P-193 guard: every coin line > starting coins)
+  dropRate    baseCost               30 -> 38
+  coinValue   baseCost               40 -> 40  (already above 36)
+  Growth rates, effects and every other line unchanged.
+
+First boot (copper drop = 1 coin)
+                 buffer  plaque before  plaque after  coins to win before first buy (before -> after)
+  Demo           12      8              24            25 - 8 = 17  ->  37 - 24 = 13
+  Server         16      4              20            25 - 4 = 21  ->  37 - 20 = 17
+  Unit test: src/config.test.ts 'first-boot bankroll (P-617)' asserts
+    startingCoins - bufferSize x dropValue >= 20 for buffers 12 and 16, and that the cheapest
+    coin upgrade (37) costs more than startingCoins (36).
+
+Candidates swept (start / pusherSpeed / dropRate / coinValue), shipped model unless noted
+  candidate         first upg p90  Ascend V1 p50  copper+0.9: first upg p90 / Ascend V1 p50   daily bank 1000 / 2500 (band 10 / 20 min)
+  20/25/30/40 base  17 s           3 h 17 min     1 min 33 s / 4 h 41 min                       9 / 18 min
+  36/40/45/50       17 s           3 h 38 min     1 min 48 s / 5 h 10 min MISS                  -
+  36/40/42/45       17 s           3 h 31 min     1 min 37 s / 5 h 00 min MISS                  -
+  36/38/40/42       15 s           3 h 25 min     1 min 23 s / 4 h 53 min                       11 / 21 min MISS
+  32/33/34/40       15 s           3 h 21 min     1 min 19 s / 4 h 46 min                       10 / 20 min
+  36/37/38/40 SHIP  15 s           3 h 23 min     1 min 19 s / 4 h 50 min                       10 / 20 min
+  Base cost multiplies every level (cost = base x growth^level), so the raise is kept to the
+  smallest that clears 36: daily banking quests count falls, which track pusherSpeed levels,
+  and they leave their bands above 37/38. 32 would only clear 20 spendable on the Demo (16 on
+  the server), so 36 is shipped.
+
+Effect on the targets
+  Pacing (02-ECONOMY.md)  7/7 before, 7/7 after (--strict exits 0). First upgrade p90 17 s -> 15 s
+                          (the 2 min target holds with 1 min 45 s spare). Ascend V1 3 h 17 min ->
+                          3 h 23 min, V2/V1 x1.62 -> x1.58, first album set 14 min 42 s -> 15 min 21 s,
+                          season 28.3 h unchanged.
+  FTUE                    first Vault Crate p90 14 s unchanged. Opening heap first fall after 10
+                          drops unchanged (physics pile model). P-436 (first credit by drop 8 with
+                          Vault >= 8): the drop count to first credit is physics and does not move;
+                          the Vault after 8 drops rises from 0 to 16 (Demo) / 12 (server), so that
+                          bound can only get better.
+  What-if copper heap at return 0.9 (P-193 evidence): first upgrade p90 1 min 33 s -> 1 min 19 s,
+                          Ascend V1 4 h 41 min -> 4 h 50 min, 7/7 in band both times.
+  Physics ladder (--ladder): unchanged by economy costs; 'First Diamond, 3 pinpoint taps/s >= 1 min'
+                          misses on the baseline too (50 s p10), 28/28 style pacing rows in band.
+  Quests                  daily bank 1000 coins: 9 -> 10 min (easy band 10); 2500: 18 -> 20 min
+                          (medium band 20). Inside their bands (quests.test.ts green).
+  Steward's allowance     the sim's 0.8 drops/s no longer empties the 36-coin Vault inside 30 s
+                          (broke at 45 s); the dead-end test now pours at the slowest rate that
+                          does (36 / 29 = 1.24 drops/s, broke at 29 s, resumes at 36 s with the
+                          allowance). Ceiling 0.083 coins/s still under a quarter of the base rate.
+  Rate envelope           base limits in src/config.ts unchanged (rateEnvelope.test.ts green).
+                          rate-envelope.json regenerated: every limits.max and mean at every
+                          checkpoint is equal or lower (47 values down, none up), because a
+                          checkpoint reached on the same play now holds fewer pusherSpeed /
+                          dropRate / coinValue levels. Only the table inputs grow (activeSeconds
+                          at the ascend checkpoints, +1 to +5 charms), so no envelope gets worse.
+
+Untouched outside economy: server PREMINT_BUFFER_TARGET (16), Demo MOCK_RULES.bufferSize (12),
+and the Demo / server signup both read startingCoins from the trust fund stat.
+
+======================================================================================
+Shipped run after P-617 (pnpm --filter @coinposh/economy sim --strict)
+======================================================================================
+CoinPosh balancing sim · 100 players · seed 1 · 7 casual days
+
+Pacing targets (02-ECONOMY.md): 7/7 on target
+      Target                   Bound                    At   Sim          p10 / p50 / p90
+────  ───────────────────────  ───────────────────────  ───  ───────────  ──────────────────────────────────────
+PASS  First upgrade            ≤ 2 min                  p90  15 s         15 s / 15 s / 15 s
+PASS  First Charm              ≤ 5 min                  p90  14 s         14 s / 14 s / 14 s
+PASS  First album set          ≤ 45 min                 p50  15 min 21 s  8 min 40 s / 15 min 21 s / 22 min 25 s
+PASS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  3 h 23 min   3 h 03 min / 3 h 23 min / 3 h 36 min
+PASS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  day 1.50     day 1.50 / day 1.50 / day 1.50
+PASS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  ×1.58        ×1.48 / ×1.58 / ×1.70
+PASS  Free season track        25.0 h – 35.0 h          p50  28.3 h       28.0 h / 28.3 h / 28.6 h
+
+FTUE targets (00-VISION.md): 1/1 on target
+      Target             Bound   At   Sim   p10 / p50 / p90
+────  ─────────────────  ──────  ───  ────  ─────────────────
+PASS  First Vault Crate  ≤ 45 s  p90  14 s  6 s / 14 s / 14 s
+
+Opening heap: 100 silver coins on the house · first fall after 10 drops · paid 751 / 751 / 762 coins (p10 / p50 / p90)
+
+Active-play milestones (continuous play, capped at 60 h)
+Milestone              p10          p50          p90
+─────────────────────  ───────────  ───────────  ───────────
+Opening heap cleared   1 min 33 s   1 min 34 s   1 min 34 s
+First upgrade          15 s         15 s         15 s
+First Vault Crate      6 s          14 s         14 s
+First Charm            14 s         14 s         14 s
+First album set        8 min 40 s   15 min 21 s  22 min 25 s
+Ascend Riviera Yacht   3 h 03 min   3 h 23 min   3 h 36 min
+Ascend Salon de Paris  8 h 01 min   8 h 55 min   9 h 19 min
+Free season track      28 h 01 min  28 h 20 min  28 h 34 min
+
+Casual player, median at end of each day
+Day  Active   Venue  Bullion  Gold Bars  Crates  Charms  Sets  Pearls  Keys  Season
+───  ───────  ─────  ───────  ─────────  ──────  ──────  ────  ──────  ────  ───────
+1    50 min   1      16 %     0          138     14      2     172     2     tier 1
+2    100 min  2      3 %      1          295     30      2     382     5     tier 2
+3    150 min  2      68 %     1          464     48      2     606     9     tier 4
+4    200 min  3      17 %     1          636     65      2     828     12    tier 5
+5    250 min  3      57 %     1          812     84      2     1051    14    tier 7
+6    300 min  3      98 %     2          991     103     2     1289    18    tier 8
+7    350 min  4      8 %      1          1163    122     2     1516    21    tier 10
+
+======================================================================================
+What-if after P-617 (sim --heap-tier copper --return-ratio 0.9)
+======================================================================================
+CoinPosh balancing sim · 100 players · seed 1 · 7 casual days
+
+Pacing targets (02-ECONOMY.md): 7/7 on target
+      Target                   Bound                    At   Sim          p10 / p50 / p90
+────  ───────────────────────  ───────────────────────  ───  ───────────  ────────────────────────────────────
+PASS  First upgrade            ≤ 2 min                  p90  1 min 19 s   48 s / 1 min 14 s / 1 min 19 s
+PASS  First Charm              ≤ 5 min                  p90  14 s         14 s / 14 s / 14 s
+PASS  First album set          ≤ 45 min                 p50  19 min 23 s  9 min / 19 min 23 s / 30 min 57 s
+PASS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  4 h 50 min   4 h 23 min / 4 h 50 min / 5 h 04 min
+PASS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  day 2.00     day 2.00 / day 2.00 / day 2.00
+PASS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  ×1.55        ×1.45 / ×1.55 / ×1.63
+PASS  Free season track        25.0 h – 35.0 h          p50  28.5 h       28.2 h / 28.5 h / 28.8 h
+
+FTUE targets (00-VISION.md): 1/1 on target
+      Target             Bound   At   Sim   p10 / p50 / p90
+────  ─────────────────  ──────  ───  ────  ─────────────────
+PASS  First Vault Crate  ≤ 45 s  p90  14 s  6 s / 14 s / 14 s
+
+Opening heap: 100 copper coins on the house · first fall after 10 drops · paid 150 / 150 / 155 coins (p10 / p50 / p90)
+
+Active-play milestones (continuous play, capped at 60 h)
+Milestone              p10          p50          p90
+─────────────────────  ───────────  ───────────  ───────────
+Opening heap cleared   2 min 26 s   2 min 27 s   2 min 27 s
+First upgrade          48 s         1 min 14 s   1 min 19 s
+First Vault Crate      6 s          14 s         14 s
+First Charm            14 s         14 s         14 s
+First album set        9 min        19 min 23 s  30 min 57 s
+Ascend Riviera Yacht   4 h 23 min   4 h 50 min   5 h 04 min
+Ascend Salon de Paris  11 h 14 min  11 h 58 min  12 h 56 min
+Free season track      28 h 15 min  28 h 33 min  28 h 46 min
+
+Casual player, median at end of each day
+Day  Active   Venue  Bullion  Gold Bars  Crates  Charms  Sets  Pearls  Keys  Season
+───  ───────  ─────  ───────  ─────────  ──────  ──────  ────  ──────  ────  ───────
+1    50 min   1      6 %      0          121     13      2     151     2     tier 1
+2    100 min  1      52 %     0          288     29      2     371     5     tier 2
+3    150 min  2      10 %     0          445     46      2     577     8     tier 4
+4    200 min  2      71 %     0          613     62      2     795     11    tier 5
+5    250 min  3      8 %      1          782     80      2     1013    14    tier 7
+6    300 min  3      34 %     1          958     99      2     1237    17    tier 8
+7    350 min  3      64 %     1          1136    118     2     1471    20    tier 10
+
+======================================================================================
+Shipped run before P-617 (start 20, costs 25/30/40), for comparison
+======================================================================================
+CoinPosh balancing sim · 100 players · seed 1 · 7 casual days
+
+Pacing targets (02-ECONOMY.md): 7/7 on target
+      Target                   Bound                    At   Sim          p10 / p50 / p90
+────  ───────────────────────  ───────────────────────  ───  ───────────  ──────────────────────────────────────
+PASS  First upgrade            ≤ 2 min                  p90  17 s         17 s / 17 s / 17 s
+PASS  First Charm              ≤ 5 min                  p90  14 s         14 s / 14 s / 14 s
+PASS  First album set          ≤ 45 min                 p50  14 min 42 s  7 min 46 s / 14 min 42 s / 21 min 54 s
+PASS  Ascend Venue 1 (active)  3 h 00 min – 5 h 00 min  p50  3 h 17 min   2 h 59 min / 3 h 17 min / 3 h 31 min
+PASS  Ascend Venue 1 (casual)  day 1.50 – day 2.50      p50  day 1.50     day 1.50 / day 1.50 / day 1.50
+PASS  Venue 2 / Venue 1 time   ×1.40 – ×1.80            p50  ×1.62        ×1.51 / ×1.62 / ×1.73
+PASS  Free season track        25.0 h – 35.0 h          p50  28.3 h       28.0 h / 28.3 h / 28.5 h
+
+FTUE targets (00-VISION.md): 1/1 on target
+      Target             Bound   At   Sim   p10 / p50 / p90
+────  ─────────────────  ──────  ───  ────  ─────────────────
+PASS  First Vault Crate  ≤ 45 s  p90  14 s  6 s / 14 s / 14 s
+
+Opening heap: 100 silver coins on the house · first fall after 10 drops · paid 751 / 751 / 760 coins (p10 / p50 / p90)
+
+Active-play milestones (continuous play, capped at 60 h)
+Milestone              p10          p50          p90
+─────────────────────  ───────────  ───────────  ───────────
+Opening heap cleared   1 min 26 s   1 min 27 s   1 min 27 s
+First upgrade          17 s         17 s         17 s
+First Vault Crate      6 s          14 s         14 s
+First Charm            14 s         14 s         14 s
+First album set        7 min 46 s   14 min 42 s  21 min 54 s
+Ascend Riviera Yacht   2 h 59 min   3 h 17 min   3 h 31 min
+Ascend Salon de Paris  7 h 55 min   8 h 48 min   9 h 11 min
+Free season track      27 h 59 min  28 h 18 min  28 h 31 min
+
