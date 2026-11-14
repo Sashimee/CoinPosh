@@ -341,6 +341,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-2.01-p3 | done | task/T-2.01-p3 (merge eaac8b0) | Client safes panel, controller and dial/door cinematic; fix round keeps focus across countdown ticks (503cf23); main.ts/HUD/pity wiring queued as P-544..P-547; pnpm check green after merge |
 | P-465 | done | task/P-465 (merge 09eb259) | Demo-only window.__coinposh.demo test handle, fix round (cd4131f): live-mode null test restored; unblocks T-92.09; pnpm check green after merge |
 | P-510 | done | task/P-510 (merge 5acaaeb) | Crate HUD hold kept while the director holds the unbox behind a sheet; fix round (fca3729) folds P-511, P-549 with a deterministic front-fall assertion; pnpm check green after merge |
+| P-535 | done | task/P-535 (merge 33ea92c) | A closing sheet goes inert and hands focus back at once so it cannot spend coins (folds P-537 case a), with apps/web/e2e/sheet-close-safety.spec.ts and sheetFocus tests (50a69b8); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
