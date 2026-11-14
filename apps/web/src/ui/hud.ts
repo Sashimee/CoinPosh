@@ -350,6 +350,38 @@ function followTable(
   return reflow;
 }
 
+/**
+ * The dock gains doors after boot (Safes, Ascension), and its grid track grows to fit them, so
+ * on a narrow phone the last door would sit past the gutter. When the dock no longer fits the
+ * HUD's content box, the Upgrades label steps out of sight (still its button's name for screen
+ * readers) and the button shows its icon and badge alone.
+ */
+function collapseLabelWhenCramped(
+  ctx: UiContext,
+  hud: HTMLElement,
+  dock: HTMLElement,
+  label: HTMLElement,
+): void {
+  const fit = (): void => {
+    if (hud.clientWidth === 0) return;
+    label.classList.remove('cp-sr-only');
+    const style = getComputedStyle(hud);
+    const room = hud.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    label.classList.toggle('cp-sr-only', dock.getBoundingClientRect().width > room + 0.5);
+  };
+  const resizes = new ResizeObserver(fit);
+  resizes.observe(hud);
+  const doors = new MutationObserver(fit);
+  doors.observe(dock, { childList: true });
+  document.fonts.addEventListener('loadingdone', fit);
+  ctx.own(ctx.loc.bind(fit));
+  ctx.own(() => {
+    resizes.disconnect();
+    doors.disconnect();
+    document.fonts.removeEventListener('loadingdone', fit);
+  });
+}
+
 /** A Vault that empties for a moment between a drop and the fall it pays is not news. */
 const EMPTY_SETTLE_MS = 600;
 /** How long a tap at an empty Vault keeps the notice lit. */
@@ -578,6 +610,7 @@ export function createHud(ctx: UiContext): Hud {
     createConciergeNotice(ctx),
   );
   const hud = h('div', { class: 'cp-hud' }, hudTop, dock);
+  collapseLabelWhenCramped(ctx, hud, dock, upgradesLabel);
   const tierStamp = createTierStamp(ctx);
   const root = h(
     'div',

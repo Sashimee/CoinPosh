@@ -83,7 +83,75 @@ async function hudChip(page: Page, currency: Chip): Promise<number> {
   return Number(await chip.getAttribute('data-value'));
 }
 
+interface DockFit {
+  readonly gutter: number;
+  readonly innerWidth: number;
+  readonly doors: readonly {
+    readonly testId: string;
+    readonly left: number;
+    readonly right: number;
+  }[];
+  readonly labelCollapsed: boolean;
+}
+
+function dockFit(page: Page): Promise<DockFit> {
+  return page.evaluate(() => {
+    const hud = document.querySelector<HTMLElement>('.cp-hud');
+    const dock = document.querySelector<HTMLElement>('[data-testid="hud-dock"]');
+    const label = dock?.querySelector('.cp-dock-label');
+    if (!hud || !dock || !label)
+      throw new Error('e2e: the HUD dock or its Upgrades label is missing');
+    return {
+      gutter: parseFloat(getComputedStyle(hud).paddingRight),
+      innerWidth,
+      doors: [...dock.children].map((door) => {
+        const box = door.getBoundingClientRect();
+        return {
+          testId: door.getAttribute('data-testid') ?? '?',
+          left: box.left,
+          right: box.right,
+        };
+      }),
+      labelCollapsed: label.classList.contains('cp-sr-only'),
+    };
+  });
+}
+
 test.describe('Safes sheet (P-544)', () => {
+  for (const { width, height, collapsed } of [
+    { width: 360, height: 740, collapsed: true },
+    { width: 390, height: 844, collapsed: true },
+    { width: 768, height: 1024, collapsed: false },
+  ]) {
+    test(`every dock door stays inside the gutter at ${width}x${height}`, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      await bootGame(page);
+      await expect(page.getByTestId('dock-safes')).toBeVisible();
+      await expect(page.getByTestId('hud-ascension')).toBeVisible();
+
+      const fit = await dockFit(page);
+      expect(fit.doors.map((door) => door.testId)).toEqual([
+        'dock-settings',
+        'dock-upgrades',
+        'dock-safes',
+        'hud-ascension',
+      ]);
+      expect(fit.gutter, 'the HUD keeps a side gutter').toBeGreaterThanOrEqual(
+        width < 375 ? 12 : 16,
+      );
+      for (const door of fit.doors) {
+        expect(door.left, `${door.testId} starts inside the left gutter`).toBeGreaterThanOrEqual(
+          fit.gutter,
+        );
+        expect(door.right, `${door.testId} ends inside the right gutter`).toBeLessThanOrEqual(
+          fit.innerWidth - fit.gutter,
+        );
+      }
+      expect(fit.labelCollapsed).toBe(collapsed);
+      await expect(page.getByTestId('dock-upgrades')).toHaveAccessibleName(/^Upgrades/);
+    });
+  }
+
   test('a ready safe badges the dock, opens from the keyboard, and its payout lands on the server wallet', async ({
     page,
   }) => {
