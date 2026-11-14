@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { cascade, upgradeLines } from '@coinposh/economy';
 import { MIXER_BUSES, MOTION_OPTIONS, QUALITY_OPTIONS } from '../app/settings.ts';
-import { createI18n, detectLanguage, LANGUAGES, type ResourceTree } from './core.ts';
-import { BUNDLED_RESOURCES } from './index.ts';
+import {
+  createI18n,
+  createNamespaceLoader,
+  detectLanguage,
+  LANGUAGES,
+  localeFile,
+  resourcesFromFiles,
+  type ResourceTree,
+} from './core.ts';
+import { BUNDLED_RESOURCES, i18n as appI18n, loadNamespace } from './index.ts';
 
 function leafKeys(tree: ResourceTree, prefix = ''): string[] {
   return Object.entries(tree).flatMap(([key, value]) =>
@@ -260,5 +268,209 @@ describe('detectLanguage', () => {
   it('falls back to English', () => {
     expect(detectLanguage([])).toBe('en');
     expect(detectLanguage(['ja', 'pt-BR'])).toBe('en');
+  });
+});
+
+const LOCALE_FILES = resourcesFromFiles(
+  import.meta.glob<ResourceTree>('./locales/*/*.json', { eager: true, import: 'default' }),
+);
+const NAMESPACES = [
+  ...new Set(LANGUAGES.flatMap((language) => Object.keys(LOCALE_FILES[language]))),
+].sort();
+
+function namespaceTree(language: (typeof LANGUAGES)[number], namespace: string): ResourceTree {
+  const tree = LOCALE_FILES[language][namespace];
+  if (!tree) throw new Error(`locales/${language}/${namespace}.json is missing`);
+  return tree;
+}
+
+describe('every locale namespace', () => {
+  it('finds the namespaces on disk, ui among them', () => {
+    expect(NAMESPACES).toEqual(expect.arrayContaining(['account', 'fair', 'ui']));
+  });
+
+  it.each(NAMESPACES)('%s ships a file in every language', (namespace) => {
+    const missing = LANGUAGES.filter((language) => !LOCALE_FILES[language][namespace]);
+    expect(missing).toEqual([]);
+  });
+
+  it.each(
+    NAMESPACES.flatMap((namespace) => LANGUAGES.map((language) => [namespace, language] as const)),
+  )('%s in %s has exactly the English keys and placeholders, none empty', (namespace, language) => {
+    const english = namespaceTree('en', namespace);
+    const tree = namespaceTree(language, namespace);
+    const englishKeys = leafKeys(english);
+    const keys = leafKeys(tree);
+    expect(withoutPlurals(keys)).toEqual(withoutPlurals(englishKeys));
+    expect(pluralBases(keys)).toEqual(pluralBases(englishKeys));
+    const categories = new Intl.PluralRules(language).resolvedOptions().pluralCategories;
+    const leaves = new Set(keys);
+    const missingPlurals = pluralBases(englishKeys).flatMap((base) =>
+      categories.map((category) => `${base}_${category}`).filter((key) => !leaves.has(key)),
+    );
+    expect(missingPlurals).toEqual([]);
+    for (const key of keys) {
+      const text = stringAt(tree, key);
+      expect(text.trim(), `${language}:${namespace}:${key}`).not.toBe('');
+      const englishKey = PLURAL_SUFFIX.test(key) ? key.replace(PLURAL_SUFFIX, '_other') : key;
+      expect(placeholders(text), `${language}:${namespace}:${key}`).toEqual(
+        placeholders(stringAt(english, englishKey)),
+      );
+    }
+  });
+});
+
+describe('localeFile', () => {
+  it('reads the language and namespace from the path', () => {
+    expect(localeFile('./locales/fr/account.json')).toEqual({
+      language: 'fr',
+      namespace: 'account',
+    });
+    expect(localeFile('/src/i18n/locales/de/vaultTour.json')).toEqual({
+      language: 'de',
+      namespace: 'vaultTour',
+    });
+  });
+
+  it('refuses files outside the layout, other languages and bad namespace names', () => {
+    expect(() => localeFile('./strings/en/ui.json')).toThrow(/not at locales\/<language>/);
+    expect(() => localeFile('./locales/es/ui.json')).toThrow(/unsupported language "es"/);
+    expect(() => localeFile('./locales/en/Ui.json')).toThrow(/invalid namespace "Ui"/);
+  });
+});
+
+const SAMPLE_STRINGS = {
+  en: {
+    greeting: 'Welcome to the {{room}}',
+    chips_one: '{{count}} chip',
+    chips_other: '{{count}} chips',
+  },
+  fr: {
+    greeting: 'Bienvenue au {{room}}',
+    chips_one: '{{count}} jeton',
+    chips_other: '{{count}} jetons',
+  },
+  de: {
+    greeting: 'Willkommen im {{room}}',
+    chips_one: '{{count}} Chip',
+    chips_other: '{{count}} Chips',
+  },
+} as const satisfies Record<(typeof LANGUAGES)[number], ResourceTree>;
+
+function sampleLoaders(languages: readonly (typeof LANGUAGES)[number][] = LANGUAGES) {
+  const calls: string[] = [];
+  const loaders = Object.fromEntries(
+    languages.map((language) => [
+      `./locales/${language}/sample.json`,
+      () => {
+        calls.push(language);
+        return Promise.resolve<ResourceTree>(SAMPLE_STRINGS[language]);
+      },
+    ]),
+  );
+  return { calls, loaders };
+}
+
+/** i18next keeps the resource objects it is handed and writes added bundles into them. */
+function freshResources(): typeof resources {
+  return structuredClone(resources);
+}
+
+describe('createNamespaceLoader', () => {
+  it('loads a feature namespace in EN, FR and DE, once', async () => {
+    const i18n = createI18n({ language: 'fr', resources: freshResources() });
+    const { calls, loaders } = sampleLoaders();
+    const load = createNamespaceLoader(i18n, loaders);
+    expect(i18n.exists('sample:greeting')).toBe(false);
+    await Promise.all([load('sample'), load('sample')]);
+    await load('sample');
+    expect(calls.sort()).toEqual(['de', 'en', 'fr']);
+    expect(i18n.t('sample:greeting', { room: 'Salon' })).toBe('Bienvenue au Salon');
+    expect(i18n.t('sample:chips', { count: 1 })).toBe('1 jeton');
+    i18n.changeLanguage('de');
+    expect(i18n.t('sample:chips', { count: 3 })).toBe('3 Chips');
+    expect(i18n.t('sample:greeting', { room: 'Salon', lng: 'en' })).toBe('Welcome to the Salon');
+    expect(i18n.t('hello', { name: 'Jo' })).toBe('Hallo Jo');
+  });
+
+  it('adds nothing until every language has arrived', async () => {
+    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = createNamespaceLoader(i18n, {
+      ...sampleLoaders().loaders,
+      './locales/de/sample.json': async () => {
+        await gate;
+        return SAMPLE_STRINGS.de;
+      },
+    });
+    const loading = load('sample');
+    await Promise.resolve();
+    expect(i18n.exists('sample:greeting')).toBe(false);
+    release();
+    await loading;
+    expect(i18n.exists('sample:greeting')).toBe(true);
+  });
+
+  it('resolves at once for a namespace every language already holds', async () => {
+    const i18n = createI18n({ language: 'en', resources: structuredClone(BUNDLED_RESOURCES) });
+    const { calls, loaders } = sampleLoaders();
+    await createNamespaceLoader(i18n, loaders)('ui');
+    expect(calls).toEqual([]);
+  });
+
+  it('rejects a namespace with no files, or missing a language, naming the file to add', async () => {
+    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    const load = createNamespaceLoader(i18n, sampleLoaders(['en', 'fr']).loaders);
+    await expect(load('nowhere')).rejects.toThrow(/No locale files for namespace "nowhere"/);
+    await expect(load('sample')).rejects.toThrow(/add locales\/de\/sample\.json/);
+    expect(i18n.exists('sample:greeting')).toBe(false);
+  });
+
+  it('tries a failed load again on the next call', async () => {
+    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    let failures = 1;
+    const load = createNamespaceLoader(i18n, {
+      ...sampleLoaders().loaders,
+      './locales/fr/sample.json': () => {
+        if (failures-- > 0) return Promise.reject(new Error('chunk failed to load'));
+        return Promise.resolve(SAMPLE_STRINGS.fr);
+      },
+    });
+    await expect(load('sample')).rejects.toThrow('chunk failed to load');
+    await load('sample');
+    expect(i18n.t('sample:greeting', { room: 'bar', lng: 'fr' })).toBe('Bienvenue au bar');
+  });
+
+  it('refuses a locale file for an unsupported language when it is set up', () => {
+    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    expect(() =>
+      createNamespaceLoader(i18n, { './locales/es/sample.json': () => Promise.resolve({}) }),
+    ).toThrow(/unsupported language "es"/);
+  });
+});
+
+describe('loadNamespace', () => {
+  it.each(['account', 'fair'])(
+    'loads the %s files from locales/<language>/ into the app instance',
+    async (namespace) => {
+      await loadNamespace(namespace);
+      const [key] = leafKeys(namespaceTree('en', namespace));
+      if (key === undefined) throw new Error(`${namespace} has no strings`);
+      for (const language of LANGUAGES) {
+        expect(appI18n.t(`${namespace}:${key}`, { lng: language })).toBe(
+          stringAt(namespaceTree(language, namespace), key),
+        );
+      }
+    },
+  );
+
+  it('keeps ui bundled for the first paint and resolves it without a fetch', async () => {
+    for (const language of LANGUAGES) {
+      expect(appI18n.instance.hasResourceBundle(language, 'ui')).toBe(true);
+    }
+    await expect(loadNamespace('ui')).resolves.toBeUndefined();
   });
 });

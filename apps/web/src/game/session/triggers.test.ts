@@ -1,5 +1,8 @@
+import { MintedCoinSchema, type Claim, type ClaimResult, type CoinId } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import { createBus } from '../../app/bus.ts';
+import type { TableEvent } from '../../net/index.ts';
+import { newIdempotencyKey } from '../../net/request.ts';
 import type { SimEventBatch } from '../simWorker/index.ts';
 import type { GameEvents } from '../systems/index.ts';
 import {
@@ -77,6 +80,7 @@ function setup(sample: () => Promise<void> = () => Promise.resolve()) {
   const page = new FakePage();
   const game = createBus<GameEvents>();
   const simListeners = new Set<(batch: SimEventBatch) => void>();
+  const tableListeners = new Set<(event: TableEvent) => void>();
   const calls: string[] = [];
   const errors: unknown[] = [];
   let samples = 0;
@@ -100,11 +104,20 @@ function setup(sample: () => Promise<void> = () => Promise.resolve()) {
         return () => simListeners.delete(listener);
       },
     },
+    table: {
+      subscribe(listener) {
+        tableListeners.add(listener);
+        return () => tableListeners.delete(listener);
+      },
+    },
     page,
     scheduler,
     now: () => scheduler.now,
     onError: (error) => errors.push(error),
   });
+  const table = (event: TableEvent): void => {
+    for (const listener of tableListeners) listener(event);
+  };
   const sim = (batch: Partial<SimEventBatch>): void => {
     for (const listener of simListeners) listener({ ...NO_EVENTS, ...batch });
   };
@@ -114,15 +127,24 @@ function setup(sample: () => Promise<void> = () => Promise.resolve()) {
     page,
     game,
     sim,
+    table,
     calls,
     errors,
     simListeners,
+    tableListeners,
     samples: () => samples,
   };
 }
 
 const ORIGIN = { x: 0, y: 0, z: 0 };
 const FELL: GameEvents['coin:fell'] = { coin: null, edge: 'front', position: ORIGIN, tick: 4 };
+
+const coin = (n: number): CoinId => `coin_${'C'.repeat(15)}${String(n)}` as CoinId;
+const MINTED = MintedCoinSchema.parse({ id: coin(9), tier: 'silver', value: 12 });
+const FUSION: Claim = { kind: 'fusion', coinIds: [coin(1), coin(2), coin(3)], tick: 40 };
+const FALL: Claim = { kind: 'fall', coinId: coin(4), tick: 41, edge: 'front' };
+const FUSED: ClaimResult = { status: 'accepted', credited: 0, cascade: null, minted: MINTED };
+const PAID: ClaimResult = { status: 'accepted', credited: 5, cascade: null, minted: null };
 
 const contact = (strength: number): SimEventBatch['contacts'][number] => ({
   coinId: 0,
@@ -160,6 +182,26 @@ describe('wireSnapshotTriggers', () => {
     sim({ falls: [{ coinId: 1, edge: 'front', tick: 2 }] });
     sim({ fusions: [{} as SimEventBatch['fusions'][number]] });
     expect(calls).toEqual(['activity', 'activity', 'activity']);
+  });
+
+  it('counts the server naming a coin already on the table as the table moving, so an upload poses it', () => {
+    const { table, calls, scheduler, samples } = setup();
+    scheduler.advance(SAMPLE_WINDOW_MS * 2);
+    const rested = samples();
+    table({ type: 'claimSettled', claim: FUSION, result: FUSED });
+    table({ type: 'claimsFailed', claims: [FALL, FUSION], error: new Error('offline') });
+    table({ type: 'dropSettled', key: newIdempotencyKey(), coin: MINTED, spawnedCrates: [] });
+    expect(calls).toEqual(['activity', 'activity', 'activity']);
+    expect(samples()).toBe(rested + 1);
+  });
+
+  it('leaves server answers that name no coin to the sim events they follow', () => {
+    const { table, calls } = setup();
+    table({ type: 'claimSettled', claim: FALL, result: PAID });
+    table({ type: 'claimsFailed', claims: [FALL], error: new Error('offline') });
+    table({ type: 'snapshotSettled', seq: 1, stored: 3, ignored: 0 });
+    table({ type: 'status', status: 'synced', pending: 0 });
+    expect(calls).toEqual([]);
   });
 
   it('samples at once, keeps sampling while the table moves and stops once it has rested', () => {
@@ -239,7 +281,18 @@ describe('wireSnapshotTriggers', () => {
 
   it('stops for good on close: no listener, no timer, the cadence closed, a late failure unreported', async () => {
     let fail: (error: Error) => void = () => undefined;
-    const { triggers, scheduler, page, game, sim, calls, errors, simListeners } = setup(
+    const {
+      triggers,
+      scheduler,
+      page,
+      game,
+      sim,
+      table,
+      calls,
+      errors,
+      simListeners,
+      tableListeners,
+    } = setup(
       () =>
         new Promise((_, reject) => {
           fail = reject;
@@ -250,10 +303,12 @@ describe('wireSnapshotTriggers', () => {
     expect(calls).toEqual(['close']);
     expect(scheduler.timers.size).toBe(0);
     expect(simListeners.size).toBe(0);
+    expect(tableListeners.size).toBe(0);
     expect(page.visibility.size).toBe(0);
     expect(page.hides.size).toBe(0);
     game.emit('coin:fell', FELL);
     sim({ falls: [{ coinId: 1, edge: 'front', tick: 2 }] });
+    table({ type: 'claimSettled', claim: FUSION, result: FUSED });
     expect(calls).toEqual(['close']);
     fail(new Error('SimBridge.snapshot: the bridge was disposed before the reply'));
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -1,5 +1,5 @@
 import type { Bus } from '../../app/bus.ts';
-import type { SnapshotCadence } from '../../net/index.ts';
+import type { SnapshotCadence, TableEvent, TableSync } from '../../net/index.ts';
 import type { SimEventBatch } from '../simWorker/index.ts';
 import type { GameEvents } from '../systems/index.ts';
 import type { TableCapture } from './capture.ts';
@@ -26,6 +26,7 @@ export interface SnapshotTriggerDeps {
   readonly capture: Pick<TableCapture, 'refresh'>;
   readonly game: Pick<Bus<GameEvents>, 'on'>;
   readonly sim: { onEvents(listener: (batch: SimEventBatch) => void): () => void };
+  readonly table: Pick<TableSync, 'subscribe'>;
   readonly page: PagePort;
   readonly scheduler: {
     setTimeout(callback: () => void, ms: number): unknown;
@@ -49,8 +50,25 @@ function moved(batch: SimEventBatch): boolean {
 }
 
 /**
+ * A server answer that names a coin the table already shows: a drop the server minted, or a
+ * fusion's coin. No upload so far could pose it, and the table may have stopped moving.
+ */
+function named(event: TableEvent): boolean {
+  switch (event.type) {
+    case 'dropSettled':
+      return true;
+    case 'claimSettled':
+      return event.claim.kind === 'fusion';
+    case 'claimsFailed':
+      return event.claims.some((claim) => claim.kind === 'fusion');
+    default:
+      return false;
+  }
+}
+
+/**
  * Tells the snapshot cadence when the table moved: a drop, a nudge, a fusion, a fall, or a hard
- * strike in the sim. Meanwhile the sim is sampled so a capture is fresh when the cadence asks.
+ * strike in the sim, or when the server names a coin already on it. Meanwhile the sim is sampled so a capture is fresh when the cadence asks.
  * A hidden page uploads its latest sample at once, then again once a last fresh one lands; a page going away hands the queued
  * snapshot to its keepalive request.
  */
@@ -87,6 +105,9 @@ export function wireSnapshotTriggers(deps: SnapshotTriggerDeps): SnapshotTrigger
     deps.game.on('coin:fell', activity),
     deps.sim.onEvents((batch) => {
       if (moved(batch)) activity();
+    }),
+    deps.table.subscribe((event) => {
+      if (named(event)) activity();
     }),
     page.onVisibilityChange(() => {
       if (closed) return;
