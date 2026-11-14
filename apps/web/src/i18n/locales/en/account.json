@@ -1,0 +1,96 @@
+{
+  "title": "Keep my progress",
+  "intro": {
+    "guest": "Your save lives on this device only. Link an account to keep it safe and play it anywhere.",
+    "linked": "Your save is kept with your account. Sign in on any device to pick it up."
+  },
+  "loading": "Checking your account…",
+  "loadFailed": "Your account could not be checked just now. Your save is safe on this device.",
+  "retry": "Try again",
+  "provider": {
+    "google": "Google",
+    "apple": "Apple"
+  },
+  "button": {
+    "link": {
+      "google": "Continue with Google",
+      "apple": "Continue with Apple"
+    },
+    "signin": {
+      "google": "Sign in with Google",
+      "apple": "Sign in with Apple"
+    },
+    "busy": "Opening {{provider}}…",
+    "ready": "Tap again to open {{provider}}",
+    "waiting": "Waiting for {{provider}}… tap to cancel"
+  },
+  "demo": {
+    "badge": "Fake",
+    "link": "Fake {{provider}} sign-in",
+    "signin": "Fake {{provider}} sign-in",
+    "note": "Demo Mode: these sign-ins are fake. They never reach Google or Apple and only last as long as this tab."
+  },
+  "googleHint": "Pick your Google account below.",
+  "unavailable": "Google and Apple sign-in are on their way. Your save stays safe on this device until then.",
+  "unavailableOne": "{{provider}} sign-in is on its way. Your save stays safe on this device until then.",
+  "linked": {
+    "heading": "Linked accounts",
+    "since": "Linked {{date}}",
+    "unlink": "Unlink",
+    "unlinkAria": "Unlink {{provider}}",
+    "confirm": "Unlink {{provider}}?",
+    "confirmHint": "This save stays on this device and with any other linked account.",
+    "confirmLast": "This is your only linked account. Without it, this save lives on this device only.",
+    "keep": "Keep it",
+    "confirmButton": "Unlink"
+  },
+  "status": {
+    "linked": "{{provider}} linked. Your progress is kept.",
+    "unlinked": "{{provider}} unlinked.",
+    "cancelled": "Nothing changed.",
+    "inUse": "That {{provider}} account already keeps another save.",
+    "notLinked": "{{provider}} doesn’t keep a CoinPosh save yet. Link it here to keep this one.",
+    "invalidToken": "{{provider}} could not confirm it was you. Please try again.",
+    "unavailable": "{{provider}} sign-in is not available right now. Your save is safe on this device.",
+    "offline": "You seem to be offline. Your save is safe; try again once you are connected.",
+    "failed": "That did not go through. Your save is safe; please try again.",
+    "signedIn": "Welcome back. Your {{venue}} save is on the table.",
+    "sameSave": "You are already playing this save.",
+    "keptGuest": "You are playing this device's save. The account save stays with your account.",
+    "swapFailed": "You are signed in, but your save has not reached the table yet."
+  },
+  "switch": {
+    "offer": "Play that save instead",
+    "open": "Saved on another device? Sign in",
+    "title": "Sign in to a kept save",
+    "hint": "Pick the account your other save is linked to.",
+    "back": "Back"
+  },
+  "finish": "Finish switching",
+  "choice": {
+    "title": "Choose a save",
+    "subtitle": "Saves are never merged. Pick the one to play from now on.",
+    "options": "Saves to choose from",
+    "device": "On this device",
+    "account": "With your {{provider}} account",
+    "venue": "Venue",
+    "goldBars": "Gold bars",
+    "coins": "Coins",
+    "lastPlayed": "Played {{when}}",
+    "selected": "Chosen",
+    "pick": "Pick a save to continue.",
+    "warnDevice": "The account save stays with your account. This device plays on as a guest.",
+    "warnAccount": "This device's guest save will be left behind and cannot be recovered.",
+    "keepDevice": "Keep this device's save",
+    "keepAccount": "Play the account save",
+    "busy": "Switching…",
+    "summary": "{{save}}: {{venue}}. Gold bars: {{goldBars}}. Coins: {{coins}}. Played {{when}}."
+  },
+  "prompt": {
+    "title": "Keep this save safe",
+    "ascension": "A new venue is worth keeping. Link Google or Apple so this save follows you.",
+    "playtime": "That is a lot of fine play. Link Google or Apple so this save follows you.",
+    "action": "Keep my progress",
+    "later": "Not now"
+  }
+}

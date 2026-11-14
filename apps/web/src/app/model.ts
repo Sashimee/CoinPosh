@@ -88,11 +88,11 @@ const STAT_FORMATS: Readonly<Record<UpgradeStatId, StatFormat>> = {
 };
 
 export interface Wallet {
-  /** What the Vault shows: the server's wallet plus the drop buffer and unconfirmed winnings. */
+  /** What the Vault shows: the server's wallet plus winnings still waiting for its answer. */
   readonly coins: number;
   /**
-   * The part of `coins` the server can spend: the wallet alone. The pre-minted drop buffer is
-   * already paid for and provisional winnings are not yet confirmed. Omitted means all of it.
+   * The part of `coins` the server can spend: the wallet alone, since provisional winnings are
+   * not yet confirmed. Omitted means all of it.
    */
   readonly spendableCoins?: number;
   readonly goldBars: number;
@@ -106,11 +106,6 @@ export interface UpgradeRow {
   readonly cost: number | null;
   /** Whether the server can pay the price now, from spendable coins or gold bars. */
   readonly affordable: boolean;
-  /**
-   * Coins the Vault shows but the server cannot spend yet, when only they stand between the
-   * player and the price; 0 otherwise.
-   */
-  readonly heldBack: number;
   readonly current: number;
   readonly nextValue: number | null;
   readonly format: StatFormat;
@@ -120,21 +115,51 @@ export function spendableCoins(wallet: Wallet): number {
   return Math.min(wallet.coins, wallet.spendableCoins ?? wallet.coins);
 }
 
+/** What the table holds for the player, as the server and the outbox report it. */
+export interface VaultBalance {
+  /** The server's wallet: the only coins it can spend. */
+  readonly walletCoins: number;
+  /** Worth of the pre-minted drop buffer, already paid for out of the wallet. */
+  readonly bufferedCoins: number;
+  /** Winnings sent to the server and not yet confirmed. */
+  readonly provisionalCoins: number;
+  readonly goldBars: number;
+}
+
+export interface VaultReadout extends Wallet {
+  readonly spendableCoins: number;
+  /** True while some of `coins` waits on the server's answer. */
+  readonly provisional: boolean;
+  /** The drop buffer: paid for, ready to drop, and shown apart from the Vault. */
+  readonly inHand: number;
+}
+
+/**
+ * The Vault figure is the wallet the server spends plus winnings it has yet to confirm, so a
+ * price at or below a settled Vault is always one the server accepts. The drop buffer was paid
+ * for out of the wallet already and can only be dropped, so it is reported on its own.
+ */
+export function vaultReadout(balance: VaultBalance): VaultReadout {
+  return {
+    coins: balance.walletCoins + balance.provisionalCoins,
+    spendableCoins: balance.walletCoins,
+    goldBars: balance.goldBars,
+    provisional: balance.provisionalCoins > 0,
+    inHand: balance.bufferedCoins,
+  };
+}
+
 export function upgradeRow(line: UpgradeLineDef, level: number, wallet: Wallet): UpgradeRow {
   const clamped = Math.min(Math.max(0, Math.floor(level)), line.maxLevel);
   const maxed = clamped >= line.maxLevel;
   const cost = maxed ? null : upgradeCost(line, clamped);
-  const coinLine = line.currency === 'coins';
-  const spendable = coinLine ? spendableCoins(wallet) : wallet.goldBars;
-  const affordable = cost !== null && spendable >= cost;
-  const shown = coinLine ? wallet.coins : wallet.goldBars;
+  const spendable = line.currency === 'coins' ? spendableCoins(wallet) : wallet.goldBars;
   return {
     line,
     level: clamped,
     maxed,
     cost,
-    affordable,
-    heldBack: cost !== null && !affordable && shown >= cost ? shown - spendable : 0,
+    affordable: cost !== null && spendable >= cost,
     current: upgradeStat(line, clamped),
     nextValue: maxed ? null : upgradeStat(line, clamped + 1),
     format: STAT_FORMATS[line.effect.stat],

@@ -107,13 +107,18 @@ async function nudgeTableBehindReveal(page: Page): Promise<void> {
 /**
  * Records the Vault the plaque shows on every painted frame after the Collect press, which the
  * tracer stamps in the capture phase so no change can slip in between. It samples frames, not
- * mutations, because the order under test is the one the player sees.
+ * mutations, because the order under test is the one the player sees. The coins in hand are
+ * counted with the plaque, so a drop-buffer refill, which moves coins from the Vault into the
+ * hand, is not mistaken for a payout move.
  */
 async function traceVault(page: Page): Promise<void> {
   await page.evaluate(() => {
     const spoken = document.querySelector('[data-testid=hud-balance] .cp-sr-only');
     if (!spoken) throw new Error('The Vault plaque has no screen-reader balance to trace');
-    const read = (): number => Number(spoken.textContent.replace(/\D/g, ''));
+    const digits = (element: Element | null): number =>
+      Number((element?.textContent ?? '').replace(/\D/g, ''));
+    const read = (): number =>
+      digits(spoken) + digits(document.querySelector('[data-testid=hud-in-hand] .cp-sr-only'));
     let tracing = true;
     const onPress = (event: Event): void => {
       if (!(event.target instanceof Element)) return;

@@ -1,0 +1,96 @@
+{
+  "title": "Garder ma progression",
+  "intro": {
+    "guest": "Votre partie n’existe que sur cet appareil. Liez un compte pour la protéger et la reprendre partout.",
+    "linked": "Votre partie est gardée avec votre compte. Connectez-vous sur n’importe quel appareil pour la reprendre."
+  },
+  "loading": "Vérification de votre compte…",
+  "loadFailed": "Votre compte n’a pas pu être vérifié pour l’instant. Votre partie reste en sûreté sur cet appareil.",
+  "retry": "Réessayer",
+  "provider": {
+    "google": "Google",
+    "apple": "Apple"
+  },
+  "button": {
+    "link": {
+      "google": "Continuer avec Google",
+      "apple": "Continuer avec Apple"
+    },
+    "signin": {
+      "google": "Se connecter avec Google",
+      "apple": "Se connecter avec Apple"
+    },
+    "busy": "Ouverture de {{provider}}…",
+    "ready": "Touchez encore pour ouvrir {{provider}}",
+    "waiting": "En attente de {{provider}}… touchez pour annuler"
+  },
+  "demo": {
+    "badge": "Factice",
+    "link": "Connexion {{provider}} factice",
+    "signin": "Connexion {{provider}} factice",
+    "note": "Mode démo : ces connexions sont factices. Elles n’atteignent jamais Google ni Apple et ne durent que le temps de cet onglet."
+  },
+  "googleHint": "Choisissez votre compte Google ci-dessous.",
+  "unavailable": "La connexion avec Google et Apple arrive bientôt. D’ici là, votre partie reste en sûreté sur cet appareil.",
+  "unavailableOne": "La connexion avec {{provider}} arrive bientôt. D’ici là, votre partie reste en sûreté sur cet appareil.",
+  "linked": {
+    "heading": "Comptes liés",
+    "since": "Lié le {{date}}",
+    "unlink": "Délier",
+    "unlinkAria": "Délier {{provider}}",
+    "confirm": "Délier {{provider}} ?",
+    "confirmHint": "Cette partie reste sur cet appareil et avec tout autre compte lié.",
+    "confirmLast": "C’est votre seul compte lié. Sans lui, cette partie n’existe plus que sur cet appareil.",
+    "keep": "Le garder",
+    "confirmButton": "Délier"
+  },
+  "status": {
+    "linked": "{{provider}} lié. Votre progression est gardée.",
+    "unlinked": "{{provider}} délié.",
+    "cancelled": "Rien n’a changé.",
+    "inUse": "Ce compte {{provider}} garde déjà une autre partie.",
+    "notLinked": "{{provider}} ne garde encore aucune partie CoinPosh. Liez-le ici pour garder celle-ci.",
+    "invalidToken": "{{provider}} n’a pas pu confirmer que c’était vous. Veuillez réessayer.",
+    "unavailable": "La connexion avec {{provider}} n’est pas disponible pour l’instant. Votre partie reste en sûreté sur cet appareil.",
+    "offline": "Vous semblez hors ligne. Votre partie est en sûreté ; réessayez une fois connecté.",
+    "failed": "Cela n’a pas abouti. Votre partie est en sûreté ; veuillez réessayer.",
+    "signedIn": "Bon retour. Votre partie {{venue}} est sur la table.",
+    "sameSave": "Vous jouez déjà cette partie.",
+    "keptGuest": "Vous jouez la partie de cet appareil. La partie du compte reste avec votre compte.",
+    "swapFailed": "Vous êtes connecté, mais votre partie n’a pas encore rejoint la table."
+  },
+  "switch": {
+    "offer": "Jouer plutôt cette partie",
+    "open": "Une partie sur un autre appareil ? Connectez-vous",
+    "title": "Se connecter à une partie gardée",
+    "hint": "Choisissez le compte auquel votre autre partie est liée.",
+    "back": "Retour"
+  },
+  "finish": "Terminer le changement",
+  "choice": {
+    "title": "Choisir une partie",
+    "subtitle": "Les parties ne sont jamais fusionnées. Choisissez celle à jouer désormais.",
+    "options": "Parties au choix",
+    "device": "Sur cet appareil",
+    "account": "Avec votre compte {{provider}}",
+    "venue": "Lieu",
+    "goldBars": "Lingots",
+    "coins": "Pièces",
+    "lastPlayed": "Jouée {{when}}",
+    "selected": "Choisie",
+    "pick": "Choisissez une partie pour continuer.",
+    "warnDevice": "La partie du compte reste avec votre compte. Cet appareil continue en invité.",
+    "warnAccount": "La partie invitée de cet appareil sera abandonnée et ne pourra pas être récupérée.",
+    "keepDevice": "Garder la partie de cet appareil",
+    "keepAccount": "Jouer la partie du compte",
+    "busy": "Changement…",
+    "summary": "{{save}} : {{venue}}. Lingots : {{goldBars}}. Pièces : {{coins}}. Jouée {{when}}."
+  },
+  "prompt": {
+    "title": "Protégez cette partie",
+    "ascension": "Un nouveau lieu mérite d’être gardé. Liez Google ou Apple pour que cette partie vous suive.",
+    "playtime": "Voilà de belles heures de jeu. Liez Google ou Apple pour que cette partie vous suive.",
+    "action": "Garder ma progression",
+    "later": "Plus tard"
+  }
+}

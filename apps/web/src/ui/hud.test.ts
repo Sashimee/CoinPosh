@@ -1,13 +1,19 @@
 import { openingHeap, upgradeCost, upgradeLines } from '@coinposh/economy';
 import { describe, expect, it } from 'vitest';
 import { upgradeRow } from '../app/model.ts';
+import { defaultSettings } from '../app/settings.ts';
+import { initialUiState } from '../app/state.ts';
+import { createStore } from '../app/store.ts';
 import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../i18n/index.ts';
 import {
   createPosterGate,
   dockAffordableCount,
+  inHandCopy,
   posterHeapTarget,
   safesTriggerBeckons,
   safesTriggerState,
+  setInHand,
+  vaultIsEmpty,
 } from './hud.ts';
 
 const RICH = 1e15;
@@ -28,7 +34,7 @@ describe('dockAffordableCount', () => {
     );
   });
 
-  it('counts only what spendable coins can buy, not coins still in the drop rail', () => {
+  it('counts only what spendable coins can buy, not winnings still awaiting the house', () => {
     const cheapest = Math.min(...venue.map((line) => upgradeCost(line, 0)));
     const shown = cheapest + 4;
     expect(
@@ -206,5 +212,48 @@ describe('dock.safesReady', () => {
     expect(one).toContain('1');
     expect(many).toContain('3');
     expect(many, 'the plural form differs from the singular').not.toBe(one.replace('1', '3'));
+  });
+});
+
+describe('inHandCopy', () => {
+  it.each([
+    ['en', 'In hand', '1 coin in hand', '12 coins in hand'],
+    ['fr', 'En main', '1 pièce en main', '12 pièces en main'],
+    ['de', 'In der Hand', '1 Münze in der Hand', '12 Münzen in der Hand'],
+  ] as const)('labels and pluralises the drop buffer in %s', (language, label, one, many) => {
+    const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
+    const t = i18n.t.bind(i18n);
+    expect(inHandCopy(t, 12, language)).toMatchObject({ label, value: '12' });
+    expect(inHandCopy(t, 1, language).spoken).toContain(one);
+    expect(inHandCopy(t, 12, language).spoken).toContain(many);
+    expect(inHandCopy(t, 0, language).value).toBe('0');
+  });
+});
+
+describe('vaultIsEmpty', () => {
+  it('stays quiet while coins in hand can still drop, even with the Vault at zero', () => {
+    expect(vaultIsEmpty(0, 12)).toBe(false);
+    expect(vaultIsEmpty(5, 0)).toBe(false);
+  });
+
+  it('calls the Vault empty only once neither the Vault nor the hand can pay for a drop', () => {
+    expect(vaultIsEmpty(0, 0)).toBe(true);
+  });
+});
+
+describe('setInHand', () => {
+  const store = createStore(initialUiState(defaultSettings('en')));
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])('refuses %s coins in hand', (coins) => {
+    expect(() => {
+      setInHand(store, coins);
+    }).toThrow(RangeError);
+  });
+
+  it('accepts an empty and a full buffer', () => {
+    expect(() => {
+      setInHand(store, 0);
+      setInHand(store, 12);
+    }).not.toThrow();
   });
 });

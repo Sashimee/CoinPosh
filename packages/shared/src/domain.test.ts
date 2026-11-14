@@ -1,5 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  CHARM_KINDS,
+  CharmKindSchema,
   COIN_TIER_IDS,
   COIN_TIERS,
   CURRENCIES,
@@ -15,8 +17,12 @@ import {
   RarityIdSchema,
   RewardPreviewSchema,
   RewardSchema,
+  SYNERGY_TAGS,
+  SynergyTagSchema,
   WalletSchema,
+  isCharmKind,
   nextCoinTier,
+  type CharmKind,
   type CoinTier,
   type CoinTierId,
   type Currency,
@@ -26,6 +32,7 @@ import {
   type Rarity,
   type RarityId,
 } from './domain.ts';
+import { CharmTypeIdSchema } from './ids.ts';
 import { ids } from './test/fixtures.ts';
 import { roundTrip } from './test/roundTrip.ts';
 
@@ -143,5 +150,34 @@ describe('RewardSchema', () => {
         safe: { id: ids.safe, type: 'gold', unlocksAt: 0 },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('charm kinds and synergy tags', () => {
+  it('lists the six Charm Board pieces and five tags, each once', () => {
+    expect(CHARM_KINDS).toEqual([
+      'golden-peg',
+      'velvet-ropes',
+      'magnet-cufflinks',
+      'brass-bumper',
+      'butler',
+      'perfume-atomizer',
+    ]);
+    expect(SYNERGY_TAGS).toEqual(['gilded', 'magnetic', 'kinetic', 'service', 'fragrant']);
+    expectTypeOf<CharmKind>().toEqualTypeOf<(typeof CHARM_KINDS)[number]>();
+  });
+
+  it('spells every kind as a valid charm catalog id, so a kind can be granted as a charm type', () => {
+    for (const kind of CHARM_KINDS) expect(CharmTypeIdSchema.safeParse(kind).success).toBe(true);
+  });
+
+  it('accepts only the listed kinds and tags', () => {
+    for (const kind of CHARM_KINDS) expect(isCharmKind(kind)).toBe(true);
+    for (const value of ['goldenPeg', 'captainsBellCharm', '', 'butler ', 7, null, undefined]) {
+      expect(isCharmKind(value)).toBe(false);
+      expect(CharmKindSchema.safeParse(value).success).toBe(false);
+    }
+    expect(SynergyTagSchema.safeParse('gilded').success).toBe(true);
+    expect(SynergyTagSchema.safeParse('Gilded').success).toBe(false);
   });
 });

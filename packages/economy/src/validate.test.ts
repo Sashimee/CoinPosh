@@ -1,3 +1,4 @@
+import type { CharmKind } from '@coinposh/shared';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { economyConfig } from './config/index.ts';
@@ -7,6 +8,8 @@ import {
   DROP_SOURCE_IDS,
   RARITY_IDS,
   RATE_ENVELOPE_METRIC_IDS,
+  type CharmKindDef,
+  type CharmsConfig,
   type CoinTierId,
   type DropTableDef,
   type EconomyConfig,
@@ -524,5 +527,133 @@ describe('validateEconomyConfig: safes', () => {
 
   it('rejects a safe type id outside the shared key format', () => {
     expect(paths(withTypes([{ ...gold, id: 'Gold Safe' }]))).toContain('safes.types[0].id');
+  });
+});
+
+describe('validateEconomyConfig: charms', () => {
+  const shipped = economyConfig.charms;
+
+  function withCharms(patch: Partial<CharmsConfig>): EconomyConfig {
+    return { ...economyConfig, charms: { ...shipped, ...patch } };
+  }
+
+  function withKind(kind: CharmKind, patch: Partial<CharmKindDef>): EconomyConfig {
+    return withCharms({
+      kinds: { ...shipped.kinds, [kind]: { ...shipped.kinds[kind], ...patch } },
+    });
+  }
+
+  it('accepts the shipped catalog', () => {
+    expect(validateEconomyConfig(economyConfig).filter((i) => i.path.startsWith('charms'))).toEqual(
+      [],
+    );
+  });
+
+  it('rejects charm pick odds that do not sum to exactly 100 %', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 20_000 }).filter((w) => w !== 1_500),
+        (weight) => {
+          const drops = { ...shipped.drops, butler: { kind: 'butler' as const, weight } };
+          expect(validateEconomyConfig(withCharms({ drops }))).toContainEqual(
+            expect.objectContaining({ path: 'charms.drops' }),
+          );
+        },
+      ),
+    );
+  });
+
+  it('rejects an album charm that maps to no kind', () => {
+    const { pearlNecklaceCharm: _dropped, ...drops } = shipped.drops;
+    const rest = { ...drops, butler: { kind: 'butler' as const, weight: 1_700 } };
+    expect(validateEconomyConfig(withCharms({ drops: rest }))).toEqual([
+      {
+        path: 'album[2] (sunsetGala)',
+        message: 'charm "pearlNecklaceCharm" maps to no kind in charms.drops',
+      },
+    ]);
+  });
+
+  it('rejects a kind that no drop grants, and a kind id that plays as another kind', () => {
+    const drops = { ...shipped.drops, 'golden-peg': { kind: 'butler' as const, weight: 1_500 } };
+    expect(validateEconomyConfig(withCharms({ drops }))).toEqual([
+      {
+        path: 'charms.drops.golden-peg',
+        message: 'a kind\'s own id must play as that kind, got "butler"',
+      },
+      { path: 'charms.drops', message: 'no drop ever grants golden-peg' },
+    ]);
+  });
+
+  it('rejects a level that weakens a charm', () => {
+    const kick = shipped.kinds['brass-bumper'].params.kickMmPerS;
+    const levels: number[] = [...kick.levels];
+    levels[4] = 100;
+    const params = { ...shipped.kinds['brass-bumper'].params, kickMmPerS: { ...kick, levels } };
+    expect(paths(withKind('brass-bumper', { params }))).toEqual([
+      'charms.kinds.brass-bumper.params.kickMmPerS.levels[4]',
+    ]);
+  });
+
+  it('rejects fractional or missing level values, so the sim never sees a float', () => {
+    const ropes = shipped.kinds['velvet-ropes'].params.ropeMm;
+    const params = {
+      ...shipped.kinds['velvet-ropes'].params,
+      ropeMm: { ...ropes, levels: [24.5, ...ropes.levels.slice(1, 9)] },
+    };
+    expect(paths(withKind('velvet-ropes', { params }))).toEqual([
+      'charms.kinds.velvet-ropes.params.ropeMm',
+      'charms.kinds.velvet-ropes.params.ropeMm.levels[0]',
+    ]);
+  });
+
+  it('rejects a boosted name that is not a parameter', () => {
+    expect(paths(withKind('butler', { boosted: 'speed' }))).toEqual(['charms.kinds.butler']);
+  });
+
+  it('rejects a value cap over the per-charm envelope budget', () => {
+    expect(validateEconomyConfig(withKind('golden-peg', { valueCapBp: 601 }))).toContainEqual({
+      path: 'charms.kinds.golden-peg.valueCapBp',
+      message: 'must be an integer in [0, 600], got 601',
+    });
+  });
+
+  it('rejects a set bonus that pushes a loadout past the envelope', () => {
+    const setBonuses = shipped.setBonuses.map((b) =>
+      b.tag === 'kinetic' && b.pieces === 2 ? { ...b, valueBp: 700 } : b,
+    );
+    expect(validateEconomyConfig(withCharms({ setBonuses }))).toContainEqual({
+      path: 'charms',
+      message: "loadout golden-peg + brass-bumper may mint 1300 bp, over the envelope's 1200 bp",
+    });
+  });
+
+  it('rejects an unreachable tier, a missing tier and a tier that does not beat the one below', () => {
+    const setBonuses = [
+      ...shipped.setBonuses.filter((b) => !(b.tag === 'service' && b.pieces === 3)),
+      { tag: 'service' as const, pieces: 4, effectBoostBp: 3_000, valueBp: 0 },
+    ].map((b) => (b.tag === 'fragrant' && b.pieces === 3 ? { ...b, effectBoostBp: 1_000 } : b));
+    expect(validateEconomyConfig(withCharms({ setBonuses }))).toEqual([
+      { path: 'charms.setBonuses[8] (fragrant ×3)', message: 'must beat the 2-piece tier' },
+      {
+        path: 'charms.setBonuses[9] (service ×4)',
+        message: 'only 3 kinds carry service, so no loadout reaches it',
+      },
+      { path: 'charms.setBonuses', message: 'service needs a 3-piece tier' },
+    ]);
+  });
+
+  it('rejects a level curve that skips the first copy or stalls', () => {
+    expect(paths(withCharms({ copiesToLevel: [2, 3, 4, 7, 12, 20, 32, 50, 76, 116] }))).toEqual([
+      'charms.copiesToLevel',
+    ]);
+    expect(paths(withCharms({ copiesToLevel: [1, 2, 4, 7, 7, 20, 32, 50, 76, 116] }))).toEqual([
+      'charms.copiesToLevel[4]',
+    ]);
+  });
+
+  it('rejects a drop id outside the shared key format', () => {
+    const drops = { ...shipped.drops, 'Golden Peg': { kind: 'golden-peg' as const, weight: 0 } };
+    expect(paths(withCharms({ drops }))).toEqual(['charms.drops.Golden Peg']);
   });
 });

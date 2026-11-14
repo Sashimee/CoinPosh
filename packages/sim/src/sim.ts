@@ -5,12 +5,15 @@ import { assertValidInput, type SimInput } from './inputs.ts';
 import { type MechanicEvent, type MechanicsConfig, TableMechanics } from './mechanics/mechanics.ts';
 import { TOWER_TUNING } from './mechanics/tuning.ts';
 import { Xoshiro128ss } from './prng.ts';
+import { type AnyPropSpec, type BoundProp, bindProps, type PropCoin } from './props/index.ts';
+import { type PropEvent, propKeepClear, type PropState, TableProps } from './props/world.ts';
 import { loadRapier, type Rapier } from './rapier.ts';
 import {
   type CoinPose,
   dequantizePosition,
   dequantizeRotation,
   quantizePosition,
+  type PropSnapshot,
   quantizeRotation,
   SIM_SNAPSHOT_VERSION,
   type SimTableSnapshot,
@@ -54,6 +57,12 @@ export interface SimOptions {
    * with a Champagne Tower.
    */
   readonly restore?: SimRestore;
+  /**
+   * Pegs, movers, prizes, fields and targets on the table, by kind (PROP_KINDS), checked
+   * by bindProps and stepped in ascending id order. None when omitted or empty, and a Sim
+   * without props hashes and snapshots as it did before props existed.
+   */
+  readonly props?: readonly AnyPropSpec[];
 }
 
 /**
@@ -79,6 +88,11 @@ export type RestoreEntry =
 export interface SimRestore {
   readonly pusherTickInCycle: number;
   readonly coins: readonly RestoreEntry[];
+  /**
+   * The props' state from Sim.snapshot(): one entry for every prop in `props`. When
+   * omitted, every prop starts afresh as on a new Sim.
+   */
+  readonly props?: readonly PropSnapshot[];
 }
 
 /** What happened during one step, each event stamped with the tick after it. */
@@ -93,6 +107,8 @@ export interface SimEvents {
   readonly crateFalls: readonly CrateFallEvent[];
   /** Crates that landed or were knocked hard, in ascending crate id order. */
   readonly crateImpacts: readonly CrateImpactEvent[];
+  /** Dynamic props that fell, then coins that entered a prop; always empty without props. */
+  readonly props: readonly PropEvent[];
 }
 
 /**
@@ -146,6 +162,7 @@ export class Sim {
   readonly #rng: Xoshiro128ss;
   readonly #mechanics: TableMechanics<string> | null;
   readonly #tiers: readonly string[] | null;
+  readonly #props: TableProps | null;
   #tick = 0;
   #disposed = false;
 
@@ -159,8 +176,11 @@ export class Sim {
    * as one that does not: the heap is idle (FUSION_TUNING.freshTicks, wakeFromTier), so
    * its second layer does not fuse with the coins it rests on until a fresh coin wakes it.
    */
-  static heapCapacity(mechanics?: MechanicsConfig<string>): number {
-    return PusherTable.heapCapacity(heapLayout(mechanics));
+  static heapCapacity(
+    mechanics?: MechanicsConfig<string>,
+    props: readonly AnyPropSpec[] = [],
+  ): number {
+    return PusherTable.heapCapacity(heapLayout(mechanics, bindProps(props)));
   }
 
   private constructor(rapier: Rapier, options: SimOptions) {
@@ -178,8 +198,13 @@ export class Sim {
         'Sim: restore refuses a Sim with a Champagne Tower; pass mechanics with tower: null',
       );
     }
+    const props = bindProps(options.props ?? []);
+    if (props.length === 0 && restore?.props !== undefined && restore.props.length > 0) {
+      throw new RangeError('Sim: restore.props holds props, but options.props has none');
+    }
+    const layout = heapLayout(config, props);
     const entries = restore
-      ? this.#restoreEntries(restore, config)
+      ? this.#restoreEntries(restore, layout)
       : openingHeap
         ? this.#heapEntries(openingHeap)
         : [];
@@ -198,7 +223,11 @@ export class Sim {
       this.#mechanics = config
         ? new TableMechanics(rapier, this.#world, this.#table, config)
         : null;
-      const laid = this.#lay(entries, config);
+      this.#props =
+        props.length > 0
+          ? new TableProps(rapier, this.#world, this.#table, props, restore?.props)
+          : null;
+      const laid = this.#lay(entries, layout);
       const mechanics = this.#mechanics;
       if (mechanics) {
         mechanics.layCoins(
@@ -211,6 +240,7 @@ export class Sim {
           }),
         );
       }
+      this.#props?.prime(this.#propCoins());
     } catch (error) {
       this.#world.free();
       throw error;
@@ -261,6 +291,12 @@ export class Sim {
       .map((coin) => ({ ...coin, tier: mechanics ? mechanics.tierOf(coin.id) : null }));
   }
 
+  /** Every prop, in ascending id order; empty on a Sim without props. */
+  props(): PropState[] {
+    this.#assertLive();
+    return this.#props ? this.#props.states() : [];
+  }
+
   get crateCount(): number {
     return this.#table.crateCount;
   }
@@ -285,7 +321,7 @@ export class Sim {
         `Sim.snapshot: tick ${this.#tick} has ${this.#table.crateCount} crates on the table, which a snapshot cannot hold; snapshot once they have fallen`,
       );
     }
-    return {
+    const table: SimTableSnapshot = {
       version: SIM_SNAPSHOT_VERSION,
       pusherTickInCycle: this.#table.pusherTickInCycle,
       coins: this.#table.coins().map((coin) => ({
@@ -295,6 +331,7 @@ export class Sim {
         rest: coin.sleeping ? 'asleep' : 'awake',
       })),
     };
+    return this.#props ? { ...table, props: this.#props.snapshot() } : table;
   }
 
   /**
@@ -334,6 +371,7 @@ export class Sim {
         }
         case 'nudge':
           this.#table.nudge(input.direction);
+          this.#props?.nudge(input.direction);
           break;
         case 'dropCrate':
           this.#table.dropCrate(input.xMm / 1000, this.#rng);
@@ -341,29 +379,28 @@ export class Sim {
       }
     }
     this.#tick += 1;
+    const coins = (): PropCoin[] => this.#propCoins();
+    this.#props?.beforeStep(coins);
     const falls = this.#table.step(this.#tick);
     const contacts = this.#table.contacts;
-    const mechanics = this.#mechanics
-      ? this.#mechanics.step(
-          this.#tick,
-          falls.map((fall) => fall.coinId),
-        )
-      : [];
-    return {
-      falls,
-      contacts,
-      mechanics,
-      crateFalls: this.#table.crateFalls,
-      crateImpacts: this.#table.crateImpacts,
-    };
+    const crateFalls = this.#table.crateFalls;
+    const crateImpacts = this.#table.crateImpacts;
+    const { events: props, consumed } = this.#props
+      ? this.#props.afterStep(this.#tick, coins)
+      : { events: [], consumed: [] };
+    const removed = falls.map((fall) => fall.coinId);
+    removed.push(...consumed);
+    const mechanics = this.#mechanics ? this.#mechanics.step(this.#tick, removed) : [];
+    return { falls, contacts, mechanics, crateFalls, crateImpacts, props };
   }
 
   /**
    * Digest of everything that can influence a future tick: the tick counter, the
    * PRNG state, the whole table (pusher clock and pose, every coin's pose, velocity
    * and sleep state, and every crate's once one has been dropped) and, on a Sim with
-   * mechanics, every coin's tier and the fusion and tower state. A Sim without
-   * mechanics hashes only the first three.
+   * mechanics, every coin's tier and the fusion and tower state, and on a Sim with
+   * props, every prop's clock, body state and the coins in it. A Sim without mechanics
+   * or props hashes only the first three.
    */
   hash(): string {
     this.#assertLive();
@@ -373,6 +410,7 @@ export class Sim {
     }
     this.#table.hashInto(h);
     this.#mechanics?.hashInto(h);
+    this.#props?.hashInto(h);
     return h.digest();
   }
 
@@ -399,10 +437,7 @@ export class Sim {
   }
 
   /** Checks a restore before anything is built: any bad entry throws. */
-  #restoreEntries(
-    restore: SimRestore,
-    config: MechanicsConfig<string> | undefined,
-  ): readonly RestoreEntry[] {
+  #restoreEntries(restore: SimRestore, layout: HeapLayout): readonly RestoreEntry[] {
     if (!Array.isArray(restore.coins)) {
       throw new TypeError('Sim: restore.coins must be an array of RestoreEntry');
     }
@@ -419,7 +454,7 @@ export class Sim {
         `Sim: restore has poses validateSnapshot drops (${reasons}); filter them before restoring`,
       );
     }
-    const capacity = Sim.heapCapacity(config);
+    const capacity = PusherTable.heapCapacity(layout);
     const slots = new Set<number>();
     entries.forEach((entry, i) => {
       if (entry.kind === 'pose') {
@@ -446,7 +481,7 @@ export class Sim {
   }
 
   /** Lays `entries` on the empty table, heap slots from their own PRNG, and returns the ids. */
-  #lay(entries: readonly RestoreEntry[], config: MechanicsConfig<string> | undefined): number[] {
+  #lay(entries: readonly RestoreEntry[], layout: HeapLayout): number[] {
     if (entries.length === 0) {
       return [];
     }
@@ -456,11 +491,7 @@ export class Sim {
         slots = entry.slot + 1;
       }
     }
-    const heap = this.#table.heapSlotPoses(
-      slots,
-      Xoshiro128ss.fromSeed(this.seed),
-      heapLayout(config),
-    );
+    const heap = this.#table.heapSlotPoses(slots, Xoshiro128ss.fromSeed(this.seed), layout);
     const coins = entries.map((entry): RestoreCoin => {
       if (entry.kind === 'pose') {
         return {
@@ -504,6 +535,18 @@ export class Sim {
     }
   }
 
+  /** Every coin as a prop hook sees it, in ascending id order. */
+  #propCoins(): PropCoin[] {
+    const mechanics = this.#mechanics;
+    return this.#table.coins().map((coin) => ({
+      id: coin.id,
+      translation: coin.translation,
+      rotation: coin.rotation,
+      sleeping: coin.sleeping,
+      tier: mechanics ? mechanics.tierOf(coin.id) : null,
+    }));
+  }
+
   #assertLive(): void {
     if (this.#disposed) {
       throw new Error('Sim has been disposed; create a new one with Sim.create()');
@@ -511,9 +554,12 @@ export class Sim {
   }
 }
 
-/** Where the opening heap goes on a Sim made with `config`; see Sim.heapCapacity. */
-function heapLayout(config: MechanicsConfig<string> | undefined): HeapLayout {
-  const keepClear: HeapKeepClear[] = [];
+/** Where the opening heap goes on a Sim made with `config` and `props`; see Sim.heapCapacity. */
+function heapLayout(
+  config: MechanicsConfig<string> | undefined,
+  props: readonly BoundProp[],
+): HeapLayout {
+  const keepClear: HeapKeepClear[] = propKeepClear(props);
   if (config && config.tower !== null) {
     const { x, z } = config.tower ?? TOWER_TUNING.placement;
     keepClear.push({ x, z, radius: TOWER_TUNING.pedestalRadius });

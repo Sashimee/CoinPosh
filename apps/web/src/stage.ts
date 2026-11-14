@@ -71,6 +71,13 @@ export interface Stage {
   onFrame(listener: FrameListener): () => void;
   observeSize(listener: SizeListener): () => void;
   onTierChange(listener: TierListener): () => void;
+  /**
+   * Draws the next frame of the loop through the post pipeline with the scene as it stands:
+   * frame listeners and the coin upload skip it, so what a warmup puts on screen is still there
+   * when it renders, and the quality governor does not count it. Resolves once it has rendered,
+   * on the renderer of the time; it waits while the tab is hidden or the renderer rebuilds.
+   */
+  drawFrame(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -81,9 +88,16 @@ interface StageContext {
   readonly override: QualityTier | undefined;
   look(): RenderLook;
   advance(time: number): void;
+  /** The waiters of the frame about to render, which it draws as is; empty for a normal frame. */
+  takeStillFrame(): readonly FrameWaiter[];
   resized(width: number, height: number): void;
   applyProfile(renderer: WebGPURenderer, profile: QualityProfile): void;
   onDeviceLost(lost: ActiveRenderer, next: RenderBackend): void;
+}
+
+interface FrameWaiter {
+  resolve(): void;
+  reject(error: unknown): void;
 }
 
 interface ActiveRenderer {
@@ -122,6 +136,7 @@ export async function createStage(
   let baked: { renderer: WebGPURenderer; resolution: number } | null = null;
   let disposed = false;
   let active: ActiveRenderer;
+  let stillFrame: FrameWaiter[] = [];
 
   const context: StageContext = {
     scene,
@@ -135,6 +150,11 @@ export async function createStage(
       const elapsed = timer.getElapsed();
       for (const listener of frameListeners) listener(delta, elapsed);
       coins.update(camera, size.height);
+    },
+    takeStillFrame() {
+      const waiters = stillFrame;
+      stillFrame = [];
+      return waiters;
     },
     resized(width, height) {
       size = { width, height };
@@ -239,8 +259,15 @@ export async function createStage(
       tierListeners.add(listener);
       return () => tierListeners.delete(listener);
     },
+    drawFrame() {
+      if (disposed) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        stillFrame.push({ resolve, reject });
+      });
+    },
     async dispose() {
       disposed = true;
+      for (const waiter of context.takeStillFrame()) waiter.resolve();
       frameListeners.clear();
       sizeListeners.clear();
       tierListeners.clear();
@@ -336,8 +363,18 @@ async function startRenderer(
   }
 
   const drawFrame = (time: number): void => {
-    context.advance(time);
-    adaptive.render(time);
+    const still = context.takeStillFrame();
+    try {
+      if (still.length === 0) context.advance(time);
+      adaptive.render(time);
+    } catch (error) {
+      for (const waiter of still) waiter.reject(error);
+      throw error;
+    }
+    if (still.length === 0) return;
+    // A still frame links programs, so the interval after it would read as a slow frame.
+    adaptive.governor.suspend();
+    for (const waiter of still) waiter.resolve();
   };
   // The first frame links the coin and post programs. Drawing it here, before the loop starts,
   // keeps that compile inside the boot the caller awaits and gives it a mark of its own.

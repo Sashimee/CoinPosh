@@ -1,4 +1,5 @@
 import type { EconomyConfig } from '../types.ts';
+import { charms } from './charms.ts';
 import { cascade, coinTiers, fusion, openingHeap } from './coins.ts';
 import { currencies } from './currencies.ts';
 import { crateRewards, crateSpawn, dropTables, pity } from './drops.ts';
@@ -26,6 +27,7 @@ export const economyConfig = {
   safes,
   venues,
   album,
+  charms,
   offline,
   bullion,
   ascension,
@@ -60,6 +62,7 @@ export {
 };
 
 export * from './allowance.ts';
+export * from './charms.ts';
 export * from './offlineRate.ts';
 export * from './quests.ts';
 export * from './safes.ts';

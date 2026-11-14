@@ -4,12 +4,12 @@ import { CURRENCIES, type Currency, type EpochMs, type Wallet } from '@coinposh/
  * Where value sits. `mint` is the only source of new value (starting grants, defined
  * bonuses), `house` is where side-gutter losses go and what stakes the opening heap,
  * `buffer` holds what the wallet prepaid for reserved drop coins, `inventory` holds
- * claimed crates and unopened safes.
+ * claimed crates, unopened safes and unrevealed scratch cards.
  */
 export const ACCOUNTS = ['mint', 'wallet', 'buffer', 'table', 'house', 'inventory'] as const;
 export type Account = (typeof ACCOUNTS)[number];
 
-export type LedgerUnit = Currency | 'crate' | 'safe';
+export type LedgerUnit = Currency | 'crate' | 'safe' | 'scratchCard';
 
 export const TX_KINDS = [
   'grant.starting',
@@ -27,6 +27,8 @@ export const TX_KINDS = [
   'safe.grant',
   'safe.key',
   'safe.open',
+  'scratch.grant',
+  'scratch.reveal',
 ] as const;
 export type TxKind = (typeof TX_KINDS)[number];
 

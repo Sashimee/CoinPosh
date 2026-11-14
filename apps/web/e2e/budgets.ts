@@ -69,8 +69,21 @@ export const BUNDLE_BUDGETS = {
    * 12.8 and systems 10.1 kB. That is feature growth, not duplication; the one cut found, three's
    * ConvexHull in unbox/shot.ts (about 2.6 kB), is queued with vfx-juice. Growth past the 5 %
    * tolerance still fails.
+   *
+   * P-578 re-baselined from 113 kB on 2026-11-14 to the Demo build of feat/build-loop 3e8cff3:
+   * 117.7 kB once the account UI left for its own row, of which crates 33.0, vfx 21.1, riviera
+   * 14.5, stage 12.6, systems 10.7, the sim worker bridge 5.3 and coin emboss 5.2 kB. The 5.6 kB
+   * since c239efa (the trace P-496 asked for) is spread across feature chunks rather than one
+   * regression; the budget sits just above the build so new growth shows at once.
    */
-  otherLazyJs: 113 * 1024,
+  otherLazyJs: 118 * 1024,
+  /**
+   * The account UI (T-10.04, P-577), apart from the net layer's 7.5 kB sign-in chunks: the prompt
+   * clock imported after boot, the Settings section and gentle prompt on first need, the
+   * progress choice on a sign-in that finds two saves, and one translation of its strings (FR
+   * and DE load per language). 12.3 kB gzip at most per player on 2026-11-14.
+   */
+  accountUi: 13 * 1024,
   /**
    * The safes dock (T-2.01-p3): controller, countdowns and strings behind the HUD's Safes badge,
    * imported once the table is up. 6.3 kB gzip on 2026-11-14.

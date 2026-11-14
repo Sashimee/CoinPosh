@@ -95,6 +95,30 @@ export const COLLECTIBLE_KINDS = ['coinSkin', 'charm', 'heirloom'] as const;
 export const CollectibleKindSchema = z.enum(COLLECTIBLE_KINDS);
 export type CollectibleKind = z.infer<typeof CollectibleKindSchema>;
 
+/**
+ * The six Charm Board pieces (00-VISION §2). A charm's catalog id (`CharmTypeId`) may be a kind
+ * itself or a named edition of one; `packages/economy` maps every droppable id onto its kind.
+ */
+export const CHARM_KINDS = [
+  'golden-peg',
+  'velvet-ropes',
+  'magnet-cufflinks',
+  'brass-bumper',
+  'butler',
+  'perfume-atomizer',
+] as const;
+export const CharmKindSchema = z.enum(CHARM_KINDS);
+export type CharmKind = z.infer<typeof CharmKindSchema>;
+
+export function isCharmKind(value: unknown): value is CharmKind {
+  return CharmKindSchema.safeParse(value).success;
+}
+
+/** Charms sharing a tag unlock that tag's set bonus at 2 and 3 distinct kinds slotted. */
+export const SYNERGY_TAGS = ['gilded', 'magnetic', 'kinetic', 'service', 'fragrant'] as const;
+export const SynergyTagSchema = z.enum(SYNERGY_TAGS);
+export type SynergyTag = z.infer<typeof SynergyTagSchema>;
+
 /** A coin as the server minted it. `value` is the server's stored value, never the client's. */
 export const MintedCoinSchema = z.object({
   id: CoinIdSchema,

@@ -40,6 +40,8 @@ import {
   type PlayerId,
   type SafeOpenRequest,
   type SafeOpenResponse,
+  type ScratchRevealRequest,
+  type ScratchRevealResponse,
   TableSessionIdSchema,
   VenueIdSchema,
   CURRENCIES,
@@ -109,6 +111,12 @@ import {
   type UpgradeHost,
 } from '../routes/upgrades.ts';
 import { countLockedSafes, openSafe, readSafes, type SafeHost } from '../routes/safes.ts';
+import {
+  countHeldScratchCards,
+  readScratchCards,
+  revealScratchCard,
+  type ScratchHost,
+} from '../routes/scratch.ts';
 import { migrate } from './schema.ts';
 import {
   CHUTE_POSE,
@@ -174,6 +182,8 @@ export interface ConservationReport {
   readonly ledgerCratesOnTable: number;
   readonly safesHeld: number;
   readonly ledgerSafesHeld: number;
+  readonly scratchCardsHeld: number;
+  readonly ledgerScratchCardsHeld: number;
   /** Every currency's wallet balance equals its ledger legs, and its legs sum to zero. */
   readonly currenciesConserved: boolean;
   readonly conserved: boolean;
@@ -222,7 +232,10 @@ function settleLegs(
   ];
 }
 
-export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendHost, SafeHost {
+export class PlayerDO
+  extends DurableObject<Env>
+  implements UpgradeHost, AscendHost, SafeHost, ScratchHost
+{
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
   private readonly fair: FairSeeds;
@@ -321,7 +334,11 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
         lifetimeBullion: lifetimeBullion(this.sql),
       },
       table: { ...this.snapshot(), session: this.tableSession(), layout },
-      inventory: { charms: [], safes: readSafes(this.sql), scratchCards: [] },
+      inventory: {
+        charms: [],
+        safes: readSafes(this.sql),
+        scratchCards: readScratchCards(this.sql),
+      },
       offline: null,
       fair: this.fairSeedChained()
         ? this.fair.active()
@@ -443,6 +460,23 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
     });
   }
 
+  /**
+   * Reveals a scratch card the player holds (T-2.02): a provably fair roll on the `scratch`
+   * table whose grid shows exactly one 3-match, the rolled rarity. The coins it pays top the
+   * reserved buffer up so the returned wallet is final.
+   */
+  async revealScratch(
+    command: Command<ScratchRevealRequest>,
+  ): Promise<DoResult<ScratchRevealResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const revealed = revealScratchCard(this.sql, this.fair, command.body, context);
+      this.reserveBuffer(context);
+      return { ...revealed, wallet: readWallet(this.sql) };
+    });
+  }
+
   /** Double-entry totals next to the entity tables they must agree with. */
   conservation(): ConservationReport {
     const wallet = readWallet(this.sql);
@@ -469,6 +503,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
     const safesHeld = countLockedSafes(this.sql);
     const ledgerSafesHeld = ledgerBalance(this.sql, 'inventory', 'safe');
+    const scratchCardsHeld = countHeldScratchCards(this.sql);
+    const ledgerScratchCardsHeld = ledgerBalance(this.sql, 'inventory', 'scratchCard');
     const conserved =
       ledger.wallet === walletCoins &&
       ledger.buffer === bufferPaid &&
@@ -476,6 +512,11 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
       ledgerCratesOnTable === tableCrates &&
       ledgerSafesHeld === safesHeld &&
       ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, 'safe'), 0) === 0 &&
+      ledgerScratchCardsHeld === scratchCardsHeld &&
+      ACCOUNTS.reduce(
+        (sum, account) => sum + ledgerBalance(this.sql, account, 'scratchCard'),
+        0,
+      ) === 0 &&
       ledger.wallet + ledger.buffer + ledger.table + ledger.house + ledger.mint === 0 &&
       currenciesConserved;
     return {
@@ -488,6 +529,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
       ledgerCratesOnTable,
       safesHeld,
       ledgerSafesHeld,
+      scratchCardsHeld,
+      ledgerScratchCardsHeld,
       currenciesConserved,
       conserved,
     };

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { cascade, upgradeCost, upgradeLines, type UpgradeLineDef } from '@coinposh/economy';
-import { affordableCount, comboView, decorumView, upgradeRow, upgradeRows } from './model.ts';
+import {
+  affordableCount,
+  comboView,
+  decorumView,
+  upgradeRow,
+  upgradeRows,
+  vaultReadout,
+} from './model.ts';
 
 function line(id: string): UpgradeLineDef {
   const found = upgradeLines.find((candidate) => candidate.id === id);
@@ -86,47 +93,38 @@ describe('upgradeRow', () => {
     expect(upgradeRow(global, 0, { coins: 10 ** 9, goldBars: 0 }).affordable).toBe(false);
   });
 
-  it('checks a coin price against spendable coins, not the Vault the drop buffer swells', () => {
+  it('checks a coin price against spendable coins, not winnings still awaiting the server', () => {
     const pusher = line('pusherSpeed');
     const price = upgradeCost(pusher, 0);
-    const shown = price + 4;
-    const spendable = price - 5;
-    const row = upgradeRow(pusher, 0, { coins: shown, spendableCoins: spendable, goldBars: 0 });
-    expect(row.affordable).toBe(false);
-    expect(row.heldBack).toBe(shown - spendable);
-    expect(
-      upgradeRow(pusher, 0, { coins: shown, spendableCoins: price, goldBars: 0 }),
-    ).toMatchObject({ affordable: true, heldBack: 0 });
+    const pending = vaultReadout({
+      walletCoins: price - 5,
+      bufferedCoins: 12,
+      provisionalCoins: 9,
+      goldBars: 0,
+    });
+    expect(upgradeRow(pusher, 0, pending).affordable).toBe(false);
+    const settled = vaultReadout({
+      walletCoins: price,
+      bufferedCoins: 12,
+      provisionalCoins: 0,
+      goldBars: 0,
+    });
+    expect(upgradeRow(pusher, 0, settled).affordable).toBe(true);
   });
 
   it('treats the whole Vault as spendable when no spendable figure is given', () => {
     const pusher = line('pusherSpeed');
     const price = upgradeCost(pusher, 0);
-    expect(upgradeRow(pusher, 0, { coins: price, goldBars: 0 })).toMatchObject({
-      affordable: true,
-      heldBack: 0,
-    });
+    expect(upgradeRow(pusher, 0, { coins: price, goldBars: 0 }).affordable).toBe(true);
   });
 
-  it('holds nothing back when even the Vault as shown is short of the price', () => {
-    const pusher = line('pusherSpeed');
-    const price = upgradeCost(pusher, 0);
-    const row = upgradeRow(pusher, 0, { coins: price - 1, spendableCoins: 0, goldBars: 0 });
-    expect(row).toMatchObject({ affordable: false, heldBack: 0 });
-    const maxed = upgradeRow(pusher, pusher.maxLevel, {
-      coins: 10 ** 12,
-      spendableCoins: 0,
-      goldBars: 0,
-    });
-    expect(maxed).toMatchObject({ affordable: false, heldBack: 0 });
-  });
-
-  it('leaves gold-bar lines on gold bars whatever coins are held back', () => {
+  it('leaves gold-bar lines on gold bars whatever coins are spendable', () => {
     const global = upgradeLines.find((candidate) => candidate.currency === 'goldBars');
     if (!global) throw new Error('no gold bar upgrade line');
     const price = upgradeCost(global, 0);
     const row = upgradeRow(global, 0, { coins: 10 ** 9, spendableCoins: 0, goldBars: price });
-    expect(row).toMatchObject({ affordable: true, heldBack: 0 });
+    expect(row.affordable).toBe(true);
+    expect(upgradeRow(global, 0, { coins: 10 ** 9, goldBars: price - 1 }).affordable).toBe(false);
   });
 
   it('caps at max level with no price', () => {
@@ -148,5 +146,56 @@ describe('upgradeRow', () => {
     ).length;
     expect(affordableCount(rows)).toBe(expected);
     expect(affordableCount(upgradeRows(upgradeLines, {}, { coins: 0, goldBars: 0 }))).toBe(0);
+  });
+});
+
+describe('vaultReadout', () => {
+  const settled = { walletCoins: 67, bufferedCoins: 12, provisionalCoins: 0, goldBars: 3 };
+
+  it('shows the spendable wallet on the plaque and the drop buffer apart, in hand', () => {
+    expect(vaultReadout(settled)).toEqual({
+      coins: 67,
+      spendableCoins: 67,
+      goldBars: 3,
+      provisional: false,
+      inHand: 12,
+    });
+  });
+
+  it('lights every coin line priced at or below a settled plaque, and none above it', () => {
+    const readout = vaultReadout(settled);
+    const coinLines = upgradeLines.filter((candidate) => candidate.currency === 'coins');
+    for (const candidate of coinLines) {
+      for (const level of [0, 1, 2]) {
+        const row = upgradeRow(candidate, level, readout);
+        if (row.cost === null) continue;
+        expect(row.affordable, `${candidate.id} L${String(level)} at ${String(row.cost)}`).toBe(
+          row.cost <= readout.coins,
+        );
+      }
+    }
+  });
+
+  it('never counts the buffer in the plaque, however full or empty it is', () => {
+    expect(vaultReadout({ ...settled, bufferedCoins: 0 }).coins).toBe(67);
+    expect(vaultReadout({ ...settled, bufferedCoins: 480 })).toMatchObject({
+      coins: 67,
+      inHand: 480,
+    });
+    expect(vaultReadout({ ...settled, walletCoins: 0 })).toMatchObject({
+      coins: 0,
+      spendableCoins: 0,
+      inHand: 12,
+    });
+  });
+
+  it('adds unconfirmed winnings to the plaque, shimmering, but never to what can be spent', () => {
+    expect(vaultReadout({ ...settled, provisionalCoins: 8 })).toEqual({
+      coins: 75,
+      spendableCoins: 67,
+      goldBars: 3,
+      provisional: true,
+      inHand: 12,
+    });
   });
 });

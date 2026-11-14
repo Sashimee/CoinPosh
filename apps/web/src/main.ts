@@ -2,6 +2,7 @@ import type { MintedCoin, Roll, Safe, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
+import { vaultReadout } from './app/model.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import {
   mountAscension,
@@ -10,6 +11,7 @@ import {
   type AscensionHud,
 } from './game/ascension/index.ts';
 import { createTableRelay, type TableRelay } from './game/ascension/relay.ts';
+import { browserStorage } from './app/settings.ts';
 import type * as CratesApi from './game/crates/index.ts';
 import type * as SessionModule from './game/session/index.ts';
 import type {
@@ -33,6 +35,7 @@ import {
   NET_I18N_SOURCE,
   openingLayout,
   SnapshotCadence,
+  type AccountClient,
   type DemoBannerColors,
   type Net,
   type NetMode,
@@ -60,7 +63,9 @@ import {
 } from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
-import { mountSafesTrigger } from './ui/hud.ts';
+import type { AccountUi } from './ui/account/clock.ts';
+import { mountSafesTrigger, setInHand } from './ui/hud.ts';
+import { settingsAccountSlot } from './ui/panels/settingsPanel.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
@@ -240,6 +245,12 @@ let audio: AudioEngine | null = null;
 let ascensionHud: AscensionHud | null = null;
 /** Mounted once the player's table has loaded. */
 let safesSheet: SafesSheet | null = null;
+/** Mounted once the player's table has loaded; its code loads after the table. */
+let accountUi: AccountUi | null = null;
+/** Re-lays the table on the save a sign-in moved onto; null until the scene plays. */
+let relayAccountSwap: ((state: StateResponse) => void) | null = null;
+/** The latest save a sign-in moved onto before the scene played; the scene lays it once it can. */
+let pendingAccountSwap: StateResponse | null = null;
 
 const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
@@ -275,6 +286,12 @@ void hydrated
   .then((boot) => (boot ? mountSafesSheet(boot) : undefined))
   .catch((error: unknown) => {
     console.error('CoinPosh safes failed to mount; the game continues without Safes.', error);
+  });
+
+void hydrated
+  .then((boot) => (boot ? mountAccount(boot) : undefined))
+  .catch((error: unknown) => {
+    console.error('CoinPosh account UI failed to mount; guest play goes on without it.', error);
   });
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
@@ -419,10 +436,10 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
 }
 
 /**
- * Turns the upgrades panel's confirms into server purchases. The Vault plaque counts the drop
- * buffer on top of the wallet, so a purchase re-reads the table instead of showing the bare
- * wallet the purchase returns. Stale levels re-read the state without `hydrate=boot`, which
- * would refund the coins in play.
+ * Turns the upgrades panel's confirms into server purchases. The Vault plaque follows the table
+ * sync's wallet and adds winnings still in the outbox, so a purchase re-reads the table instead
+ * of showing the bare wallet the purchase returns. Stale levels re-read the state without
+ * `hydrate=boot`, which would refund the coins in play.
  */
 function mountUpgradePurchases(
   net: Net,
@@ -536,13 +553,23 @@ interface VaultTracker {
   resumed(): void;
   /** A new boot of the table ("Play here") replaced the buffer with the one `state` lists. */
   adopted(state: StateResponse): void;
+  /**
+   * While `hold` holds crate winnings back from the Vault, a buffer refill stays in the plaque
+   * rather than moving into the hand, so the held Vault never dips and its coin line adds up.
+   */
+  holdWith(hold: VaultHold): () => void;
+}
+
+interface VaultHold {
+  holding(): boolean;
+  /** Runs `listener` each time held winnings are paid into the Vault; returns the way to stop. */
+  onPaid(listener: () => void): () => void;
 }
 
 /**
- * The Vault shows every coin the player holds: the server's wallet, the pre-minted drop buffer
- * (already paid for out of the wallet, so the wallet alone reads low), and winnings still
- * waiting for the server's answer, shimmering while any are. Only the wallet is spendable, so
- * upgrade prices are checked against it alone.
+ * The Vault shows what the server can spend, the wallet, plus winnings still waiting for its
+ * answer, shimmering while any are; so a price at or below a settled Vault always buys. The
+ * pre-minted drop buffer, already paid for out of the wallet, is shown apart as the coins in hand.
  *
  * TableSync says how many coins are buffered but not what they are worth, so the worth comes
  * from server coins seen here: the snapshot's buffer, oldest first as drops take them, and for
@@ -556,16 +583,26 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
   const known: number[] = state.table.buffer.map((coin) => coin.value);
   let refillValue = state.table.buffer.at(-1)?.value ?? 0;
   let awaitingSync = false;
+  let hold: VaultHold | null = null;
+  let shownInHand = 0;
   const refresh = (): void => {
     const balance = table.balance;
     if (!balance) return;
     let buffered = 0;
     for (let i = 0; i < table.bufferSize; i += 1) buffered += known[i] ?? refillValue;
+    const readout = vaultReadout({
+      walletCoins: balance.wallet.coins,
+      bufferedCoins: buffered,
+      provisionalCoins: balance.provisionalCoins,
+      goldBars: balance.wallet.goldBars,
+    });
+    const inHand = hold?.holding() ? Math.min(readout.inHand, shownInHand) : readout.inHand;
+    shownInHand = inHand;
+    setInHand(app.store, inHand);
     app.setWallet({
       ...balance.wallet,
-      coins: balance.wallet.coins + buffered + balance.provisionalCoins,
-      spendableCoins: balance.wallet.coins,
-      provisional: balance.provisionalCoins > 0,
+      ...readout,
+      coins: readout.coins + readout.inHand - inHand,
     });
   };
   const forgetBuffer = (): void => {
@@ -605,6 +642,15 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
       known.splice(0, known.length, ...booted.table.buffer.map((coin) => coin.value));
       refillValue = booted.table.buffer.at(-1)?.value ?? refillValue;
       refresh();
+    },
+    holdWith(next) {
+      hold = next;
+      const stop = next.onPaid(refresh);
+      return () => {
+        stop();
+        if (hold === next) hold = null;
+        refresh();
+      };
     },
   };
 }
@@ -758,7 +804,8 @@ async function bootScene(
   // The renderer checks its clock against the first frame's timestamp, so the effects' first,
   // slowest update must not run inside that frame.
   await frameDrawn(stage);
-  const vfx = attachVfx(stage, vfxModule);
+  const effects = attachVfx(stage, vfxModule);
+  const vfx = effects?.vfx ?? null;
   const boot = await hydrated;
   if (!boot || !layout || bridge.failure) {
     revealVenue();
@@ -775,8 +822,10 @@ async function bootScene(
     });
     playing = { sim: started, layout: laid, scope };
     const payouts = orderCratePayouts(walletPayoutFor(ui.store));
+    const releaseVault = boot.vault.holdWith(payouts);
     scope.add(() => {
       payouts.dispose();
+      releaseVault();
     });
     const systems = startPlay(systemsModule, stage, started, boot, state, vfx, payouts, scope);
     playingSystems = systems;
@@ -873,7 +922,7 @@ async function bootScene(
   // scripts/capture-poster.ts drew on every device, and play starts once the table is on screen.
   await coinsDrawn(stage, bridge);
   // A software GPU can finish that link only as the next frame waits on it.
-  await frameDrawn(stage);
+  await drawWarmFrame(stage, effects);
   releaseHeldSim(bridge);
   if (!probe.superseded) probe.playable = true;
   markBoot('playable');
@@ -886,37 +935,66 @@ async function bootScene(
   });
   if (uninstallDemo !== null) teardown.push(uninstallDemo);
 
-  const relay = createTableRelay<Laid>({
-    state: boot.state,
-    hold: () => {
-      probe.playable = false;
-      playing.scope.dispose();
-      view.use(playing.sim.bridge, playing.sim.bridge);
-    },
-    boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
-    lay: layFrom,
-    play: (laid) => {
-      playOn(laid);
-      markBoot('ascended');
-    },
-    discard: ({ scope }) => {
-      scope.dispose();
-    },
-    // The held sim's coins and crates are gone on the server, so play resumes on it with no
-    // crates riding; every coin dropped from here on is one the server will pay.
-    resume: (state, booted) => {
-      const { sim: held, layout: heldLayout } = playing;
-      if (booted) adoptState(state);
-      view.use(play(held, state, { ...heldLayout, crates: [] }), held.bridge);
-      probe.playable = true;
-    },
-    onError: (error) => {
-      console.error(
-        'CoinPosh ascension: the new venue could not be laid; play goes on on the old table.',
-        error,
-      );
-    },
+  const relayTable = (
+    state: StateResponse,
+    bootState: () => Promise<StateResponse>,
+    step: string,
+  ): TableRelay =>
+    createTableRelay<Laid>({
+      state,
+      hold: () => {
+        probe.playable = false;
+        playing.scope.dispose();
+        view.use(playing.sim.bridge, playing.sim.bridge);
+      },
+      boot: bootState,
+      lay: layFrom,
+      play: (laid) => {
+        playOn(laid);
+        markBoot(step);
+      },
+      discard: ({ scope }) => {
+        scope.dispose();
+      },
+      // The held sim's coins and crates are gone on the server, so play resumes on it with no
+      // crates riding; every coin dropped from here on is one the server will pay.
+      resume: (state, booted) => {
+        const { sim: held, layout: heldLayout } = playing;
+        if (booted) adoptState(state);
+        view.use(play(held, state, { ...heldLayout, crates: [] }), held.bridge);
+        probe.playable = true;
+      },
+      onError: (error) => {
+        console.error(
+          `CoinPosh ${step}: the new table could not be laid; play goes on on the old one.`,
+          error,
+        );
+      },
+    });
+  const relay = relayTable(
+    boot.state,
+    () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
+    'ascended',
+  );
+  let swapRelay: TableRelay | null = null;
+  relayAccountSwap = (state) => {
+    swapRelay?.dispose();
+    const next = relayTable(state, () => Promise.resolve(state), 'account-swapped');
+    swapRelay = next;
+    next
+      .bootState()
+      .then((booted) => next.layTable(booted))
+      .catch((error: unknown) => {
+        next.failed(error);
+      });
+  };
+  teardown.push(() => {
+    relayAccountSwap = null;
+    swapRelay?.dispose();
   });
+  const swappedEarly = pendingAccountSwap;
+  pendingAccountSwap = null;
+  if (swappedEarly) relayAccountSwap(swappedEarly);
   mountAscensionDoor(stage, boot, relay);
 }
 
@@ -956,7 +1034,11 @@ function mountAscensionDoor(stage: Stage, boot: NetBoot, relay: TableRelay): voi
     },
   });
   ascensionHud = hud;
+  const stopPrompt = hud.events.on('ascension:completed', () => {
+    accountUi?.ascended();
+  });
   teardown.push(() => {
+    stopPrompt();
     ascensionHud = null;
     relay.dispose();
     hud.dispose();
@@ -1113,6 +1195,47 @@ async function warmSim(simModule: typeof SimWorkerModule): Promise<void> {
   } finally {
     spare.dispose();
   }
+}
+
+/** Optional Google and Apple sign-in in Settings, and the once-per-device nudge toward it. */
+async function mountAccount(boot: NetBoot): Promise<void> {
+  const { mountAccountUi } = await import('./ui/account/clock.ts');
+  let subscribed: Promise<AccountClient> | null = null;
+  const client = (): Promise<AccountClient> =>
+    (subscribed ??= boot.net
+      .account()
+      .then((account) => {
+        teardown.push(
+          account.onSwap(({ state }) => {
+            if (relayAccountSwap) {
+              relayAccountSwap(state);
+              return;
+            }
+            pendingAccountSwap = state;
+            ui.setUpgradeLevels(state.venue.upgrades);
+            boot.vault.adopted(state);
+            safesSheet?.adopt(state);
+          }),
+        );
+        return account;
+      })
+      .catch((error: unknown) => {
+        subscribed = null;
+        throw error;
+      }));
+  const mounted = mountAccountUi({
+    ui,
+    host: uiRoot,
+    slot: settingsAccountSlot(uiRoot),
+    client,
+    playing: () => probe.playable,
+    storage: browserStorage(),
+  });
+  accountUi = mounted;
+  teardown.push(() => {
+    accountUi = null;
+    mounted.dispose();
+  });
 }
 
 /** How the server laid the table, in every net mode; null without a table to lay. */
@@ -1281,6 +1404,25 @@ function coinsDrawn(stage: Stage, bridge: SimBridge): Promise<void> {
   });
 }
 
+/**
+ * Draws the last frame before play with the effects' programs linked in it, so the first taps'
+ * fusions do not stall on them. It runs once every light is in place: a light added after it
+ * would rebuild their pipelines, and the programs would link a second time on first use.
+ */
+async function drawWarmFrame(stage: Stage, effects: AttachedVfx | null): Promise<void> {
+  if (effects) {
+    try {
+      if (await effects.warmup()) return;
+    } catch (error) {
+      console.error(
+        'CoinPosh effects could not pre-link their shaders; the first effects may stutter.',
+        error,
+      );
+    }
+  }
+  await frameDrawn(stage);
+}
+
 /** Resolves once the next frame has been drawn: promise callbacks run after the frame callback. */
 function frameDrawn(stage: Stage): Promise<void> {
   return new Promise((resolve) => {
@@ -1292,11 +1434,25 @@ function frameDrawn(stage: Stage): Promise<void> {
   });
 }
 
+/** Recorded after each warmup frame, for e2e/shader-warmup.spec.ts and the playtest console. */
+const VFX_WARMED_MARK = 'coinposh:vfx:warmed';
+
+interface AttachedVfx {
+  readonly vfx: Vfx;
+  /**
+   * Links the effects' programs (flash, ring, sparks, foil) with one post-pass frame, so the
+   * first fusion or OBSCENE does not stall on them. Settles after the frame that runs it, true
+   * when it drew one: a renderer swap still waiting to be adopted skips the frame.
+   */
+  warmup(): Promise<boolean>;
+}
+
 /**
  * Follows the stage's renderer through device-loss rebuilds, its quality tier and the motion
- * setting. Without effects the game still plays, so a failure here is logged, not fatal.
+ * setting, re-linking the effects' programs after each. Without effects the game still plays,
+ * so a failure here is logged, not fatal.
  */
-function attachVfx(stage: Stage, vfxModule: typeof VfxModule): Vfx | null {
+function attachVfx(stage: Stage, vfxModule: typeof VfxModule): AttachedVfx | null {
   let vfx: Vfx;
   try {
     vfx = vfxModule.createVfx({
@@ -1314,26 +1470,55 @@ function attachVfx(stage: Stage, vfxModule: typeof VfxModule): Vfx | null {
     return null;
   }
   let renderer = stage.renderer;
+  let live = true;
+  let queued: Promise<boolean> | null = null;
+  let previous: Promise<unknown> = Promise.resolve();
+  // One warmup frame at a time; the requests made before it starts share it.
+  const warmup = (): Promise<boolean> => {
+    if (queued) return queued;
+    const run = previous.then(async () => {
+      queued = null;
+      // A swap still waiting for the next frame warms the new renderer once it is adopted.
+      if (!live || stage.renderer !== renderer) return false;
+      await vfx.warmup(() => stage.drawFrame());
+      performance.mark(VFX_WARMED_MARK);
+      return true;
+    });
+    queued = run;
+    previous = run.catch(() => undefined);
+    return run;
+  };
+  const rewarm = (): void => {
+    warmup().catch((error: unknown) => {
+      console.error(
+        'CoinPosh effects could not pre-link their shaders after a renderer change; the next effects may stutter.',
+        error,
+      );
+    });
+  };
   const stopFrame = stage.onFrame((deltaSeconds) => {
     if (stage.renderer !== renderer) {
       renderer = stage.renderer;
       vfx.setRenderer(renderer, stage.backend);
+      rewarm();
     }
     vfx.update(deltaSeconds);
   });
   const stopTier = stage.onTierChange((profile) => {
     vfx.setQuality(profile.tier);
+    rewarm();
   });
   const stopMotion = onReducedMotionChange((reduced) => {
     vfx.setReducedMotion(reduced);
   });
   teardown.push(() => {
+    live = false;
     stopFrame();
     stopTier();
     stopMotion();
     vfx.dispose();
   });
-  return vfx;
+  return { vfx, warmup };
 }
 
 /**
@@ -1513,6 +1698,9 @@ interface CratePayoutOrder {
   collected(crateId: string, landsInMs: number): void;
   /** The crate left without a collect, or every crate cinematic is over. */
   gone(crateId: string | null): void;
+  /** Crate winnings or the falls behind them are held back from the Vault. */
+  holding(): boolean;
+  onPaid(listener: () => void): () => void;
   dispose(): void;
 }
 
@@ -1537,6 +1725,11 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   let batches = 0;
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
   let effects: () => Vfx | null = () => null;
+  const paidListeners = new Set<() => void>();
+  const release = (id: string): void => {
+    payout.release(id);
+    for (const listener of [...paidListeners]) listener();
+  };
 
   const active = (): boolean =>
     unpaid.size > 0 || landing.size > 0 || performance.now() < holdUntil;
@@ -1550,14 +1743,14 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   const pay = (paid: FallBatch): void => {
     const vfx = effects();
     if (!vfx || paid.pops.length === 0) {
-      payout.release(paid.id);
+      release(paid.id);
       return;
     }
     let landed = 0;
     const finish = (): void => {
       if (!releasing.delete(finish)) return;
       clearTimeout(cap);
-      payout.release(paid.id);
+      release(paid.id);
     };
     const cap = setTimeout(finish, HELD_FALL_POPS_CAP_MS);
     releasing.add(finish);
@@ -1585,6 +1778,7 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
     const paid = batch;
     batch = null;
     if (paid) pay(paid);
+    else for (const listener of [...paidListeners]) listener();
   };
 
   const forget = (crateId: string): void => {
@@ -1685,6 +1879,13 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
       if (crateId === null) for (const id of [...unpaid.keys()]) forget(id);
       else forget(crateId);
       settle();
+    },
+    holding: () => active() || releasing.size > 0,
+    onPaid(listener) {
+      paidListeners.add(listener);
+      return () => {
+        paidListeners.delete(listener);
+      };
     },
     dispose() {
       for (const id of [...unpaid.keys()]) forget(id);
