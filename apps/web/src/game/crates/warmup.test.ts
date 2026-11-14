@@ -8,34 +8,9 @@ import {
   type Object3D,
 } from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  BOOT_PLAYABLE_MARK,
-  bindCrateWarmup,
-  FramePrimer,
-  onBootPlayable,
-  type Schedule,
-  type WarmBatch,
-} from './warmup.ts';
+import { bindCrateWarmup, type WarmBatch } from './warmup.ts';
 
-/** Idle slots that run only when the test says the frame has finished. */
-function idleQueue(): { schedule: Schedule; flush(): void; readonly size: number } {
-  const tasks: (() => void)[] = [];
-  return {
-    schedule: (task) => tasks.push(task),
-    flush() {
-      for (const task of tasks.splice(0)) task();
-    },
-    get size() {
-      return tasks.length;
-    },
-  };
-}
-
-function primerOf(parent: Object3D): Object3D {
-  const primer = parent.getObjectByName('crate-primer');
-  if (!primer) throw new Error('No crate primer under the parent');
-  return primer;
-}
+const PLAYABLE = 'coinposh:boot:playable';
 
 /** What the renderer does to a drawn object once its draw call is issued. */
 function draw(part: Object3D): void {
@@ -47,14 +22,6 @@ function draw(part: Object3D): void {
     new MeshBasicNodeMaterial(),
     new Group(),
   );
-}
-
-/** One frame: every part in the primer draws, then the frame ends and idle slots run. */
-function frame(parent: Object3D, idle: { flush(): void }): string[] {
-  const drawn = [...primerOf(parent).children];
-  for (const part of drawn) draw(part);
-  idle.flush();
-  return drawn.map((part) => part.name);
 }
 
 function batch(...names: string[]): WarmBatch & { released: number } {
@@ -73,222 +40,134 @@ function batch(...names: string[]): WarmBatch & { released: number } {
   return result;
 }
 
-describe('FramePrimer', () => {
-  it('draws one part per frame, out of sight and unculled, then leaves the scene', () => {
-    const parent = new Group();
-    const idle = idleQueue();
-    const primer = new FramePrimer(parent, idle.schedule);
-    const parts = batch('lacquer', 'gold', 'flare');
-    const done = vi.fn();
-    primer.run(parts, done);
+function rig(names: readonly string[] = ['lacquer', 'gold', 'flare']) {
+  const scene = new Group();
+  const listeners = new Set<(deltaSeconds: number) => void>();
+  const stage = {
+    scene,
+    renderer: {} as object,
+    onFrame(listener: (deltaSeconds: number) => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const batches: ReturnType<typeof batch>[] = [];
+  const unbox = {
+    warmParts: () => {
+      const made = batch(...names);
+      batches.push(made);
+      return made;
+    },
+    prime: vi.fn(),
+  };
+  const warmup = bindCrateWarmup(stage, unbox);
+  /** One table frame: listeners, then every warm prop in the scene draws, then the frame task ends. */
+  const frame = async (): Promise<string[]> => {
+    for (const listener of listeners) listener(1 / 60);
+    const drawn = [...scene.children];
+    for (const part of drawn) draw(part);
+    await Promise.resolve();
+    return drawn.map((part) => part.name);
+  };
+  return { scene, stage, unbox, batches, warmup, frame, listeners };
+}
 
-    expect(primerOf(parent).position.y).toBeLessThan(-100);
-    expect(parts.parts.every((part) => !part.frustumCulled)).toBe(true);
-    expect(primer.running).toBe(true);
-    expect(frame(parent, idle)).toEqual(['lacquer']);
-    expect(frame(parent, idle)).toEqual(['gold']);
-    expect(done).not.toHaveBeenCalled();
-    expect(frame(parent, idle)).toEqual(['flare']);
-
-    expect(done).toHaveBeenCalledOnce();
-    expect(parts.released).toBe(1);
-    expect(primer.running).toBe(false);
-    expect(primerOf(parent).children).toEqual([]);
-  });
-
-  it('moves on only after the frame that drew a part, never inside its render', () => {
-    const parent = new Group();
-    const idle = idleQueue();
-    const primer = new FramePrimer(parent, idle.schedule);
-    primer.run(batch('lacquer', 'gold'));
-    const [first] = primerOf(parent).children;
-    if (!first) throw new Error('The primer drew nothing');
-    draw(first);
-    draw(first);
-
-    expect(primerOf(parent).children.map((part) => part.name)).toEqual(['lacquer']);
-    expect(idle.size).toBe(1);
-    idle.flush();
-    expect(primerOf(parent).children.map((part) => part.name)).toEqual(['gold']);
-  });
-
-  it('drops the batch in flight for a new one, releasing it and never finishing it', () => {
-    const parent = new Group();
-    const idle = idleQueue();
-    const primer = new FramePrimer(parent, idle.schedule);
-    const old = batch('lacquer', 'gold');
-    const oldDone = vi.fn();
-    primer.run(old, oldDone);
-    const [stale] = primerOf(parent).children;
-    if (!stale) throw new Error('The primer drew nothing');
-    draw(stale);
-    const fresh = batch('velvet');
-    primer.run(fresh);
-    idle.flush();
-
-    expect(old.released).toBe(1);
-    expect(primerOf(parent).children.map((part) => part.name)).toEqual(['velvet']);
-    frame(parent, idle);
-    expect(oldDone).not.toHaveBeenCalled();
-    expect(fresh.released).toBe(1);
-  });
-
-  it('finishes an empty batch at once and leaves the scene on dispose', () => {
-    const parent = new Group();
-    const primer = new FramePrimer(parent, idleQueue().schedule);
-    const done = vi.fn();
-    primer.run(batch(), done);
-    expect(done).toHaveBeenCalledOnce();
-    primer.run(batch('lacquer'));
-    primer.dispose();
-    expect(parent.getObjectByName('crate-primer')).toBeUndefined();
-  });
-});
-
-describe('onBootPlayable', () => {
+describe('bindCrateWarmup', () => {
   afterEach(() => {
-    performance.clearMarks(BOOT_PLAYABLE_MARK);
+    performance.clearMarks(PLAYABLE);
   });
 
-  it('starts once the boot marks the table playable, not before', async () => {
-    const start = vi.fn();
-    onBootPlayable(start);
+  it('draws nothing until the boot marks the table playable', async () => {
+    const { scene, unbox, warmup, frame } = rig();
     performance.mark('coinposh:boot:laid');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(start).not.toHaveBeenCalled();
-    performance.mark(BOOT_PLAYABLE_MARK);
-    await vi.waitFor(() => {
-      expect(start).toHaveBeenCalledOnce();
-    });
+    for (let i = 0; i < 10; i++) expect(await frame()).toEqual([]);
+    expect(warmup.warming).toBe(false);
+    expect(scene.children).toEqual([]);
+    expect(unbox.prime).not.toHaveBeenCalled();
     performance.clearMarks('coinposh:boot:laid');
   });
 
-  it('starts at once when the mark is already down, and never after a cancel', async () => {
-    performance.mark(BOOT_PLAYABLE_MARK);
-    const start = vi.fn();
-    const cancelled = vi.fn();
-    onBootPlayable(start);
-    onBootPlayable(cancelled)();
-    await Promise.resolve();
-    expect(start).toHaveBeenCalledOnce();
-    expect(cancelled).not.toHaveBeenCalled();
-  });
-});
+  it('draws one prop per frame, out of sight and unculled, then hands over to the unbox primer', async () => {
+    const { scene, unbox, batches, warmup, frame } = rig();
+    performance.mark(PLAYABLE);
 
-describe('bindCrateWarmup', () => {
-  function rig() {
-    const listeners = new Set<(deltaSeconds: number) => void>();
-    const stage = {
-      renderer: {} as object,
-      onFrame(listener: (deltaSeconds: number) => void) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-    };
-    const runs: { names: string[]; done: (() => void) | undefined }[] = [];
-    let running = false;
-    const primer = {
-      get running() {
-        return running;
-      },
-      run(next: WarmBatch, done?: () => void) {
-        running = true;
-        runs.push({
-          names: next.parts.map((part) => part.name),
-          done: () => {
-            running = false;
-            done?.();
-          },
-        });
-      },
-      dispose: vi.fn(),
-    };
-    let play: (() => void) | null = null;
-    const cancel = vi.fn();
-    const warmed = vi.fn();
-    const warmup = bindCrateWarmup({
-      stage,
-      primer,
-      unbox: () => batch('lacquer', 'flare'),
-      table: () => batch('crate-body'),
-      warmed,
-      playable: (start) => {
-        play = start;
-        return cancel;
-      },
-    });
-    const tick = () => {
-      for (const listener of listeners) listener(1 / 60);
-    };
-    return {
-      warmup,
-      stage,
-      runs,
-      primer,
-      warmed,
-      cancel,
-      listeners,
-      tick,
-      playable: () => play?.(),
-    };
-  }
-
-  it('waits for playable, then warms the unbox and reports it once drawn', () => {
-    const { warmup, runs, warmed, tick, playable } = rig();
-    tick();
-    expect(runs).toEqual([]);
-    playable();
-
-    expect(runs.map((run) => run.names)).toEqual([['lacquer', 'flare']]);
+    expect(await frame()).toEqual(['lacquer']);
     expect(warmup.warming).toBe(true);
-    expect(warmup.warmed).toBe(false);
-    runs[0]?.done?.();
-    expect(warmed).toHaveBeenCalledOnce();
-    expect(warmup.warmed).toBe(true);
+    const parts = batches[0]?.parts ?? [];
+    expect(parts.every((part) => !part.frustumCulled && part.position.y < -100)).toBe(true);
+    expect(await frame()).toEqual(['gold']);
+    expect(unbox.prime).not.toHaveBeenCalled();
+    expect(await frame()).toEqual(['flare']);
+
+    expect(unbox.prime).toHaveBeenCalledOnce();
+    expect(batches[0]?.released).toBe(1);
+    expect(warmup.warming).toBe(false);
+    expect(scene.children).toEqual([]);
+    expect(await frame()).toEqual([]);
+    expect(batches).toHaveLength(1);
+  });
+
+  it('moves on only after the frame task that drew a prop, and once however often it drew', async () => {
+    const { scene, frame } = rig();
+    performance.mark(PLAYABLE);
+    await frame();
+    const [second] = scene.children;
+    if (!second) throw new Error('The warm-up drew nothing');
+    draw(second);
+    draw(second);
+    expect(scene.children.map((part) => part.name)).toEqual(['gold']);
+    await Promise.resolve();
+    expect(scene.children.map((part) => part.name)).toEqual(['flare']);
+  });
+
+  it('starts over on a swapped renderer, dropping the warm-up in flight', async () => {
+    const { stage, unbox, batches, frame } = rig();
+    performance.mark(PLAYABLE);
+    await frame();
+    stage.renderer = {};
+
+    expect(await frame()).toEqual(['lacquer']);
+    expect(batches).toHaveLength(2);
+    expect(batches[0]?.released).toBe(1);
+    expect(await frame()).toEqual(['gold']);
+    expect(await frame()).toEqual(['flare']);
+    expect(unbox.prime).toHaveBeenCalledOnce();
+    expect(batches[1]?.released).toBe(1);
+
+    stage.renderer = {};
+    expect(await frame()).toEqual(['lacquer']);
+    expect(batches).toHaveLength(3);
+  });
+
+  it('leaves a swap before playable to the first warm-up, which draws on the live renderer', async () => {
+    const { stage, batches, frame } = rig();
+    stage.renderer = {};
+    await frame();
+    expect(batches).toEqual([]);
+    performance.mark(PLAYABLE);
+    await frame();
+    await frame();
+    expect(batches).toHaveLength(1);
+  });
+
+  it('finishes an empty batch at once', async () => {
+    const { unbox, warmup, frame } = rig([]);
+    performance.mark(PLAYABLE);
+    expect(await frame()).toEqual([]);
+    expect(unbox.prime).toHaveBeenCalledOnce();
     expect(warmup.warming).toBe(false);
   });
 
-  it('links everything again, table crate included, after a renderer swap', () => {
-    const { stage, runs, warmed, tick, playable } = rig();
-    playable();
-    runs[0]?.done?.();
-    tick();
-    expect(runs).toHaveLength(1);
-
-    stage.renderer = {};
-    tick();
-    tick();
-    expect(runs.map((run) => run.names)).toEqual([
-      ['lacquer', 'flare'],
-      ['lacquer', 'flare', 'crate-body'],
-    ]);
-    runs[1]?.done?.();
-    expect(warmed).toHaveBeenCalledOnce();
-  });
-
-  it('leaves a swap before playable to the boot frames, which draw the standby crate', () => {
-    const { stage, runs, tick, playable } = rig();
-    stage.renderer = {};
-    tick();
-    expect(runs).toEqual([]);
-    playable();
-    expect(runs.map((run) => run.names)).toEqual([['lacquer', 'flare']]);
-  });
-
-  it('reports warmed from a swap warm-up that replaced the first one', () => {
-    const { stage, runs, warmed, tick, playable } = rig();
-    playable();
-    stage.renderer = {};
-    tick();
-    runs[1]?.done?.();
-    expect(warmed).toHaveBeenCalledOnce();
-  });
-
-  it('stops listening and drops the primer on dispose', () => {
-    const { warmup, cancel, primer, listeners } = rig();
+  it('takes its props out of the scene and stops listening on dispose, mid-warm-up', async () => {
+    const { scene, unbox, batches, warmup, frame, listeners } = rig();
+    performance.mark(PLAYABLE);
+    await frame();
     warmup.dispose();
-    expect(cancel).toHaveBeenCalledOnce();
-    expect(primer.dispose).toHaveBeenCalledOnce();
+    expect(scene.children).toEqual([]);
     expect(listeners.size).toBe(0);
+    expect(batches[0]?.released).toBe(1);
+    expect(warmup.warming).toBe(false);
+    expect(await frame()).toEqual([]);
+    expect(unbox.prime).not.toHaveBeenCalled();
   });
 });

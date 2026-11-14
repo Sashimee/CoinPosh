@@ -33,14 +33,14 @@ import {
   positionViewDirection,
   positionWorld,
 } from 'three/tsl';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createBus } from '../../app/bus.ts';
 import type { CrateEvents } from './events.ts';
 import { UnboxAssets, UnboxStage } from '../../vfx/cinematics/unbox/index.ts';
 import { RARITY_COLORS, VFX_COLORS } from '../../vfx/palette.ts';
 import { CRATE_RIDE, POSITION_UNIT } from '@coinposh/sim/snapshot';
 import { CrateRide } from './ride.ts';
-import { bindCrateWarmup, FramePrimer } from './warmup.ts';
+import { bindCrateWarmup } from './warmup.ts';
 import {
   crateShine,
   GLINT_OFF,
@@ -55,6 +55,7 @@ import {
 } from './view.ts';
 
 const FRAME = 1 / 60;
+const PLAYABLE = 'coinposh:boot:playable';
 
 function crateId(n: number): CrateId {
   return `crate-${String(n)}` as CrateId;
@@ -597,34 +598,20 @@ describe('crate warm-up', () => {
         };
       },
     });
-    const view = new TableCrateView(scene);
-    const idle: (() => void)[] = [];
     const listeners = new Set<(deltaSeconds: number) => void>();
     const stage = {
+      scene,
       renderer: {} as object,
       onFrame(listener: (deltaSeconds: number) => void) {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
     };
-    let play: (() => void) | null = null;
-    const warmup = bindCrateWarmup({
-      stage,
-      primer: new FramePrimer(scene, (task) => idle.push(task)),
-      unbox: () => unbox.warmParts(),
-      table: () => view.warmParts(),
-      warmed: () => {
-        unbox.prime();
-      },
-      playable: (start) => {
-        play = start;
-        return () => undefined;
-      },
-    });
-    /** One table frame: listeners, then what the crate primer draws, then the idle slot after it. */
-    const frame = (): Material[] => {
+    const warmup = bindCrateWarmup(stage, unbox);
+    /** One table frame: listeners, then the warm prop draws, then the frame task ends. */
+    const frame = async (): Promise<Material[]> => {
       for (const listener of listeners) listener(FRAME);
-      const drawn = [...(scene.getObjectByName('crate-primer')?.children ?? [])];
+      const drawn = warmProps(scene);
       for (const part of drawn) {
         part.onAfterRender(
           null as never,
@@ -635,33 +622,39 @@ describe('crate warm-up', () => {
           new Group(),
         );
       }
-      for (const task of idle.splice(0)) task();
+      await Promise.resolve();
       return drawn.map(materialOf);
     };
-    return { scene, unbox, view, stage, warmup, frame, playable: () => play?.() };
+    return { scene, unbox, stage, warmup, frame };
   }
 
-  it('draws nothing before the table is playable', () => {
+  function warmProps(scene: Object3D): Object3D[] {
+    return scene.children.filter((part) => part.position.y === -1_000);
+  }
+
+  afterEach(() => {
+    performance.clearMarks(PLAYABLE);
+  });
+
+  it('draws nothing before the table is playable', async () => {
     const { scene, warmup, frame } = table();
-    for (let i = 0; i < 30; i++) expect(frame()).toEqual([]);
+    for (let i = 0; i < 30; i++) expect(await frame()).toEqual([]);
     expect(warmup.warming).toBe(false);
     expect(scene.getObjectByName('unbox-primer')).toBeUndefined();
   });
 
-  it('links each unbox material on its own frame after playable, then hands over to the unbox primer', () => {
-    const { scene, unbox, warmup, frame, playable } = table();
-    playable();
+  it('links each unbox material on its own frame after playable, then hands over to the unbox primer', async () => {
+    const { scene, unbox, warmup, frame } = table();
+    performance.mark(PLAYABLE);
     const linked: Material[] = [];
     for (let i = 0; i < 7; i++) {
-      const drawn = frame();
+      const drawn = await frame();
       expect(drawn).toHaveLength(1);
       linked.push(...drawn);
     }
     expect(new Set(linked).size).toBe(7);
     expect(warmup.warming).toBe(false);
-    expect(warmup.warmed).toBe(true);
-    expect(frame()).toEqual([]);
-    expect(scene.getObjectByName('crate-primer')?.children).toEqual([]);
+    expect(await frame()).toEqual([]);
     const unboxPrimer = scene.getObjectByName('unbox-primer');
     expect(unboxPrimer?.children.map(materialOf)).toEqual([linked[0]]);
     unbox.dispose();
@@ -699,45 +692,25 @@ describe('crate warm-up', () => {
     unbox.dispose();
   });
 
-  it('draws the table crate as a spawned crate does, and releases it from wherever it hung', () => {
-    const parent = new Group();
-    const view = new TableCrateView(parent);
-    view.spawn(crateId(1));
-    const spawned = meshesUnder(parent);
-    const warm = view.warmParts();
-    const parts = warm.parts as Mesh[];
-    expect(parts.map((mesh) => mesh.material)).toEqual(spawned.map((mesh) => mesh.material));
-    expect(parts.map((mesh) => mesh.geometry)).toEqual(spawned.map((mesh) => mesh.geometry));
-    expect(parts.map((mesh) => mesh.castShadow)).toEqual([true, true, false]);
-    expect(parts.map((mesh) => mesh.renderOrder)).toEqual(spawned.map((mesh) => mesh.renderOrder));
-    const holder = new Group();
-    holder.add(...parts);
-    warm.release();
-    expect(holder.children).toEqual([]);
-    expect(view.count).toBe(1);
-    view.dispose();
-  });
-
-  it('links the unbox and the table crate again on a swapped renderer', () => {
-    const { view, stage, frame, playable } = table();
-    playable();
-    for (let i = 0; i < 7; i++) frame();
-    const crate = view.warmParts();
-    const crateMaterials = crate.parts.map(materialOf);
-    crate.release();
+  it('links the unbox again on a swapped renderer', async () => {
+    const { stage, frame } = table();
+    performance.mark(PLAYABLE);
+    const linked: Material[] = [];
+    for (let i = 0; i < 7; i++) linked.push(...(await frame()));
 
     stage.renderer = {};
     const relinked: Material[] = [];
-    for (let i = 0; i < 14; i++) relinked.push(...frame());
-    expect(relinked).toHaveLength(10);
-    for (const material of crateMaterials) expect(relinked).toContain(material);
+    for (let i = 0; i < 14; i++) relinked.push(...(await frame()));
+    expect(relinked).toHaveLength(7);
+    expect(new Set(relinked)).toEqual(new Set(linked));
   });
 
-  it('takes its primer out of the scene on dispose, mid-warm-up', () => {
-    const { scene, warmup, frame, playable } = table();
-    playable();
-    frame();
+  it('takes its warm prop out of the scene on dispose, mid-warm-up', async () => {
+    const { scene, warmup, frame } = table();
+    performance.mark(PLAYABLE);
+    await frame();
+    expect(warmProps(scene)).toHaveLength(1);
     warmup.dispose();
-    expect(scene.getObjectByName('crate-primer')).toBeUndefined();
+    expect(warmProps(scene)).toEqual([]);
   });
 });

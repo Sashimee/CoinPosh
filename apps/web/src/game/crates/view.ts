@@ -448,29 +448,6 @@ export class TableCrateView {
     }
   }
 
-  /**
-   * The crate's meshes, unlit by any crate, for a warm-up to draw out of sight: after a renderer
-   * swap the standby is long gone, and the next crate would link its programs on arrival.
-   */
-  warmParts(): WarmBatch {
-    const root = this.build('crate:warm', {
-      seam: new Color(),
-      glow: 0,
-      sweep: GLINT_OFF,
-      glint: 0,
-    });
-    const parts = [...root.children];
-    return {
-      parts,
-      release: () => {
-        for (const mesh of parts) {
-          mesh.removeFromParent();
-          this.looks.delete(mesh);
-        }
-      },
-    };
-  }
-
   dispose(): void {
     this.retireStandby();
     for (const crate of this.crates.values()) this.discard(crate.root);
