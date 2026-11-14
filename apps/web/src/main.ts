@@ -93,6 +93,9 @@ const TABLE_SEED = 0xc0196051;
 /** The longest the stage waits for the sim to be ready, so a slow worker download never blanks the table. */
 const SIM_HEAD_START_MS = 1500;
 
+/** index.html's preload of Rapier's wasm, which the sim worker then reads from the HTTP cache. */
+const RAPIER_WASM_PRELOAD = 'link[rel="preload"][type="application/wasm"]';
+
 /** Waits between attempts to load the player's table at boot, doubling up to the ceiling. */
 const STATE_RETRY = { firstDelayMs: 1000, maxDelayMs: 30_000 } as const;
 
@@ -770,10 +773,14 @@ async function bootScene(
     sessionModule = session;
     // On a software GPU the stage's first frames hold the main thread for seconds, and a worker's
     // first messages wait for the main thread, so Rapier gets a bounded head start before them.
-    await Promise.race([
-      simReady,
-      new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
-    ]);
+    // While its wasm is still on the wire a head start buys nothing, and the GPU work overlaps
+    // the download instead of following it.
+    if (!rapierWasmInFlight()) {
+      await Promise.race([
+        simReady,
+        new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
+      ]);
+    }
     const stageBuilt = stageModule
       .createStage(target, {
         look: riviera.RIVIERA_RENDER_LOOK,
@@ -938,11 +945,12 @@ async function bootScene(
   // sim waits them out at the tick it was laid at, so the table under the poster is the one
   // scripts/capture-poster.ts drew on every device, and play starts once the table is on screen.
   await coinsDrawn(stage, bridge);
-  // A software GPU can finish that link only as the next frame waits on it.
-  await drawWarmFrame(stage, effects);
   releaseHeldSim(bridge);
   if (!probe.superseded) probe.playable = true;
   markBoot('playable');
+  // The effects link on the frame after play starts rather than holding play for it: the first
+  // fusion needs coins in contact for 0.4 s and a fall, so no effect can fire before it.
+  void drawWarmFrame(effects);
   const uninstallDemo = sessionModule.installDemoHandle(probe, boot.net.mock, {
     player: () => boot.net.session.playerId,
     retake,
@@ -1422,22 +1430,20 @@ function coinsDrawn(stage: Stage, bridge: SimBridge): Promise<void> {
 }
 
 /**
- * Draws the last frame before play with the effects' programs linked in it, so the first taps'
- * fusions do not stall on them. It runs once every light is in place: a light added after it
- * would rebuild their pipelines, and the programs would link a second time on first use.
+ * Draws the first frame after play starts with the effects' programs linked in it, so the first
+ * taps' fusions do not stall on them. It runs once every light is in place: a light added after
+ * it would rebuild their pipelines, and the programs would link a second time on first use.
  */
-async function drawWarmFrame(stage: Stage, effects: AttachedVfx | null): Promise<void> {
-  if (effects) {
-    try {
-      if (await effects.warmup()) return;
-    } catch (error) {
-      console.error(
-        'CoinPosh effects could not pre-link their shaders; the first effects may stutter.',
-        error,
-      );
-    }
+async function drawWarmFrame(effects: AttachedVfx | null): Promise<void> {
+  if (!effects) return;
+  try {
+    await effects.warmup();
+  } catch (error) {
+    console.error(
+      'CoinPosh effects could not pre-link their shaders; the first effects may stutter.',
+      error,
+    );
   }
-  await frameDrawn(stage);
 }
 
 /** Resolves once the next frame has been drawn: promise callbacks run after the frame callback. */
@@ -2136,6 +2142,16 @@ function watchReducedMotion(apply: (reduced: boolean) => void): void {
   query.addEventListener('change', (event) => {
     apply(event.matches);
   });
+}
+
+/**
+ * Whether the Rapier wasm that index.html preloads at navigation is still downloading: a
+ * preload gets its resource timing entry once its response is complete.
+ */
+function rapierWasmInFlight(): boolean {
+  const preload = document.querySelector<HTMLLinkElement>(RAPIER_WASM_PRELOAD);
+  if (!preload) return false;
+  return performance.getEntriesByName(preload.href, 'resource').length === 0;
 }
 
 function markBoot(step: string): void {

@@ -22,6 +22,32 @@ export const BOOT_TO_FIRST_DROP_MS = 3_000;
  */
 export const BOOT_RUNS = 5;
 
+/**
+ * P-628: the median of the BOOT_RUNS spans from the `venue` mark to `playable`. The device target
+ * is 300 ms on an idle machine; on SwiftShader that span is the frame that reveals the venue and
+ * links its programs (P-294, P-295), 1.0 to 2.1 s with a 1.2 s median over 5 runs on 2026-11-14
+ * at load 9 on 10 cores. This is a regression floor with headroom for a 4-vCPU runner: the
+ * effects' warm frame, which used to sit in this span, would push it past.
+ */
+export const VENUE_TO_PLAYABLE_MS = 2_000;
+
+/**
+ * P-627: a cold boot over throttled 4G, emulated through CDP. Before P-627 the median playable
+ * mark was 6.2 s, with Rapier's wasm requested about 1.8 s in, once the sim worker ran. With the
+ * wasm preloaded from index.html it is requested about 0.2 s in and playable reads 4.4 to 5.0 s
+ * on SwiftShader at load 8 to 22 on 10 cores (2026-11-14).
+ */
+export const THROTTLED_BOOT = {
+  downloadBitsPerSecond: 9_000_000,
+  uploadBitsPerSecond: 1_500_000,
+  latencyMs: 150,
+  runs: 3,
+  /** Median, navigation start to the `playable` mark. */
+  playableMs: 4_500,
+  /** Navigation start to the wasm request: index.html's preload, not the worker's fetch. */
+  wasmRequestStartMs: 700,
+} as const;
+
 /** The CI frame sample: twenty seconds of play at one drop a second after a three-second warm-up. */
 export const FRAME_SAMPLE = {
   warmupMs: 3_000,

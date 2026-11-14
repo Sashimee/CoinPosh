@@ -3,12 +3,14 @@ import { QUALITY_STORAGE_KEY, type StoredQuality } from '../src/scene/quality/st
 import { bootGame, expect, probe, tapDrop, test } from './fixtures.ts';
 
 /**
- * P-580: the effects' programs link in the frame before play and again after a tier change or
+ * P-580: the effects' programs link in a warmup frame at boot and again after a tier change or
  * a renderer rebuild, so no fusion, OBSCENE or crate burst stalls the main thread on a link.
+ * Since P-628 the boot warmup is the frame after play starts: the first fusion needs coins in
+ * contact and a fall, so it always comes later, and the test checks that it does.
  *
  * An init script counts every WebGL2 `linkProgram` with its fragment shader, and each effect is
  * told apart by constants only its material compiles to (src/vfx/flash.ts, shockwave.ts and
- * particles/material.ts). The first test also requires every effect to have linked during boot,
+ * particles/material.ts). The first test also requires every effect to have linked by that frame,
  * so a fingerprint that stops matching fails here instead of passing silently.
  */
 
@@ -43,6 +45,8 @@ interface MultisampleRecord {
 interface GlLog {
   readonly links: LinkRecord[];
   readonly multisample: MultisampleRecord[];
+  /** The sim's fusion count as each warmed mark was taken, or null before the probe exists. */
+  readonly fusionsAtWarm: (number | null)[];
 }
 
 declare global {
@@ -52,9 +56,16 @@ declare global {
 }
 
 async function recordGl(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const log: GlLog = { links: [], multisample: [] };
+  await page.addInitScript((warmedMark) => {
+    const log: GlLog = { links: [], multisample: [], fusionsAtWarm: [] };
     window.__coinposhGl = log;
+    new PerformanceObserver((entries) => {
+      for (const entry of entries.getEntriesByName(warmedMark, 'mark')) {
+        if (entry.entryType === 'mark') {
+          log.fusionsAtWarm.push(window.__coinposh?.counts.simFusions ?? null);
+        }
+      }
+    }).observe({ type: 'mark' });
     const gl = WebGL2RenderingContext.prototype;
     const fragments = new WeakMap<WebGLProgram, string>();
     const isFragment = new WeakSet<WebGLShader>();
@@ -85,7 +96,7 @@ async function recordGl(page: Page): Promise<void> {
       log.multisample.push({ at: performance.now(), samples });
       original.renderbufferStorageMultisample.call(this, target, samples, format, width, height);
     };
-  });
+  }, WARMED_MARK);
 }
 
 function glLog(page: Page): Promise<GlLog> {
@@ -127,18 +138,29 @@ async function fusions(page: Page): Promise<number> {
 }
 
 test.describe('shader warmup (P-580)', () => {
-  test('every effect links before play, and taps 1-60 link none of them', async ({ page }) => {
+  test('every effect links in the frame after play starts, before the first fusion, and taps 1-60 link none of them', async ({
+    page,
+  }) => {
     await recordGl(page);
     await bootGame(page);
     const [playableAt] = await markTimes(page, PLAYABLE_MARK);
     if (playableAt === undefined) throw new Error(`The ${PLAYABLE_MARK} mark is missing`);
-    const warmed = await markTimes(page, WARMED_MARK);
-    expect(warmed, 'one warmup frame ran before play').toHaveLength(1);
+    await expect
+      .poll(() => markTimes(page, WARMED_MARK), {
+        message: 'the warmup frame ran once play started',
+        timeout: 30_000,
+      })
+      .toHaveLength(1);
+    const [warmedAt = Number.NaN] = await markTimes(page, WARMED_MARK);
+    expect(warmedAt, 'P-628: the warmup frame no longer holds play back').toBeGreaterThan(
+      playableAt,
+    );
 
     const booted = await glLog(page);
+    expect(booted.fusionsAtWarm, 'the effects were linked before any fusion fired').toEqual([0]);
     expect(
-      new Set(vfxLinks(booted, 0, playableAt)),
-      'flash, ring, sparks and foil all linked before play: a fingerprint that stops matching fails here',
+      new Set(vfxLinks(booted, 0, warmedAt)),
+      'flash, ring, sparks and foil all linked by the warmup frame: a fingerprint that stops matching fails here',
     ).toEqual(new Set(VFX_PROGRAMS));
 
     for (let i = 0; i < TAPS; i += 1) {
@@ -148,9 +170,7 @@ test.describe('shader warmup (P-580)', () => {
     await page.waitForTimeout(EFFECTS_SETTLE_MS);
 
     expect(await fusions(page), 'the taps fused coins, so the effects fired').toBeGreaterThan(0);
-    expect(vfxLinks(await glLog(page), playableAt), 'effect programs linked during taps').toEqual(
-      [],
-    );
+    expect(vfxLinks(await glLog(page), warmedAt), 'effect programs linked during taps').toEqual([]);
   });
 
   test('a tier change on a renderer rebuild warms the effects before the next fusion', async ({

@@ -7,6 +7,20 @@
     <meta name="color-scheme" content="dark" />
     <title>CoinPosh</title>
     <link rel="icon" href="data:," />
+    <!--
+      Rapier's wasm, requested at navigation rather than once the sim worker runs. The build
+      emits this file under the same content-hashed name as the copy the worker's Rapier loader
+      fetches (the bytes the -compat build inlines, see packages/sim/src/rapier-wasm.ts), so the
+      worker reads the preloaded response from the HTTP cache. e2e/boot.perf.ts fails if the two
+      URLs ever diverge.
+    -->
+    <link
+      rel="preload"
+      as="fetch"
+      type="application/wasm"
+      crossorigin
+      href="../../packages/sim/node_modules/@dimforge/rapier3d-deterministic-compat/dist/rapier_wasm3d_bg.wasm"
+    />
     <link
       rel="preload"
       as="image"

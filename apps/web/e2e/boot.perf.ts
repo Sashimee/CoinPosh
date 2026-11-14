@@ -1,6 +1,11 @@
-import type { Page } from '@playwright/test';
+import type { Browser, Page, Request, TestInfo } from '@playwright/test';
 import { economyConfig } from '@coinposh/economy';
-import { BOOT_RUNS, BOOT_TO_FIRST_DROP_MS } from './budgets.ts';
+import {
+  BOOT_RUNS,
+  BOOT_TO_FIRST_DROP_MS,
+  THROTTLED_BOOT,
+  VENUE_TO_PLAYABLE_MS,
+} from './budgets.ts';
 import {
   coinLedger,
   expect,
@@ -137,6 +142,8 @@ interface BootRun {
   readonly playableMs: number;
   /** The app's `coinposh:boot:stage` mark: the renderer is up and its first frame compiled. */
   readonly stageMs: number;
+  /** From the `coinposh:boot:venue` mark, the venue built, to the playable mark. */
+  readonly venueToPlayableMs: number;
   /**
    * From the playable mark to the test's tap. The tap waits for the first sync after playable,
    * so this is mostly the first venue frame, during which a player's tap would queue as well.
@@ -191,6 +198,7 @@ async function bootToFirstDrop(page: Page, shot: string | null): Promise<BootRun
   return {
     playableMs,
     stageMs: await bootMark(page, 'stage'),
+    venueToPlayableMs: playableMs - (await bootMark(page, 'venue')),
     tapLagMs: tapMs - playableMs,
     tapMs,
     firstDropMs: dropMs,
@@ -225,11 +233,13 @@ test.describe('boot budget', () => {
       statistic: `median of ${String(runs.length)}`,
       playableMs: pick('playableMs'),
       stageMs: pick('stageMs'),
+      venueToPlayableMs: pick('venueToPlayableMs'),
       tapLagMs: pick('tapLagMs'),
       firstDropMs: pick('firstDropMs'),
       tapToDropMs: pick('tapToDropMs'),
       longestFrameAfterTapMs: pick('longestFrameAfterTapMs'),
       budgetMs: BOOT_TO_FIRST_DROP_MS,
+      venueToPlayableBudgetMs: VENUE_TO_PLAYABLE_MS,
     };
     await writePerfReport('boot.json', headline, runs, testInfo);
 
@@ -237,5 +247,141 @@ test.describe('boot budget', () => {
       headline.firstDropMs,
       `median ms from navigation start to the first coin in the sim, runs: ${runs.map((run) => run.firstDropMs.toFixed(0)).join(', ')}`,
     ).toBeLessThan(BOOT_TO_FIRST_DROP_MS);
+    expect(
+      headline.venueToPlayableMs,
+      `median ms from the venue mark to playable, runs: ${runs.map((run) => run.venueToPlayableMs.toFixed(0)).join(', ')}`,
+    ).toBeLessThan(VENUE_TO_PLAYABLE_MS);
+  });
+
+  test(`over throttled 4G, Rapier's wasm is requested at navigation and downloaded once, and the median of ${String(THROTTLED_BOOT.runs)} cold boots is playable under ${String(THROTTLED_BOOT.playableMs)} ms`, async ({
+    browser,
+  }, testInfo) => {
+    test.setTimeout(THROTTLED_BOOT.runs * 60_000);
+    const runs: WithHost<ThrottledRun>[] = [];
+    for (let i = 0; i < THROTTLED_BOOT.runs; i += 1) {
+      runs.push(stampRun(await throttledBoot(browser, testInfo, i + 1)));
+    }
+
+    const pick = (metric: 'playableMs' | 'venueMs' | 'wasmRequestStartMs'): number =>
+      median(runs.map((run) => run[metric]));
+    const headline = {
+      statistic: `median of ${String(runs.length)}`,
+      playableMs: pick('playableMs'),
+      venueMs: pick('venueMs'),
+      wasmRequestStartMs: pick('wasmRequestStartMs'),
+      budgetMs: THROTTLED_BOOT.playableMs,
+      network: {
+        downloadBitsPerSecond: THROTTLED_BOOT.downloadBitsPerSecond,
+        uploadBitsPerSecond: THROTTLED_BOOT.uploadBitsPerSecond,
+        latencyMs: THROTTLED_BOOT.latencyMs,
+      },
+    };
+    await writePerfReport('boot-throttled.json', headline, runs, testInfo);
+
+    for (const [i, run] of runs.entries()) {
+      const boot = `throttled boot ${String(i + 1)}`;
+      expect(
+        run.wasmRequestStartMs,
+        `${boot}: ms from navigation start to the wasm request`,
+      ).toBeLessThan(THROTTLED_BOOT.wasmRequestStartMs);
+      expect(
+        run.wasmRequests.map((request) => request.url),
+        `${boot}: every wasm request is for the URL index.html preloads, so the worker reads the preload from the HTTP cache`,
+      ).toEqual(run.wasmRequests.map(() => run.preloadUrl));
+      expect(
+        run.wasmRequests.filter((request) => request.bodyBytes > 0),
+        `${boot}: the wasm body came over the wire once, requests: ${JSON.stringify(run.wasmRequests)}`,
+      ).toHaveLength(1);
+    }
+    expect(
+      headline.playableMs,
+      `median ms from navigation start to playable over throttled 4G, runs: ${runs.map((run) => run.playableMs.toFixed(0)).join(', ')}`,
+    ).toBeLessThan(THROTTLED_BOOT.playableMs);
   });
 });
+
+interface WasmRequest {
+  readonly url: string;
+  readonly status: number | null;
+  /** The encoded body bytes received: 0 for a 304 or a response read from the HTTP cache. */
+  readonly bodyBytes: number;
+}
+
+interface ThrottledRun {
+  readonly playableMs: number;
+  readonly venueMs: number;
+  /** When index.html's wasm preload started, from its resource timing entry. */
+  readonly wasmRequestStartMs: number;
+  readonly preloadUrl: string;
+  /** Every wasm request the page and its sim worker made. */
+  readonly wasmRequests: readonly WasmRequest[];
+}
+
+const WASM_PRELOAD = 'link[rel="preload"][type="application/wasm"]';
+
+async function wasmRequestOf(request: Request): Promise<WasmRequest> {
+  const response = await request.response();
+  const sizes = await request.sizes();
+  return {
+    url: request.url(),
+    status: response?.status() ?? null,
+    bodyBytes: sizes.responseBodySize,
+  };
+}
+
+/** One cold boot to playable over throttled 4G, in a fresh context so the HTTP cache is empty. */
+async function throttledBoot(
+  browser: Browser,
+  testInfo: TestInfo,
+  boot: number,
+): Promise<ThrottledRun> {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const errors = await prepareGamePage(page);
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Network.enable');
+    await cdp.send('Network.emulateNetworkConditions', {
+      offline: false,
+      latency: THROTTLED_BOOT.latencyMs,
+      downloadThroughput: THROTTLED_BOOT.downloadBitsPerSecond / 8,
+      uploadThroughput: THROTTLED_BOOT.uploadBitsPerSecond / 8,
+    });
+    const wasm: Promise<WasmRequest>[] = [];
+    const settle = (request: Request): void => {
+      if (new URL(request.url()).pathname.endsWith('.wasm')) wasm.push(wasmRequestOf(request));
+    };
+    page.on('requestfinished', settle);
+    page.on('requestfailed', settle);
+
+    await page.goto(gameUrl('?quality=low'), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
+      timeout: 45_000,
+      polling: 16,
+    });
+    const preload = await page.evaluate((selector) => {
+      const link = document.querySelector<HTMLLinkElement>(selector);
+      if (!link) return null;
+      const entry = performance.getEntriesByName(link.href, 'resource')[0];
+      return { url: link.href, startMs: entry?.startTime ?? null };
+    }, WASM_PRELOAD);
+    if (!preload) throw new Error(`index.html has no ${WASM_PRELOAD}; update boot.perf.ts`);
+    if (preload.startMs === null) {
+      throw new Error(`The table was playable before the wasm preload of ${preload.url} finished`);
+    }
+    await expectDemoMode(page);
+    expect(
+      unexpectedErrors(errors, testInfo),
+      `throttled boot ${String(boot)} logged errors`,
+    ).toEqual([]);
+    return {
+      playableMs: await bootMark(page, 'playable'),
+      venueMs: await bootMark(page, 'venue'),
+      wasmRequestStartMs: preload.startMs,
+      preloadUrl: preload.url,
+      wasmRequests: await Promise.all(wasm),
+    };
+  } finally {
+    await context.close();
+  }
+}
