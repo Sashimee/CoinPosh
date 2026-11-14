@@ -371,6 +371,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-508 | done | task/P-508 (merge fdab531) | Lead decision + implementation: features slot in the Demo PersistedWorld, saved atomically with the ledger (persist.ts, world.ts, persist.test.ts, boot.test.ts; 46c7d96); pnpm check green after merge |
 | P-654 | done | task/P-654 (merge 1dee4f0) | Every server-kept coin gets an accepted pose before unload or re-boot: the session holds the table still and posed before a boot (session/hold.ts, capture.ts, retake.ts, triggers.ts, main.ts, demo-reload.spec.ts and session tests; 562c0ea); folds P-656 (reboot pauses the sim before the drain); unblocks P-626 retry; pnpm check green after merge |
 | P-656 | done | folded into P-654 (merge 1dee4f0) | demo.reboot() holds the sim before warmSim/drainBeforeBoot, with demoHandle tests for coins moving during the drain |
+| P-425 | done | task/P-425 (merge 93c1169) | Self-hosted Cormorant Garamond 600/700/700-italic and Manrope 500/700 woff2 (Latin + FR/DE) with font-display: swap, @font-face and tokens in styles.css, preloads in index.html, OFL licences and SOURCES.md, font bytes counted in bundle-size.ts, fonts.spec.ts e2e (f505d38); folds P-102; follow-ups P-689/P-690; pnpm check green after merge |
+| P-102 | done | folded into P-425 (merge 93c1169) | Display serif and UI sans now ship as self-hosted webfonts |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
