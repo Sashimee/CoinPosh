@@ -368,6 +368,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-655 | done | task/P-655 (merge 59974b0) | Crate ride advances on sim ticks, so a held sim holds its crates and their poses are no longer refused as teleports (controller.ts, ride.ts, crates.test.ts; 9031c25); pnpm check green after merge; follow-up P-669 |
 | P-660 | done | task/P-660 (merge e3baefd) | Table crate shader pipelines warmed before the first crate spawns: hidden crate (body, band, glow, ring, spark) compiled in the post-boot warm-up (crates/warmup.ts, view.ts, mount.ts and tests; c6234a3); pnpm check green after merge; follow-up P-673 |
 | P-508 | done | task/P-508 (merge fdab531) | Lead decision + implementation: features slot in the Demo PersistedWorld, saved atomically with the ledger (persist.ts, world.ts, persist.test.ts, boot.test.ts; 46c7d96); pnpm check green after merge |
+| P-654 | done | task/P-654 (merge 1dee4f0) | Every server-kept coin gets an accepted pose before unload or re-boot: the session holds the table still and posed before a boot (session/hold.ts, capture.ts, retake.ts, triggers.ts, main.ts, demo-reload.spec.ts and session tests; 562c0ea); folds P-656 (reboot pauses the sim before the drain); unblocks P-626 retry; pnpm check green after merge |
+| P-656 | done | folded into P-654 (merge 1dee4f0) | demo.reboot() holds the sim before warmSim/drainBeforeBoot, with demoHandle tests for coins moving during the drain |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
