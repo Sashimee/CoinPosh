@@ -373,6 +373,11 @@ interface HandoverRound {
   readonly emptied: boolean;
   /** Whether the hand had room for a refill when COLLECT was pressed. */
   readonly roomInHand: boolean;
+  /**
+   * Whether another crate opened while this card was up: the director queues it and mounts its
+   * card the moment this one leaves, so the Vault stays held and no handover plays behind it.
+   */
+  readonly queued: boolean;
 }
 
 /** Empties the Vault until a crate opens, checks its card, collects it and returns the samples. */
@@ -402,11 +407,20 @@ async function collectAfterEmptying(page: Page, handCapacity: number): Promise<H
     .toBe(0);
   const roomInHand = (await readDigits(page, 'hud-in-hand')) < handCapacity;
 
+  const card = await reveal.elementHandle();
   await page.evaluate(() => {
     window.__payoutTapGuard = false;
   });
   await collect.click();
-  await expect(reveal).toHaveCount(0, { timeout: PAYOUT_SETTLES_MS });
+  await expect
+    .poll(() => card.evaluate((el) => el.isConnected), {
+      message: 'the collected card flies off and leaves',
+      timeout: PAYOUT_SETTLES_MS,
+    })
+    .toBe(false);
+  const { counts: left } = await probe(page);
+  const queued = left.cratesOpened > left.cratesCollected;
+  if (!queued) await expect(reveal).toHaveCount(0);
   await page.waitForTimeout(HANDOVER_SETTLES_MS);
   const sampled = await page.evaluate(() => {
     const sampler = window.__handover;
@@ -421,7 +435,7 @@ async function collectAfterEmptying(page: Page, handCapacity: number): Promise<H
   const opened = sampled.frames.findIndex((row) => row.reveal);
   const emptied =
     tapped || sampled.frames.slice(0, opened).some((row) => row.plaque === 0 && row.inHand === 0);
-  return { line, emptied, roomInHand, ...sampled };
+  return { line, emptied, roomInHand, queued, ...sampled };
 }
 
 async function readDigits(page: Page, testId: string): Promise<number> {
@@ -447,15 +461,17 @@ async function expectPayoutHandover(page: Page, motion: Motion): Promise<void> {
   // A crate can open right after a burst of falls has refilled the Vault and the hand; that
   // card has nothing to show on an empty Vault, so the test plays on to the next crate.
   const rounds: HandoverRound[] = [];
+  // A crate that opened behind another's card is played as the next round but is not a try.
   const ready = (row: HandoverRound | undefined): boolean =>
-    row !== undefined && row.emptied && row.roomInHand;
-  while (rounds.length < CRATES_TRIED && !ready(rounds.at(-1))) {
+    row !== undefined && row.emptied && row.roomInHand && !row.queued;
+  const tried = (): number => rounds.filter((_, i) => rounds[i - 1]?.queued !== true).length;
+  while (tried() < CRATES_TRIED && !ready(rounds.at(-1))) {
     rounds.push(await collectAfterEmptying(page, handCapacity));
   }
   const round = rounds.at(-1);
   if (!round || !ready(round)) {
     throw new Error(
-      `None of ${String(CRATES_TRIED)} crates opened on an emptied Vault with room in the hand: ${JSON.stringify(rounds.map(({ emptied, roomInHand }) => ({ emptied, roomInHand })))}`,
+      `None of ${String(CRATES_TRIED)} crates opened on an emptied Vault with room in the hand: ${JSON.stringify(rounds.map(({ emptied, roomInHand, queued }) => ({ emptied, roomInHand, queued })))}`,
     );
   }
   const { line, frames, collectedAt, creditedAtOpen } = round;
