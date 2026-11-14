@@ -36,7 +36,7 @@ export const DEMO_STORAGE_KEY = 'coinposh.demo.world';
  * Bumped whenever the shape below changes. A blob of any other version is dropped for a fresh
  * session rather than migrated: Demo progress only lives as long as the tab.
  */
-export const DEMO_BLOB_SCHEMA_VERSION = 1;
+export const DEMO_BLOB_SCHEMA_VERSION = 2;
 
 /** The slice of the Web Storage API the mock needs, so tests can hand in a fake or a failing one. */
 export interface MockStorage {
@@ -161,6 +161,17 @@ const LedgerEntrySchema = z.strictObject({
   ref: z.string().nullable(),
 });
 
+/**
+ * A Demo feature module's id (`quests`, `season`, ...). Kept to plain identifiers so no stored
+ * key can be `__proto__` or another name a record would treat specially.
+ */
+export const FeatureIdSchema = z.string().regex(/^[a-z][a-z0-9._-]{0,63}$/);
+
+/**
+ * Feature modules keep their state in `features`, inside the same blob as the ledger their rewards
+ * credit, so one write stores both or neither: a reload, or a write the quota refuses, can never
+ * restore a reward without the state that marks it claimed.
+ */
 export const PersistedWorldSchema = z.strictObject({
   /** How many page lives restored this world before; new entity ids carry it so none repeats. */
   epoch: AmountSchema,
@@ -168,6 +179,8 @@ export const PersistedWorldSchema = z.strictObject({
   ledger: z.array(LedgerEntrySchema),
   checkpoints: z.array(z.tuple([PlayerIdSchema, z.record(CurrencyIdSchema, int)])),
   players: z.array(PersistedPlayerSchema),
+  /** Opaque JSON per feature id; each feature validates its own slot when it reads it back. */
+  features: z.record(FeatureIdSchema, z.unknown()).readonly(),
 });
 export type PersistedWorld = z.infer<typeof PersistedWorldSchema>;
 export type PersistedPlayer = z.infer<typeof PersistedPlayerSchema>;

@@ -642,6 +642,183 @@ describe('Demo persistence: a seeded page replays its crypto stream after a relo
   });
 });
 
+describe('Demo persistence: feature state is saved in the same write as the ledger', () => {
+  const book = {
+    daily: ['daily-1', 'daily-2'],
+    baselines: { 'daily-1': 12, 'daily-2': 0 },
+    claimed: ['daily-1'],
+    streak: { days: 3, lastAt: null },
+  };
+
+  function mockPlayer(tab: Tab) {
+    const player = tab.server.world.player(tab.id);
+    if (player === undefined) throw new Error('The mock world lost the player.');
+    return player;
+  }
+
+  async function claimDaily(tab: Tab): Promise<void> {
+    await tab.boot();
+    tab.server.world.grant(
+      mockPlayer(tab),
+      time.now(),
+      'quest.claim',
+      { coins: 40, keys: 1 },
+      'daily-1',
+    );
+    tab.server.world.setFeatureState('quests', book);
+    await tab.player.client.call('state');
+  }
+
+  it('restores a claimed quest and the grant it paid together after a reload', async () => {
+    const first = await Tab.open(page());
+    await claimDaily(first);
+    const paid = first.wallet();
+    first.server.flush();
+    expect(storedWorld().features).toEqual({ quests: book });
+
+    const server = page();
+    expect(server.restored).toBe(true);
+    expect(server.world.featureState('quests')).toEqual(book);
+    expect(server.world.featureState('season')).toBeUndefined();
+    const grant = server.ledger().find((entry) => entry.reason === 'quest.claim');
+    expect(grant).toMatchObject({
+      playerId: first.id,
+      delta: { coins: 40, keys: 1 },
+      ref: 'daily-1',
+    });
+    const second = await Tab.open(server);
+    const booted = await second.boot();
+    expect(second.id).toBe(first.id);
+    expect(booted.wallet).toEqual(paid);
+    expect(server.world.featureState('quests')).toEqual(book);
+    second.expectConserved();
+  });
+
+  it('loses both the quest claim and its grant when the save fails, never one without the other', async () => {
+    const first = await Tab.open(page());
+    await first.boot();
+    first.server.flush();
+    const before = storedWorld();
+    expect(before.features).toEqual({});
+
+    const failing = collectingPage();
+    const tab = await Tab.open(failing);
+    storage.failSet = true;
+    await claimDaily(tab);
+    failing.flush();
+    expect(warnings).toEqual([expect.stringMatching(/could not be saved/)]);
+    storage.failSet = false;
+
+    const server = page();
+    expect(server.world.featureState('quests')).toBeUndefined();
+    expect(server.ledger().some((entry) => entry.reason === 'quest.claim')).toBe(false);
+  });
+
+  it('keeps a feature slot across reloads it is not touched in, and clears it when set to undefined', async () => {
+    const first = await Tab.open(page());
+    await claimDaily(first);
+    first.server.flush();
+    const again = await Tab.open(page());
+    await again.boot();
+    again.server.flush();
+    expect(storedWorld().features).toEqual({ quests: book });
+
+    again.server.world.setFeatureState('quests', undefined);
+    await again.player.client.call('state');
+    again.server.flush();
+    expect(storedWorld().features).toEqual({});
+    expect(page().world.featureState('quests')).toBeUndefined();
+  });
+
+  it('refuses a restore whose feature slot was edited into data JSON cannot hold', () => {
+    const world = new MockWorld();
+    world.setFeatureState('quests', book);
+    const data = world.serialize();
+    expect(() =>
+      MockWorld.restore({ ...data, features: { quests: { score: Number.NaN } } }),
+    ).toThrow(/feature quests state cannot be stored because quests\.score is NaN/);
+  });
+});
+
+describe('MockWorld feature state', () => {
+  it('reads back undefined for a feature that stored nothing', () => {
+    expect(new MockWorld().featureState('quests')).toBeUndefined();
+  });
+
+  it('hands out copies, so a caller mutating what it read or wrote changes nothing stored', () => {
+    const world = new MockWorld();
+    const written = { claimed: ['daily-1'] };
+    world.setFeatureState('quests', written);
+    written.claimed.push('daily-2');
+    const read = world.featureState('quests') as { claimed: string[] };
+    read.claimed.push('daily-3');
+    expect(world.featureState('quests')).toEqual({ claimed: ['daily-1'] });
+    expect(world.serialize().features).toEqual({ quests: { claimed: ['daily-1'] } });
+  });
+
+  it('stores every kind of JSON value at the top level', () => {
+    const world = new MockWorld();
+    for (const value of [
+      null,
+      true,
+      0,
+      -1.5,
+      '',
+      'tier-3',
+      [],
+      [1, [2]],
+      {},
+      Object.create(null),
+    ]) {
+      world.setFeatureState('season', value);
+      expect(world.featureState('season')).toEqual(value);
+    }
+  });
+
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  const shared = { at: 1 };
+  it.each([
+    ['a function', () => 1, /quests is a function/],
+    ['a bigint', 10n, /quests is bigint/],
+    ['a symbol', Symbol('q'), /quests is symbol/],
+    ['NaN', Number.NaN, /quests is NaN/],
+    ['Infinity', { score: Number.POSITIVE_INFINITY }, /quests\.score is Infinity/],
+    ['negative zero', [-0], /quests\[0\] is 0/],
+    ['a nested undefined', { streak: undefined }, /quests\.streak is undefined/],
+    ['an array hole', new Array<number>(2), /quests\[0\] is a hole/],
+    ['a Date', { lastAt: new Date(0) }, /quests\.lastAt is a Date, not plain data/],
+    ['a Map', new Map(), /quests is a Map, not plain data/],
+    ['a cycle', cyclic, /quests\.self refers back to itself/],
+    ['symbol keys', { [Symbol('k')]: 1 }, /quests has symbol keys/],
+  ])('refuses %s, naming the feature and where', (_label, value, message) => {
+    const world = new MockWorld();
+    world.setFeatureState('quests', { kept: true });
+    expect(() => {
+      world.setFeatureState('quests', value);
+    }).toThrow(message);
+    expect(world.featureState('quests')).toEqual({ kept: true });
+  });
+
+  it('accepts the same object reached twice, which is not a cycle', () => {
+    const world = new MockWorld();
+    world.setFeatureState('quests', { a: shared, b: [shared] });
+    expect(world.featureState('quests')).toEqual({ a: { at: 1 }, b: [{ at: 1 }] });
+  });
+
+  it.each(['', 'Quests', '__proto__', '1st', 'a'.repeat(65), 'has space'])(
+    'refuses the feature id %j',
+    (id) => {
+      expect(() => {
+        new MockWorld().setFeatureState(id, 1);
+      }).toThrow(/is not a feature id/);
+      expect(() => {
+        new MockWorld().setFeatureState(id, undefined);
+      }).toThrow(/is not a feature id/);
+    },
+  );
+});
+
 describe('Demo persistence: a bad blob or a broken storage falls back to a fresh session', () => {
   async function expectFresh(server: MockServer) {
     expect(server.restored).toBe(false);
@@ -674,8 +851,54 @@ describe('Demo persistence: a bad blob or a broken storage falls back to a fresh
       JSON.stringify({ ...blob, schema: DEMO_BLOB_SCHEMA_VERSION + 1 }),
     );
     await expectFresh(collectingPage());
-    expect(warnings).toEqual([expect.stringMatching(/save format 2, this build reads 1/)]);
+    expect(warnings).toEqual([
+      expect.stringContaining(
+        `save format ${DEMO_BLOB_SCHEMA_VERSION + 1}, this build reads ${DEMO_BLOB_SCHEMA_VERSION}`,
+      ),
+    ]);
     expect(storage.items.has(DEMO_STORAGE_KEY)).toBe(false);
+  });
+
+  it('drops a save from before feature state was stored, rather than restoring a quest book that is gone', async () => {
+    const blob = JSON.parse(await savedWorld()) as { world: Record<string, unknown> };
+    const { features: _dropped, ...world } = blob.world;
+    storage.items.set(DEMO_STORAGE_KEY, JSON.stringify({ ...blob, schema: 1, world }));
+    await expectFresh(collectingPage());
+    expect(warnings).toEqual([
+      expect.stringContaining(`save format 1, this build reads ${DEMO_BLOB_SCHEMA_VERSION}`),
+    ]);
+    expect(storage.items.has(DEMO_STORAGE_KEY)).toBe(false);
+  });
+
+  it.each([
+    ['missing', undefined, /world\.features/],
+    ['an array', [{ claimed: ['daily-1'] }], /world\.features/],
+    ['a string', 'quests', /world\.features/],
+    ['null', null, /world\.features/],
+    ['keyed by a non-feature id', { __proto__x: 1, 'Not An Id': {} }, /world\.features/],
+  ])(
+    'drops a blob whose features slot is %s, naming it as the reason',
+    async (_label, features, where) => {
+      const blob = JSON.parse(await savedWorld()) as { world: Record<string, unknown> };
+      blob.world.features = features;
+      storage.items.set(DEMO_STORAGE_KEY, JSON.stringify(blob));
+      await expectFresh(collectingPage());
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/shape is invalid/);
+      expect(warnings[0]).toMatch(where);
+      expect(storage.items.has(DEMO_STORAGE_KEY)).toBe(false);
+    },
+  );
+
+  it('drops a blob whose feature slot carries a __proto__ key, never polluting a prototype', async () => {
+    const raw = await savedWorld();
+    storage.items.set(
+      DEMO_STORAGE_KEY,
+      raw.replace('"features":{}', '"features":{"quests":{"__proto__":{"polluted":true}}}'),
+    );
+    await expectFresh(collectingPage());
+    expect(warnings).toEqual([expect.stringMatching(/feature quests state .*__proto__ key/)]);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
   it('drops a blob written by another sim snapshot version', async () => {

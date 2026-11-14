@@ -22,6 +22,7 @@ import {
 } from '../test/harness.ts';
 import { MOCK_RULES } from './rules.ts';
 import type { MockServer } from './server.ts';
+import { MockWorld } from './world.ts';
 
 let time: FakeTime;
 let server: MockServer;
@@ -278,6 +279,32 @@ describe('Demo Mode boot (hydrate=boot)', () => {
       body: { session: session(rebooted), x: 0, tick: simTick(), coinId: coin.id },
     });
     expect(later.coin.id).toBe(coin.id);
+  });
+
+  it('re-boots with a quest claim and its grant intact, and carries both through serialize and restore', async () => {
+    const state = await boot();
+    const drops = await dropBuffered(state, 3);
+    await settleUnposed(state);
+    const player = server.world.player(requirePlayerId(alice));
+    if (player === undefined) throw new Error('The mock world lost alice.');
+    server.world.grant(player, time.now(), 'season.tier', { pearls: 2 }, 'tier-1');
+    const book = { paidTiers: ['tier-1'], streak: { days: 1 } };
+    server.world.setFeatureState('season', book);
+    const paid = wallet();
+
+    await boot();
+    expect(entries('refund.table')).toHaveLength(drops.length);
+    expect(entries('season.tier')).toEqual([
+      expect.objectContaining({ delta: { pearls: 2 }, ref: 'tier-1' }),
+    ]);
+    expect(wallet().pearls).toBe(paid.pearls);
+    expect(server.world.featureState('season')).toEqual(book);
+    expectConserved();
+
+    const restored = MockWorld.restore(server.world.serialize());
+    expect(restored.featureState('season')).toEqual(book);
+    expect(restored.ledger).toEqual(server.world.ledger);
+    expect(restored.player(requirePlayerId(alice))?.wallet).toEqual(wallet());
   });
 
   it('starts Demo Mode afresh on reload: a new mock server knows nothing of the old player', async () => {
