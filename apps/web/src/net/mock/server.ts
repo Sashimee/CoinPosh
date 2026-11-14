@@ -33,6 +33,8 @@ import {
 } from '@coinposh/shared';
 import { fromBase64Url, randomBase62, sha256Hex, utf8Bytes } from '../encoding.ts';
 import { NetworkError, type ApiOperation } from '../errors.ts';
+import { featureRoutes, MOCK_FEATURES, type FeatureRoute } from '../features/registry.ts';
+import type { MockFeature, MockFeatureContext } from '../features/types.ts';
 import type { Transport, WireRequest, WireResponse } from '../wire.ts';
 import type { MockAccounts, MockIdentityProvider } from './account.ts';
 import {
@@ -76,6 +78,11 @@ export interface MockServerOptions {
   readonly persistMaxWaitMs?: number;
   /** Whose `pagehide` and `visibilitychange` flush the world at once. Defaults to `window`. */
   readonly lifecycle?: EventTarget | null;
+  /**
+   * The Demo feature modules whose handlers run in place of the built-in route of the same
+   * name. Defaults to {@link MOCK_FEATURES}; two features handling one endpoint throws here.
+   */
+  readonly features?: readonly MockFeature[];
 }
 
 /** The sessionStorage key the Demo account links live under, next to the world they point into. */
@@ -538,6 +545,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const now = options.now ?? (() => Date.now());
   const warn = options.onPersistWarning ?? consoleWarn;
   const storage = options.storage === undefined ? browserSessionStorage(warn) : options.storage;
+  const features: ReadonlyMap<MockOperation, FeatureRoute> = featureRoutes(
+    options.features ?? MOCK_FEATURES,
+  );
   const persistence = openPersistence(storage, warn, now);
   const world = persistence.world;
   const accessTokens = new Map<string, AccessRecord>();
@@ -792,6 +802,24 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   }
 
+  function featureContext(
+    feature: MockFeature,
+    player: MockPlayer,
+    at: number,
+  ): MockFeatureContext {
+    return {
+      player,
+      now: at,
+      state: () => world.featureState(feature.id),
+      setState: (value) => {
+        world.setFeatureState(feature.id, value);
+      },
+      grant: (reason, delta, ref = null) => {
+        world.grant(player, at, reason, delta, ref);
+      },
+    };
+  }
+
   /** Mirrors the server: replay only inside the window, never a bundle whose session was revoked since. */
   function replayRefresh(stored: StoredResponse, at: number): WireResponse {
     const age = at - stored.at;
@@ -900,18 +928,29 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           }
           query = parsed.data as StateQuery;
         }
-        result =
-          found.name === 'tableSnapshot'
-            ? world.snapshot(player, body as TableSnapshotRequest, at)
-            : await world.handle(
-                player,
-                found.name,
-                body as never,
-                params?.data as never,
-                at,
-                query,
-              );
-        world.touch(player, at);
+        const feature = features.get(found.name);
+        if (feature === undefined) {
+          result =
+            found.name === 'tableSnapshot'
+              ? world.snapshot(player, body as TableSnapshotRequest, at)
+              : await world.handle(
+                  player,
+                  found.name,
+                  body as never,
+                  params?.data as never,
+                  at,
+                  query,
+                );
+          world.touch(player, at);
+        } else {
+          // No touch: only the world's routes record a silence before marking the player
+          // active, so a feature answered first after one must not erase the offline earnings.
+          result = await feature.handler(featureContext(feature.feature, player, at), {
+            body: body as never,
+            params: params?.data as never,
+            query,
+          });
+        }
       }
       const checked = found.endpoint.response.safeParse(result);
       if (!checked.success) {
