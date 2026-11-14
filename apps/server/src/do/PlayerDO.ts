@@ -38,6 +38,8 @@ import {
   type NudgeRequest,
   type NudgeResponse,
   type PlayerId,
+  type SafeOpenRequest,
+  type SafeOpenResponse,
   TableSessionIdSchema,
   VenueIdSchema,
   CURRENCIES,
@@ -66,6 +68,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { randomBase62, randomBytes, sha256Hex } from '../crypto.ts';
 import type { Env } from '../env.ts';
 import { ApiFailure } from '../http/errors.ts';
+import { FairSeeds } from '../rng/fair.ts';
 import {
   Entities,
   newTableSessionId,
@@ -105,6 +108,7 @@ import {
   UPGRADE_TX_KIND,
   type UpgradeHost,
 } from '../routes/upgrades.ts';
+import { countLockedSafes, openSafe, readSafes, type SafeHost } from '../routes/safes.ts';
 import { migrate } from './schema.ts';
 import {
   CHUTE_POSE,
@@ -168,6 +172,8 @@ export interface ConservationReport {
   readonly tableValue: number;
   readonly tableCrates: number;
   readonly ledgerCratesOnTable: number;
+  readonly safesHeld: number;
+  readonly ledgerSafesHeld: number;
   /** Every currency's wallet balance equals its ledger legs, and its legs sum to zero. */
   readonly currenciesConserved: boolean;
   readonly conserved: boolean;
@@ -216,15 +222,17 @@ function settleLegs(
   ];
 }
 
-export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendHost {
+export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendHost, SafeHost {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
+  private readonly fair: FairSeeds;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.entities = new Entities(this.sql);
     migrate(this.sql, (run) => ctx.storage.transactionSync(run));
+    this.fair = new FairSeeds(this.sql);
   }
 
   /** Creates the table and starting grant once; calling it again is a no-op. */
@@ -313,13 +321,15 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
         lifetimeBullion: lifetimeBullion(this.sql),
       },
       table: { ...this.snapshot(), session: this.tableSession(), layout },
-      inventory: { charms: [], safes: [], scratchCards: [] },
+      inventory: { charms: [], safes: readSafes(this.sql), scratchCards: [] },
       offline: null,
-      fair: {
-        serverSeedHash: this.requireMeta('fair_server_seed_hash'),
-        clientSeed: this.requireMeta('fair_client_seed'),
-        nonce: Number(this.requireMeta('fair_nonce')),
-      },
+      fair: this.fairSeedChained()
+        ? this.fair.active()
+        : {
+            serverSeedHash: this.requireMeta('fair_server_seed_hash'),
+            clientSeed: this.requireMeta('fair_client_seed'),
+            nonce: Number(this.requireMeta('fair_nonce')),
+          },
       familyOffice: readFamilyOfficeLevels(this.sql),
     };
     return { ok: true, replayed: false, body: StateResponseSchema.parse(state) };
@@ -418,6 +428,21 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
     });
   }
 
+  /**
+   * Opens a safe the player holds (T-2.01): by Key at any time, by timer once the server clock
+   * reaches its `unlocksAt`. The contents are a provably fair roll on the player's seed chain;
+   * the coins they pay top the reserved buffer up so the returned wallet is final.
+   */
+  async openSafe(command: Command<SafeOpenRequest>): Promise<DoResult<SafeOpenResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const opened = openSafe(this.sql, this.fair, command.body, context);
+      this.reserveBuffer(context);
+      return { ...opened, wallet: readWallet(this.sql) };
+    });
+  }
+
   /** Double-entry totals next to the entity tables they must agree with. */
   conservation(): ConservationReport {
     const wallet = readWallet(this.sql);
@@ -442,11 +467,15 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
       .reduce((total, coin) => total + coin.value, 0);
     const tableCrates = this.entities.cratesOnTable().length;
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
+    const safesHeld = countLockedSafes(this.sql);
+    const ledgerSafesHeld = ledgerBalance(this.sql, 'inventory', 'safe');
     const conserved =
       ledger.wallet === walletCoins &&
       ledger.buffer === bufferPaid &&
       ledger.table === tableValue &&
       ledgerCratesOnTable === tableCrates &&
+      ledgerSafesHeld === safesHeld &&
+      ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, 'safe'), 0) === 0 &&
       ledger.wallet + ledger.buffer + ledger.table + ledger.house + ledger.mint === 0 &&
       currenciesConserved;
     return {
@@ -457,6 +486,8 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
       tableValue,
       tableCrates,
       ledgerCratesOnTable,
+      safesHeld,
+      ledgerSafesHeld,
       currenciesConserved,
       conserved,
     };
@@ -1217,6 +1248,27 @@ export class PlayerDO extends DurableObject<Env> implements UpgradeHost, AscendH
       legs.push(...settleLegs('table', 'crate', 1, crate.id));
     }
     return legs;
+  }
+
+  /**
+   * Rolls run on the seed chain in `fair_seeds`. A player's first roll starts it from the
+   * commitment sign-up stored in meta and already showed in `GET /v1/state`, so the hash and
+   * client seed the player saw are the ones that roll.
+   */
+  private adoptFairSeed(now: EpochMs): void {
+    this.fair.adopt(
+      {
+        serverSeed: this.requireMeta('fair_server_seed'),
+        serverSeedHash: this.requireMeta('fair_server_seed_hash'),
+        clientSeed: this.requireMeta('fair_client_seed'),
+        nonce: Number(this.requireMeta('fair_nonce')),
+      },
+      now,
+    );
+  }
+
+  private fairSeedChained(): boolean {
+    return this.sql.exec('SELECT 1 FROM fair_seeds LIMIT 1').toArray().length > 0;
   }
 
   private venueId(): VenueId {

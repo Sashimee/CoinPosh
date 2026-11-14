@@ -637,7 +637,7 @@ async function bootScene(
     const simModuleLoaded = import('./game/simWorker/index.ts');
     // The sim lays the server's table, so it waits for hydration; the GPU need not.
     const simStarted = Promise.all([simModuleLoaded, openingTable(hydrated)]).then(
-      ([simModule, layout]) => startSim(simModule, layout, run.scope),
+      ([simModule, layout]) => startSim(simModule, layout, run.scope, { held: true }),
     );
     pending.push(simStarted);
     // A failed start is already logged and kept in `bridge.failure`; the mark only times success.
@@ -724,6 +724,7 @@ async function bootScene(
   if (!boot || !layout || bridge.failure) {
     revealVenue();
     attachTable(stage, venue, bridge);
+    releaseHeldSim(bridge);
     return;
   }
   stopEarlyTaps();
@@ -759,7 +760,6 @@ async function bootScene(
       },
       scope,
     );
-    probe.playable = true;
     return systems;
   };
 
@@ -798,6 +798,7 @@ async function bootScene(
     view.use(next.bridge, next.bridge);
     adoptState(state);
     view.use(play(next, state, laid), next.bridge);
+    probe.playable = true;
   };
 
   /**
@@ -825,6 +826,14 @@ async function bootScene(
   revealVenue();
   const view = attachTable(stage, venue, bridge);
   view.use(systems, bridge);
+  // The venue's and the coins' first frames link their shaders, seconds on a software GPU. The
+  // sim waits them out at the tick it was laid at, so the table under the poster is the one
+  // scripts/capture-poster.ts drew on every device, and play starts once the table is on screen.
+  await coinsDrawn(stage, bridge);
+  // A software GPU can finish that link only as the next frame waits on it.
+  await frameDrawn(stage);
+  releaseHeldSim(bridge);
+  if (!probe.superseded) probe.playable = true;
   markBoot('playable');
 
   const relay = createTableRelay<Laid>({
@@ -849,6 +858,7 @@ async function bootScene(
       const { sim: held, layout: heldLayout } = playing;
       if (booted) adoptState(state);
       view.use(play(held, state, { ...heldLayout, crates: [] }), held.bridge);
+      probe.playable = true;
     },
     onError: (error) => {
       console.error(
@@ -1084,6 +1094,26 @@ function holdEarlyEvents(bridge: SimBridge, scope: Scope): () => readonly SimEve
     stop();
     return kept.splice(0);
   };
+}
+
+/** A hidden page keeps the sim paused; the bridge resumes it when the page shows. */
+function releaseHeldSim(bridge: SimBridge): void {
+  if (document.visibilityState !== 'hidden') bridge.resume();
+}
+
+/**
+ * Resolves once a frame has drawn the sim's coins, the sync before it having had a sim frame to
+ * draw, or once the sim has failed and there is nothing to wait for.
+ */
+function coinsDrawn(stage: Stage, bridge: SimBridge): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = stage.onFrame(() => {
+      if (bridge.stats.frames === 0 && !bridge.failure) return;
+      stop();
+      resolve();
+    });
+    teardown.push(stop);
+  });
 }
 
 /** Resolves once the next frame has been drawn: promise callbacks run after the frame callback. */
@@ -1624,16 +1654,21 @@ interface StartedSim {
   readonly takeEarlyEvents: () => readonly SimEventBatch[];
 }
 
-/** Started alongside the renderer, so the worker loads Rapier while the GPU initialises. */
+/**
+ * Started alongside the renderer, so the worker loads Rapier while the GPU initialises. With
+ * `held`, the sim stays at its laid tick until `releaseHeldSim`.
+ */
 function startSim(
   simModule: typeof SimWorkerModule,
   layout: OpeningLayout | null,
   scope: Scope,
+  { held = false }: { readonly held?: boolean } = {},
 ): StartedSim {
   const bridge = simModule.createSimBridge({
     seed: TABLE_SEED,
     ...(layout ? { restore: layout.restore } : {}),
   });
+  if (held) bridge.pause();
   probe.bridge = bridge;
   if (layout) probe.restored = restoreCounts(layout, (probe.restored?.boots ?? 0) + 1);
   markBoot('sim-start');
