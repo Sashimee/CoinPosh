@@ -520,6 +520,8 @@ export class MockWorld {
    * Never stored: after a reload every open that was in flight died with the page.
    */
   readonly #claimedThisPage = new Set<CrateId>();
+  /** Table snapshots accepted per player in this page life; never stored, like the claims above. */
+  readonly #acceptedSnapshots = new Map<PlayerId, number>();
 
   /**
    * A seeded Demo page replays the same `crypto` stream after every reload, so ids minted in a
@@ -639,6 +641,11 @@ export class MockWorld {
   /** What a player's evicted ledger entries add up to: replaying the ledger starts here. */
   ledgerCheckpoint(id: PlayerId): Wallet {
     return { ...(this.#checkpoints.get(id) ?? emptyWallet()) };
+  }
+
+  /** How many table snapshots this page life accepted from the player, for the Demo test handle. */
+  acceptedSnapshots(id: PlayerId): number {
+    return this.#acceptedSnapshots.get(id) ?? 0;
   }
 
   player(id: PlayerId): MockPlayer | undefined {
@@ -1203,6 +1210,7 @@ export class MockWorld {
     player.snapshotFlags['snapshot.foreign'] += foreign;
     player.snapshotFlags['snapshot.teleport'] += teleport;
     player.snapshotFlags['snapshot.implausible'] += judged.dropped + implausibleCrates;
+    this.#acceptedSnapshots.set(player.id, this.acceptedSnapshots(player.id) + 1);
     return { seq: body.seq, stored: accepted.size + acceptedCrates.size, ignored };
   }
 
@@ -1218,10 +1226,22 @@ export class MockWorld {
     return session;
   }
 
-  /** A table op naming another session leaves the mark alone. */
-  #raiseSessionTick(player: MockPlayer, session: TableSessionId | undefined, tick: number): void {
+  /**
+   * The table's lease, as the server's requireLease: a drop or claim from a session another
+   * boot replaced is refused before any value moves. Unlike the server, an op naming no
+   * session still passes, because the mock's own suites and the outbox tests drive the table
+   * without booting it first.
+   */
+  #requireLease(player: MockPlayer, session: TableSessionId | undefined): void {
+    if (session === undefined || session === player.tableSession) return;
+    throw new MockFailure(
+      'session_superseded',
+      'Another tab or device has booted this table since. Reload to play here.',
+    );
+  }
+
+  #raiseSessionTick(player: MockPlayer, tick: number): void {
     if (player.tableSession === null) return;
-    if (session !== undefined && session !== player.tableSession) return;
     player.tableSessionMaxTick = Math.max(player.tableSessionMaxTick, tick);
   }
 
@@ -1386,6 +1406,7 @@ export class MockWorld {
     },
 
     tableDrop: (player, body, _params, now) => {
+      this.#requireLease(player, body.session);
       this.#checkActionTick(player, 'Drop', body.tick, now);
       if (
         player.lastDropTick !== null &&
@@ -1417,7 +1438,7 @@ export class MockWorld {
       }
       this.#record(player, coin.id).dropsBehind = 1;
       player.lastDropTick = body.tick;
-      this.#raiseSessionTick(player, body.session, body.tick);
+      this.#raiseSessionTick(player, body.tick);
       player.drops += 1;
       const spawnedCrates: TableCrate[] = [];
       if (player.drops > player.dropHighWater) {
@@ -1447,9 +1468,10 @@ export class MockWorld {
     },
 
     tableClaims: (player, body, _params, now) => {
+      this.#requireLease(player, body.session);
       const results = body.claims.map((claim) => {
         const result = this.#claim(player, claim, now);
-        if (result.status === 'accepted') this.#raiseSessionTick(player, body.session, claim.tick);
+        if (result.status === 'accepted') this.#raiseSessionTick(player, claim.tick);
         return result;
       });
       return { results, wallet: player.wallet };

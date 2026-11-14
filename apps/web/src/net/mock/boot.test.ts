@@ -1,5 +1,12 @@
 import { crateSpawn } from '@coinposh/economy';
-import type { DropResponse, PoseTuple, StateResponse, TableSessionId } from '@coinposh/shared';
+import type {
+  Claim,
+  DropResponse,
+  PlayerId,
+  PoseTuple,
+  StateResponse,
+  TableSessionId,
+} from '@coinposh/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ApiRequestError } from '../errors.ts';
 import { newIdempotencyKey } from '../request.ts';
@@ -227,5 +234,73 @@ describe('Demo Mode boot (hydrate=boot)', () => {
     expect(reloaded.ledger().every((entry) => entry.playerId === requirePlayerId(fresh))).toBe(
       true,
     );
+  });
+});
+
+describe('Demo Mode table lease (bootElsewhere)', () => {
+  async function refusal(run: Promise<unknown>): Promise<string | null> {
+    return run.then(
+      () => null,
+      (error: unknown) => (error instanceof ApiRequestError ? error.code : String(error)),
+    );
+  }
+
+  it('refuses a drop from the session a second tab replaced, and moves no value', async () => {
+    const state = await boot();
+    await dropBuffered(state, 1);
+    await server.bootElsewhere(requirePlayerId(alice));
+    const before = wallet();
+    const ledger = server.ledger().length;
+    await expect(refusal(dropBuffered(state, 1))).resolves.toBe('session_superseded');
+    time.advance(100);
+    await expect(
+      refusal(
+        alice.client.call('tableDrop', {
+          body: { session: session(state), x: 0, tick: simTick() },
+        }),
+      ),
+    ).resolves.toBe('session_superseded');
+    expect(wallet()).toEqual(before);
+    expect(server.ledger()).toHaveLength(ledger);
+    expectConserved();
+  });
+
+  it('refuses a claim from the replaced session and pays it to the new one', async () => {
+    const state = await boot();
+    const [a, b, c] = state.table.coins;
+    if (a === undefined || b === undefined || c === undefined) throw new Error('No opening heap.');
+    await server.bootElsewhere(requirePlayerId(alice));
+    const current = server.world.player(requirePlayerId(alice))?.tableSession;
+    if (current === null || current === undefined) throw new Error('The boot left no session.');
+    expect(current).not.toBe(session(state));
+    time.advance(MOCK_RULES.minFusionMsAfterSpawn);
+    const claims: Claim[] = [{ kind: 'fusion', coinIds: [a.id, b.id, c.id], tick: simTick() }];
+    const before = wallet();
+    const ledger = server.ledger().length;
+    await expect(
+      refusal(alice.client.call('tableClaims', { body: { session: session(state), claims } })),
+    ).resolves.toBe('session_superseded');
+    expect(wallet()).toEqual(before);
+    expect(server.ledger()).toHaveLength(ledger);
+    const { results } = await alice.client.call('tableClaims', {
+      body: { session: current, claims },
+    });
+    expect(results[0]?.status).toBe('accepted');
+    expectConserved();
+  });
+
+  it('starts a new table session on every call', async () => {
+    const state = await boot();
+    await server.bootElsewhere(requirePlayerId(alice));
+    const once = server.world.player(requirePlayerId(alice))?.tableSession;
+    await server.bootElsewhere(requirePlayerId(alice));
+    expect(once).not.toBe(session(state));
+    expect(server.world.player(requirePlayerId(alice))?.tableSession).not.toBe(once);
+  });
+
+  it('rejects an unknown player and keeps serving requests after it', async () => {
+    const state = await boot();
+    await expect(server.bootElsewhere('p_nobody' as PlayerId)).rejects.toThrow(/no player/);
+    await expect(dropBuffered(state, 1)).resolves.toHaveLength(1);
   });
 });
