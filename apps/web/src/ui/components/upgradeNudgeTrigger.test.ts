@@ -199,6 +199,27 @@ describe('first-upgrade headroom', () => {
     expect(nudge.retired).toBe(false);
   });
 
+  it('never says ready while the drop buffer is what lifts the Vault over the price', () => {
+    const nudge = fresh();
+    const held = snapshot({ coins: price + 4, spendableCoins: price - 5 });
+    for (let at = 0; at <= NUDGE_STEADY_MS * 3; at += 100) {
+      expect(nudge.evaluate(held, at), `at ${String(at)} ms`).toBe(null);
+    }
+    expect(nudge.wakeAt).toBe(null);
+    expect(nudge.retired).toBe(false);
+  });
+
+  it('times the headroom on spendable coins, however much the buffer adds on top', () => {
+    const nudge = fresh();
+    const shown = roomy + 40;
+    expect(nudge.evaluate(snapshot({ coins: shown, spendableCoins: roomy - 1 }), 0)).toBe(null);
+    expect(nudge.wakeAt).toBe(NUDGE_STEADY_MS);
+    expect(nudge.evaluate(snapshot({ coins: shown, spendableCoins: roomy }), 100)).toBe(null);
+    expect(
+      nudge.evaluate(snapshot({ coins: shown, spendableCoins: roomy }), 100 + NUDGE_CONFIRM_MS),
+    ).toBe(cheapestCoinLine?.id);
+  });
+
   it('restarts the confirm beat when the Vault dips under the headroom', () => {
     const nudge = fresh();
     expect(nudge.evaluate(snapshot({ coins: roomy }), 0)).toBe(null);
@@ -312,6 +333,19 @@ describe('nudgeStillAffordable', () => {
   it('holds while the wallet covers the next level, and lapses one coin under it', () => {
     expect(nudgeStillAffordable(upgradeLines, id, snapshot({ coins: price }))).toBe(true);
     expect(nudgeStillAffordable(upgradeLines, id, snapshot({ coins: price - 1 }))).toBe(false);
+  });
+
+  it('lapses when only coins still in the drop rail cover the price', () => {
+    expect(
+      nudgeStillAffordable(
+        upgradeLines,
+        id,
+        snapshot({ coins: price + 4, spendableCoins: price - 5 }),
+      ),
+    ).toBe(false);
+    expect(
+      nudgeStillAffordable(upgradeLines, id, snapshot({ coins: price + 4, spendableCoins: price })),
+    ).toBe(true);
   });
 
   it('prices the level the profile is on, not level 0', () => {

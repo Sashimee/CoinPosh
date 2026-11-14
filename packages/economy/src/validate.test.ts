@@ -15,6 +15,7 @@ import {
   type RateEnvelopeConfig,
   type RateEnvelopeMetricDef,
   type RateEnvelopeMetricId,
+  type SafeTypeDef,
 } from './types.ts';
 
 function withOdds(source: DropTableDef['source'], odds: OddsTable): EconomyConfig {
@@ -430,5 +431,98 @@ describe('validateEconomyConfig: config keys', () => {
       currencies: [{ ...currency, sinks: ['Drop'] }, ...currencies],
     } as unknown as EconomyConfig;
     expect(keyIssues(broken)).toEqual(['currencies[0].sinks[0]', 'venues[0].id', 'album[0].id']);
+  });
+});
+
+describe('validateEconomyConfig: safes', () => {
+  const [gold] = economyConfig.safes.types;
+  const withTypes = (types: readonly SafeTypeDef[]): EconomyConfig => ({
+    ...economyConfig,
+    safes: { ...economyConfig.safes, types },
+  });
+  const withGold = (patch: Partial<SafeTypeDef>): EconomyConfig =>
+    withTypes([{ ...gold, ...patch }]);
+  const withSafeChance = (rarity: RarityId, safeChance: number): EconomyConfig => ({
+    ...economyConfig,
+    crateRewards: {
+      ...economyConfig.crateRewards,
+      [rarity]: { ...economyConfig.crateRewards[rarity], safeChance },
+    },
+  });
+
+  it('rejects a safe chance off the odds scale', () => {
+    for (const chance of [-1, 0.5, ODDS_SCALE + 1, Number.NaN]) {
+      expect(validateEconomyConfig(withSafeChance('heirloom', chance))).toContainEqual({
+        path: 'crateRewards.heirloom.safeChance',
+        message: `must be an integer in [0, ${ODDS_SCALE}]`,
+      });
+    }
+  });
+
+  it('rejects a rarer crate that is less likely to hold a safe', () => {
+    expect(validateEconomyConfig(withSafeChance('legendary', 2_000))).toEqual([
+      {
+        path: 'crateRewards.legendary.safeChance',
+        message: 'a rarer crate must not be less likely to hold a safe',
+      },
+    ]);
+  });
+
+  it('rejects an empty catalog and a crate drop that names no safe type', () => {
+    expect(paths(withTypes([]))).toEqual(['safes.types', 'safes.crateDrop.type']);
+  });
+
+  it('rejects a duplicate safe type', () => {
+    expect(validateEconomyConfig(withTypes([gold, gold]))).toEqual([
+      { path: 'safes.types[1] (gold)', message: 'duplicate id' },
+    ]);
+  });
+
+  it('rejects contents that roll on a missing table or on the table that drops safes', () => {
+    const dropTables = economyConfig.dropTables.filter((t) => t.source !== 'goldSafe');
+    expect(validateEconomyConfig({ ...economyConfig, dropTables })).toContainEqual({
+      path: 'safes.types[0] (gold)',
+      message: 'dropSource "goldSafe" has no drop table',
+    });
+    expect(validateEconomyConfig(withGold({ dropSource: 'vaultCrate' }))).toEqual([
+      {
+        path: 'safes.types[0] (gold)',
+        message: 'contents must not roll on "vaultCrate", the table that drops safes',
+      },
+    ]);
+  });
+
+  it('rejects contents that roll on a table without pity', () => {
+    const dropTables = economyConfig.dropTables.map((t) =>
+      t.source === 'goldSafe' ? { ...t, pity: false } : t,
+    );
+    expect(validateEconomyConfig({ ...economyConfig, dropTables })).toContainEqual({
+      path: 'safes.types[0] (gold)',
+      message: 'dropSource "goldSafe" must carry pity counters',
+    });
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])('rejects %s keys or unlock seconds per safe', (bad) => {
+    expect(validateEconomyConfig(withGold({ keysPerSafe: bad }))).toEqual([
+      {
+        path: 'safes.types[0] (gold)',
+        message: `keysPerSafe must be a positive integer, got ${bad}`,
+      },
+    ]);
+    expect(validateEconomyConfig(withGold({ unlockSeconds: bad }))).toEqual([
+      {
+        path: 'safes.types[0] (gold)',
+        message: `unlockSeconds must be a positive integer, got ${bad}`,
+      },
+    ]);
+  });
+
+  it('rejects a crate drop from a source with no table', () => {
+    const dropTables = economyConfig.dropTables.filter((t) => t.source !== 'vaultCrate');
+    expect(paths({ ...economyConfig, dropTables })).toContain('safes.crateDrop.source');
+  });
+
+  it('rejects a safe type id outside the shared key format', () => {
+    expect(paths(withTypes([{ ...gold, id: 'Gold Safe' }]))).toContain('safes.types[0].id');
   });
 });

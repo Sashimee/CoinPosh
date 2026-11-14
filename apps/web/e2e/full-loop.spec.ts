@@ -1,6 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
-import { dropBufferTarget, economyConfig, upgradeCost, upgradeLines } from '@coinposh/economy';
-import { MOCK_RULES } from '../src/net/mock/rules.ts';
+import { economyConfig, upgradeCost, upgradeLines } from '@coinposh/economy';
 import { bootGame, expect, probe, type Probe, refusedTotal, reviewShot, test } from './fixtures.ts';
 
 const SETTINGS_KEY = 'coinposh.settings.v1';
@@ -33,16 +32,7 @@ const COLLECT_SETTLES_MS = 3_000;
 const CHEAPEST_COIN_LINE = upgradeLines
   .filter((line) => line.currency === 'coins')
   .reduce((best, line) => (upgradeCost(line, 0) < upgradeCost(best, 0) ? line : best));
-
-/**
- * The Vault plaque and the upgrade rows count the pre-minted drop buffer, which the server
- * cannot spend (#94), so a BUY lit at the bare price can be refused as insufficient funds.
- * Until #94 ships, the run buys once the Vault covers the price with a full copper buffer
- * on top, so the wallet alone pays it. Drop this margin when #94 is fixed.
- */
-const SPENDABLE_FIRST_BUY =
-  upgradeCost(CHEAPEST_COIN_LINE, 0) +
-  dropBufferTarget(MOCK_RULES.bufferSize, {}) * economyConfig.coinTiers[0].value;
+const FIRST_UPGRADE_COST = upgradeCost(CHEAPEST_COIN_LINE, 0);
 
 /**
  * Where successive taps lift, as fractions of the stage width. A player sweeps the rail rather
@@ -309,21 +299,28 @@ test.describe('full loop in Demo Mode at 390x844 (T-1.18)', () => {
       // Drops alone spawn crates, so once the table holds none and the taps stop, no crate
       // reveal can cover the sheet or pay out mid-purchase and skew the Vault check. A player
       // saving up stops tapping once the price is in hand and lets the pusher clear the table.
+      // The row stays in the DOM while the sheet is closed, and lights only once the server can
+      // spend the price: coins still in the drop rail swell the Vault but never light it.
+      const cheapestRow = page.locator(`.cp-upgrade[data-line="${CHEAPEST_COIN_LINE.id}"]`);
+      const rowLit = async (): Promise<boolean> =>
+        /\bis-affordable\b/.test((await cheapestRow.getAttribute('class')) ?? '');
       await playUntil(
         page,
         reveal,
         async () => {
           const { vault, probe: p } = await snapshot(page);
           return (
-            vault >= SPENDABLE_FIRST_BUY && p.counts.cratesSpawned === p.counts.cratesCollected
+            vault >= FIRST_UPGRADE_COST &&
+            p.counts.cratesSpawned === p.counts.cratesCollected &&
+            (await rowLit())
           );
         },
         Date.now() + AFFORD_WITHIN_MS,
         async () => {
           const { vault, probe: p } = await snapshot(page);
-          return `No crate-free table with ${String(SPENDABLE_FIRST_BUY)} in the Vault within ${String(AFFORD_WITHIN_MS)} ms of play: Vault ${String(vault)}, ${JSON.stringify(p.counts)}`;
+          return `No crate-free table with ${CHEAPEST_COIN_LINE.id} lit at ${String(FIRST_UPGRADE_COST)} within ${String(AFFORD_WITHIN_MS)} ms of play: Vault ${String(vault)}, lit ${String(await rowLit())}, ${JSON.stringify(p.counts)}`;
         },
-        (s) => vaultLow(s) || s.vault >= SPENDABLE_FIRST_BUY,
+        (s) => vaultLow(s) || s.vault >= FIRST_UPGRADE_COST,
       );
       await expect(badge).toBeVisible();
       await reviewShot(page, 'full-loop-04-upgrade-ready');
@@ -334,7 +331,7 @@ test.describe('full loop in Demo Mode at 390x844 (T-1.18)', () => {
       const bought = sheet.locator(`.cp-upgrade[data-line="${lineId}"]`);
       await expect(bought, 'the cheapest coin line is lit').toHaveClass(/is-affordable/);
       await expect(bought.locator('.cp-upgrade-level')).toHaveText('Lv 0');
-      const cost = upgradeCost(CHEAPEST_COIN_LINE, 0);
+      const cost = FIRST_UPGRADE_COST;
       const before = await snapshot(page);
       expect(before.vault, `the Vault covers ${lineId} at ${String(cost)}`).toBeGreaterThanOrEqual(
         cost,

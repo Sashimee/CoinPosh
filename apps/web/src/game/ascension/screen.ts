@@ -1,18 +1,27 @@
 import './ascension.css';
 import type { AscendResponse, VenueId } from '@coinposh/shared';
 import type { UiApp, UiAudio } from '../../app/index.ts';
+import { upgradeRow } from '../../app/model.ts';
 import type { ImpactEvent } from '../../audio/index.ts';
-import { formatBalance, formatInteger, type InterpolationValues } from '../../i18n/index.ts';
+import {
+  formatBalance,
+  formatInteger,
+  type InterpolationValues,
+  type Language,
+} from '../../i18n/index.ts';
 import { makePressable } from '../../ui/components/pressable.ts';
 import { feedback, type UiContext } from '../../ui/context.ts';
-import { h, listen, restartAnimation } from '../../ui/dom.ts';
+import { fromMarkup, h, listen, restartAnimation } from '../../ui/dom.ts';
 import { icon } from '../../ui/icons.ts';
 import { Localizer } from '../../ui/localize.ts';
 import { schedule } from '../../ui/motion/loop.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
+import { sharedSheetFocus } from '../../ui/panels/sheetFocus.ts';
+import { upgradeRowCopy } from '../../ui/panels/upgradesPanel.ts';
 import type { AscensionController } from './controller.ts';
 import {
   ascensionKey,
+  lineDescriptionKey,
   lineNameKey,
   registerAscensionStrings,
   rejectionKey,
@@ -21,6 +30,7 @@ import {
 import {
   ascensionProgress,
   canRequestAscension,
+  FAMILY_OFFICE_LINES,
   familyOfficeRows,
   holdFraction,
   holdTick,
@@ -37,6 +47,53 @@ const PURCHASE_CHIME: readonly ImpactEvent[] = [
 const RING_RADIUS = 52;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const STATUS_ID = 'cp-ascension-status';
+const LOCK_ICON =
+  '<svg class="cp-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="10.5" width="13" height="9.5" rx="2.2" fill="currentColor" fill-opacity=".18"/><path d="M8.6 10.5V8.2a3.4 3.4 0 0 1 6.8 0v2.3"/><path d="M12 14.2v2.2"/></svg>';
+
+type Translate = (key: string, values?: InterpolationValues) => string;
+
+export interface FamilyOfficeRowCopy {
+  readonly name: string;
+  readonly description: string;
+  readonly level: string;
+  /** The current effect, then the next level's while one is left, as the Upgrades sheet reads it. */
+  readonly effect: string;
+  /** The next level's Gold Bar price, formatted; null once the line is maxed. */
+  readonly price: string | null;
+  readonly buyLabel: string;
+}
+
+/** Every string a Family Office row shows, with effects from the same economy formula as the server. */
+export function familyOfficeRowCopy(
+  t: Translate,
+  row: FamilyOfficeRow,
+  language: Language,
+): FamilyOfficeRowCopy {
+  const line = FAMILY_OFFICE_LINES.find((candidate) => candidate.id === row.lineId);
+  if (line === undefined) {
+    throw new RangeError(`Economy config has no Family Office line "${row.lineId}"`);
+  }
+  const own = (key: Parameters<typeof ascensionKey>[0], values?: InterpolationValues) =>
+    t(ascensionKey(key), values);
+  const name = t(lineNameKey(row.lineId));
+  const view = upgradeRow(line, row.level, { coins: 0, goldBars: 0 });
+  return {
+    name,
+    description: t(lineDescriptionKey(row.lineId)),
+    level: own('level', { level: formatInteger(row.level, language) }),
+    effect: upgradeRowCopy(t, view, language, false).effect,
+    price: row.cost === null ? null : formatBalance(row.cost, language),
+    buyLabel:
+      row.cost === null
+        ? own('maxedLabel', { line: name })
+        : own('buyLabel', {
+            level: formatInteger(row.level + 1, language),
+            line: name,
+            price: formatInteger(row.cost, language),
+          }),
+  };
+}
 
 export interface AscensionScreenOptions {
   readonly ui: Pick<UiApp, 'store' | 'bus' | 'i18n' | 'setWallet'>;
@@ -95,6 +152,8 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   const venueName = (id: VenueId) => ui.i18n.t(venueKey(id));
   const int = (value: number) => formatInteger(value, ui.i18n.language);
   const play = (sound: ImpactEvent) => options.audio()?.playImpact(sound);
+  const opener = document.activeElement;
+  const trigger = opener instanceof HTMLElement && opener !== document.body ? opener : null;
   let progress = ascensionProgress(venueId, options.bullion);
 
   const title = h('h2', { class: 'cp-ascension-title', attrs: { id: 'cp-ascension-title' } });
@@ -113,7 +172,6 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   const fill = ring('cp-ascension-ring-fill');
   const hold = ring('cp-ascension-ring-hold');
   svg.append(track, fill, hold);
-  setRing(hold, 0);
   const laurel = h('span', { class: 'cp-ascension-laurel' }, icon('laurel'));
   const dial = h('div', { class: 'cp-ascension-dial' }, svg, laurel);
   const progressText = h('p', { class: 'cp-ascension-progress' });
@@ -140,16 +198,29 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   );
   const next = h('p', { class: 'cp-ascension-next' });
 
-  const holdLabel = h('span');
+  const holdLabel = h('span', { class: 'cp-ascension-hold-label' });
   const holdButton = h(
     'button',
     {
       class: 'cp-buy cp-ascension-hold',
       attrs: { type: 'button', 'data-testid': 'ascension-hold' },
     },
+    h(
+      'span',
+      { class: 'cp-ascension-hold-track', attrs: { 'aria-hidden': 'true' } },
+      h('span', { class: 'cp-ascension-hold-fill' }),
+    ),
+    h('span', { class: 'cp-ascension-hold-lock' }, fromMarkup(LOCK_ICON)),
     holdLabel,
   );
-  const status = h('p', { class: 'cp-ascension-status', attrs: { 'aria-live': 'polite' } });
+  const setHold = (fraction: number) => {
+    setRing(hold, fraction);
+    holdButton.style.setProperty('--cp-ascension-hold-progress', fraction.toFixed(4));
+  };
+  const status = h('p', {
+    class: 'cp-ascension-status',
+    attrs: { id: STATUS_ID, 'aria-live': 'polite', 'data-testid': 'ascension-status' },
+  });
 
   const officeTitle = h('h3', { class: 'cp-ascension-office-title' });
   const officeSubtitle = h('p', { class: 'cp-ascension-office-subtitle' });
@@ -197,6 +268,7 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   ctx.own(loc.attr(close, 'aria-label', () => t('close')));
   const renderProgress = () => {
     setRing(fill, progress.fraction);
+    holdButton.style.setProperty('--cp-ascension-hold-preview', progress.fraction.toFixed(4));
     progressText.textContent =
       progress.bullion === null
         ? t('progressUnknown')
@@ -235,6 +307,8 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
       state === 'idle' || state === 'holding' ? 'false' : 'true',
     );
     holdButton.dataset.state = state;
+    if (state === 'blocked') holdButton.setAttribute('aria-describedby', STATUS_ID);
+    else holdButton.removeAttribute('aria-describedby');
     holdLabel.textContent =
       state === 'holding' ? t('holding') : state === 'sending' ? t('sending') : t('hold');
     if (state === 'blocked' && status.textContent === '') {
@@ -245,6 +319,7 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
       status.textContent = blockedHint;
     }
   };
+  setHold(0);
   ctx.own(loc.bind(renderHold));
 
   const say = (message: string) => {
@@ -271,7 +346,7 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     restartAnimation(holdButton, 'is-denied');
     state = outcome.reason === 'notReady' || outcome.reason === 'locked' ? 'blocked' : 'idle';
     heldMs = 0;
-    setRing(hold, 0);
+    setHold(0);
     renderHold();
     if (outcome.reason === 'stale') options.refresh?.();
   };
@@ -283,7 +358,7 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     state = 'idle';
     heldMs = 0;
     lastTick = 0;
-    setRing(hold, 0);
+    setHold(0);
     root.classList.remove('is-holding');
     renderHold();
   };
@@ -305,7 +380,7 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
       if (state !== 'holding') return false;
       heldMs += dt * 1000;
       const fraction = holdFraction(heldMs);
-      setRing(hold, fraction);
+      setHold(fraction);
       const tick = holdTick(fraction);
       if (tick > lastTick) {
         lastTick = tick;
@@ -353,6 +428,12 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   const buildRow = (lineId: string) => {
     const name = h('span', { class: 'cp-ascension-office-name' });
     const level = h('span', { class: 'cp-ascension-office-level' });
+    const description = h('span', { class: 'cp-ascension-office-description' });
+    const effect = h('span', {
+      class: 'cp-ascension-office-effect',
+      attrs: { 'data-testid': `family-office-effect-${lineId}` },
+    });
+    const goldBar = icon('goldBar');
     const price = h('span', { class: 'cp-ascension-office-price' });
     const buy = h(
       'button',
@@ -360,37 +441,41 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
         class: 'cp-buy cp-ascension-office-buy',
         attrs: { type: 'button', 'data-testid': `family-office-buy-${lineId}` },
       },
-      icon('goldBar'),
+      goldBar,
       price,
     );
     const item = h(
       'li',
       { class: 'cp-ascension-office-row', attrs: { 'data-line': lineId } },
-      h('span', { class: 'cp-ascension-office-text' }, name, level),
+      h(
+        'span',
+        { class: 'cp-ascension-office-text' },
+        h('span', { class: 'cp-ascension-office-head' }, name, level),
+        description,
+        effect,
+      ),
       buy,
     );
     let current: FamilyOfficeRow | null = null;
     let pending = false;
     const render = (row: FamilyOfficeRow) => {
       current = row;
-      name.textContent = ui.i18n.t(lineNameKey(lineId));
-      level.textContent = row.maxed ? t('maxed') : t('level', { level: int(row.level) });
-      price.textContent =
-        row.cost === null ? t('maxed') : formatBalance(row.cost, ui.i18n.language);
+      const copy = familyOfficeRowCopy(
+        (key, values) => ui.i18n.t(key, values),
+        row,
+        ui.i18n.language,
+      );
+      name.textContent = copy.name;
+      level.textContent = copy.level;
+      description.textContent = copy.description;
+      effect.textContent = copy.effect;
+      price.textContent = copy.price ?? t('maxed');
+      goldBar.toggleAttribute('hidden', copy.price === null);
       buy.setAttribute(
         'aria-disabled',
         !row.maxed && row.affordable && !pending ? 'false' : 'true',
       );
-      buy.setAttribute(
-        'aria-label',
-        row.cost === null
-          ? `${name.textContent} ${t('maxed')}`
-          : t('buyLabel', {
-              level: int(row.level + 1),
-              line: name.textContent,
-              price: int(row.cost),
-            }),
-      );
+      buy.setAttribute('aria-label', copy.buyLabel);
       item.dataset.maxed = String(row.maxed);
     };
     makePressable(buy, ctx, {
@@ -454,14 +539,11 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     options.onClose();
   };
   makePressable(close, ctx, { feedback: 'close', onPress: requestClose });
-  ctx.own(
-    listen(root, 'keydown', (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        requestClose();
-      }
-    }),
-  );
+  const focus = sharedSheetFocus().register(root, () => {
+    if (state === 'sending') return;
+    feedback(ctx, 'close');
+    options.onClose();
+  });
 
   const setBullion = (bullion: number | null) => {
     if (closed) return;
@@ -477,6 +559,7 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
   };
 
   options.host.append(root);
+  focus.opened();
   feedback(ctx, 'open');
   root.tabIndex = -1;
   root.focus({ preventScroll: true });
@@ -490,7 +573,10 @@ export function showAscension(options: AscensionScreenOptions): AscensionScreen 
     stopHold?.();
     for (const off of disposers.splice(0)) off();
     loc.dispose();
+    const restoreFocus = focus.closing(trigger);
     root.remove();
+    restoreFocus();
+    focus.dispose();
   }
 
   return { el: root, setBullion, dispose };

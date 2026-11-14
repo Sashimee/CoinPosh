@@ -57,6 +57,7 @@ function harness(coins: number, levels: Record<string, number> = {}): Harness {
   const store = createStore<UiState>({
     ...initialUiState(defaultSettings('en')),
     coins,
+    spendableCoins: coins,
     upgradeLevels: levels,
   });
   const bus = createBus<UiEvents>();
@@ -72,7 +73,11 @@ function harness(coins: number, levels: Record<string, number> = {}): Harness {
     bus,
     onUpgradeRequest: (handler) => bus.on('upgrades:request', handler),
     setWallet: (wallet) => {
-      store.setState({ coins: wallet.coins, goldBars: wallet.goldBars });
+      store.setState({
+        coins: wallet.coins,
+        spendableCoins: wallet.spendableCoins ?? wallet.coins,
+        goldBars: wallet.goldBars,
+      });
     },
     resolveUpgrade: (next) => {
       store.setState(

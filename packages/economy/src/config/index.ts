@@ -4,6 +4,7 @@ import { currencies } from './currencies.ts';
 import { crateRewards, crateSpawn, dropTables, pity } from './drops.ts';
 import { ftueTargets, ladderTargets, pacing } from './pacing.ts';
 import { album, ascension, bullion, offline, season, venues } from './progression.ts';
+import { safes } from './safes.ts';
 import { upgradeCostRule, upgradeLines } from './upgrades.ts';
 // Imported last and read through a getter: ../config.ts imports this module back, so
 // the leaf tables above must be initialised before it runs, and rateEnvelope may still be
@@ -22,6 +23,7 @@ export const economyConfig = {
   pity,
   crateSpawn,
   crateRewards,
+  safes,
   venues,
   album,
   offline,
@@ -60,4 +62,5 @@ export {
 export * from './allowance.ts';
 export * from './offlineRate.ts';
 export * from './quests.ts';
+export * from './safes.ts';
 export * from './season.ts';

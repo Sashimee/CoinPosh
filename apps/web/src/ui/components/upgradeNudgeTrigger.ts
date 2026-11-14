@@ -1,16 +1,16 @@
 import { coinTiers, rateEnvelopeDerivation, type UpgradeLineDef } from '@coinposh/economy';
-import { upgradeRows, type UpgradeRow, type Wallet } from '../../app/model.ts';
+import { spendableCoins, upgradeRows, type UpgradeRow, type Wallet } from '../../app/model.ts';
 import type { SettingsStorage } from '../../app/settings.ts';
 
 export const UPGRADE_NUDGE_STORAGE_KEY = 'coinposh.nudge.firstUpgrade.v1';
 
-/** How long the Vault must sit at or above a price without dropping before a tight buy is offered. */
+/** How long spendable coins must sit at or above a price without dropping before a tight buy is offered. */
 export const NUDGE_STEADY_MS = 1_500;
 
 /**
- * How long a balance with headroom must hold it before the hint fires. The Vault the HUD sees
- * is wallet plus buffered drops, and the two can land a few milliseconds apart, so a single
- * reading can overstate it for a moment.
+ * How long a balance with headroom must hold it before the hint fires. The wallet and the
+ * table's balance events can land a few milliseconds apart, so a single reading can overstate
+ * it for a moment.
  */
 export const NUDGE_CONFIRM_MS = 250;
 
@@ -63,8 +63,9 @@ export function cheapestAffordable(rows: readonly UpgradeRow[]): UpgradeRow | nu
   return best;
 }
 
+/** What the server can spend on the row's price: drop-buffer coins never count. */
 function purse(wallet: Wallet, row: UpgradeRow): number {
-  return row.line.currency === 'coins' ? wallet.coins : wallet.goldBars;
+  return row.line.currency === 'coins' ? spendableCoins(wallet) : wallet.goldBars;
 }
 
 /** Drops spend coins only, so a gold-bar price needs no cushion. */

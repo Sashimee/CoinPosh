@@ -4,9 +4,10 @@ import { isLanguage } from '../i18n/index.ts';
 /**
  * Dev-only look-dev harness for the HUD, served by Vite at /src/ui/preview.html. The numbers
  * here are stand-ins for what the server would report. Query flags: `lang=fr|de`,
- * `panel=upgrades|settings`, `coins=<n>`, `bars=<n>`, `combo=<n>`, `decorum=<0..1>`,
- * `frozen=<s>`, `levels=<line>:<n>,…`, `demo` (a scripted run of coin gains and cascades), and
- * `scene` (render the Riviera venue behind the UI).
+ * `panel=upgrades|settings`, `coins=<n>`, `spendable=<n>` (the part of coins the server can
+ * spend), `bars=<n>`, `combo=<n>`, `decorum=<0..1>`, `frozen=<s>`, `levels=<line>:<n>,…`,
+ * `demo` (a scripted run of coin gains and cascades), and `scene` (render the Riviera venue
+ * behind the UI).
  */
 declare global {
   interface Window {
@@ -86,7 +87,12 @@ function boot(): void {
   if (motion === 'reduced' || motion === 'full' || motion === 'system') {
     app.store.setState((s) => ({ settings: { ...s.settings, motion } }));
   }
-  app.setWallet({ coins: numberParam('coins', 12_480), goldBars: numberParam('bars', 0) });
+  const coins = numberParam('coins', 12_480);
+  app.setWallet({
+    coins,
+    spendableCoins: numberParam('spendable', coins),
+    goldBars: numberParam('bars', 0),
+  });
   app.setCascade(numberParam('combo', 0));
   app.setDecorum({
     used: numberParam('decorum', 0.2) * 100,

@@ -15,6 +15,7 @@ import {
   createFirstUpgradeNudge,
   hasBeenActivated,
   nudgeStillAffordable,
+  type NudgeSnapshot,
 } from './upgradeNudgeTrigger.ts';
 
 /** The line folds away after this long; the dock keeps its glow until Upgrades is opened. */
@@ -77,6 +78,20 @@ export function foldWhenOutOfReach<S extends NudgeWallet>(
     fold();
   });
   return stop;
+}
+
+/** What the first-upgrade hint judges: the Vault as shown and the part the server can spend. */
+export function nudgeSnapshot(
+  state: NudgeWallet & { readonly spendableCoins: number },
+  playable: boolean,
+): NudgeSnapshot {
+  return {
+    coins: state.coins,
+    spendableCoins: state.spendableCoins,
+    goldBars: state.goldBars,
+    upgradeLevels: state.upgradeLevels,
+    playable,
+  };
 }
 
 export interface UpgradeNudgeOptions {
@@ -193,15 +208,7 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
 
   const evaluate = (): void => {
     const state = ctx.store.getState();
-    const id = nudge.evaluate(
-      {
-        coins: state.coins,
-        goldBars: state.goldBars,
-        upgradeLevels: state.upgradeLevels,
-        playable: options.playable(),
-      },
-      performance.now(),
-    );
+    const id = nudge.evaluate(nudgeSnapshot(state, options.playable()), performance.now());
     armWake();
     if (!id) return;
     if (state.panel === 'upgrades') options.reveal(id);
@@ -226,6 +233,7 @@ export function createUpgradeNudge(ctx: UiContext, options: UpgradeNudgeOptions)
     ctx.store.subscribe((state, previous) => {
       if (
         state.coins !== previous.coins ||
+        state.spendableCoins !== previous.spendableCoins ||
         state.goldBars !== previous.goldBars ||
         state.upgradeLevels !== previous.upgradeLevels
       ) {

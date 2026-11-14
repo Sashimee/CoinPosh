@@ -1,4 +1,5 @@
 import { ASCENSION_SQL } from '../routes/ascend.ts';
+import { SAFES_SQL } from '../routes/safes.ts';
 import { UPGRADE_LEVELS_SQL } from '../routes/upgrades.ts';
 
 /** PlayerDO SQLite migrations, applied in order; `schema_version` records how many ran. */
@@ -164,6 +165,7 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX IF NOT EXISTS ledger_tx_id ON ledger (tx_id);
   `,
   ASCENSION_SQL,
+  SAFES_SQL,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {
