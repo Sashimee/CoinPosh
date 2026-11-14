@@ -94,6 +94,23 @@ export const BUNDLE_BUDGETS = {
    * 6.6 kB gzip on 2026-11-14.
    */
   safesSheet: 7 * 1024,
+  /**
+   * P-641: the Collection (inventory) sheet, imported on the first Collection press.
+   * 10.8 kB gzip on 2026-11-14.
+   */
+  inventorySheet: 11.5 * 1024,
+  /** P-641: the Album, imported on its first tap from the Collection sheet. 8.4 kB on 2026-11-14. */
+  albumSheet: 9 * 1024,
+  /**
+   * P-641: the Certified Fair desk, imported on its first tap from Settings or a scratch card.
+   * 12.2 kB gzip on 2026-11-14.
+   */
+  fairPanel: 13 * 1024,
+  /**
+   * P-641: the scratch module and the foil sheet it imports when a card is put up.
+   * 16.6 kB gzip on 2026-11-14.
+   */
+  scratchCards: 17 * 1024,
 } as const;
 
 /** P-124: a budget fails once exceeded by more than this share. */

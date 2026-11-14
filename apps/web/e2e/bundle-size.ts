@@ -31,6 +31,25 @@ const ACCOUNT_UI_STRINGS_CHUNK = /^accountUi-account-[\w-]+\.js$/;
 const SAFES_DOCK_CHUNK = /^safes-[\w-]+\.js$/;
 const SAFES_SHEET_CHUNK = /^safesSheet-[\w-]+\.js$/;
 
+/**
+ * P-641: the reward sheets main.ts imports on their first tap, each chunk named after its
+ * folder's index.ts. Every one has its own row, so none can grow into Other lazy JS.
+ */
+const ON_TAP_SURFACES = [
+  { key: 'inventorySheet', label: 'Collection sheet (on tap)', chunk: /^inventory-[\w-]+\.js$/ },
+  { key: 'albumSheet', label: 'Album (on tap)', chunk: /^album-[\w-]+\.js$/ },
+  { key: 'fairPanel', label: 'Certified Fair (on tap)', chunk: /^fair-[\w-]+\.js$/ },
+  {
+    key: 'scratchCards',
+    label: 'Scratch Cards (on tap)',
+    chunk: /^scratch(?:Sheet)?-[\w-]+\.js$/,
+  },
+] as const satisfies readonly {
+  readonly key: keyof typeof BUNDLE_BUDGETS;
+  readonly label: string;
+  readonly chunk: RegExp;
+}[];
+
 type BudgetKey = keyof typeof BUNDLE_BUDGETS | 'accountOnTap';
 
 const BUDGETS: Record<BudgetKey, number> = {
@@ -51,6 +70,7 @@ interface Measured {
   readonly eagerAccount: readonly string[];
   readonly eagerAccountUi: readonly string[];
   readonly eagerSafes: readonly string[];
+  readonly eagerSurfaces: readonly string[];
   readonly initial: readonly string[];
 }
 
@@ -125,6 +145,15 @@ function measure(): Measured {
   if (safesDock.length === 0) fail('no safes-*.js chunk in dist/assets; update the gate');
   const safesSheet = js.filter((file) => SAFES_SHEET_CHUNK.test(file));
   if (safesSheet.length === 0) fail('no safesSheet-*.js chunk in dist/assets; update the gate');
+  const surfaces = ON_TAP_SURFACES.map((surface) => {
+    const files = js.filter((file) => surface.chunk.test(file));
+    if (files.length === 0) {
+      fail(
+        `no ${String(surface.chunk)} chunk for ${surface.label} in dist/assets; update the gate`,
+      );
+    }
+    return { ...surface, files };
+  });
 
   let wasmBytes = 0;
   const wasmFiles: string[] = readdirSync(ASSETS).filter((file) => file.endsWith('.wasm'));
@@ -156,6 +185,7 @@ function measure(): Measured {
     ...accountUi,
     ...safesDock,
     ...safesSheet,
+    ...surfaces.flatMap((surface) => surface.files),
   ]);
   const otherLazy = js.filter((file) => !accounted.has(file));
   const rows: Row[] = [
@@ -183,6 +213,7 @@ function measure(): Measured {
       files: safesSheet,
       bytes: sum(safesSheet, gz),
     },
+    ...surfaces.map(({ key, label, files }) => ({ key, label, files, bytes: sum(files, gz) })),
   ];
   return {
     rows,
@@ -190,6 +221,9 @@ function measure(): Measured {
     eagerAccount: account.filter((file) => initial.includes(file)),
     eagerAccountUi: accountUi.filter((file) => initial.includes(file)),
     eagerSafes: [...safesDock, ...safesSheet].filter((file) => initial.includes(file)),
+    eagerSurfaces: surfaces
+      .flatMap((surface) => surface.files)
+      .filter((file) => initial.includes(file)),
     initial,
   };
 }
@@ -198,7 +232,8 @@ function kb(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} kB`;
 }
 
-const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, initial } = measure();
+const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, eagerSurfaces, initial } =
+  measure();
 const lines = [
   '### Bundle budgets (gzip)',
   '',
@@ -245,6 +280,14 @@ lines.push(
     : `FAIL: safes code is in the initial load (${eagerSafes.join(', ')}).`,
 );
 if (eagerSafes.length > 0) failures.push('safes code is statically reachable from index.html');
+lines.push(
+  eagerSurfaces.length === 0
+    ? 'The Collection, Album, Certified Fair and Scratch Cards chunks are lazy: each loads on its first tap.'
+    : `FAIL: reward sheet code is in the initial load (${eagerSurfaces.join(', ')}).`,
+);
+if (eagerSurfaces.length > 0) {
+  failures.push('reward sheet code is statically reachable from index.html');
+}
 
 const report = `${lines.join('\n')}\n`;
 const summary = process.env.GITHUB_STEP_SUMMARY;

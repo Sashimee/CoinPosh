@@ -76,7 +76,22 @@
     "affordable_other": "{{count}} améliorations prêtes",
     "safesReady_one": "{{label}} : {{count}} coffre prêt à ouvrir",
     "safesReady_many": "{{label}} : {{count}} coffres prêts à ouvrir",
-    "safesReady_other": "{{label}} : {{count}} coffres prêts à ouvrir"
+    "safesReady_other": "{{label}} : {{count}} coffres prêts à ouvrir",
+    "collection": "Collection",
+    "collectionNew_one": "{{label}} : {{count}} nouvel objet",
+    "collectionNew_many": "{{label}} : {{count}} nouveaux objets",
+    "collectionNew_other": "{{label}} : {{count}} nouveaux objets"
+  },
+  "collection": {
+    "links": "Le reste de votre collection",
+    "album": "Album",
+    "scratch": "Cartes à gratter",
+    "scratchCount_one": "{{count}} carte à révéler",
+    "scratchCount_many": "{{count}} cartes à révéler",
+    "scratchCount_other": "{{count}} cartes à révéler",
+    "fair": "Certifié équitable",
+    "fairHint": "Chaque récompense est tirée d’une graine scellée avant votre partie. Consultez les chances, vos garanties et la preuve de chaque tirage.",
+    "fairOpen": "Ouvrir le bureau Certifié équitable"
   },
   "upgrades": {
     "title": "Améliorations",

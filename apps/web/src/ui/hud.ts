@@ -1,4 +1,5 @@
 import { openingHeap, stewardAllowance } from '@coinposh/economy';
+import type { Reward } from '@coinposh/shared';
 import { affordableCount, upgradeRows } from '../app/model.ts';
 import type { NudgeWallet } from './components/upgradeNudge.ts';
 import type { PanelId, UiState } from '../app/state.ts';
@@ -198,6 +199,308 @@ export function mountSafesTrigger(options: SafesTriggerOptions): SafesTrigger {
       for (const off of disposers.splice(0).reverse()) off();
       pop.stop();
       loc.dispose();
+      el.remove();
+    },
+  };
+}
+
+/** Rewards the Collection sheet lists. Safes have their own dock button, coins their plaque. */
+const COLLECTION_KINDS: ReadonlySet<Reward['kind']> = new Set([
+  'charm',
+  'collectible',
+  'scratchCard',
+]);
+
+/** How many of a roll's rewards are new entries for the Collection sheet. */
+export function collectionNews(rewards: readonly Reward[]): number {
+  return rewards.filter((reward) => COLLECTION_KINDS.has(reward.kind)).length;
+}
+
+const svgGlyph = (body: string): string =>
+  `<svg class="cp-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+
+const COLLECTION_GLYPH = svgGlyph(
+  '<path d="M5.5 9.5 8.6 5h6.8l3.1 4.5L12 19.5Z" fill="currentColor" fill-opacity=".16"/><path d="M5.5 9.5h13M9.8 9.5 12 19.5l2.2-10M8.6 5l1.2 4.5L12 5l2.2 4.5L15.4 5"/>',
+);
+const ALBUM_GLYPH = svgGlyph(
+  '<path d="M4.5 5.5a1.8 1.8 0 0 1 1.8-1.8h11.4a1.8 1.8 0 0 1 1.8 1.8v13a1.8 1.8 0 0 1-1.8 1.8H6.3a1.8 1.8 0 0 1-1.8-1.8Z" fill="currentColor" fill-opacity=".16"/><path d="M8 3.7v16.6M11.5 8.5h4.5M11.5 12h4.5"/>',
+);
+const SCRATCH_GLYPH = svgGlyph(
+  '<rect x="3.5" y="6" width="17" height="12" rx="2" fill="currentColor" fill-opacity=".16"/><path d="m7 14.5 2.5-3 2 2 2.5-3.5 3 4.5"/>',
+);
+const FAIR_GLYPH = svgGlyph(
+  '<path d="M12 3.2 18.8 6v5.4c0 4.1-2.9 7.6-6.8 9.4-3.9-1.8-6.8-5.3-6.8-9.4V6Z" fill="currentColor" fill-opacity=".16"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/>',
+);
+
+interface OwnedContext {
+  readonly ctx: UiContext;
+  dispose(): void;
+}
+
+function ownedContext(ui: Pick<UiContext, 'store' | 'bus' | 'i18n'>): OwnedContext {
+  const disposers: (() => void)[] = [];
+  const loc = new Localizer(ui.i18n);
+  return {
+    ctx: { ...ui, loc, own: (dispose) => disposers.push(dispose) },
+    dispose() {
+      for (const off of disposers.splice(0).reverse()) off();
+      loc.dispose();
+    },
+  };
+}
+
+const COLLECTION_BECKON_MS = 900;
+/** The gem tips and settles, like a stone turned to catch the light. */
+const COLLECTION_BECKON_GEM: Keyframe[] = [
+  { rotate: '0deg', scale: '1' },
+  { offset: 0.3, rotate: '-16deg', scale: '1.18' },
+  { offset: 0.65, rotate: '9deg', scale: '1' },
+  { rotate: '0deg', scale: '1' },
+];
+
+export interface CollectionTriggerOptions {
+  readonly ui: Pick<UiContext, 'store' | 'bus' | 'i18n'>;
+  readonly dock: HTMLElement;
+  /** The dock button it sits after; it joins the end of the dock when missing. */
+  readonly after: Element | null;
+  readonly onPress: () => void;
+}
+
+export interface CollectionTrigger {
+  readonly el: HTMLButtonElement;
+  /** Counts `count` new entries on the badge and beckons; nothing happens for 0. */
+  gained(count: number): void;
+  /** The sheet opened, so its entries are no longer new. */
+  seen(): void;
+  /** True while the sheet's code is loading, so a second press waits for the same load. */
+  setBusy(busy: boolean): void;
+  dispose(): void;
+}
+
+/**
+ * The dock's door to the Collection (the inventory, with the Album and Scratch Cards one tap
+ * further). Its coral badge counts the charms, cards and collectibles won since it was last
+ * opened; each win pops the badge, flares the button gold and tips the gem.
+ */
+export function mountCollectionTrigger(options: CollectionTriggerOptions): CollectionTrigger {
+  const owned = ownedContext(options.ui);
+  const { ctx } = owned;
+  const gem = fromMarkup(COLLECTION_GLYPH);
+  const badge = h('span', {
+    class: 'cp-badge',
+    attrs: { 'data-testid': 'inventory-trigger-badge', 'aria-hidden': 'true', hidden: '' },
+  });
+  const el = h(
+    'button',
+    {
+      class: 'cp-dock-button cp-panel',
+      attrs: { type: 'button', 'data-testid': 'inventory-trigger', 'aria-haspopup': 'dialog' },
+    },
+    gem,
+    badge,
+  );
+  const pop = new SpringValue(1, SPRINGS.pop, (value) => {
+    badge.style.scale = value === 1 ? '' : String(value);
+  });
+  let fresh = 0;
+
+  const paint = (): void => {
+    const label = tr(ctx, 'dock.collection');
+    badge.hidden = fresh === 0;
+    badge.textContent = formatInteger(fresh, ctx.i18n.language);
+    el.title = label;
+    el.setAttribute(
+      'aria-label',
+      fresh === 0 ? label : tr(ctx, 'dock.collectionNew', { label, count: fresh }),
+    );
+  };
+  ctx.own(ctx.loc.bind(paint));
+
+  makePressable(el, ctx, {
+    feedback: 'open',
+    onPress() {
+      options.onPress();
+    },
+  });
+
+  if (options.after) options.after.after(el);
+  else options.dock.append(el);
+  return {
+    el,
+    gained(count) {
+      if (count <= 0) return;
+      fresh += count;
+      paint();
+      pop.kick(4);
+      if (isReducedMotion()) return;
+      el.animate(SAFES_BECKON_GLOW, { duration: COLLECTION_BECKON_MS, easing: 'ease-out' });
+      gem.animate(COLLECTION_BECKON_GEM, {
+        duration: COLLECTION_BECKON_MS * 0.8,
+        easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)',
+      });
+    },
+    seen() {
+      fresh = 0;
+      paint();
+    },
+    setBusy(busy) {
+      el.toggleAttribute('aria-busy', busy);
+    },
+    dispose() {
+      owned.dispose();
+      pop.stop();
+      el.remove();
+    },
+  };
+}
+
+function linkChip(
+  ctx: UiContext,
+  testId: string,
+  template: string,
+  label: () => string,
+  onPress: () => void,
+): HTMLButtonElement {
+  const text = h('span');
+  const chip = h(
+    'button',
+    {
+      class: 'cp-chip',
+      attrs: {
+        type: 'button',
+        'data-testid': testId,
+        'aria-haspopup': 'dialog',
+        style: 'position: relative',
+      },
+    },
+    fromMarkup(template),
+    text,
+  );
+  ctx.loc.text(text, label);
+  makePressable(chip, ctx, { feedback: 'open', onPress });
+  return chip;
+}
+
+export interface CollectionLinksOptions {
+  readonly ui: Pick<UiContext, 'store' | 'bus' | 'i18n'>;
+  readonly onAlbum: (chip: HTMLElement) => void;
+  readonly onScratch: (chip: HTMLElement) => void;
+}
+
+export interface CollectionLinks {
+  readonly el: HTMLElement;
+  /** Shows the Scratch Cards chip with its count, or hides it when no card is owned. */
+  setScratchCards(count: number): void;
+  dispose(): void;
+}
+
+/** The row atop the Collection sheet that leads on to the Album and to the Scratch Cards. */
+export function createCollectionLinks(options: CollectionLinksOptions): CollectionLinks {
+  const owned = ownedContext(options.ui);
+  const { ctx } = owned;
+  const album = linkChip(
+    ctx,
+    'album-trigger',
+    ALBUM_GLYPH,
+    () => tr(ctx, 'collection.album'),
+    () => {
+      options.onAlbum(album);
+    },
+  );
+  const scratch = linkChip(
+    ctx,
+    'scratch-trigger',
+    SCRATCH_GLYPH,
+    () => tr(ctx, 'collection.scratch'),
+    () => {
+      options.onScratch(scratch);
+    },
+  );
+  const badge = h('span', { class: 'cp-badge', attrs: { 'aria-hidden': 'true' } });
+  scratch.append(badge);
+  scratch.hidden = true;
+  const pop = new SpringValue(1, SPRINGS.pop, (value) => {
+    badge.style.scale = value === 1 ? '' : String(value);
+  });
+  let cards = 0;
+  const paint = (): void => {
+    badge.textContent = formatInteger(cards, ctx.i18n.language);
+    scratch.setAttribute(
+      'aria-label',
+      `${tr(ctx, 'collection.scratch')}: ${tr(ctx, 'collection.scratchCount', { count: cards })}`,
+    );
+  };
+  ctx.own(ctx.loc.bind(paint));
+  const el = h(
+    'nav',
+    {
+      class: 'cp-collection-links',
+      attrs: {
+        'data-testid': 'collection-links',
+        style: 'display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 0 12px',
+      },
+    },
+    album,
+    scratch,
+  );
+  ctx.loc.attr(el, 'aria-label', () => tr(ctx, 'collection.links'));
+  return {
+    el,
+    setScratchCards(count) {
+      if (count > cards) pop.kick(4);
+      cards = count;
+      scratch.hidden = count === 0;
+      paint();
+    },
+    dispose() {
+      owned.dispose();
+      pop.stop();
+      el.remove();
+    },
+  };
+}
+
+export interface FairEntryOptions {
+  readonly ui: Pick<UiContext, 'store' | 'bus' | 'i18n'>;
+  /** The Settings panel's Certified Fair slot (`settingsFairSlot`). */
+  readonly slot: HTMLElement;
+  readonly onPress: (button: HTMLElement) => void;
+}
+
+export interface FairEntry {
+  readonly el: HTMLElement;
+  dispose(): void;
+}
+
+/** The Certified Fair section in Settings: the odds, the guarantees and every roll's proof. */
+export function mountFairEntry(options: FairEntryOptions): FairEntry {
+  const owned = ownedContext(options.ui);
+  const { ctx } = owned;
+  const label = h('span');
+  ctx.loc.text(label, () => tr(ctx, 'collection.fair'));
+  const hint = h('p', { class: 'cp-field-hint' });
+  ctx.loc.text(hint, () => tr(ctx, 'collection.fairHint'));
+  const button = linkChip(
+    ctx,
+    'fair-trigger',
+    FAIR_GLYPH,
+    () => tr(ctx, 'collection.fairOpen'),
+    () => {
+      options.onPress(button);
+    },
+  );
+  const el = h(
+    'section',
+    { class: 'cp-section cp-settings-group' },
+    h('h3', { class: 'cp-section-title' }, fromMarkup(FAIR_GLYPH), label),
+    hint,
+    button,
+  );
+  options.slot.append(el);
+  return {
+    el,
+    dispose() {
+      owned.dispose();
       el.remove();
     },
   };

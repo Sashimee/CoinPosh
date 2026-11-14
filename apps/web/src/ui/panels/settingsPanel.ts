@@ -7,16 +7,26 @@ import { icon, type IconName } from '../icons.ts';
 import { createSegmented, createSlider, createToggle } from '../components/controls.ts';
 
 const ACCOUNT_SLOT = 'settings-account-slot';
+const FAIR_SLOT = 'settings-fair-slot';
 
-/** The "Keep my progress" section mounts here once the account UI loads after the table. */
-export function settingsAccountSlot(root: ParentNode): HTMLElement {
-  const slot = root.querySelector<HTMLElement>(`[data-testid="${ACCOUNT_SLOT}"]`);
+function settingsSlot(root: ParentNode, testId: string, section: string): HTMLElement {
+  const slot = root.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
   if (!slot) {
     throw new Error(
-      `CoinPosh settings: the account slot ([data-testid="${ACCOUNT_SLOT}"]) is missing; mount the UI before the account section.`,
+      `CoinPosh settings: the ${section} slot ([data-testid="${testId}"]) is missing; mount the UI before the ${section} section.`,
     );
   }
   return slot;
+}
+
+/** The "Keep my progress" section mounts here once the account UI loads after the table. */
+export function settingsAccountSlot(root: ParentNode): HTMLElement {
+  return settingsSlot(root, ACCOUNT_SLOT, 'account');
+}
+
+/** The Certified Fair section mounts here once the player's table has loaded. */
+export function settingsFairSlot(root: ParentNode): HTMLElement {
+  return settingsSlot(root, FAIR_SLOT, 'Certified Fair');
 }
 
 function updateSettings(ctx: UiContext, patch: Partial<Settings>): void {
@@ -128,5 +138,6 @@ export function createSettingsPanel(ctx: UiContext): HTMLElement {
     group(ctx, 'feel', 'settings.feel', haptics.el, motion.el),
     group(ctx, 'display', 'settings.display', quality.el),
     group(ctx, 'language', 'settings.language', language.el),
+    h('div', { attrs: { 'data-testid': FAIR_SLOT } }),
   );
 }

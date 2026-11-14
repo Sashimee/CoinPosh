@@ -70,7 +70,20 @@
     "affordable_one": "{{count}} Upgrade bereit",
     "affordable_other": "{{count}} Upgrades bereit",
     "safesReady_one": "{{label}}: {{count}} Tresor bereit zum Öffnen",
-    "safesReady_other": "{{label}}: {{count}} Tresore bereit zum Öffnen"
+    "safesReady_other": "{{label}}: {{count}} Tresore bereit zum Öffnen",
+    "collection": "Sammlung",
+    "collectionNew_one": "{{label}}: {{count}} neues Objekt",
+    "collectionNew_other": "{{label}}: {{count}} neue Objekte"
+  },
+  "collection": {
+    "links": "Mehr aus Ihrer Sammlung",
+    "album": "Album",
+    "scratch": "Rubbellose",
+    "scratchCount_one": "{{count}} Los zum Aufdecken",
+    "scratchCount_other": "{{count}} Lose zum Aufdecken",
+    "fair": "Zertifiziert fair",
+    "fairHint": "Jede Belohnung stammt aus einem Seed, der vor Ihrem Spiel festgelegt wurde. Sehen Sie die Chancen, Ihre Garantien und den Nachweis jedes Zugs.",
+    "fairOpen": "Den Schalter „Zertifiziert fair“ öffnen"
   },
   "upgrades": {
     "title": "Upgrades",

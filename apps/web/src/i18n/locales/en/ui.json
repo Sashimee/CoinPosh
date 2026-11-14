@@ -70,7 +70,20 @@
     "affordable_one": "{{count}} upgrade ready",
     "affordable_other": "{{count}} upgrades ready",
     "safesReady_one": "{{label}}: {{count}} safe ready to open",
-    "safesReady_other": "{{label}}: {{count}} safes ready to open"
+    "safesReady_other": "{{label}}: {{count}} safes ready to open",
+    "collection": "Collection",
+    "collectionNew_one": "{{label}}: {{count}} new item",
+    "collectionNew_other": "{{label}}: {{count}} new items"
+  },
+  "collection": {
+    "links": "More of your collection",
+    "album": "Album",
+    "scratch": "Scratch Cards",
+    "scratchCount_one": "{{count}} card to reveal",
+    "scratchCount_other": "{{count}} cards to reveal",
+    "fair": "Certified Fair",
+    "fairHint": "Every reward is drawn from a seed committed before you play. See the odds, your guarantees and the proof of every roll.",
+    "fairOpen": "Open the Certified Fair desk"
   },
   "upgrades": {
     "title": "Upgrades",

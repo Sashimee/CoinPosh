@@ -1,4 +1,13 @@
-import type { MintedCoin, Roll, Safe, StateResponse } from '@coinposh/shared';
+import { safeTypeDef } from '@coinposh/economy';
+import type {
+  DropSourceId,
+  MintedCoin,
+  Roll,
+  Safe,
+  SafeId,
+  ScratchCardId,
+  StateResponse,
+} from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
@@ -64,8 +73,22 @@ import {
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import type { AccountUi } from './ui/account/clock.ts';
-import { InHandHandover, mountSafesTrigger, setInHand } from './ui/hud.ts';
-import { settingsAccountSlot } from './ui/panels/settingsPanel.ts';
+import type { ScratchModule } from './game/scratch/index.ts';
+import type { AlbumPanel } from './ui/album/index.ts';
+import { createPityLog } from './ui/fair/data.ts';
+import type { FairOpenOptions, FairPanel } from './ui/fair/index.ts';
+import {
+  collectionNews,
+  createCollectionLinks,
+  InHandHandover,
+  mountCollectionTrigger,
+  mountFairEntry,
+  mountSafesTrigger,
+  setInHand,
+  type CollectionLinks,
+} from './ui/hud.ts';
+import type { CardArtSource, InventoryPanel } from './ui/inventory/index.ts';
+import { settingsAccountSlot, settingsFairSlot } from './ui/panels/settingsPanel.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
@@ -245,6 +268,12 @@ let audio: AudioEngine | null = null;
 let ascensionHud: AscensionHud | null = null;
 /** Mounted once the player's table has loaded. */
 let safesSheet: SafesSheet | null = null;
+/** Mounted once the player's table has loaded; each sheet's code loads on its first tap. */
+let collection: Collection | null = null;
+/** The stage renderer the Collection's cards borrow; null until the venue is drawn. */
+let cardArt: CardArtSource | null = null;
+/** The server's latest pity counters per drop source, for the Certified Fair's guarantees. */
+const pityLog = createPityLog();
 /** Mounted once the player's table has loaded; its code loads after the table. */
 let accountUi: AccountUi | null = null;
 /** Re-lays the table on the save a sign-in moved onto; null until the scene plays. */
@@ -286,6 +315,17 @@ void hydrated
   .then((boot) => (boot ? mountSafesSheet(boot) : undefined))
   .catch((error: unknown) => {
     console.error('CoinPosh safes failed to mount; the game continues without Safes.', error);
+  });
+
+void hydrated
+  .then((boot) => {
+    if (boot) mountCollection(boot);
+  })
+  .catch((error: unknown) => {
+    console.error(
+      'CoinPosh collection failed to mount; the game continues without the Collection, Album, Scratch Cards and Certified Fair.',
+      error,
+    );
   });
 
 void hydrated
@@ -811,6 +851,15 @@ async function bootScene(
     return;
   }
   markBoot('venue');
+  cardArt = {
+    get renderer() {
+      return stage.renderer;
+    },
+    get backend() {
+      return stage.backend;
+    },
+    environment: () => stage.scene.environment,
+  };
   const revealVenue = holdBackVenue(venue.root);
   attachVenue(stage, venue, riviera.applyCameraPreset);
   stage.castCoinShadowsFrom(venue.lighting.key);
@@ -897,6 +946,7 @@ async function bootScene(
     ui.setUpgradeLevels(state.venue.upgrades);
     boot.vault.adopted(state);
     safesSheet?.adopt(state);
+    collection?.adopt(state);
   };
 
   /** The new sim is ready before the old run goes, so the table never blanks. */
@@ -1129,6 +1179,7 @@ async function mountSafesSheet(boot: NetBoot): Promise<void> {
         current = ticket;
         safes.setSafes(fresh.inventory.safes);
         safes.setWallet(fresh.wallet);
+        collection?.adopt(fresh);
       },
       (error: unknown) => {
         console.warn(
@@ -1142,20 +1193,35 @@ async function mountSafesSheet(boot: NetBoot): Promise<void> {
     current = asked;
   };
   const { counts } = probe;
+  const sources = new Map<SafeId, DropSourceId>();
   const offs = [
     safes.events.on('safes:changed', (tally) => {
       trigger.update(tally);
     }),
-    safes.events.on('safe:requested', outdateReads),
+    safes.events.on('safe:requested', ({ safeId }) => {
+      outdateReads();
+      const safe = safes.safes.find((candidate) => candidate.id === safeId);
+      if (safe) sources.set(safeId, safeTypeDef(safe.type).dropSource);
+    }),
+    safes.events.on('safe:pity', ({ safeId, pity }) => {
+      const source = sources.get(safeId);
+      sources.delete(safeId);
+      if (source) pityLog.record(source, pity);
+      else
+        console.warn(
+          `CoinPosh safes: safe ${safeId} rolled without a known type, so its pity is not shown.`,
+        );
+    }),
     safes.events.on('safe:opened', () => {
       counts.safesOpened += 1;
       outdateReads();
       // Brings the roll's credit into the HUD now, where the payout hold keeps it until collect.
       boot.resync('a safe was opened');
     }),
-    safes.events.on('safe:collected', ({ wallet }) => {
+    safes.events.on('safe:collected', ({ roll, wallet }) => {
       counts.safesCollected += 1;
       safes.setWallet(wallet);
+      collection?.granted(roll);
       boot.resync('a safe was collected');
     }),
     boot.onResynced(sync),
@@ -1175,6 +1241,248 @@ async function mountSafesSheet(boot: NetBoot): Promise<void> {
     safes.dispose();
   });
   sync();
+}
+
+interface Collection {
+  /** A collected roll: the loaded sheets re-read the server and the dock badge counts its items. */
+  granted(roll: Roll): void;
+  /** A fresh read of the player's table reported these scratch cards and this wallet. */
+  adopt(state: Pick<StateResponse, 'inventory' | 'wallet'>): void;
+}
+
+/** Loads once and shares the result; a failed load is forgotten so the next tap tries again. */
+function loadOnce<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => {
+    pending ??= load().catch((error: unknown) => {
+      pending = null;
+      throw error;
+    });
+    return pending;
+  };
+}
+
+function hudElement(testId: string, purpose: string): HTMLElement {
+  const el = uiRoot.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  if (!el) {
+    throw new Error(
+      `CoinPosh boot: the HUD's [data-testid="${testId}"] is missing, so ${purpose} has nowhere to sit; mount the UI before the collection.`,
+    );
+  }
+  return el;
+}
+
+function grantedCards(roll: Roll): readonly ScratchCardId[] {
+  return roll.rewards.flatMap((reward) => (reward.kind === 'scratchCard' ? [reward.cardId] : []));
+}
+
+/**
+ * The Collection dock button and the sheets behind it: the inventory, with the Album and the
+ * Scratch Cards one tap on, and the Certified Fair from Settings and from a scratch card's
+ * proof. Each sheet's code loads on its first tap; until then only the badge runs, counting
+ * what crates, safes and cards granted since the Collection was last opened.
+ */
+function mountCollection(boot: NetBoot): void {
+  const dock = hudElement('hud-dock', 'the Collection button');
+  const settingsButton = hudElement('dock-settings', 'the Certified Fair');
+  const { client } = boot.net;
+  const haptics = new Haptics(typeof navigator === 'undefined' ? undefined : navigator, () =>
+    performance.now(),
+  );
+  haptics.enabled = ui.store.getState().settings.haptics;
+  let cards: readonly ScratchCardId[] = boot.state.inventory.scratchCards;
+  let wallet = boot.state.wallet;
+  let inventoryPanel: InventoryPanel | null = null;
+  let albumPanel: AlbumPanel | null = null;
+  let fairPanel: FairPanel | null = null;
+  let scratch: ScratchModule | null = null;
+  let links: CollectionLinks | null = null;
+  const offs: (() => void)[] = [
+    ui.onSettingsChange((settings) => {
+      haptics.enabled = settings.haptics;
+    }),
+  ];
+  const closeStorePanel = (): void => {
+    if (ui.store.getState().panel !== null) ui.store.setState({ panel: null });
+  };
+  const showCards = (next: readonly ScratchCardId[]): void => {
+    cards = next;
+    links?.setScratchCards(next.length);
+  };
+  const failed =
+    (surface: string) =>
+    (error: unknown): void => {
+      trigger.setBusy(false);
+      console.error(`CoinPosh collection: the ${surface} did not load; tap again to retry.`, error);
+    };
+
+  const loadFair = loadOnce(async () => {
+    const module = await import('./ui/fair/index.ts');
+    fairPanel = module.mountFair({
+      ui,
+      host: uiRoot,
+      data: module.apiFairData(client, () => pityLog.read()),
+      audio: () => audio,
+      haptics,
+      onClose: () => undefined,
+    });
+    return fairPanel;
+  });
+  const openFair = (source: HTMLElement, options?: FairOpenOptions): void => {
+    loadFair().then((panel) => {
+      closeStorePanel();
+      panel.open(source, options);
+    }, failed('Certified Fair'));
+  };
+
+  const loadAlbum = loadOnce(async () => {
+    const module = await import('./ui/album/index.ts');
+    albumPanel = module.mountAlbum({
+      ui,
+      host: uiRoot,
+      data: module.apiAlbumData(client),
+      audio: () => audio,
+      haptics,
+      onClose: () => undefined,
+    });
+    return albumPanel;
+  });
+
+  const loadScratch = loadOnce(async () => {
+    const module = await import('./game/scratch/index.ts');
+    const mounted = module.mountScratch({
+      ui,
+      host: uiRoot,
+      api: module.netScratchApi(client),
+      cards,
+      wallet,
+      audio: () => audio,
+      vibrate: browserVibrate(),
+      inventoryTarget: () => trigger.el,
+      openFair,
+      onPity: (_cardId, pity) => {
+        pityLog.record('scratch', pity);
+      },
+      refresh: () => {
+        boot.resync('the server turned a scratch card down as stale');
+      },
+    });
+    offs.push(
+      mounted.events.on('scratch:changed', () => {
+        showCards(mounted.cards);
+      }),
+      mounted.events.on('scratch:collected', ({ roll }) => {
+        collection?.granted(roll);
+        boot.resync('a scratch card was collected');
+      }),
+    );
+    scratch = mounted;
+    return mounted;
+  });
+
+  const loadInventory = loadOnce(async () => {
+    const module = await import('./ui/inventory/index.ts');
+    const panel = module.mountInventory({
+      ui,
+      host: uiRoot,
+      data: module.stateInventoryData(client),
+      audio: () => audio,
+      haptics,
+      art: cardArt,
+      onClose: () => undefined,
+    });
+    const body = panel.el.querySelector<HTMLElement>('.cp-sheet-body');
+    if (!body) {
+      panel.dispose();
+      throw new Error(
+        'CoinPosh collection: the inventory sheet has no .cp-sheet-body for the Album and Scratch Cards links; ship ui/panels/sheet.ts and the collection together.',
+      );
+    }
+    links = createCollectionLinks({
+      ui,
+      onAlbum: () => {
+        loadAlbum().then((album) => {
+          panel.close();
+          album.open(trigger.el);
+        }, failed('Album'));
+      },
+      onScratch: () => {
+        loadScratch().then((loaded) => {
+          panel.close();
+          loaded.open();
+        }, failed('Scratch Cards'));
+      },
+    });
+    links.setScratchCards(cards.length);
+    body.prepend(links.el);
+    inventoryPanel = panel;
+    return panel;
+  });
+
+  const trigger = mountCollectionTrigger({
+    ui,
+    dock,
+    after: dock.querySelector('[data-testid="dock-upgrades"]'),
+    onPress: () => {
+      trigger.setBusy(true);
+      loadInventory().then((panel) => {
+        trigger.setBusy(false);
+        closeStorePanel();
+        trigger.seen();
+        panel.open(trigger.el);
+      }, failed('inventory'));
+    },
+  });
+  const fairEntry = mountFairEntry({
+    ui,
+    slot: settingsFairSlot(uiRoot),
+    onPress: () => {
+      openFair(settingsButton);
+    },
+  });
+
+  const reread = (panel: { refresh(): Promise<void> } | null): void => {
+    panel?.refresh().catch((error: unknown) => {
+      console.warn(
+        'CoinPosh collection: a sheet did not re-read the server; it reads again when opened.',
+        error,
+      );
+    });
+  };
+  collection = {
+    granted(roll) {
+      const news = collectionNews(roll.rewards);
+      if (news === 0) return;
+      trigger.gained(news);
+      const fresh = grantedCards(roll).filter((id) => !cards.includes(id));
+      if (fresh.length > 0) {
+        if (scratch) scratch.setCards([...scratch.cards, ...fresh]);
+        else showCards([...cards, ...fresh]);
+      }
+      reread(inventoryPanel);
+      reread(albumPanel);
+    },
+    adopt(state) {
+      wallet = state.wallet;
+      if (scratch) {
+        scratch.setCards(state.inventory.scratchCards);
+        scratch.setWallet(state.wallet);
+      } else {
+        showCards(state.inventory.scratchCards);
+      }
+    },
+  };
+  teardown.push(() => {
+    collection = null;
+    for (const off of offs.splice(0)) off();
+    fairEntry.dispose();
+    trigger.dispose();
+    links?.dispose();
+    inventoryPanel?.dispose();
+    albumPanel?.dispose();
+    fairPanel?.dispose();
+    scratch?.dispose();
+  });
 }
 
 interface Scope {
@@ -1232,6 +1540,7 @@ async function mountAccount(boot: NetBoot): Promise<void> {
             ui.setUpgradeLevels(state.venue.upgrades);
             boot.vault.adopted(state);
             safesSheet?.adopt(state);
+            collection?.adopt(state);
           }),
         );
         return account;
@@ -2000,7 +2309,11 @@ function mountTableCrates(
       counts.cratesCollected += 1;
       payouts.collected(crateId, coinLineLandsInMs(cratesApi, roll));
       safesSheet?.granted(roll);
+      collection?.granted(roll);
       boot.resync('a Vault Crate was collected');
+    }),
+    crates.events.on('crate:pity', ({ pity }) => {
+      pityLog.record('vaultCrate', pity);
     }),
     crates.events.on('crate:rejected', ({ crateId }) => {
       payouts.gone(crateId);

@@ -1,4 +1,5 @@
 import { openingHeap, upgradeCost, upgradeLines } from '@coinposh/economy';
+import { RewardSchema } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import { upgradeRow } from '../app/model.ts';
 import { defaultSettings } from '../app/settings.ts';
@@ -6,6 +7,7 @@ import { initialUiState } from '../app/state.ts';
 import { createStore } from '../app/store.ts';
 import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../i18n/index.ts';
 import {
+  collectionNews,
   createPosterGate,
   dockAffordableCount,
   HANDOVER_DWELL_MS,
@@ -22,6 +24,7 @@ import {
 } from './hud.ts';
 
 const RICH = 1e15;
+const CHARM_TYPE = 'golden-peg';
 const familyOffice = upgradeLines.filter((line) => line.scope === 'global');
 const venue = upgradeLines.filter((line) => line.scope === 'venue');
 
@@ -217,6 +220,83 @@ describe('dock.safesReady', () => {
     expect(one).toContain('1');
     expect(many).toContain('3');
     expect(many, 'the plural form differs from the singular').not.toBe(one.replace('1', '3'));
+  });
+});
+
+describe('collectionNews', () => {
+  const rewards = RewardSchema.array().parse([
+    { kind: 'currency', currency: 'coins', amount: 1200 },
+    {
+      kind: 'charm',
+      charmId: 'charm_Pl9Ok8Ij7U',
+      charmType: CHARM_TYPE,
+      level: 1,
+      duplicate: false,
+    },
+    {
+      kind: 'charm',
+      charmId: 'charm_Pl9Ok8Ij7U',
+      charmType: CHARM_TYPE,
+      level: 2,
+      duplicate: true,
+    },
+    {
+      kind: 'safe',
+      safe: { id: 'safe_Za1Xs2Cd3V', type: 'gold', unlocksAt: 1_767_225_600_000 },
+    },
+    { kind: 'scratchCard', cardId: 'scratch_Mn4Bv5Cx6Z' },
+    { kind: 'collectible', collectibleId: 'duchess-sovereign-1891' },
+  ]);
+
+  it('counts charms, duplicates included, scratch cards and collectibles', () => {
+    expect(collectionNews(rewards)).toBe(4);
+  });
+
+  it('leaves out coins and safes, which have their own readouts', () => {
+    expect(collectionNews(rewards.filter((r) => r.kind === 'currency' || r.kind === 'safe'))).toBe(
+      0,
+    );
+    expect(collectionNews([])).toBe(0);
+  });
+});
+
+describe.each(LANGUAGES)('collection strings in %s', (language) => {
+  const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
+  const resolved = (text: string): void => {
+    expect(text).not.toMatch(/^(dock|collection)\./);
+    expect(text).not.toContain('{{');
+  };
+
+  it('names the dock button and pluralises its new count', () => {
+    const one = i18n.t('dock.collectionNew', { label: 'COLL', count: 1 });
+    const many = i18n.t('dock.collectionNew', { label: 'COLL', count: 3 });
+    for (const text of [one, many]) {
+      resolved(text);
+      expect(text.startsWith('COLL')).toBe(true);
+    }
+    expect(one).toContain('1');
+    expect(many).toContain('3');
+    expect(many, 'the plural form differs from the singular').not.toBe(one.replace('1', '3'));
+  });
+
+  it('pluralises the scratch cards left to reveal', () => {
+    const one = i18n.t('collection.scratchCount', { count: 1 });
+    const many = i18n.t('collection.scratchCount', { count: 5 });
+    resolved(one);
+    resolved(many);
+    expect(many).not.toBe(one.replace('1', '5'));
+  });
+
+  it.each([
+    'dock.collection',
+    'collection.links',
+    'collection.album',
+    'collection.scratch',
+    'collection.fair',
+    'collection.fairHint',
+    'collection.fairOpen',
+  ])('translates %s', (key) => {
+    resolved(i18n.t(key));
   });
 });
 

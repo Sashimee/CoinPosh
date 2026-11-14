@@ -140,6 +140,26 @@ function chunkFileName(chunk: { readonly moduleIds: readonly string[] }): string
   return accountUi ? 'assets/accountUi-[name]-[hash].js' : 'assets/[name]-[hash].js';
 }
 
+/**
+ * The reward sheets (inventory, album, fair, scratch) share the unbox hero, the particle system
+ * and the crates strings with the table. Left to itself the bundler splits each shared module
+ * into its own small chunk, which costs gzip overhead on chunks the table loads at boot anyway;
+ * these groups keep them inside the vfx and crates boot chunks, which a sheet then reuses from
+ * cache. P-641 measured Other lazy JS at 120.3 kB gzip without them, 117.8 kB with them.
+ * The vfx group names its modules: one the entry chunk imports (vfx/haptics) would pull the
+ * whole group, three.webgpu with it, into the initial load.
+ */
+const TABLE_CHUNKS = [
+  {
+    name: 'vfx',
+    test: /[\\/]src[\\/]vfx[\\/](?:(?:camera|particles|text|time)[\\/]|(?:index|juice|emitters|flash|fusionJuice|glow|shockwave|timeline|palette)\.ts$)/,
+  },
+  {
+    name: 'unbox',
+    test: /[\\/](?:src[\\/](?:vfx[\\/]cinematics[\\/]unbox|game[\\/]crates)[\\/]|three[\\/]examples[\\/]jsm[\\/]math[\\/]ConvexHull\.js$)/,
+  },
+];
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', 'VITE_');
   const apiUrl = resolveApiUrl(env.VITE_API_URL);
@@ -175,7 +195,10 @@ export default defineConfig(({ mode }) => {
       // their imports, so the polyfill is bytes on the critical path for no change in behavior.
       modulePreload: { polyfill: false },
       rolldownOptions: {
-        output: { chunkFileNames: chunkFileName },
+        output: {
+          chunkFileNames: chunkFileName,
+          codeSplitting: { includeDependenciesRecursively: false, groups: TABLE_CHUNKS },
+        },
       },
     },
   };
