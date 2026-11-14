@@ -1,10 +1,19 @@
 import { RollSchema, WalletSchema, type CrateId } from '@coinposh/shared';
-import { Group, PerspectiveCamera, Vector3 } from 'three/webgpu';
+import {
+  BufferGeometry,
+  Group,
+  MeshBasicNodeMaterial,
+  PerspectiveCamera,
+  Scene,
+  Vector3,
+  type Object3D,
+} from 'three/webgpu';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBus } from '../../app/bus.ts';
 import { defaultSettings } from '../../app/settings.ts';
-import { initialUiState, type UiState } from '../../app/state.ts';
+import { initialUiState, type UiEvents, type UiState } from '../../app/state.ts';
 import { createStore } from '../../app/store.ts';
+import { BUNDLED_RESOURCES, createI18n } from '../../i18n/index.ts';
 import {
   PAYOUT_HOLD_CAP_MS,
   PayoutLedger,
@@ -15,6 +24,7 @@ import type { CrateEvents } from './events.ts';
 import {
   bindEscapeCollect,
   holdWhileSheetOpen,
+  mountCrates,
   payoutLines,
   rollCredit,
   trackCratePayout,
@@ -339,5 +349,170 @@ describe('a crate holds its credit from open to collect', () => {
       expect(ledger.coins.shown).toBe(52);
       expect(warnings).toEqual([]);
     });
+  });
+});
+
+class FakeElement {
+  readonly children: FakeElement[] = [];
+  readonly dataset: Record<string, string> = {};
+  readonly style = { setProperty: () => undefined, removeProperty: () => undefined };
+  readonly classList = { remove: () => undefined, toggle: () => undefined };
+  className = '';
+  hidden = false;
+  textContent = '';
+  parent: FakeElement | null = null;
+  readonly attributes = new Map<string, string>();
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+  append(...nodes: FakeElement[]): void {
+    for (const node of nodes) {
+      node.parent = this;
+      this.children.push(node);
+    }
+  }
+  remove(): void {
+    this.parent?.children.splice(this.parent.children.indexOf(this), 1);
+    this.parent = null;
+  }
+}
+
+describe('the crate warm-up in the mounted module', () => {
+  const PLAYABLE = 'coinposh:boot:playable';
+  let spawned = 0;
+
+  beforeEach(() => {
+    // The unbox primer waits on timeouts here; the boot mark has to stay on the real `performance`.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.stubGlobal('document', { createElement: () => new FakeElement() });
+  });
+
+  afterEach(() => {
+    performance.clearMarks(PLAYABLE);
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function warmProps(scene: Object3D): Object3D[] {
+    return scene.children.filter((part) => part.position.y === -1_000);
+  }
+
+  function mounted() {
+    const scene = new Group();
+    const listeners = new Set<(deltaSeconds: number) => void>();
+    const crates = mountCrates({
+      net: {
+        table: { subscribe: () => () => undefined, claimCrate: () => undefined },
+        client: { call: () => Promise.reject(new Error('No server in this test')) },
+      },
+      sim: { stats: { tick: 0, pusherStroke: 0 } },
+      stage: {
+        scene,
+        camera: new PerspectiveCamera(40, 9 / 16),
+        renderer: {},
+        onFrame(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      framing: () => ({
+        position: new Vector3(0, 0.5, 0.6),
+        target: new Vector3(0, 0, -0.05),
+        fov: 40,
+      }),
+      ui: {
+        store: createStore(initialUiState(defaultSettings('en'))),
+        bus: createBus<UiEvents>(),
+        i18n: createI18n({ language: 'en', resources: BUNDLED_RESOURCES }),
+      },
+      host: new FakeElement() as unknown as HTMLElement,
+      reducedMotion: () => true,
+    });
+    const prime = vi.spyOn(crates.director, 'prime');
+    /** One table frame: listeners, the out-of-sight props draw, then the frame's task and idle slot end. */
+    const frame = async (): Promise<void> => {
+      for (const listener of [...listeners]) listener(1 / 60);
+      const unboxPrimer = scene.getObjectByName('unbox-primer')?.children ?? [];
+      for (const part of [...warmProps(scene), ...unboxPrimer]) {
+        part.onAfterRender(
+          null as never,
+          new Scene(),
+          new PerspectiveCamera(),
+          new BufferGeometry(),
+          new MeshBasicNodeMaterial(),
+          new Group(),
+        );
+      }
+      await Promise.resolve();
+      vi.runOnlyPendingTimers();
+    };
+    /** A crate already on the table at load, so the arrival hint stays down. */
+    const spawn = (): void => {
+      spawned += 1;
+      crates.events.emit('crate:spawned', {
+        crateId: `crate_${String(spawned).padStart(16, 'A')}` as CrateId,
+        kind: 'vault',
+        position: { x: 0, y: 0, z: 0 },
+        resumed: true,
+      });
+    };
+    const unboxPriming = (): boolean => scene.getObjectByName('unbox-primer') !== undefined;
+    return { crates, scene, listeners, prime, frame, spawn, unboxPriming };
+  }
+
+  it('primes the unbox for a crate that spawns before the table is playable', async () => {
+    const { crates, scene, prime, frame, spawn, unboxPriming } = mounted();
+    await frame();
+    spawn();
+    expect(prime).toHaveBeenCalledOnce();
+    expect(unboxPriming()).toBe(true);
+    expect(warmProps(scene)).toEqual([]);
+    crates.dispose();
+  });
+
+  it('leaves a crate that spawns mid-warm-up to the warm-up, which primes the unbox once done', async () => {
+    const { crates, scene, prime, frame, spawn, unboxPriming } = mounted();
+    performance.mark(PLAYABLE);
+    await frame();
+    expect(warmProps(scene)).toHaveLength(1);
+    spawn();
+    expect(prime).not.toHaveBeenCalled();
+    expect(unboxPriming()).toBe(false);
+
+    for (let i = 0; i < 6; i++) await frame();
+    expect(warmProps(scene)).toEqual([]);
+    expect(prime).toHaveBeenCalledOnce();
+    expect(unboxPriming()).toBe(true);
+    crates.dispose();
+  });
+
+  it('starts no second primer for a crate that spawns after the warm-up', async () => {
+    const { crates, scene, frame, spawn, unboxPriming } = mounted();
+    performance.mark(PLAYABLE);
+    for (let i = 0; i < 7; i++) await frame();
+    expect(unboxPriming()).toBe(true);
+    for (let i = 0; i < 7; i++) await frame();
+    expect(unboxPriming()).toBe(false);
+
+    spawn();
+    await frame();
+    expect(unboxPriming()).toBe(false);
+    expect(warmProps(scene)).toEqual([]);
+    crates.dispose();
+  });
+
+  it('stops the warm-up on dispose, mid-way, and never primes the unbox', async () => {
+    const { crates, scene, listeners, prime, frame, unboxPriming } = mounted();
+    performance.mark(PLAYABLE);
+    await frame();
+    await frame();
+    expect(warmProps(scene)).toHaveLength(1);
+
+    crates.dispose();
+    expect(warmProps(scene)).toEqual([]);
+    expect(listeners.size).toBe(0);
+    await frame();
+    expect(prime).not.toHaveBeenCalled();
+    expect(unboxPriming()).toBe(false);
   });
 });
