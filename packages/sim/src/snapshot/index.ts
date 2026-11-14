@@ -9,6 +9,8 @@ export {
   dequantizePosition,
   dequantizeRotation,
   POSITION_UNIT,
+  type PropPoseSnapshot,
+  type PropSnapshot,
   quantizePosition,
   quantizeRotation,
   type RestState,

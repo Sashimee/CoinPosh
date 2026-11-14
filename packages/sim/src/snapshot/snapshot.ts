@@ -29,6 +29,27 @@ export interface SimTableSnapshot {
   readonly pusherTickInCycle: number;
   /** In ascending id order. */
   readonly coins: readonly CoinPose[];
+  /** Present only on a Sim with props: one entry per prop, in ascending id order. */
+  readonly props?: readonly PropSnapshot[];
+}
+
+/** A dynamic prop's pose, quantized as a coin's is. */
+export interface PropPoseSnapshot {
+  readonly p: readonly [number, number, number];
+  readonly q: readonly [number, number, number, number];
+  readonly rest: 'awake' | 'asleep';
+}
+
+/**
+ * One prop of a saved table. Its kind, shape and parameters are the config's; the
+ * snapshot keeps only what play changed: how many ticks it has been on the table, which
+ * sets where a kinematic prop is along its path, and a dynamic prop's pose, which is
+ * absent once it has fallen.
+ */
+export interface PropSnapshot {
+  readonly id: number;
+  readonly clock: number;
+  readonly pose?: PropPoseSnapshot;
 }
 
 function whole(n: number): number {
