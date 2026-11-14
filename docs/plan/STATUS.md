@@ -347,7 +347,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-510 | done | task/P-510 (merge 5acaaeb) | Crate HUD hold kept while the director holds the unbox behind a sheet; fix round (fca3729) folds P-511, P-549 with a deterministic front-fall assertion; pnpm check green after merge |
 | P-535 | done | task/P-535 (merge 33ea92c) | A closing sheet goes inert and hands focus back at once so it cannot spend coins (folds P-537 case a), with apps/web/e2e/sheet-close-safety.spec.ts and sheetFocus tests (50a69b8); pnpm check green after merge |
 | P-544 | done | task/P-544 (merge bf9df59) | Safes sheet mounted with a HUD trigger, ready badge and server wallet sync (folds P-545, P-546), with apps/web/e2e/safes.spec.ts and hud tests; review round (852be7a); pnpm check green after merge |
-| P-536 | blocked(review: not delivered; plaque = wallet breaks apps/web/e2e/demo-reload.spec.ts outside its owns) | task/P-536 (not merged) | Design ready (vaultReadout, hud.inHand, drop upgrades.heldBack, plaque-honesty.spec.ts); retry once owns widen to demo-reload.spec.ts and collect-payout.spec.ts (P-573, P-574); branch kept |
+| P-536 | done | task/P-536 (merge f378559) | Vault plaque shows spendable coins only; drop buffer as a separate 'in hand' readout, with apps/web/e2e/plaque-honesty.spec.ts (folds P-573, P-574) (6afeada); pnpm check green after merge; follow-ups P-609 to P-613 |
 | P-575 | done | task/P-575 (merge c8497a7) | core.ts fuse() holds fusions whose inputs are not yet bound and claims them once their mints land, pairing undrawn coins by sim id (248c132); unblocks T-92.09; follow-ups P-593, P-594; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
