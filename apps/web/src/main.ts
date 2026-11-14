@@ -537,6 +537,17 @@ interface VaultTracker {
   resumed(): void;
   /** A new boot of the table ("Play here") replaced the buffer with the one `state` lists. */
   adopted(state: StateResponse): void;
+  /**
+   * While `hold` holds crate winnings back from the Vault, a buffer refill stays in the plaque
+   * rather than moving into the hand, so the held Vault never dips and its coin line adds up.
+   */
+  holdWith(hold: VaultHold): () => void;
+}
+
+interface VaultHold {
+  holding(): boolean;
+  /** Runs `listener` each time held winnings are paid into the Vault; returns the way to stop. */
+  onPaid(listener: () => void): () => void;
 }
 
 /**
@@ -556,6 +567,8 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
   const known: number[] = state.table.buffer.map((coin) => coin.value);
   let refillValue = state.table.buffer.at(-1)?.value ?? 0;
   let awaitingSync = false;
+  let hold: VaultHold | null = null;
+  let shownInHand = 0;
   const refresh = (): void => {
     const balance = table.balance;
     if (!balance) return;
@@ -567,8 +580,14 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
       provisionalCoins: balance.provisionalCoins,
       goldBars: balance.wallet.goldBars,
     });
-    setInHand(app.store, readout.inHand);
-    app.setWallet({ ...balance.wallet, ...readout });
+    const inHand = hold?.holding() ? Math.min(readout.inHand, shownInHand) : readout.inHand;
+    shownInHand = inHand;
+    setInHand(app.store, inHand);
+    app.setWallet({
+      ...balance.wallet,
+      ...readout,
+      coins: readout.coins + readout.inHand - inHand,
+    });
   };
   const forgetBuffer = (): void => {
     awaitingSync = false;
@@ -607,6 +626,15 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
       known.splice(0, known.length, ...booted.table.buffer.map((coin) => coin.value));
       refillValue = booted.table.buffer.at(-1)?.value ?? refillValue;
       refresh();
+    },
+    holdWith(next) {
+      hold = next;
+      const stop = next.onPaid(refresh);
+      return () => {
+        stop();
+        if (hold === next) hold = null;
+        refresh();
+      };
     },
   };
 }
@@ -777,8 +805,10 @@ async function bootScene(
     });
     playing = { sim: started, layout: laid, scope };
     const payouts = orderCratePayouts(walletPayoutFor(ui.store));
+    const releaseVault = boot.vault.holdWith(payouts);
     scope.add(() => {
       payouts.dispose();
+      releaseVault();
     });
     const systems = startPlay(systemsModule, stage, started, boot, state, vfx, payouts, scope);
     playingSystems = systems;
@@ -1515,6 +1545,9 @@ interface CratePayoutOrder {
   collected(crateId: string, landsInMs: number): void;
   /** The crate left without a collect, or every crate cinematic is over. */
   gone(crateId: string | null): void;
+  /** Crate winnings or the falls behind them are held back from the Vault. */
+  holding(): boolean;
+  onPaid(listener: () => void): () => void;
   dispose(): void;
 }
 
@@ -1539,6 +1572,11 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   let batches = 0;
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
   let effects: () => Vfx | null = () => null;
+  const paidListeners = new Set<() => void>();
+  const release = (id: string): void => {
+    payout.release(id);
+    for (const listener of [...paidListeners]) listener();
+  };
 
   const active = (): boolean =>
     unpaid.size > 0 || landing.size > 0 || performance.now() < holdUntil;
@@ -1552,14 +1590,14 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   const pay = (paid: FallBatch): void => {
     const vfx = effects();
     if (!vfx || paid.pops.length === 0) {
-      payout.release(paid.id);
+      release(paid.id);
       return;
     }
     let landed = 0;
     const finish = (): void => {
       if (!releasing.delete(finish)) return;
       clearTimeout(cap);
-      payout.release(paid.id);
+      release(paid.id);
     };
     const cap = setTimeout(finish, HELD_FALL_POPS_CAP_MS);
     releasing.add(finish);
@@ -1587,6 +1625,7 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
     const paid = batch;
     batch = null;
     if (paid) pay(paid);
+    else for (const listener of [...paidListeners]) listener();
   };
 
   const forget = (crateId: string): void => {
@@ -1687,6 +1726,13 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
       if (crateId === null) for (const id of [...unpaid.keys()]) forget(id);
       else forget(crateId);
       settle();
+    },
+    holding: () => active() || releasing.size > 0,
+    onPaid(listener) {
+      paidListeners.add(listener);
+      return () => {
+        paidListeners.delete(listener);
+      };
     },
     dispose() {
       for (const id of [...unpaid.keys()]) forget(id);
