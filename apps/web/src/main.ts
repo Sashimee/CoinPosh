@@ -2,6 +2,7 @@ import type { MintedCoin, Roll, Safe, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
+import { vaultReadout } from './app/model.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import {
   mountAscension,
@@ -60,7 +61,7 @@ import {
 } from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
-import { mountSafesTrigger } from './ui/hud.ts';
+import { mountSafesTrigger, setInHand } from './ui/hud.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
@@ -419,10 +420,10 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
 }
 
 /**
- * Turns the upgrades panel's confirms into server purchases. The Vault plaque counts the drop
- * buffer on top of the wallet, so a purchase re-reads the table instead of showing the bare
- * wallet the purchase returns. Stale levels re-read the state without `hydrate=boot`, which
- * would refund the coins in play.
+ * Turns the upgrades panel's confirms into server purchases. The Vault plaque follows the table
+ * sync's wallet and adds winnings still in the outbox, so a purchase re-reads the table instead
+ * of showing the bare wallet the purchase returns. Stale levels re-read the state without
+ * `hydrate=boot`, which would refund the coins in play.
  */
 function mountUpgradePurchases(
   net: Net,
@@ -539,10 +540,9 @@ interface VaultTracker {
 }
 
 /**
- * The Vault shows every coin the player holds: the server's wallet, the pre-minted drop buffer
- * (already paid for out of the wallet, so the wallet alone reads low), and winnings still
- * waiting for the server's answer, shimmering while any are. Only the wallet is spendable, so
- * upgrade prices are checked against it alone.
+ * The Vault shows what the server can spend, the wallet, plus winnings still waiting for its
+ * answer, shimmering while any are; so a price at or below a settled Vault always buys. The
+ * pre-minted drop buffer, already paid for out of the wallet, is shown apart as the coins in hand.
  *
  * TableSync says how many coins are buffered but not what they are worth, so the worth comes
  * from server coins seen here: the snapshot's buffer, oldest first as drops take them, and for
@@ -561,12 +561,14 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
     if (!balance) return;
     let buffered = 0;
     for (let i = 0; i < table.bufferSize; i += 1) buffered += known[i] ?? refillValue;
-    app.setWallet({
-      ...balance.wallet,
-      coins: balance.wallet.coins + buffered + balance.provisionalCoins,
-      spendableCoins: balance.wallet.coins,
-      provisional: balance.provisionalCoins > 0,
+    const readout = vaultReadout({
+      walletCoins: balance.wallet.coins,
+      bufferedCoins: buffered,
+      provisionalCoins: balance.provisionalCoins,
+      goldBars: balance.wallet.goldBars,
     });
+    setInHand(app.store, readout.inHand);
+    app.setWallet({ ...balance.wallet, ...readout });
   };
   const forgetBuffer = (): void => {
     awaitingSync = false;

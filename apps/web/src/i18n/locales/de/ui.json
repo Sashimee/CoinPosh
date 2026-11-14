@@ -17,6 +17,11 @@
     "balanceAria": "Tresorguthaben: {{value}}",
     "goldBarsAria": "Goldbarren: {{value}}",
     "provisional": "Das Haus bestätigt",
+    "inHand": {
+      "label": "In der Hand",
+      "aria_one": "{{value}} Münze in der Hand, bezahlt und bereit zum Einwurf",
+      "aria_other": "{{value}} Münzen in der Hand, bezahlt und bereit zum Einwurf"
+    },
     "vaultEmpty": {
       "title": "Tresor leer",
       "hint": "Ihre Münzen an der Kante sind noch im Spiel. Sehen Sie zu, wie sie fallen."
@@ -78,8 +83,6 @@
     "pending": "Wird bestätigt…",
     "buyAria": "{{name}} Stufe {{level}} für {{cost}} kaufen",
     "cannotAfford": "Nicht genug Guthaben",
-    "heldBack_one": "{{value}} Münze noch in der Fallrinne",
-    "heldBack_other": "{{value}} Münzen noch in der Fallrinne",
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",
