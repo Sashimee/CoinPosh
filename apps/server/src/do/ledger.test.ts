@@ -130,6 +130,30 @@ describe('LedgerTx', () => {
     }).toThrow(/coins legs sum to -5/);
   });
 
+  it.each([
+    ['quest.claim', 'mint', 'wallet', 'pearls'],
+    ['streak.milestone', 'mint', 'wallet', 'keys'],
+    ['season.tier', 'mint', 'wallet', 'tickets'],
+    ['season.rollover', 'wallet', 'house', 'stars'],
+  ] as const)(
+    'lists %s as its own kind, moving %s -> %s and nothing else',
+    (kind, from, to, unit) => {
+      expect(TX_KINDS).toContain(kind);
+      const moved = new LedgerTx(kind).move(from, to, unit, 3, null);
+      expect(moved.legs).toEqual([
+        { account: from, unit, delta: -3, ref: null },
+        { account: to, unit, delta: 3, ref: null },
+      ]);
+      expect(() => {
+        moved.assertBalanced();
+      }).not.toThrow();
+      const conjured = new LedgerTx(kind).post(to, unit, 3, null);
+      expect(() => {
+        conjured.assertBalanced();
+      }).toThrow(`${kind} is unbalanced: ${unit} legs sum to 3`);
+    },
+  );
+
   it('refuses negative moves and fractional amounts', () => {
     expect(() => new LedgerTx('claim.fall').move('table', 'wallet', 'coins', -3, null)).toThrow(
       ConservationError,
