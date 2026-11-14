@@ -1,5 +1,6 @@
 import { ASCENSION_SQL } from '../routes/ascend.ts';
 import { SAFES_SQL } from '../routes/safes.ts';
+import { SCRATCH_SQL } from '../routes/scratch.ts';
 import { UPGRADE_LEVELS_SQL } from '../routes/upgrades.ts';
 
 /** PlayerDO SQLite migrations, applied in order; `schema_version` records how many ran. */
@@ -166,6 +167,7 @@ export const MIGRATIONS: readonly string[] = [
   `,
   ASCENSION_SQL,
   SAFES_SQL,
+  SCRATCH_SQL,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {
