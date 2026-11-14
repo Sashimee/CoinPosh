@@ -8,6 +8,7 @@ import {
   CURRENCY_IDS,
   DROP_SOURCE_IDS,
   RARITY_IDS,
+  SafeTypeIdSchema,
   UpgradeLineIdSchema,
   VENUE_IDS,
 } from '@coinposh/shared';
@@ -76,6 +77,9 @@ function checkKeys(config: EconomyConfig, report: Report): void {
     check(`upgradeLines[${i}].effect.stat`, line.effect.stat);
   }
   for (const [i, t] of config.dropTables.entries()) check(`dropTables[${i}].source`, t.source);
+  for (const [i, t] of config.safes.types.entries()) {
+    check(`safes.types[${i}].id`, t.id, SafeTypeIdSchema);
+  }
   // Key format only: membership in VENUE_IDS is reported by checkProgression.
   for (const [i, v] of config.venues.entries()) check(`venues[${i}].id`, v.id);
   for (const [i, set] of config.album.entries()) {
@@ -255,24 +259,60 @@ function checkDrops(config: EconomyConfig, report: Report): void {
 
   checkIdsExactly(report, 'crateRewards', Object.keys(crateRewards), RARITY_IDS);
   let previousIncome = -1;
+  let previousSafeChance = 0;
   for (const rarity of RARITY_IDS) {
     const reward = crateRewards[rarity];
     const path = `crateRewards.${rarity}`;
     for (const key of ['incomeSeconds', 'pearls', 'keys', 'tickets'] as const) {
       if (!isNonNegative(reward[key])) report(`${path}.${key}`, 'must be ≥ 0');
     }
-    if (
-      !Number.isInteger(reward.charmChance) ||
-      reward.charmChance < 0 ||
-      reward.charmChance > ODDS_SCALE
-    ) {
-      report(`${path}.charmChance`, `must be an integer in [0, ${ODDS_SCALE}]`);
+    for (const key of ['charmChance', 'safeChance'] as const) {
+      const chance = reward[key];
+      if (!Number.isInteger(chance) || chance < 0 || chance > ODDS_SCALE) {
+        report(`${path}.${key}`, `must be an integer in [0, ${ODDS_SCALE}]`);
+      }
     }
+    if (reward.safeChance < previousSafeChance) {
+      report(`${path}.safeChance`, 'a rarer crate must not be less likely to hold a safe');
+    }
+    previousSafeChance = reward.safeChance;
     if (!(reward.incomeSeconds > previousIncome)) {
       report(`${path}.incomeSeconds`, 'rarer crates must pay strictly more coins');
     }
     previousIncome = reward.incomeSeconds;
   }
+}
+
+function checkSafes(config: EconomyConfig, report: Report): void {
+  const { safes, dropTables } = config;
+  if (safes.types.length === 0) report('safes.types', 'the catalog needs at least one safe type');
+  const ids = new Set<string>();
+  safes.types.forEach((type, i) => {
+    const path = `safes.types[${i}] (${type.id})`;
+    if (ids.has(type.id)) report(path, 'duplicate id');
+    ids.add(type.id);
+    const table = dropTables.find((t) => t.source === type.dropSource);
+    if (table === undefined) {
+      report(path, `dropSource "${type.dropSource}" has no drop table`);
+    } else if (!table.pity) {
+      report(path, `dropSource "${type.dropSource}" must carry pity counters`);
+    }
+    if (type.dropSource === safes.crateDrop.source) {
+      report(path, `contents must not roll on "${type.dropSource}", the table that drops safes`);
+    }
+    if (!isPositiveInt(type.keysPerSafe)) {
+      report(path, `keysPerSafe must be a positive integer, got ${type.keysPerSafe}`);
+    }
+    if (!isPositiveInt(type.unlockSeconds)) {
+      report(path, `unlockSeconds must be a positive integer, got ${type.unlockSeconds}`);
+    }
+  });
+
+  const { source, type } = safes.crateDrop;
+  if (!dropTables.some((t) => t.source === source)) {
+    report('safes.crateDrop.source', `"${source}" has no drop table`);
+  }
+  if (!ids.has(type)) report('safes.crateDrop.type', `"${type}" is not in safes.types`);
 }
 
 function checkProgression(config: EconomyConfig, report: Report): void {
@@ -362,6 +402,7 @@ export function validateEconomyConfig(config: EconomyConfig): readonly Validatio
   checkCoins(config, report);
   checkUpgrades(config, report);
   checkDrops(config, report);
+  checkSafes(config, report);
   checkProgression(config, report);
   checkPacing(config, report);
   checkRateEnvelope(config, report);

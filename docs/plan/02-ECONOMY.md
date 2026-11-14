@@ -14,7 +14,7 @@ chart) for review.
 | **Bullion** | venue progress | Converted from coin winnings (1 per 1,000 value) | Ascension threshold |
 | **Gold Bars** | prestige, permanent | Venue Ascension | Permanent global upgrades ("The Family Office") |
 | **Pearls** | premium (earnable) | Quests, album sets, season track, Heirloom pushes, rare crates | Keys, safe skips, gacha tickets, cosmetics. IAP later behind a flag |
-| **Keys** | utility | Crates, quests, season | Open safes instantly |
+| **Keys** | utility | Legendary+ crates, safes, quests, season | Open safes instantly (1 per Gold Safe) |
 | **Tickets** | utility | Quests, Golden Hour, season | Gacha pulls |
 | **Stars** | season XP | Everything you do | Season pass tiers |
 
@@ -187,6 +187,78 @@ Considered and rejected: 400 Stars a tier puts the quest player at 29.4–29.9 h
 season's last day, and a player who skips quests (19,000 of 20,000 Stars) never finishes.
 T-3.07 owns the rebalance; the quest player sits 0.9 h above the band's floor, so a raise in the
 passive Stars rate (632 an active hour today) needs a matching raise in Stars per tier.
+
+## Safes (T-2.01)
+
+Numbers and rules: `packages/economy/src/config/safes.ts` (`safes`, `safeTypeDef`,
+`safeUnlocksAt`, `safeTimerReady`) and the `safeChance` column of `crateRewards`
+(`src/config/drops.ts`).
+
+| Safe | Contents roll on | Keys to open now | Timer |
+|---|---|---|---|
+| Gold | `goldSafe` table above, with pity | 1 | 4 h |
+
+**Where safes come from.** A Vault Crate open rolls its rarity, then rolls `safeChance` for a
+Gold Safe on top of that rarity's normal reward. The rarer the crate, the likelier the safe:
+
+| Crate rarity | Common | Fine | Rare | Exquisite | Legendary | Heirloom |
+|---|---|---|---|---|---|---|
+| Safe chance | 0 % | 2 % | 10 % | 25 % | 50 % | 100 % |
+| Keys in the crate | 0 | 0 | 0 | 0 (was 1) | 1 | 2 |
+
+With pity that is 3.64 % a crate, about one safe every 27.5 crates. Quests can grant safes too
+(`Reward` kind `safe`), but no quest pays one yet.
+
+**Rules.**
+- The server grants the safe and stamps `unlocksAt = grantedAt + 4 h` from its own clock
+  (`safeUnlocksAt`). The client never sends a time the server trusts.
+- `method: 'key'` spends `keysPerSafe` Keys and opens at once. `method: 'timer'` succeeds once
+  the server clock reaches `unlocksAt`, never before (`safeTimerReady`). The Butler (staff) opens
+  it the moment the timer ends.
+- Contents roll on `goldSafe` with its own pity counters and pay that rarity's `crateRewards` row
+  (coins, Pearls, Keys, Tickets, Charm chance, album card). That roll never rolls `safeChance`,
+  so a safe never holds a safe. Safes pay no Stars, so the season track is unchanged.
+
+**Why these numbers.**
+- *4 h timer:* longer than a day's casual play (2 × 25 min), so inside a session only a Key
+  opens a safe now. Shorter than the shortest casual gap (11.6 h), so the next session always
+  finds yesterday's safes open (0 still locked at any session start, 5 seeds × 42 days).
+- *1 Key:* readable at a glance, and the Demo mock already uses it.
+- *Exquisite Key → 25 % safe:* with the old Exquisite Key, crates alone paid 1.6 Keys per safe.
+  The casual player opened 100 % of safes by Key and still sat on 242–263 unspent Keys at day 42
+  (307–327 with quests), so the timer never mattered and the Key stopped feeling like a choice.
+  The fix moves value out of a Key and into a safe, which is worth more: a safe's expected payout
+  is 27.8 s of income, 2.16 Pearls, 0.028 Keys and 0.134 Tickets against a crate's 18.9 s, 1.31,
+  0.018 and 0.079.
+
+**Flow proof** (`safes.test.ts`: the sim's casual player, sessions at 8:00 and 20:00, 42 days,
+seeds 1–5. Each crate rolls rarity and `safeChance` on a side stream. A held Key is spent at
+once, otherwise the safe waits for its timer. Keys come from crates, safe contents, season tiers
+and, in the quest row, daily and weekly quests and streak milestones):
+
+| Player | Safes a day | Opened by Key | Keys left at day 42 | Most locked at once |
+|---|---|---|---|---|
+| Never claims a quest | 6.12 – 6.55 | 59.5 – 67.8 % | 0 | 5 – 7 |
+| Claims quests | 5.95 – 6.38 | 85.6 – 91.4 % | 1 – 9 | 5 – 6 |
+
+Quests pay for the Keys, so a quest player opens nearly every safe at once and a player who
+skips them waits on the timer for a third of them. Keys never pile up. The first safe came at
+4.6–35.3 active minutes (median 17.6), inside the first two sessions on every seed. Over 400
+seeds it is p50 12.3 min, p90 27.0 min.
+
+**Pacing proof.** Safes add 5.35 % to crate coin income when every safe is paid at once (the
+fastest case). The shipped sim with that income folded in (`runSimulation`, 24 players, 3 days)
+still passes every pacing target, so no target moves:
+
+| Seed | Ascend V1 active p50 (without safes) | V2 / V1 | Free season | First album set |
+|---|---|---|---|---|
+| 1 | 3 h 12 (3 h 17) | 1.61 × | 28.2 h | 14.7 min |
+| 2 | 3 h 12 (3 h 16) | 1.61 × | 28.3 h | 12.0 min |
+| 3 | 3 h 16 (3 h 18) | 1.64 × | 28.3 h | 15.1 min |
+
+Casual Ascend V1 stays at 1.5 days. The margin: crate income could rise 20 % before Ascend V1
+nears the 3 h floor (3 h 01 at × 1.2). Dropping the Exquisite Key leaves the casual player 2, 5,
+9, 12, 15, 18, 21 crate Keys by days 1–7 (was 8 … 71), all of which the safes now use.
 
 ## Expansion economy (M10+, founder Q&A 2026-11-09)
 

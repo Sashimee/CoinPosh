@@ -74,6 +74,15 @@
   line-height: 1.4;
 }
 
+.cp-ascension-progress {
+  font-family: var(--cp-font-display);
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+  color: var(--cp-ivory);
+  letter-spacing: 0.02em;
+}
+
 .cp-ascension-dial {
   position: relative;
   width: 120px;
@@ -143,6 +152,8 @@
 .cp-ascension-estimate-value {
   font-family: var(--cp-font-display);
   font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
   color: var(--cp-champagne);
   opacity: 0.85;
 }
@@ -187,16 +198,140 @@
   color: var(--cp-sea-glass);
 }
 
-.cp-ascension-hold {
-  width: 100%;
-  min-height: 48px;
-  touch-action: none;
-  user-select: none;
+@property --cp-ascension-hold-preview {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
 }
 
-.cp-ascension-hold[data-state='blocked'],
+.cp-buy.cp-ascension-hold {
+  position: relative;
+  flex-direction: row;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 52px;
+  margin-top: 4px;
+  overflow: hidden;
+  isolation: isolate;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition:
+    --cp-ascension-hold-preview 600ms cubic-bezier(0.2, 1, 0.4, 1),
+    box-shadow 200ms ease;
+}
+
+.cp-ascension-hold::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  z-index: 0;
+  border-radius: calc(var(--cp-radius-sm) - 3px);
+  border: 1px solid rgb(var(--cp-ivory-rgb) / 0.35);
+  pointer-events: none;
+}
+
+.cp-ascension-hold-label,
+.cp-ascension-hold-lock {
+  position: relative;
+  z-index: 2;
+}
+
+.cp-ascension-hold-lock {
+  display: none;
+  place-items: center;
+}
+
+.cp-ascension-hold-lock svg {
+  width: 18px;
+  height: 18px;
+}
+
+.cp-ascension-hold-track {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.cp-ascension-hold-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  opacity: 0;
+}
+
+.cp-ascension-hold[data-state='blocked'] .cp-ascension-hold-lock {
+  display: inline-grid;
+  color: var(--cp-gold-brushed);
+}
+
+/* Recessed lacquer in a gilt frame, so a locked hold still reads as a button, not a field. */
+.cp-buy.cp-ascension-hold[data-state='blocked'] {
+  border: 1px solid rgb(var(--cp-gold-brushed-rgb) / 0.85);
+  background:
+    linear-gradient(
+      180deg,
+      rgb(0 0 0 / 0.42),
+      rgb(0 0 0 / 0.12) 55%,
+      rgb(var(--cp-gold-brushed-rgb) / 0.08)
+    ),
+    var(--cp-lacquer);
+  color: var(--cp-champagne);
+  box-shadow:
+    inset 0 2px 7px rgb(0 0 0 / 0.65),
+    inset 0 -1px 0 rgb(var(--cp-gold-brushed-rgb) / 0.4),
+    0 0 0 3px rgb(var(--cp-gold-brushed-rgb) / 0.12),
+    0 1px 0 rgb(var(--cp-ivory-rgb) / 0.08);
+  cursor: not-allowed;
+}
+
+.cp-ascension-hold[data-state='blocked']::before {
+  border-color: rgb(var(--cp-gold-brushed-rgb) / 0.28);
+}
+
+.cp-ascension-hold[data-state='blocked'] .cp-ascension-hold-fill {
+  width: calc(var(--cp-ascension-hold-preview) * 100%);
+  opacity: 1;
+  background: linear-gradient(
+    90deg,
+    rgb(var(--cp-gold-brushed-rgb) / 0.06),
+    rgb(var(--cp-gold-brushed-rgb) / 0.3)
+  );
+  box-shadow: inset -2px 0 0 rgb(var(--cp-gold-brushed-rgb) / 0.75);
+}
+
+.cp-ascension-hold[data-state='holding'] .cp-ascension-hold-fill {
+  width: calc(var(--cp-ascension-hold-progress, 0) * 100%);
+  opacity: 1;
+  background: linear-gradient(
+    90deg,
+    rgb(var(--cp-ivory-rgb) / 0.15),
+    rgb(var(--cp-ivory-rgb) / 0.55)
+  );
+}
+
+.cp-ascension-hold[data-state='idle'] {
+  animation: cp-ascension-hold-breathe 2400ms ease-in-out infinite;
+}
+
+.cp-ascension-hold[data-state='idle'] .cp-ascension-hold-track::after {
+  content: '';
+  position: absolute;
+  inset: -20% auto -20% 0;
+  width: 38%;
+  background: linear-gradient(100deg, transparent, rgb(var(--cp-ivory-rgb) / 0.6), transparent);
+  translate: -120% 0;
+  animation: cp-ascension-hold-sheen 2400ms ease-in-out infinite;
+}
+
 .cp-ascension-hold[data-state='sending'] {
-  opacity: 0.6;
+  opacity: 0.7;
 }
 
 .cp-ascension-hold.is-denied,
@@ -258,11 +393,23 @@
 
 .cp-ascension-office-text {
   display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.cp-ascension-office-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
   min-width: 0;
 }
 
 .cp-ascension-office-name {
   font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .cp-ascension-office-level {
@@ -270,18 +417,49 @@
   color: var(--cp-champagne);
 }
 
-.cp-ascension-office-buy {
-  display: inline-flex;
+.cp-ascension-office-description {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--cp-ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.cp-ascension-office-effect {
+  font-family: var(--cp-font-display);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+  color: var(--cp-gold-brushed);
+  overflow-wrap: anywhere;
+}
+
+.cp-buy.cp-ascension-office-buy {
+  flex-direction: row;
+  justify-content: center;
   align-items: center;
   gap: 4px;
   flex: none;
-  min-width: 72px;
-  min-height: 36px;
+  min-width: 76px;
+  min-height: 44px;
+  padding-inline: 10px;
 }
 
 .cp-ascension-office-buy svg {
+  flex: none;
   width: 16px;
   height: 16px;
+}
+
+.cp-ascension-office-buy svg[hidden] {
+  display: none;
+}
+
+.cp-ascension-office-price {
+  font-family: var(--cp-font-display);
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: lining-nums tabular-nums;
+  white-space: nowrap;
 }
 
 .cp-ascension-office-row[data-maxed='true'] .cp-ascension-office-buy {
@@ -325,6 +503,26 @@
   }
 }
 
+@keyframes cp-ascension-hold-breathe {
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgb(var(--cp-ivory-rgb) / 0.6),
+      0 0 0 2px rgb(var(--cp-gold-brushed-rgb) / 0.45),
+      0 0 22px 4px rgb(var(--cp-gold-brushed-rgb) / 0.45);
+  }
+}
+
+@keyframes cp-ascension-hold-sheen {
+  0%,
+  35% {
+    translate: -120% 0;
+  }
+  80%,
+  100% {
+    translate: 320% 0;
+  }
+}
+
 @keyframes cp-ascension-pop {
   40% {
     scale: 1.04;
@@ -338,12 +536,27 @@
 .cp-ascension[data-motion='reduced'] .cp-ascension-hold.is-denied,
 .cp-ascension[data-motion='reduced'] .cp-ascension-office-row.is-denied,
 .cp-ascension[data-motion='reduced'] .cp-ascension-office-row.is-purchased,
-.cp-ascension[data-motion='reduced'].is-holding .cp-ascension-laurel {
+.cp-ascension[data-motion='reduced'].is-holding .cp-ascension-laurel,
+.cp-ascension[data-motion='reduced'] .cp-ascension-hold {
   animation: none;
 }
 
-.cp-ascension[data-motion='reduced'] .cp-ascension-ring-fill {
+.cp-ascension[data-motion='reduced'] .cp-ascension-ring-fill,
+.cp-ascension[data-motion='reduced'] .cp-ascension-hold {
   transition: none;
+}
+
+.cp-ascension[data-motion='reduced']
+  .cp-ascension-hold[data-state='idle']
+  .cp-ascension-hold-track::after {
+  display: none;
+}
+
+.cp-ascension[data-motion='reduced'] .cp-ascension-hold[data-state='idle'] {
+  box-shadow:
+    inset 0 1px 0 rgb(var(--cp-ivory-rgb) / 0.6),
+    0 0 0 2px rgb(var(--cp-gold-brushed-rgb) / 0.45),
+    0 0 16px 2px rgb(var(--cp-gold-brushed-rgb) / 0.35);
 }
 
 .cp-ascension[data-motion='reduced'] .cp-ascension-office-row.is-purchased {

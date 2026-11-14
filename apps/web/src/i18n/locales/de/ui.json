@@ -76,6 +76,8 @@
     "pending": "Wird bestätigt…",
     "buyAria": "{{name}} Stufe {{level}} für {{cost}} kaufen",
     "cannotAfford": "Nicht genug Guthaben",
+    "heldBack_one": "{{value}} Münze noch in der Fallrinne",
+    "heldBack_other": "{{value}} Münzen noch in der Fallrinne",
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",

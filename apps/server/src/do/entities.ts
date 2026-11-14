@@ -10,12 +10,14 @@ import {
   CoinIdSchema,
   CrateIdSchema,
   ENTITY_ID_PREFIXES,
+  SafeIdSchema,
   TableSessionIdSchema,
   type ClaimRejection,
   type CoinId,
   type CoinTier,
   type CrateId,
   type CrateKind,
+  type SafeId,
   type EpochMs,
   type MintedCoin,
   type TableCrate,
@@ -75,6 +77,10 @@ export function newCoinId(): CoinId {
 
 export function newCrateId(): CrateId {
   return CrateIdSchema.parse(`${ENTITY_ID_PREFIXES.crate}_${randomBase62(ENTITY_ID_LENGTH)}`);
+}
+
+export function newSafeId(): SafeId {
+  return SafeIdSchema.parse(`${ENTITY_ID_PREFIXES.safe}_${randomBase62(ENTITY_ID_LENGTH)}`);
 }
 
 export function newTableSessionId(): TableSessionId {
