@@ -9,6 +9,7 @@ import {
   type Currency,
   type DropSourceId,
   type Rarity,
+  type SoireePerkStat,
   type SynergyTag,
   type VenueId,
 } from '@coinposh/shared';
@@ -437,4 +438,72 @@ export interface RateEnvelopeDerivation {
    * window of every measured play style up to this cadence, Sommelier Pours included.
    */
   readonly honestTapsPerSecond: number;
+}
+
+/** A Soirée guest's request: `count` front-edge falls of `tier` within `windowMs`. */
+export interface SoireeRequestDef {
+  readonly kind: 'falls';
+  readonly tier: CoinTierId;
+  readonly count: number;
+  readonly windowMs: number;
+}
+
+export interface SoireeGuestDef {
+  /** A `SoireeGuestId` catalog key. */
+  readonly id: string;
+  /** 1-based; every run seats `seatsPerAct` guests of each act, acts in order. */
+  readonly act: number;
+  readonly request: SoireeRequestDef;
+  /** Favors paid when the request is fulfilled inside its window. */
+  readonly favors: number;
+}
+
+export interface SoireeFavorDef {
+  /** A `SoireeFavorId` catalog key. */
+  readonly id: string;
+  readonly stat: SoireePerkStat;
+  /** The stat is multiplied by `1 + magnitudeBp / 10 000` while the perk runs. */
+  readonly magnitudeBp: number;
+  readonly durationMs: number;
+  readonly cost: number;
+}
+
+/** What a run pays for a number of guests served, before any crate is opened. */
+export interface SoireeRewardTier {
+  readonly crates: number;
+  /** Crates rolled on `perfectCrateOdds` instead of `crateOdds`. */
+  readonly perfectCrates: number;
+  readonly keys: number;
+}
+
+/**
+ * The ceiling on what one rewarded run may add on top of the table income its own minutes
+ * earn anyway, in session-seconds: one second of the player's whole active income, the
+ * crates it opens included.
+ */
+export interface SoireeCapConfig {
+  /** The bonus may reach at most this share of `durationMs`, counted in session-seconds. */
+  readonly maxBonusShare: number;
+  /**
+   * Upper bound on the session income a perk on each stat adds per unit of magnitude per
+   * second: the stat's income elasticity. `soiree.test.ts` holds each bound to the sim.
+   */
+  readonly perkElasticity: Readonly<Record<SoireePerkStat, number>>;
+}
+
+export interface SoireeConfig {
+  readonly durationMs: number;
+  /** Pause after a guest resolves before the next window opens; the draft happens here. */
+  readonly interludeMs: number;
+  /** Runs per UTC day that pay rewards; further runs play for the tally alone. */
+  readonly rewardedRunsPerDay: number;
+  readonly seatsPerAct: number;
+  readonly draftSize: number;
+  readonly guests: readonly SoireeGuestDef[];
+  readonly favors: readonly SoireeFavorDef[];
+  /** Indexed by guests served, from 0 to every seat. */
+  readonly rewards: readonly SoireeRewardTier[];
+  readonly crateOdds: OddsTable;
+  readonly perfectCrateOdds: OddsTable;
+  readonly cap: SoireeCapConfig;
 }

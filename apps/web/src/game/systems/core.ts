@@ -10,6 +10,7 @@ import type {
   Tick,
   VenueId,
 } from '@coinposh/shared';
+import { nextCoinTier } from '@coinposh/shared';
 import { createBus, type Bus } from '../../app/bus.ts';
 import type { DecorumState } from '../../app/model.ts';
 import type { FeedbackKind, UiState } from '../../app/state.ts';
@@ -181,6 +182,8 @@ interface HeldFall {
 /** A sim fusion the server cannot be asked for yet: an input has no coin bound to it so far. */
 interface HeldFusion {
   readonly simIds: readonly [number, number, number];
+  /** The tier the sim fused into; an input bound to a coin that does not fuse into it is not the coin it fused. */
+  readonly into: CoinTier;
   /** Each input's coin, taken as soon as it is bound, since the body may leave before the rest. */
   readonly coins: (MintedCoin | null)[];
   readonly fusedId: number | null;
@@ -237,8 +240,11 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const settledIds = new Set<number>();
   let lastClaimTick = 0;
   let fallsAtLastClaimTick = 0;
-  /** Sim id of the coin each fusion claim makes, keyed by the claim's first coin. */
-  const fusedBodies = new Map<CoinId, number>();
+  /**
+   * Sim id of the coin each fusion claim makes, keyed by the claim's first coin. A refused claim
+   * leaves the inputs on the server's table, so the fused body is re-bound to that first coin.
+   */
+  const fusedBodies = new Map<CoinId, { readonly fusedId: number; readonly input: MintedCoin }>();
   const heldFusions: HeldFusion[] = [];
   /** Fused bodies whose own claim has not settled, held or in flight. */
   const unsettledFused = new Set<number>();
@@ -367,10 +373,10 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       case 'claimSettled': {
         const { claim, result } = event;
         if (claim.kind === 'fusion') {
-          const fusedId = fusedBodies.get(claim.coinIds[0]);
+          const fused = fusedBodies.get(claim.coinIds[0]);
           fusedBodies.delete(claim.coinIds[0]);
-          if (fusedId !== undefined) {
-            settleFused(fusedId, result.status === 'accepted' ? result.minted : null);
+          if (fused !== undefined) {
+            settleFused(fused.fusedId, result.status === 'accepted' ? result.minted : fused.input);
             claimHeldFusions();
           }
           break;
@@ -403,9 +409,9 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
             events.emit('fall:refused', { coinId: claim.coinId, reason: null });
           }
           if (claim.kind === 'fusion') {
-            const fusedId = fusedBodies.get(claim.coinIds[0]);
+            const fused = fusedBodies.get(claim.coinIds[0]);
             fusedBodies.delete(claim.coinIds[0]);
-            if (fusedId !== undefined) settleFused(fusedId, null);
+            if (fused !== undefined) settleFused(fused.fusedId, fused.input);
           }
         }
         claimHeldFusions();
@@ -503,22 +509,27 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   ): void => {
     const [a, b, c] = coins;
     table.claimFusion([a.id, b.id, c.id], fusionClaimTick());
-    if (fusedId !== null) fusedBodies.set(a.id, fusedId);
+    if (fusedId !== null) fusedBodies.set(a.id, { fusedId, input: a });
   };
 
   /** An input with no coin yet is waiting only while it is a fused body whose claim is in flight. */
-  const inputCoin = (simId: number): MintedCoin | 'waiting' | 'lost' => {
+  const inputCoin = (simId: number, into: CoinTier): MintedCoin | 'waiting' | 'lost' => {
     const coin = ledger.claimable(simId) ?? departedCoins.get(simId);
-    if (coin) return coin;
+    if (coin) return nextCoinTier(coin.tier) === into ? coin : 'lost';
     return unsettledFused.has(simId) ? 'waiting' : 'lost';
   };
 
+  /** Takes every input coin bound so far, so an abandoned fusion still knows a coin it was made of. */
   const gather = (held: HeldFusion): 'ready' | 'waiting' | 'lost' => {
     let waiting = false;
+    let lost = false;
     for (const [slot, simId] of held.simIds.entries()) {
       if (held.coins[slot]) continue;
-      const coin = inputCoin(simId);
-      if (coin === 'lost') return 'lost';
+      const coin = inputCoin(simId, held.into);
+      if (coin === 'lost') {
+        lost = true;
+        continue;
+      }
       if (coin === 'waiting') {
         waiting = true;
         continue;
@@ -526,13 +537,18 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       held.coins[slot] = coin;
       departedCoins.delete(simId);
     }
+    if (lost) return 'lost';
     return waiting ? 'waiting' : 'ready';
   };
 
-  /** A fusion the server can never be asked for leaves its fused body unminted too. */
+  /**
+   * A fusion the server can never be asked for leaves its inputs on the server's table, so its
+   * fused body stands for one of them, or for nothing when none of them was ever bound.
+   */
   const abandon = (held: HeldFusion): void => {
     for (const simId of held.simIds) departedCoins.delete(simId);
-    if (held.fusedId !== null) settleFused(held.fusedId, null);
+    if (held.fusedId === null) return;
+    settleFused(held.fusedId, held.coins.find((candidate) => candidate !== null) ?? null);
   };
 
   /** A fusion's own fused body is unsettled until the server answers the fusion's claim. */
@@ -580,7 +596,12 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
     const sources = fusion.simIds.map((id) => watcher.lastPosition(id) ?? fusion.center);
     if (fusedId !== null) unsettledFused.add(fusedId);
     ledger.reach(Math.max(...fusion.simIds));
-    const held: HeldFusion = { simIds: fusion.simIds, coins: [null, null, null], fusedId };
+    const held: HeldFusion = {
+      simIds: fusion.simIds,
+      into: fusion.tier,
+      coins: [null, null, null],
+      fusedId,
+    };
     const state = gather(held);
     const [a, b, c] = held.coins;
     let claimed = false;

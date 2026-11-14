@@ -55,6 +55,7 @@ import {
 } from '../test/harness.ts';
 import type { MockServer } from './server.ts';
 import { MOCK_RULES } from './rules.ts';
+import { MockWorld, RestoreError } from './world.ts';
 
 let time: FakeTime;
 let server: MockServer;
@@ -108,6 +109,10 @@ async function claimAt(claims: readonly Claim[], player: Player = alice) {
 
 function fallAt(coin: MintedCoin, tick: number): Claim {
   return { kind: 'fall', coinId: coin.id, tick, edge: 'front' };
+}
+
+function refusedChecks(player: Player = alice): string[] {
+  return server.world.envelopeRefusals(requirePlayerId(player)).map((refusal) => refusal.check);
 }
 
 async function accessToken(player: Player = alice): Promise<string> {
@@ -680,6 +685,7 @@ describe('mock server: attacks from a compromised client', () => {
       },
     });
     expect(results[0]).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    expect(refusedChecks()).toEqual(['clock_ahead']);
     expect((await claimFall(coin.id)).status).toBe('accepted');
   });
 
@@ -894,6 +900,7 @@ describe('mock server: attacks from a compromised client', () => {
     expect(await claimAt([fallAt(coin, justShort)])).toEqual([
       { status: 'rejected', reason: 'over_envelope' },
     ]);
+    expect(refusedChecks()).toEqual(['fall_travel', 'fall_travel']);
     expect(server.ledger()).toHaveLength(before);
     expect((await claimFall(coin.id)).status).toBe('accepted');
     expectConserved();
@@ -907,6 +914,7 @@ describe('mock server: attacks from a compromised client', () => {
       results.push(...(await claimAt([fallAt(coin, time.tick())])));
     }
     expect(results).toEqual(results.map(() => ({ status: 'rejected', reason: 'over_envelope' })));
+    expect(refusedChecks()).toEqual(results.map(() => 'fall_travel'));
     expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(0);
     expect((await state()).wallet.bullion).toBe(before.bullion);
     expectConserved();
@@ -925,6 +933,7 @@ describe('mock server: attacks from a compromised client', () => {
     expect(results.slice(maxPerTick)).toEqual(
       coins.slice(maxPerTick).map(() => ({ status: 'rejected', reason: 'over_envelope' })),
     );
+    expect(refusedChecks()).toEqual(coins.slice(maxPerTick).map(() => 'fall_same_tick'));
     const best = cascadeTierFor(maxPerTick, cascade);
     expect(results[maxPerTick - 1]).toMatchObject({ cascade: best?.id ?? null });
     expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(
@@ -944,6 +953,7 @@ describe('mock server: attacks from a compromised client', () => {
     const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * step)));
     expect(results.filter((result) => result.status === 'accepted')).toHaveLength(max);
     expect(results.at(-1)).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    expect(new Set(refusedChecks())).toEqual(new Set(['fall_window']));
     expectConserved();
   });
 
@@ -956,7 +966,35 @@ describe('mock server: attacks from a compromised client', () => {
     expect(await claimAt([fallAt(second, tick - 1)])).toEqual([
       { status: 'rejected', reason: 'over_envelope' },
     ]);
+    expect(refusedChecks()).toEqual(['tick_order']);
     expect((await claimAt([fallAt(second, tick)]))[0]?.status).toBe('accepted');
+  });
+
+  it('P-639: pays an honest fall settled at the render tick after a crate claimed at the newest tick', async () => {
+    let crate = null;
+    let fallen: MintedCoin | null = null;
+    for (let i = 0; i < crateSpawn.ftueScriptedDrop && crate === null; i++) {
+      time.advance(100);
+      const buffered = await bufferedCoin();
+      const response = await alice.client.call('tableDrop', {
+        body: { x: 0, tick: time.tick(), coinId: buffered.id },
+      });
+      crate = response.spawnedCrates[0] ?? null;
+      if (crate === null) await claimFall(response.coin.id);
+      else fallen = response.coin;
+    }
+    if (crate === null || fallen === null) throw new Error('Expected the scripted FTUE crate.');
+    travel();
+    time.advance(500);
+    const newest = time.tick();
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: newest, edge: 'front' }]),
+    ).toEqual([{ status: 'accepted', credited: 0, cascade: null, minted: null }]);
+    expect(await claimAt([fallAt(fallen, newest - 3)])).toMatchObject([
+      { status: 'accepted', credited: fallen.value },
+    ]);
+    expect(refusedChecks()).toEqual([]);
+    expectConserved();
   });
 
   it('rejects a fusion of coins that have not landed yet', async () => {
@@ -965,6 +1003,7 @@ describe('mock server: attacks from a compromised client', () => {
     expect(await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }])).toEqual([
       { status: 'rejected', reason: 'over_envelope' },
     ]);
+    expect(refusedChecks()).toEqual(['fusion_settle']);
     time.advance(MOCK_RULES.minFusionMsAfterSpawn);
     expect((await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }]))[0]?.status).toBe(
       'accepted',
@@ -1824,5 +1863,89 @@ describe('mock server: state reports ascension progress and the Family Office', 
     await expect(
       alice.client.call('ascend', { body: { venueId: riviera.id } }),
     ).rejects.toMatchObject({ code: 'not_ready' });
+  });
+});
+
+describe('mock server: feature rewards are granted through the single ledger', () => {
+  beforeEach(async () => {
+    await state();
+  });
+
+  function alicePlayer() {
+    const found = server.world.player(requirePlayerId(alice));
+    if (found === undefined) throw new Error('Expected Alice in the mock world.');
+    return found;
+  }
+
+  it('writes each grant to the ledger with its reason and ref, and the restored world adds up', () => {
+    const player = alicePlayer();
+    const before = { ...player.wallet };
+    const at = time.now();
+    server.world.grant(player, at, 'quest.claim', { coins: 120, stars: 2 }, 'quest_daily_drops');
+    server.world.grant(player, at, 'streak.milestone', { keys: 1 }, 'streak_7');
+    server.world.grant(player, at, 'season.tier', { bullion: 3 }, 'tier_4');
+
+    const granted = server.world.ledger
+      .slice(-3)
+      .map(({ reason, delta, ref, at: when }) => ({ reason, delta, ref, when }));
+    expect(granted).toEqual([
+      {
+        reason: 'quest.claim',
+        delta: { coins: 120, stars: 2 },
+        ref: 'quest_daily_drops',
+        when: at,
+      },
+      { reason: 'streak.milestone', delta: { keys: 1 }, ref: 'streak_7', when: at },
+      { reason: 'season.tier', delta: { bullion: 3 }, ref: 'tier_4', when: at },
+    ]);
+    expect(player.wallet.coins).toBe(before.coins + 120);
+    expect(player.wallet.stars).toBe(before.stars + 2);
+    expect(player.wallet.keys).toBe(before.keys + 1);
+    expect(player.wallet.bullion).toBe(before.bullion + 3);
+    expectConserved();
+
+    const restored = MockWorld.restore(server.world.serialize());
+    expect(restored.player(player.id)?.wallet).toEqual(player.wallet);
+    expect(restored.ledger.slice(-3).map((entry) => entry.reason)).toEqual([
+      'quest.claim',
+      'streak.milestone',
+      'season.tier',
+    ]);
+  });
+
+  it('defaults ref to null and records nothing for an all-zero grant', () => {
+    const player = alicePlayer();
+    server.world.grant(player, time.now(), 'season.tier', { stars: 1 });
+    expect(server.world.ledger.at(-1)).toMatchObject({ reason: 'season.tier', ref: null });
+    const length = server.world.ledger.length;
+    server.world.grant(player, time.now(), 'quest.claim', { coins: 0 }, 'quest_x');
+    expect(server.world.ledger.length).toBe(length);
+  });
+
+  it('refuses debits, fractional amounts and reasons outside the feature kinds', () => {
+    const player = alicePlayer();
+    const wallet = { ...player.wallet };
+    const length = server.world.ledger.length;
+    expect(() => {
+      server.world.grant(player, time.now(), 'quest.claim', { coins: -50 });
+    }).toThrow(/quest\.claim tried to take 50 coins/);
+    expect(() => {
+      server.world.grant(player, time.now(), 'quest.claim', { coins: 1.5 });
+    }).toThrow(/non-integer/);
+    expect(() => {
+      server.world.grant(player, time.now(), 'claim.fall' as never, { coins: 10 });
+    }).toThrow(/not a feature reward reason/);
+    expect(player.wallet).toEqual(wallet);
+    expect(server.world.ledger.length).toBe(length);
+    expectConserved();
+  });
+
+  it('refuses to restore stored data whose grant was tampered with', () => {
+    server.world.grant(alicePlayer(), time.now(), 'quest.claim', { coins: 40 }, 'quest_a');
+    const data = server.world.serialize();
+    const last = data.ledger.at(-1);
+    if (last === undefined) throw new Error('Expected a ledger entry.');
+    last.delta = { coins: 4000 };
+    expect(() => MockWorld.restore(data)).toThrow(RestoreError);
   });
 });

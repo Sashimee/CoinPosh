@@ -166,7 +166,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.05-p2 | blocked(review: not delivered, needs quest/streak/season TxKinds in ledger.ts and design calls on tier claims, scratch-card rewards and Season Stars) | | Nothing committed; server design ready once POLISH ledger and design items land |
 | T-3.05-p3 | blocked(review: not delivered, Demo quest claim cannot credit the ledger without a public MockWorld grant hook; quest book persistence needs a lead call) | | Nothing committed; re-run after the world.ts grant method and persistence option land (POLISH) |
 | T-3.05 | in progress (parts merged: T-3.05-p1) | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag). Parts T-3.05-p1, T-3.05-p2, T-3.05-p3. Parts merged: T-3.05-p1 (merge 1865458); parts pending: T-3.05-p2, T-3.05-p3 |
-| T-3.06 | todo | | Waits on T-3.01. Soirée Nights run mode |
+| T-3.06 | in progress (parts merged: T-3.06-p1 375bb8a) | task/T-3.06-p1 (merge 375bb8a) | Soirée Nights run mode; parts T-3.06-p1, T-3.06-p2; p2 pending |
+| T-3.06-p1 | done | task/T-3.06-p1 (merge 375bb8a) | Soirée Nights contract and numbers: shared API types, endpoints, economy config and 02-ECONOMY section (fc27c3b); pnpm check green after merge; follow-ups P-675 to P-680 |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
 | T-10.01 | done | task/T-10.01 (merge 75e63f3) | Account link contracts: packages/shared/src/api/account.ts, accountEndpoints in endpoints.ts, new error codes (e91c834); wiring into `endpoints`, fixtures and Demo mock queued as P-281 for T-10.03; pnpm check green after merge |
 | T-10.02 | done | task/T-10.02 (merge 695d63b) | Server: verify ID tokens, link, sign in on a new device (19c8550, POLISH.md hunk dropped after review); follow-ups P-304..P-306; P-292..P-294 already queued in POLISH.md; pnpm check green after merge |
@@ -174,7 +175,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-10.04 | done | task/T-10.04 (merge 43bb4cb) | Account UI: link, sign in, progress choice; fix round adds ui/account/clock.test.ts, trimmed surface chunk, opaque choice sheet; folds P-577, P-578; pnpm check green after merge |
 | H-10.01 | todo | | Human step: Google Cloud OAuth web client (origins `https://sashimee.github.io`, `https://devcoinposh.bas.lu`, localhost) → Worker secret `GOOGLE_CLIENT_ID`, repo variable `VITE_GOOGLE_CLIENT_ID` |
 | H-10.02 | todo | | Human step: Apple Developer membership (same account as H-7.01, pulled forward), Services ID and Sign in with Apple key → Worker secrets `APPLE_SERVICES_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, repo variable `VITE_APPLE_SERVICES_ID` |
-| T-11.01 | todo | | Waits on T-92.07, T-92.08, T-10.02, T-10.03. Feature-module seams |
+| T-11.01 | in progress (parts merged: T-11.01-p1 0e3cd7f) | task/T-11.01-p1 (merge 0e3cd7f) | Waits on T-92.07, T-92.08, T-10.02, T-10.03. Feature-module seams; parts T-11.01-p1, T-11.01-p2, T-11.01-p3; p2, p3 pending |
+| T-11.01-p1 | done | task/T-11.01-p1 (merge 0e3cd7f) | Feature-module seams, part 1: shared per-theme endpoint maps (9a1fe73); pnpm check green after merge |
 | T-11.02 | done | task/T-11.02 (merge 83cde70) | Sim prop seam: packages/sim/src/props (kinds, params, shape, world), sim and snapshot wiring (462f248); follow-ups P-605..P-608; pnpm check green after merge |
 | T-11.03 | todo | | Waits on T-11.01. Collecting contracts |
 | T-11.04 | todo | | Waits on T-11.03, T-3.07. Collecting numbers |
@@ -254,7 +256,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-16.13 | todo | | Waits on T-16.07, T-16.08, T-16.09, T-16.10, T-16.11, T-15.06. Table mechanics wiring |
 | T-16.14 | todo | | Waits on T-16.13. E2E: table mechanics |
 | T-17.01 | todo | | Waits on T-16.06. Director camera |
-| T-17.02 | todo | | Ready: deps done. Adaptive music |
+| T-17.02 | done | task/T-17.02 (merge 0714e82) | Adaptive music: stem scheduler, tempo, jackpot sting and player under apps/web/src/audio/music/adaptive (a3b196a); pnpm check green after merge; engine.ts wiring queued as P-670 |
 | T-17.03 | todo | | Waits on T-7.02. Haptic pattern library |
 | T-17.04 | todo | | Waits on T-17.01, T-17.02, T-17.03. Game feel wiring |
 | T-18.01 | todo | | Waits on T-11.01. Comfort contracts |
@@ -269,7 +271,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-19.02 | todo | | Waits on T-19.01. Server: parental policy |
 | T-19.03 | todo | | Waits on T-6.02. Left-hand and Zen modes |
 | T-19.04 | todo | | Waits on T-19.03. Landscape tablet layout |
-| T-19.05 | todo | | Ready: deps done. Keyboard and mouse controls |
+| T-19.05 | done | task/T-19.05 (merge ad02892) | Keyboard and mouse controls: bindings, controls, focus and i18n under apps/web/src/game/input/keyboard (4bcc4db); pnpm check green after merge; mount wiring queued as P-674 for T-19.06 |
 | T-19.06 | todo | | Waits on T-19.02, T-19.04, T-19.05, T-18.08. Accessibility wiring and e2e |
 | T-20.01 | todo | | Waits on T-11.01, T-4.01. Community contracts |
 | T-20.02 | todo | | Waits on T-20.01, T-3.07. Community numbers |
@@ -358,9 +360,14 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-617 | done | task/P-617 (merge 02a492a) | Starting bankroll 36 (bootBankroll: 20 spendable + 16 drop buffer) so the boot plaque shows at least 20; pusherSpeed/dropRate base costs 37/38 keep the P-193 guard; config.test and allowance.test assert both, balance report P-617-starting-bankroll.txt and rate envelope refreshed (3cf8519); economy 448/448, typecheck + lint green; pnpm check red only on the pre-existing snapshot.test.ts:446 step-6 case (P-634), which also fails with P-617's economy changes reverted |
 | P-614 | done | task/P-614 (merge c317eea) | Crate payout handover: balance plaque holds the win through the reveal and the bankrupt notice stays down while a reveal is paying, with hud/balancePlaque tests and apps/web/e2e/collect-payout.spec.ts cases (a040e57); web typecheck + lint + unit green; pnpm check red only on the pre-existing snapshot.test.ts:446 step-6 case (P-634), merge touches no server or package code |
 | P-616 | done | b9c49e1 (lead salvage: demoHandle refund test now uploads an empty settled snapshot first) |
-| P-507 | todo | | Re-run after P-616 merges |
+| P-507 | done | task/P-507 (merge ee21b91) | Public MockWorld.grant routes Demo feature rewards through the single ledger (world.ts, server.test.ts; 597b805); pnpm check green after merge |
 | P-627 | blocked(review: P-628 playable <= venue + 300 ms not met, budget floored at 1,800 ms; warm frame after playable stalls the first tap) | task/P-627 (11a7c6c, not merged) | Split the vfx warmup across idle frames and budget longestFrameAfterTapMs; venue shader linking off the critical path (P-652); perf summary row (P-653); BOOT_TO_FIRST_DROP_MS must not be loosened; branch kept |
 | P-626 | blocked(review: e2e not green; demo-reload still refunds unposed coins 1 of 4, table-persistence re-boot cases race the resumed sim) | task/P-626 (3602038, not merged) | Waits on the upload-after-settle/pagehide snapshot fix (P-654), reboot pause (P-656), crate ride on sim time (P-655), fused body cleanup (P-657); fix the seq-0 read and play-on ledger check in table-persistence.spec.ts on retry; first-tap profile P-658; branch kept |
+| P-645 | done | task/P-645 (merge 391dd67) | Server POST /v1/crates/open with crate.open ledger kind, collectible unit for the album card and append-only crate_opens table (folds P-646, P-433, P-533; P-647 decision: card ledgered inside crate.open) (dbe4a06); pnpm check green after merge; follow-ups P-664..P-666 |
+| P-639 | done | task/P-639 (merge 01bddb2) | Honest front-edge falls are no longer refused as over_envelope by the Demo mock (world.ts), with core.test, mock server.test and apps/web/e2e/honest-falls.spec.ts cases (35616ad); folds P-657 (refused fusion claim removes the fused body from the sim); pnpm check green after merge; follow-ups P-667, P-668 |
+| P-655 | done | task/P-655 (merge 59974b0) | Crate ride advances on sim ticks, so a held sim holds its crates and their poses are no longer refused as teleports (controller.ts, ride.ts, crates.test.ts; 9031c25); pnpm check green after merge; follow-up P-669 |
+| P-660 | done | task/P-660 (merge e3baefd) | Table crate shader pipelines warmed before the first crate spawns: hidden crate (body, band, glow, ring, spark) compiled in the post-boot warm-up (crates/warmup.ts, view.ts, mount.ts and tests; c6234a3); pnpm check green after merge; follow-up P-673 |
+| P-508 | done | task/P-508 (merge fdab531) | Lead decision + implementation: features slot in the Demo PersistedWorld, saved atomically with the ledger (persist.ts, world.ts, persist.test.ts, boot.test.ts; 46c7d96); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 

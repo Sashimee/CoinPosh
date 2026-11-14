@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { composeEndpoints, get, getWithParams, post, type Endpoint } from './endpoint.ts';
 import {
   AccountLinkRequestSchema,
   AccountLinkResponseSchema,
@@ -51,6 +52,14 @@ import {
   LeaderboardParamsSchema,
   LeaderboardResponseSchema,
 } from './social.ts';
+import {
+  SoireeDraftRequestSchema,
+  SoireeDraftResponseSchema,
+  SoireeFinishRequestSchema,
+  SoireeFinishResponseSchema,
+  SoireeStartRequestSchema,
+  SoireeStartResponseSchema,
+} from './soiree.ts';
 import { StateResponseSchema } from './state.ts';
 import {
   ClaimsRequestSchema,
@@ -65,32 +74,7 @@ import {
   TableSnapshotResponseSchema,
 } from './table.ts';
 
-export type HttpMethod = 'GET' | 'POST';
-
-/**
- * `none` endpoints carry no bearer access token but are still device-signed: the verifying key
- * travels in the body (`devicePublicKey`) or is looked up from the refresh-token row.
- */
-export type AuthMode = 'none' | 'bearer';
-
-export interface Endpoint<
-  M extends HttpMethod = HttpMethod,
-  P extends string = string,
-  B extends z.ZodType | null = z.ZodType | null,
-  Q extends z.ZodType | null = z.ZodType | null,
-  R extends z.ZodType = z.ZodType,
-> {
-  readonly method: M;
-  readonly path: P;
-  readonly auth: AuthMode;
-  /** JSON request body; `null` for GET. Every body schema is strict: unknown keys are rejected. */
-  readonly body: B;
-  /** Path parameters (`:name` segments); `null` when the path has none. */
-  readonly params: Q;
-  /** Query string fields, each a string on the wire; absent when the endpoint takes none. */
-  readonly query?: z.ZodType;
-  readonly response: R;
-}
+export * from './endpoint.ts';
 
 /**
  * `hydrate=boot` marks the snapshot a freshly loaded client lays its table from. Its sim can
@@ -102,31 +86,7 @@ export const StateQuerySchema = z.strictObject({
 });
 export type StateQuery = z.infer<typeof StateQuerySchema>;
 
-function get<const P extends string, R extends z.ZodType>(
-  path: P,
-  response: R,
-): Endpoint<'GET', P, null, null, R> {
-  return { method: 'GET', path, auth: 'bearer', body: null, params: null, response };
-}
-
-function getWithParams<const P extends string, Q extends z.ZodType, R extends z.ZodType>(
-  path: P,
-  params: Q,
-  response: R,
-): Endpoint<'GET', P, null, Q, R> {
-  return { method: 'GET', path, auth: 'bearer', body: null, params, response };
-}
-
-function post<const P extends string, B extends z.ZodType, R extends z.ZodType>(
-  path: P,
-  body: B,
-  response: R,
-  auth: AuthMode = 'bearer',
-): Endpoint<'POST', P, B, null, R> {
-  return { method: 'POST', path, auth, body, params: null, response };
-}
-
-export const endpoints = {
+const coreEndpoints = {
   authGuest: post('/v1/auth/guest', GuestAuthRequestSchema, GuestAuthResponseSchema, 'none'),
   authRefresh: post('/v1/auth/refresh', RefreshRequestSchema, RefreshResponseSchema, 'none'),
   state: { ...get('/v1/state', StateResponseSchema), query: StateQuerySchema },
@@ -158,6 +118,15 @@ export const endpoints = {
   ),
   eventsCurrent: get('/v1/events/current', EventsCurrentResponseSchema),
 } as const satisfies Record<string, Endpoint>;
+
+/**
+ * The live registry: the core map plus one spread per theme. A theme ships
+ * `packages/shared/src/api/<theme>/endpoints.ts` exporting `const <theme>Endpoints = { ... }`
+ * built with `get`/`post`, its names camelCase and prefixed with the theme (`sampleTally`) and
+ * its paths under `/v1/<theme>/`. The theme's .01 contracts task adds its map as one more
+ * argument here; a duplicate name or method and path throws when this module loads.
+ */
+export const endpoints = composeEndpoints(coreEndpoints);
 
 // TODO(lead-architect): register as `endpoints.tableSnapshot` in the same change that adds its
 // fixture to `test/fixtures.ts` and its mock handler (T-92.05); both are mapped over every
@@ -192,6 +161,20 @@ export const accountEndpoints = {
 export type AccountEndpoints = typeof accountEndpoints;
 export type AccountEndpointName = keyof AccountEndpoints;
 export const ACCOUNT_ENDPOINT_NAMES = Object.keys(accountEndpoints) as AccountEndpointName[];
+
+// TODO(lead-architect): spread into `endpoints` in the same change that adds their fixtures to
+// `test/fixtures.ts` and their Demo handlers to `apps/web/src/net/mock/world.ts` (T-3.06 p3/p4);
+// both are mapped over every EndpointName, so registering them first breaks their typecheck.
+/** Soirée Nights (T-3.06): the server seats, judges and pays the run; the client only plays it. */
+export const soireeEndpoints = {
+  soireeStart: post('/v1/soiree/start', SoireeStartRequestSchema, SoireeStartResponseSchema),
+  soireeDraft: post('/v1/soiree/draft', SoireeDraftRequestSchema, SoireeDraftResponseSchema),
+  soireeFinish: post('/v1/soiree/finish', SoireeFinishRequestSchema, SoireeFinishResponseSchema),
+} as const satisfies Record<string, Endpoint>;
+
+export type SoireeEndpoints = typeof soireeEndpoints;
+export type SoireeEndpointName = keyof SoireeEndpoints;
+export const SOIREE_ENDPOINT_NAMES = Object.keys(soireeEndpoints) as SoireeEndpointName[];
 
 export type Endpoints = typeof endpoints;
 export type EndpointName = keyof Endpoints;
