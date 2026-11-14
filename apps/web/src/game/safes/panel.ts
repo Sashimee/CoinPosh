@@ -53,9 +53,20 @@ export interface SafesPanel {
 
 interface Row {
   readonly item: HTMLElement;
+  /** The row's control that can take focus right now, if any. */
+  readonly focusTarget: () => HTMLElement | null;
   readonly render: (safe: Safe) => SafeActions;
   readonly deny: () => void;
   ready: boolean | null;
+}
+
+function focusDropped(): boolean {
+  const active = document.activeElement;
+  return active === null || active === document.body;
+}
+
+function focusQuietly(el: HTMLElement): void {
+  el.focus({ preventScroll: true });
 }
 
 /**
@@ -82,7 +93,10 @@ export function showSafesPanel(options: SafesPanelOptions): SafesPanel {
   const opener = document.activeElement;
   const trigger = opener instanceof HTMLElement && opener !== document.body ? opener : null;
 
-  const title = h('h2', { class: 'cp-safes-title', attrs: { id: 'cp-safes-title' } });
+  const title = h('h2', {
+    class: 'cp-safes-title',
+    attrs: { id: 'cp-safes-title', tabindex: '-1' },
+  });
   const subtitle = h('p', { class: 'cp-safes-subtitle' });
   const close = h(
     'button',
@@ -201,6 +215,8 @@ export function showSafesPanel(options: SafesPanelOptions): SafesPanel {
 
     const render = (next: Safe): SafeActions => {
       current = next;
+      const keyHadFocus = document.activeElement === keyButton;
+      const timerHadFocus = document.activeElement === timerButton;
       const view = safeActions({
         safe: next,
         serverNow: options.serverNow(),
@@ -244,6 +260,8 @@ export function showSafesPanel(options: SafesPanelOptions): SafesPanel {
       timerButton.textContent = pending === 'timer' ? t('opening') : t('openFree');
       timerButton.setAttribute('aria-label', t('openFreeLabel', { safe: safeName }));
       item.classList.toggle('is-pending', pending !== null);
+      if (keyHadFocus && keyButton.hidden && !timerButton.hidden) focusQuietly(timerButton);
+      if (timerHadFocus && timerButton.hidden && !keyButton.hidden) focusQuietly(keyButton);
       return view;
     };
 
@@ -263,7 +281,24 @@ export function showSafesPanel(options: SafesPanelOptions): SafesPanel {
         options.onOpen(current, 'timer');
       },
     });
-    return { item, render, deny, ready: null };
+    const focusTarget = () =>
+      !keyButton.hidden ? keyButton : !timerButton.hidden ? timerButton : null;
+    return { item, focusTarget, render, deny, ready: null };
+  };
+
+  /** Hands focus from a row that left the list to the next row, else the one before, else the title. */
+  const refocusNeighbour = (order: readonly Row[], gone: Row) => {
+    const at = order.indexOf(gone);
+    const after = order.slice(at + 1);
+    const before = order.slice(0, at).reverse();
+    for (const row of [...after, ...before]) {
+      const target = row.item.isConnected ? row.focusTarget() : null;
+      if (target !== null) {
+        focusQuietly(target);
+        return;
+      }
+    }
+    focusQuietly(title);
   };
 
   let tick: ReturnType<typeof setTimeout> | null = null;
@@ -272,16 +307,27 @@ export function showSafesPanel(options: SafesPanelOptions): SafesPanel {
   const render = () => {
     if (closed) return;
     const owned = options.safes();
-    const seen = new Set<SafeId>();
+    const focused = document.activeElement;
+    const focusedInList = focused instanceof HTMLElement && list.contains(focused);
+    const kept = new Set(owned.map((safe) => safe.id));
+    let orphanedFocus: Row | null = null;
+    const order = [...rows.values()];
+    for (const [safeId, row] of rows) {
+      if (kept.has(safeId)) continue;
+      if (focusedInList && row.item.contains(focused)) orphanedFocus = row;
+      row.item.remove();
+      rows.delete(safeId);
+    }
     let nextRepaint: number | null = null;
-    for (const safe of owned) {
-      seen.add(safe.id);
+    for (const [index, safe] of owned.entries()) {
       let row = rows.get(safe.id);
       if (row === undefined) {
         row = buildRow(safe);
         rows.set(safe.id, row);
       }
-      list.append(row.item);
+      // Rows stay in place across ticks: moving an element drops focus from anything inside it.
+      const slot = list.children[index] ?? null;
+      if (slot !== row.item) list.insertBefore(row.item, slot);
       const view = row.render(safe);
       const ready = view.countdown.state === 'ready';
       if (row.ready === false && ready) {
@@ -297,11 +343,8 @@ export function showSafesPanel(options: SafesPanelOptions): SafesPanel {
         nextRepaint = nextRepaint === null ? wait : Math.min(nextRepaint, wait);
       }
     }
-    for (const [safeId, row] of rows) {
-      if (seen.has(safeId)) continue;
-      row.item.remove();
-      rows.delete(safeId);
-    }
+    if (orphanedFocus !== null) refocusNeighbour(order, orphanedFocus);
+    else if (focusedInList && focused.isConnected && focusDropped()) focusQuietly(focused);
     empty.hidden = owned.length > 0;
     list.hidden = owned.length === 0;
     const shown = options.keys();
