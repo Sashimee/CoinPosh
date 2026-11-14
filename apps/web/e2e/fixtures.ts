@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test as base, expect, type Page, type TestInfo } from '@playwright/test';
 import { economyConfig } from '@coinposh/economy';
+import type { DemoHandle } from '../src/game/session/demoHandle.ts';
 import { GAME_URL, SCREENSHOT_DIR } from './env.ts';
 
 export { expect };
@@ -28,15 +29,34 @@ export interface ProbeSim {
   readonly frames: number;
 }
 
+/** How the table in play was laid when it last booted. */
+export interface ProbeRestored {
+  /** 1 for the page load, one more for each re-boot or "Play here". */
+  readonly boots: number;
+  readonly poses: number;
+  readonly heapSlots: number;
+  readonly cratePoses: number;
+  readonly chutes: number;
+}
+
 export interface Probe {
   readonly sim: ProbeSim | null;
   readonly playable: boolean;
   readonly counts: ProbeCounts;
 }
 
+/** The table session's side of `window.__coinposh`: how it booted and who holds it. */
+export interface TableProbe {
+  readonly restored: ProbeRestored | null;
+  /** True while another client holds the table and the page waits on "Play here". */
+  readonly superseded: boolean;
+  /** Drives the in-browser server as a re-boot or a second tab would; only in Demo Mode. */
+  readonly demo?: DemoHandle | undefined;
+}
+
 declare global {
   interface Window {
-    __coinposh?: Probe;
+    __coinposh?: Probe & TableProbe;
   }
 }
 
@@ -130,6 +150,15 @@ export function probe(page: Page): Promise<Probe> {
     const p = window.__coinposh;
     if (!p) throw new Error('window.__coinposh is missing: the page is not the CoinPosh game');
     return { sim: p.sim, playable: p.playable, counts: p.counts };
+  });
+}
+
+/** The table session's probe: how the table last booted and whether this page holds it. */
+export function tableProbe(page: Page): Promise<Omit<TableProbe, 'demo'>> {
+  return page.evaluate(() => {
+    const p = window.__coinposh;
+    if (!p) throw new Error('window.__coinposh is missing: the page is not the CoinPosh game');
+    return { restored: p.restored, superseded: p.superseded };
   });
 }
 

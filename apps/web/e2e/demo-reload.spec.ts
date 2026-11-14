@@ -150,14 +150,6 @@ async function tableCoins(page: Page): Promise<number> {
   return sim.coins;
 }
 
-/** Table coins the stored snapshot does not pose and the opening heap does not hold a slot for. */
-function unposed(player: StoredPlayer): StoredCoin[] {
-  const posed = new Set(player.tableSnapshot?.poses.map((pose) => pose[0]));
-  return player.coins.filter(
-    (record) => record.place === 'table' && record.heapSlot === null && !posed.has(record.coin.id),
-  );
-}
-
 /**
  * Waits until any crate the taps won has been revealed and collected, and two snapshots of the
  * resting table have reached the tab's storage since the last tap.
@@ -236,13 +228,8 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
   }
   const fromSeq = world.nextSeq;
   const vault = storedVault(left);
-  const unposedCoins = unposed(left);
-  const refundCap = new Map(
-    unposedCoins.map((record) => [record.coin.id, Math.min(record.paid, record.coin.value)]),
-  );
-  // The Vault comes back as it was, moved only by what the boot rules and the restored table
-  // do: a coin no snapshot posed (the client leaves some fused coins out of its snapshots) is
-  // refunded at most what it cost, and coins on the lip fall as play resumes.
+  // The Vault comes back as it was, moved only by what the restored table does: coins on the
+  // lip fall as play resumes. The boot lays every table coin, so it refunds none.
   let moves: StoredEntry[] = [];
   await expect
     .poll(async () => {
@@ -255,23 +242,25 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
   const falls = moves.filter((entry) => entry.reason === 'claim.fall');
   const prepays = moves.filter((entry) => entry.reason === 'drop.prepay');
   expect(moves.length).toBe(refunds.length + falls.length + prepays.length);
-  expect(refunds.length).toBeLessThanOrEqual(unposedCoins.length);
-  expect(new Set(refunds.map((entry) => entry.ref)).size).toBe(refunds.length);
-  for (const entry of refunds) {
-    expect(refundCap.has(entry.ref ?? ''), `refund of ${String(entry.ref)}`).toBe(true);
-    expect(entry.delta.coins).toBeLessThanOrEqual(refundCap.get(entry.ref ?? '') ?? 0);
-  }
+  const posed = refunds.map((entry) => {
+    const pose = left.tableSnapshot?.poses.find((tuple) => tuple[0] === entry.ref);
+    return `${String(entry.ref)} ${pose === undefined ? 'not in the stored snapshot' : JSON.stringify(pose)}`;
+  });
+  expect(
+    refunds.map((entry) => entry.ref),
+    `coins the boot refunded instead of laying (${posed.join('; ')})`,
+  ).toEqual([]);
   expect(falls.length).toBeLessThanOrEqual(FALLS_WHILE_BOOTING);
   testInfo.annotations.push({
     type: 'vault moves after the reload',
-    description: `${String(refunds.length)} of ${String(unposedCoins.length)} unposed coins refunded, ${String(falls.length)} falls`,
+    description: `${String(refunds.length)} refunds, ${String(falls.length)} falls`,
   });
   const restored = await restoredCoins(page);
-  expect(restored, 'the server lays every table coin it kept, less the refunded unposed ones').toBe(
-    left.coins.filter((record) => record.place === 'table').length - refunds.length,
+  expect(restored, 'the server lays every table coin it kept').toBe(
+    left.coins.filter((record) => record.place === 'table').length,
   );
   expect(
-    Math.abs(restored - (coins - refunds.length)),
+    Math.abs(restored - coins),
     'the reloaded table holds the coins the player last saw, within the snapshot tolerance',
   ).toBeLessThanOrEqual(COIN_TOLERANCE);
 
