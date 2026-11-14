@@ -2,6 +2,7 @@ import type { MintedCoin, Roll, Safe, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
+import { vaultReadout } from './app/model.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './audio/index.ts';
 import {
   mountAscension,
@@ -60,7 +61,7 @@ import {
 } from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
-import { mountSafesTrigger } from './ui/hud.ts';
+import { mountSafesTrigger, setInHand } from './ui/hud.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
@@ -419,10 +420,10 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
 }
 
 /**
- * Turns the upgrades panel's confirms into server purchases. The Vault plaque counts the drop
- * buffer on top of the wallet, so a purchase re-reads the table instead of showing the bare
- * wallet the purchase returns. Stale levels re-read the state without `hydrate=boot`, which
- * would refund the coins in play.
+ * Turns the upgrades panel's confirms into server purchases. The Vault plaque follows the table
+ * sync's wallet and adds winnings still in the outbox, so a purchase re-reads the table instead
+ * of showing the bare wallet the purchase returns. Stale levels re-read the state without
+ * `hydrate=boot`, which would refund the coins in play.
  */
 function mountUpgradePurchases(
   net: Net,
@@ -536,13 +537,23 @@ interface VaultTracker {
   resumed(): void;
   /** A new boot of the table ("Play here") replaced the buffer with the one `state` lists. */
   adopted(state: StateResponse): void;
+  /**
+   * While `hold` holds crate winnings back from the Vault, a buffer refill stays in the plaque
+   * rather than moving into the hand, so the held Vault never dips and its coin line adds up.
+   */
+  holdWith(hold: VaultHold): () => void;
+}
+
+interface VaultHold {
+  holding(): boolean;
+  /** Runs `listener` each time held winnings are paid into the Vault; returns the way to stop. */
+  onPaid(listener: () => void): () => void;
 }
 
 /**
- * The Vault shows every coin the player holds: the server's wallet, the pre-minted drop buffer
- * (already paid for out of the wallet, so the wallet alone reads low), and winnings still
- * waiting for the server's answer, shimmering while any are. Only the wallet is spendable, so
- * upgrade prices are checked against it alone.
+ * The Vault shows what the server can spend, the wallet, plus winnings still waiting for its
+ * answer, shimmering while any are; so a price at or below a settled Vault always buys. The
+ * pre-minted drop buffer, already paid for out of the wallet, is shown apart as the coins in hand.
  *
  * TableSync says how many coins are buffered but not what they are worth, so the worth comes
  * from server coins seen here: the snapshot's buffer, oldest first as drops take them, and for
@@ -556,16 +567,26 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
   const known: number[] = state.table.buffer.map((coin) => coin.value);
   let refillValue = state.table.buffer.at(-1)?.value ?? 0;
   let awaitingSync = false;
+  let hold: VaultHold | null = null;
+  let shownInHand = 0;
   const refresh = (): void => {
     const balance = table.balance;
     if (!balance) return;
     let buffered = 0;
     for (let i = 0; i < table.bufferSize; i += 1) buffered += known[i] ?? refillValue;
+    const readout = vaultReadout({
+      walletCoins: balance.wallet.coins,
+      bufferedCoins: buffered,
+      provisionalCoins: balance.provisionalCoins,
+      goldBars: balance.wallet.goldBars,
+    });
+    const inHand = hold?.holding() ? Math.min(readout.inHand, shownInHand) : readout.inHand;
+    shownInHand = inHand;
+    setInHand(app.store, inHand);
     app.setWallet({
       ...balance.wallet,
-      coins: balance.wallet.coins + buffered + balance.provisionalCoins,
-      spendableCoins: balance.wallet.coins,
-      provisional: balance.provisionalCoins > 0,
+      ...readout,
+      coins: readout.coins + readout.inHand - inHand,
     });
   };
   const forgetBuffer = (): void => {
@@ -605,6 +626,15 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
       known.splice(0, known.length, ...booted.table.buffer.map((coin) => coin.value));
       refillValue = booted.table.buffer.at(-1)?.value ?? refillValue;
       refresh();
+    },
+    holdWith(next) {
+      hold = next;
+      const stop = next.onPaid(refresh);
+      return () => {
+        stop();
+        if (hold === next) hold = null;
+        refresh();
+      };
     },
   };
 }
@@ -775,8 +805,10 @@ async function bootScene(
     });
     playing = { sim: started, layout: laid, scope };
     const payouts = orderCratePayouts(walletPayoutFor(ui.store));
+    const releaseVault = boot.vault.holdWith(payouts);
     scope.add(() => {
       payouts.dispose();
+      releaseVault();
     });
     const systems = startPlay(systemsModule, stage, started, boot, state, vfx, payouts, scope);
     playingSystems = systems;
@@ -1513,6 +1545,9 @@ interface CratePayoutOrder {
   collected(crateId: string, landsInMs: number): void;
   /** The crate left without a collect, or every crate cinematic is over. */
   gone(crateId: string | null): void;
+  /** Crate winnings or the falls behind them are held back from the Vault. */
+  holding(): boolean;
+  onPaid(listener: () => void): () => void;
   dispose(): void;
 }
 
@@ -1537,6 +1572,11 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   let batches = 0;
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
   let effects: () => Vfx | null = () => null;
+  const paidListeners = new Set<() => void>();
+  const release = (id: string): void => {
+    payout.release(id);
+    for (const listener of [...paidListeners]) listener();
+  };
 
   const active = (): boolean =>
     unpaid.size > 0 || landing.size > 0 || performance.now() < holdUntil;
@@ -1550,14 +1590,14 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   const pay = (paid: FallBatch): void => {
     const vfx = effects();
     if (!vfx || paid.pops.length === 0) {
-      payout.release(paid.id);
+      release(paid.id);
       return;
     }
     let landed = 0;
     const finish = (): void => {
       if (!releasing.delete(finish)) return;
       clearTimeout(cap);
-      payout.release(paid.id);
+      release(paid.id);
     };
     const cap = setTimeout(finish, HELD_FALL_POPS_CAP_MS);
     releasing.add(finish);
@@ -1585,6 +1625,7 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
     const paid = batch;
     batch = null;
     if (paid) pay(paid);
+    else for (const listener of [...paidListeners]) listener();
   };
 
   const forget = (crateId: string): void => {
@@ -1685,6 +1726,13 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
       if (crateId === null) for (const id of [...unpaid.keys()]) forget(id);
       else forget(crateId);
       settle();
+    },
+    holding: () => active() || releasing.size > 0,
+    onPaid(listener) {
+      paidListeners.add(listener);
+      return () => {
+        paidListeners.delete(listener);
+      };
     },
     dispose() {
       for (const id of [...unpaid.keys()]) forget(id);

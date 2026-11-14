@@ -84,18 +84,17 @@ async function storedPlayer(page: Page): Promise<StoredPlayer | undefined> {
   return (await storedWorld(page))?.players[0];
 }
 
-/** What the plaque shows for a stored player: the wallet plus the prepaid drop buffer. */
+/**
+ * What the plaque shows for a stored player: the spendable wallet. The prepaid drop buffer is
+ * the separate in-hand readout.
+ */
 function storedVault(player: StoredPlayer): number {
-  return player.coins
-    .filter((record) => record.place === 'buffer')
-    .reduce((sum, record) => sum + record.coin.value, player.wallet.coins);
+  return player.wallet.coins;
 }
 
-/** What the Vault moved by since `fromSeq`; a prepaid drop only moves coins into the buffer. */
+/** What the Vault moved by since `fromSeq`; a refill prepay debits the wallet, so it counts. */
 function vaultMoves(world: StoredWorld | null, fromSeq: number): StoredEntry[] {
-  return (world?.ledger ?? []).filter(
-    (entry) => entry.seq >= fromSeq && entry.reason !== 'drop.prepay',
-  );
+  return (world?.ledger ?? []).filter((entry) => entry.seq >= fromSeq);
 }
 
 /** A fall the server credited, once it has reached the tab's storage. */
@@ -107,8 +106,8 @@ function fallCredit(world: StoredWorld | null): StoredEntry | undefined {
 
 /**
  * Waits for the taps to earn a fall credit, so the reload always carries a session that earned
- * something. The plaque cannot tell: it counts the drop buffer, so it moves on the first
- * buffered drop whether or not anything was earned.
+ * something. The plaque cannot tell: it moves on the first refill prepay into the drop buffer
+ * whether or not anything was earned.
  */
 async function earnFromTaps(page: Page): Promise<void> {
   let world: StoredWorld | null = null;
@@ -254,7 +253,8 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
     .toBe(vault);
   const refunds = moves.filter((entry) => entry.reason === 'refund.table');
   const falls = moves.filter((entry) => entry.reason === 'claim.fall');
-  expect(moves.length).toBe(refunds.length + falls.length);
+  const prepays = moves.filter((entry) => entry.reason === 'drop.prepay');
+  expect(moves.length).toBe(refunds.length + falls.length + prepays.length);
   expect(refunds.length).toBeLessThanOrEqual(unposedCoins.length);
   expect(new Set(refunds.map((entry) => entry.ref)).size).toBe(refunds.length);
   for (const entry of refunds) {

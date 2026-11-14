@@ -4,7 +4,7 @@ import { bootGame, expect, probe, type Probe, refusedTotal, reviewShot, test } f
 
 const SETTINGS_KEY = 'coinposh.settings.v1';
 const FTUE_DROP = economyConfig.crateSpawn.ftueScriptedDrop;
-/** The most drops the opening credit check may take: the 20-coin starting Vault covers them. */
+/** The most drops the opening credit check may take: the 20 starting coins, Vault and hand, cover them. */
 const MAX_OPENING_DROPS = 15;
 /** A thumb's pace: fast enough to push the heap to the lip, slow enough to keep the queue short. */
 const TAP_EVERY_MS = 400;
@@ -58,22 +58,28 @@ declare global {
 
 interface Snapshot {
   readonly probe: Probe;
+  /** The plaque: coins the player can spend. */
   readonly vault: number;
+  /** The plaque plus the coins in hand, paid into the drop buffer, which a refill moves between. */
+  readonly held: number;
 }
 
-/** Counters and the Vault read in one page task, so no credit can land between the two. */
+/** Counters, the Vault and the coins in hand read in one page task, so no credit lands between. */
 async function snapshot(page: Page): Promise<Snapshot> {
-  const { p, vaultText } = await page.evaluate(() => {
+  const { p, vaultText, inHandText } = await page.evaluate(() => {
     const live = window.__coinposh;
     if (!live) throw new Error('window.__coinposh is missing: the page is not the CoinPosh game');
     return {
       p: { sim: live.sim, playable: live.playable, counts: live.counts },
       vaultText: document.querySelector('[data-testid=hud-balance] .cp-sr-only')?.textContent ?? '',
+      inHandText:
+        document.querySelector('[data-testid=hud-in-hand] .cp-sr-only')?.textContent ?? '',
     };
   });
   const digits = vaultText.replace(/\D/g, '');
   if (digits === '') throw new Error(`The Vault plaque announced no balance: "${vaultText}"`);
-  return { probe: p, vault: Number(digits) };
+  const vault = Number(digits);
+  return { probe: p, vault, held: vault + Number(inHandText.replace(/\D/g, '')) };
 }
 
 function settled(p: Probe): boolean {
@@ -81,8 +87,9 @@ function settled(p: Probe): boolean {
 }
 
 /**
- * Waits for a moment where every fall claim is answered and the Vault shows exactly `start`
- * less `spent` plus what the ledge paid since: nothing lost, doubled or credited twice.
+ * Waits for a moment where every fall claim is answered and the Vault with the coins in hand
+ * shows exactly `start` less `spent` plus what the ledge paid since: nothing lost, doubled or
+ * credited twice. A drop spends a coin in hand, and a refill only moves coins from the Vault.
  */
 async function expectVaultBalanced(
   page: Page,
@@ -96,7 +103,7 @@ async function expectVaultBalanced(
       async () => {
         last = await snapshot(page);
         const credited = last.probe.counts.creditedCoins - start.probe.counts.creditedCoins;
-        return settled(last.probe) && last.vault === start.vault - spent + credited;
+        return settled(last.probe) && last.held === start.held - spent + credited;
       },
       { message, timeout: 30_000, intervals: [100] },
     )
@@ -165,7 +172,7 @@ async function watchAndCollect(page: Page, reveal: Locator, shot: string | null)
 }
 
 function vaultLow(s: Snapshot): boolean {
-  return s.vault < TAP_RESERVE_COINS;
+  return s.held < TAP_RESERVE_COINS;
 }
 
 /**
@@ -235,7 +242,7 @@ test.describe('full loop in Demo Mode at 390x844 (T-1.18)', () => {
 
     await test.step('taps drop coins, and a coin over the lip credits the Vault', async () => {
       const start = await snapshot(page);
-      expect(start.vault).toBeGreaterThanOrEqual(MAX_OPENING_DROPS);
+      expect(start.held).toBeGreaterThanOrEqual(MAX_OPENING_DROPS);
       let drops = 0;
       const credited = async (): Promise<boolean> =>
         (await probe(page)).counts.credits > start.probe.counts.credits;
@@ -300,7 +307,7 @@ test.describe('full loop in Demo Mode at 390x844 (T-1.18)', () => {
       // reveal can cover the sheet or pay out mid-purchase and skew the Vault check. A player
       // saving up stops tapping once the price is in hand and lets the pusher clear the table.
       // The row stays in the DOM while the sheet is closed, and lights only once the server can
-      // spend the price: coins still in the drop rail swell the Vault but never light it.
+      // spend the price: the plaque counts only spendable coins, so a lit row is a row it covers.
       const cheapestRow = page.locator(`.cp-upgrade[data-line="${CHEAPEST_COIN_LINE.id}"]`);
       const rowLit = async (): Promise<boolean> =>
         /\bis-affordable\b/.test((await cheapestRow.getAttribute('class')) ?? '');
