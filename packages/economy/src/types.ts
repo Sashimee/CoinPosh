@@ -4,10 +4,12 @@ import {
   CURRENCIES,
   RARITIES,
   type CascadeTier,
+  type CharmKind,
   type CoinTier,
   type Currency,
   type DropSourceId,
   type Rarity,
+  type SynergyTag,
   type VenueId,
 } from '@coinposh/shared';
 
@@ -195,6 +197,75 @@ export interface AlbumSetDef {
   readonly globalBonus: number;
 }
 
+/**
+ * Units of a charm effect parameter, all integers so the sim reads them without float drift:
+ * millimetres, millimetres per second (a velocity change, so it does not depend on coin mass),
+ * sim ticks at {@link CharmsConfig.tickRateHz}, basis points (10 000 = 100 %) and whole counts.
+ */
+export type CharmParamUnit = 'mm' | 'mmPerS' | 'ticks' | 'bp' | 'count';
+
+/** Which way a parameter gets better: `more` (a stronger kick) or `less` (a shorter wait). */
+export type CharmParamSense = 'more' | 'less';
+
+export interface CharmParamDef {
+  readonly unit: CharmParamUnit;
+  readonly sense: CharmParamSense;
+  /** Value at charm level 1 … maxLevel, never worse from one level to the next. */
+  readonly levels: readonly number[];
+}
+
+export interface CharmKindDef {
+  /** Primary tag first: it tints the plinth ring and the activation flash. */
+  readonly tags: readonly SynergyTag[];
+  readonly params: Readonly<Record<string, CharmParamDef>>;
+  /** The one parameter that mastery and set bonuses strengthen. */
+  readonly boosted: string;
+  /**
+   * Most extra coin value this charm may mint, in basis points of the fall value of each
+   * rate-envelope window; the server stops crediting it past that. 0 for charms that only
+   * move coins (moving never mints).
+   */
+  readonly valueCapBp: number;
+}
+
+export interface CharmSetBonusDef {
+  readonly tag: SynergyTag;
+  /** Distinct charm kinds carrying `tag` in the loadout. */
+  readonly pieces: number;
+  /** Added to the boosted parameter of every slotted charm that carries `tag`. */
+  readonly effectBoostBp: number;
+  /** Extra value on every front-ledge payout, counted against the rate envelope. */
+  readonly valueBp: number;
+}
+
+export interface CharmMasteryConfig {
+  readonly maxLevel: number;
+  /** Mastery level l needs `activationsBase × growth^(l − 1)` accepted activations. */
+  readonly activationsBase: number;
+  readonly growth: number;
+  readonly effectBpPerLevel: number;
+}
+
+/** A droppable charm catalog id: a kind itself or a named edition of one. */
+export interface CharmDropDef {
+  readonly kind: CharmKind;
+  /** Basis points of the charm pick once a reward grants a charm; the pool sums to 10 000. */
+  readonly weight: number;
+}
+
+export interface CharmsConfig {
+  readonly tickRateHz: number;
+  readonly maxLevel: number;
+  /** Copies owned (the first included) to reach level 1 … maxLevel. */
+  readonly copiesToLevel: readonly number[];
+  readonly mastery: CharmMasteryConfig;
+  /** Ceiling on the summed set boosts one charm takes; mastery comes on top. */
+  readonly setBoostCapBp: number;
+  readonly kinds: Readonly<Record<CharmKind, CharmKindDef>>;
+  readonly setBonuses: readonly CharmSetBonusDef[];
+  readonly drops: Readonly<Record<string, CharmDropDef>>;
+}
+
 export interface OfflineConfig {
   readonly activeRateFactor: number;
   readonly baseCapHours: number;
@@ -285,6 +356,7 @@ export interface EconomyConfig {
   readonly safes: SafesConfig;
   readonly venues: readonly VenueDef[];
   readonly album: readonly AlbumSetDef[];
+  readonly charms: CharmsConfig;
   readonly offline: OfflineConfig;
   readonly bullion: BullionConfig;
   readonly ascension: AscensionConfig;
