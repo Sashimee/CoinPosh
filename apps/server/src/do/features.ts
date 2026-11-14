@@ -173,6 +173,8 @@ export interface FeatureHost {
   transactionSync<T>(run: () => T): T;
   roll(purpose: string, ref: string | null, now: EpochMs): FairRoll;
   requireLease(session: TableSessionId | undefined): void;
+  /** The PlayerDO's full ledger-against-entities check, which covers table, buffer and inventory. */
+  conserved(): boolean;
 }
 
 interface AppendedLeg extends Record<string, SqlStorageValue> {
@@ -191,15 +193,18 @@ function latestSeq(sql: SqlStorage): number {
  * Re-checks what the handler appended against what it changed: every row is one of the
  * feature's own kinds, every transaction balances per unit, and each wallet balance moved
  * by exactly its wallet legs. Raw `sql` is in the handler's hands, so this is what stops a
- * feature from writing the wallet or the ledger behind `commit`'s back.
+ * feature from writing the wallet or the ledger behind `commit`'s back. The host's own
+ * conservation check then catches balanced legs on an account (table, inventory) whose entity
+ * rows the handler did not write to match.
  */
 function assertFeatureConserved(
-  sql: SqlStorage,
+  host: FeatureHost,
   feature: ServerFeature,
   sinceSeq: number,
   walletBefore: Wallet,
   mayMoveValue: boolean,
 ): void {
+  const { sql } = host;
   const legs = sql
     .exec<AppendedLeg>(
       'SELECT tx_id, kind, account, unit, delta FROM ledger WHERE seq > ? ORDER BY seq',
@@ -242,6 +247,12 @@ function assertFeatureConserved(
           `say ${legged}; move value only through ctx.ledgerTx and ctx.commit.`,
       );
     }
+  }
+  if (!host.conserved()) {
+    throw new ConservationError(
+      `Feature "${feature.id}" left the ledger disagreeing with the entity tables; a leg on ` +
+        `table, buffer or inventory needs the matching coin, crate or item row in the same call.`,
+    );
   }
 }
 
@@ -292,7 +303,7 @@ export function runFeatureHandler(
   const sinceSeq = latestSeq(sql);
   const walletBefore = readWallet(sql);
   const output = run(ctx, input);
-  assertFeatureConserved(sql, feature, sinceSeq, walletBefore, idempotencyKey !== null);
+  assertFeatureConserved(host, feature, sinceSeq, walletBefore, idempotencyKey !== null);
   return output;
 }
 

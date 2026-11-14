@@ -1,9 +1,14 @@
-import type { Endpoint, EndpointMap, PlayerId } from '@coinposh/shared';
+import {
+  endpoints as coreEndpoints,
+  type Endpoint,
+  type EndpointMap,
+  type PlayerId,
+} from '@coinposh/shared';
 import { env } from 'cloudflare:workers';
 import type { z } from 'zod';
 import { registerServerFeatures } from '../do/features.ts';
 import { createApp } from '../index.ts';
-import { newSession, type SendOptions, type Session } from '../test/client.ts';
+import { newDevice, send as sendSigned, type SendOptions, type Session } from '../test/client.ts';
 import { playerStub } from '../test/game.ts';
 import type { ServerFeature } from './types.ts';
 
@@ -51,6 +56,29 @@ export interface FeatureHarness<E extends EndpointMap> {
   player(): Promise<FeaturePlayer<E>>;
 }
 
+/** A guest signed in through `via`, whose every call also goes through `via`. */
+async function signInVia(via: (request: Request) => Promise<Response>): Promise<Session> {
+  const device = await newDevice();
+  const response = await sendSigned(device, coreEndpoints.authGuest.path, {
+    body: {
+      devicePublicKey: device.publicKey,
+      turnstileToken: 'test-turnstile-token',
+      locale: 'en',
+    },
+    via,
+  });
+  if (response.status !== 200) {
+    throw new Error(`Guest sign-in failed with ${response.status}: ${await response.text()}`);
+  }
+  const tokens = coreEndpoints.authGuest.response.parse(await response.json());
+  return {
+    device,
+    tokens,
+    call: (path, options = {}) =>
+      sendSigned(device, path, { accessToken: tokens.accessToken, via, ...options }),
+  };
+}
+
 function fillPath(path: string, params: Query): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, (_, name: string) => {
     const value = params[name];
@@ -92,7 +120,7 @@ export function createFeatureHarness<const F extends readonly ServerFeature[]>(
   return {
     fetch,
     async player() {
-      const session = await newSession({ via: fetch });
+      const session = await signInVia(fetch);
       const send: FeaturePlayer<EndpointsOf<F>>['send'] = (name, options = {}) => {
         const { params, query, ...rest } = options;
         const target = endpoint(name);

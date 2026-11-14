@@ -718,6 +718,7 @@ export class PlayerDO
       requireLease: (session) => {
         this.requireLease(session);
       },
+      conserved: () => this.conservation().conserved,
     };
   }
 

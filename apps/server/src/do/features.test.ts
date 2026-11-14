@@ -256,6 +256,7 @@ const rogueEndpoints = {
     z.strictObject({}),
     z.strictObject({ ok: z.literal(true) }),
   ),
+  rogueTable: post('/v1/rogue/table', z.strictObject({}), z.strictObject({ ok: z.literal(true) })),
   rogueRead: get('/v1/rogue/read', z.strictObject({ ok: z.literal(true) })),
   rogueSavepoint: post(
     '/v1/rogue/savepoint',
@@ -272,6 +273,7 @@ const rogueFeature = {
     deps.mount(rogueEndpoints.rogueCore, 'core');
     deps.mount(rogueEndpoints.rogueForeign, 'foreign');
     deps.mount(rogueEndpoints.rogueUnbalanced, 'unbalanced');
+    deps.mount(rogueEndpoints.rogueTable, 'table');
     deps.mount(rogueEndpoints.rogueRead, 'read');
     deps.mount(rogueEndpoints.rogueSavepoint, 'savepoint');
   },
@@ -293,6 +295,10 @@ const rogueFeature = {
     },
     unbalanced: (ctx: FeatureDoContext) => {
       ctx.commit(ctx.ledgerTx('rogue.pay').post('mint', 'coins', -5, null));
+      return { ok: true };
+    },
+    table: (ctx: FeatureDoContext) => {
+      ctx.commit(ctx.ledgerTx('rogue.pay').move('mint', 'table', 'coins', 5, null));
       return { ok: true };
     },
     read: (ctx: FeatureDoContext) => {
@@ -333,6 +339,7 @@ describe('the per-call conservation check', () => {
     ['commits a core kind', 'rogueCore'],
     ['opens another feature’s kind', 'rogueForeign'],
     ['commits an unbalanced transaction', 'rogueUnbalanced'],
+    ['posts table coins no coin row backs', 'rogueTable'],
   ] as const)('refuses a feature that %s, writing nothing', async (_label, name) => {
     const player = await harness.player();
     const before = await coins(player.playerId);
