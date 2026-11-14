@@ -1,5 +1,6 @@
 import type { CDPSession, Page } from '@playwright/test';
-import { bootGame, expect, reviewShot, test } from './fixtures.ts';
+import { economyConfig } from '@coinposh/economy';
+import { bootGame, expect, reviewShot, tapDrop, test } from './fixtures.ts';
 
 /**
  * P-425 / P-102: the display serif and the UI sans are self-hosted woff2 subsets from
@@ -172,4 +173,126 @@ test.describe('webfonts', () => {
       });
     }
   });
+});
+
+const SETTINGS_KEY = 'coinposh.settings.v1';
+const TYPOGRAPHY_LANGUAGES = ['en', 'de'] as const;
+const FTUE_DROP = economyConfig.crateSpawn.ftueScriptedDrop;
+const TAP_EVERY_MS = 400;
+const CRATE_OPENS_WITHIN_MS = 90_000;
+
+interface OldStyleDigits {
+  readonly where: string;
+  readonly text: string;
+  readonly numeric: string;
+}
+
+/**
+ * Every visible text node with a digit that draws in the display serif and lacks lining-nums.
+ * Cormorant's default figures are old-style, so a 0 reads as an 'o' and a 1 as an 'I'.
+ */
+function oldStyleDigits(page: Page): Promise<OldStyleDigits[]> {
+  return page.evaluate((display) => {
+    const found: OldStyleDigits[] = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent?.trim() ?? '';
+      const element = node.parentElement;
+      if (!element || !/\d/.test(text)) continue;
+      if (!element.checkVisibility({ visibilityProperty: true })) continue;
+      const style = getComputedStyle(element);
+      const family = style.fontFamily.split(',')[0]?.replace(/["']/g, '').trim();
+      if (family !== display) continue;
+      if (style.fontVariantNumeric.split(/\s+/).includes('lining-nums')) continue;
+      const classes = [...element.classList].map((name) => `.${name}`).join('');
+      found.push({
+        where: `${element.tagName.toLowerCase()}${classes}`,
+        text,
+        numeric: style.fontVariantNumeric,
+      });
+    }
+    return found;
+  }, DISPLAY);
+}
+
+async function expectLiningDigits(page: Page, surface: string): Promise<void> {
+  await page.evaluate(() => document.fonts.ready);
+  const flagged = await oldStyleDigits(page);
+  const named = flagged.map((node) => `${node.where} "${node.text}" (${node.numeric})`);
+  expect(flagged, `${surface}: ${DISPLAY} digits without lining-nums: ${named.join('; ')}`).toEqual(
+    [],
+  );
+}
+
+async function scanSheet(page: Page, trigger: string, sheet: string): Promise<void> {
+  await page.getByTestId(trigger).click();
+  const open = page.getByTestId(sheet);
+  await expect(open).toBeVisible();
+  await expectLiningDigits(page, sheet);
+  await page.keyboard.press('Escape');
+  await expect(open).toBeHidden();
+}
+
+/** Plays the scripted first-session crate over the lip and skips straight to its card. */
+async function revealCrate(page: Page): Promise<void> {
+  for (let i = 0; i < FTUE_DROP; i += 1) {
+    await tapDrop(page);
+    await page.waitForTimeout(TAP_EVERY_MS);
+  }
+  const reveal = page.getByTestId('crate-reveal');
+  const deadline = Date.now() + CRATE_OPENS_WITHIN_MS;
+  for (;;) {
+    try {
+      await reveal.waitFor({ state: 'attached', timeout: TAP_EVERY_MS });
+      break;
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'TimeoutError')) throw error;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`No crate reveal within ${String(CRATE_OPENS_WITHIN_MS)} ms of play`);
+    }
+    await tapDrop(page);
+  }
+  await page.keyboard.press('Escape');
+  await expect(reveal).toHaveClass(/is-revealed/);
+  await expect(page.getByTestId('crate-collect')).toBeVisible();
+  await expect(reveal.locator('.cp-crate-line').first()).toBeVisible();
+}
+
+test.describe('display serif figures (P-708)', () => {
+  for (const language of TYPOGRAPHY_LANGUAGES) {
+    test(`every visible ${DISPLAY} digit is a lining figure (${language})`, async ({ page }) => {
+      test.setTimeout(240_000);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.addInitScript(
+        ([key, value]) => {
+          localStorage.setItem(key, value);
+        },
+        [SETTINGS_KEY, JSON.stringify({ language })] as const,
+      );
+      await bootGame(page);
+      await expect(page.locator('html')).toHaveAttribute('lang', language);
+
+      await expectLiningDigits(page, 'HUD');
+      await scanSheet(page, 'dock-upgrades', 'sheet-upgrades');
+
+      await page.getByTestId('dock-safes').click();
+      const safes = page.getByTestId('safes-panel');
+      await expect(safes).toBeVisible();
+      await expect(safes.locator('.cp-safes-keys-value')).toContainText('0');
+      await expectLiningDigits(page, 'safes-panel');
+      await safes.evaluate((el) =>
+        Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)),
+      );
+      await reviewShot(page, `fonts-safes-keys-${language}`);
+      await page.keyboard.press('Escape');
+      await expect(safes).toBeHidden();
+
+      await scanSheet(page, 'dock-settings', 'sheet-settings');
+      await scanSheet(page, 'hud-ascension', 'ascension-screen');
+
+      await revealCrate(page);
+      await expectLiningDigits(page, 'crate-reveal');
+    });
+  }
 });
