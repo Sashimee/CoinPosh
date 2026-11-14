@@ -101,6 +101,28 @@ describe('createPosterGate', () => {
     expect(mayLeave()).toBe(true);
   });
 
+  it('leaves on playable once the held table draws the heap, at the laid tick', () => {
+    const boot = freshBoot();
+    const mayLeave = createPosterGate(boot);
+    boot.sim = frame(0, openingHeap.coins);
+    expect(mayLeave(), 'the sim is held, so the tick has not moved').toBe(false);
+    boot.playable = true;
+    expect(mayLeave()).toBe(true);
+  });
+
+  it('holds a playable boot until the heap is drawn', () => {
+    const boot = freshBoot();
+    boot.playable = true;
+    const mayLeave = createPosterGate(boot);
+    expect(mayLeave(), 'no sim frame drawn yet').toBe(false);
+    boot.sim = frame(0, 0);
+    expect(mayLeave(), 'the coins are not synced yet').toBe(false);
+    boot.sim = frame(0, HEAP_TARGET - 1);
+    expect(mayLeave()).toBe(false);
+    boot.sim = frame(0, HEAP_TARGET);
+    expect(mayLeave()).toBe(true);
+  });
+
   it('does not wait for playable', () => {
     const boot = freshBoot();
     const mayLeave = createPosterGate(boot);
