@@ -24,6 +24,7 @@ import { registerCratesStrings } from './i18n.ts';
 import { rewardLines, type AlbumProgressMap } from './loot.ts';
 import { mountCrateReveal, type CrateReveal } from './revealCard.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
+import { bindCrateWarmup, FramePrimer, onBootPlayable, type CrateWarmup } from './warmup.ts';
 
 export interface CratesMountOptions {
   /** Defaults to a fresh bus; pass one to share crate events with HUD or analytics. */
@@ -35,6 +36,8 @@ export interface CratesMountOptions {
   readonly stage: {
     readonly scene: Object3D;
     readonly camera: PerspectiveCamera;
+    /** The live renderer: a swap (device loss, backend fallback) links the crate's programs again. */
+    readonly renderer?: object;
     onFrame(listener: (deltaSeconds: number) => void): () => void;
     /** The table's coins, whose baked faces the unbox hero borrows. */
     readonly coins?: Pick<CoinField, 'faceTexture'>;
@@ -50,6 +53,11 @@ export interface CratesMountOptions {
   readonly audio?: (() => CrateAudioPort | null) | null;
   readonly inventoryTarget?: () => HTMLElement | null;
   readonly reducedMotion?: () => boolean;
+  /**
+   * When the crate's programs start linking, out of sight, ahead of the first crate; defaults to
+   * the boot's playable mark, so the warm-up never holds up the first frame of play.
+   */
+  readonly warmAfter?: (start: () => void) => () => void;
 }
 
 const COLLECT = '[data-testid="crate-collect"]';
@@ -174,6 +182,7 @@ export interface CratesModule {
   readonly controller: CrateController;
   readonly table: TableCrateView;
   readonly director: UnboxDirector;
+  readonly warmup: CrateWarmup;
   dispose(): void;
 }
 
@@ -259,6 +268,17 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
 
   disposers.push(holdWhileSheetOpen(options.ui.store, director));
 
+  const warmup = bindCrateWarmup({
+    stage: options.stage,
+    primer: new FramePrimer(options.stage.scene),
+    unbox: () => director.warmParts(),
+    table: () => table.warmParts(),
+    warmed: () => {
+      director.prime();
+    },
+    playable: options.warmAfter ?? onBootPlayable,
+  });
+
   const hint = mountArrivalHint({ ui: options.ui, host: options.host, reducedMotion });
   disposers.push(bindArrivalHint(events, hint), () => {
     hint.dispose();
@@ -276,7 +296,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   disposers.push(
     events.on('crate:spawned', ({ crateId, resumed }) => {
       table.spawn(crateId, resumed);
-      director.prime();
+      // A warm-up still drawing primes the unbox when it is done; two primers would double the links.
+      if (!warmup.warming) director.prime();
       if (resumed) return;
       events.emit('crate:stinger', { cue: 'arrive', rarity: null, step: 1, duckSeconds: 0 });
       options.haptics?.pulse('tap');
@@ -332,10 +353,12 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     controller,
     table,
     director,
+    warmup,
     dispose() {
       if (disposed) return;
       disposed = true;
       for (const off of disposers.splice(0)) off();
+      warmup.dispose();
       payout.dispose();
       albums.clear();
       reveals.clear();

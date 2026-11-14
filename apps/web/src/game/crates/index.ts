@@ -38,3 +38,11 @@ export {
   UnboxDirector,
 } from './view.ts';
 export type { CrateShine, OpenedCrate, UnboxCard, UnboxDirectorOptions } from './view.ts';
+export {
+  afterIdle,
+  BOOT_PLAYABLE_MARK,
+  bindCrateWarmup,
+  FramePrimer,
+  onBootPlayable,
+} from './warmup.ts';
+export type { CrateWarmup, CrateWarmupOptions, Schedule, WarmBatch } from './warmup.ts';

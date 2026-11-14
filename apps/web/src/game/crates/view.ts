@@ -9,6 +9,7 @@ import {
   Mesh,
   MeshBasicNodeMaterial,
   MeshPhysicalNodeMaterial,
+  Sprite,
   Vector3,
   type BufferGeometry,
   type Object3D,
@@ -33,6 +34,7 @@ import type { TablePoint } from '../systems/events.ts';
 import type { CrateEvents, CrateStingerCue } from './events.ts';
 import { heroOf } from './loot.ts';
 import type { CrateRide } from './ride.ts';
+import type { WarmBatch } from './warmup.ts';
 
 const ARRIVE_S = 0.36;
 const ARRIVE_HEIGHT = 0.09;
@@ -446,6 +448,29 @@ export class TableCrateView {
     }
   }
 
+  /**
+   * The crate's meshes, unlit by any crate, for a warm-up to draw out of sight: after a renderer
+   * swap the standby is long gone, and the next crate would link its programs on arrival.
+   */
+  warmParts(): WarmBatch {
+    const root = this.build('crate:warm', {
+      seam: new Color(),
+      glow: 0,
+      sweep: GLINT_OFF,
+      glint: 0,
+    });
+    const parts = [...root.children];
+    return {
+      parts,
+      release: () => {
+        for (const mesh of parts) {
+          mesh.removeFromParent();
+          this.looks.delete(mesh);
+        }
+      },
+    };
+  }
+
   dispose(): void {
     this.retireStandby();
     for (const crate of this.crates.values()) this.discard(crate.root);
@@ -559,6 +584,30 @@ export class UnboxDirector {
   /** Starts compiling the unbox props; call it ahead of the first crate. */
   prime(): void {
     if (!this.disposed) this.assets.prime();
+  }
+
+  /**
+   * One prop per unbox material, the set the unbox's own primer draws, for a warm-up that links
+   * them sooner (or again, on a new renderer). `release` frees the god-ray slot it binds.
+   */
+  warmParts(): WarmBatch {
+    const assets = this.assets;
+    const ray = new Mesh(assets.ray, assets.rayMaterial);
+    assets.bindRay({ mesh: ray, tint: new Color(), strength: 0, angle: 0 });
+    return {
+      parts: [
+        new Mesh(assets.body, assets.lacquer),
+        new Mesh(assets.band, assets.gold),
+        new Mesh(assets.column, assets.velvet),
+        new Mesh(assets.seam, assets.seamMaterial),
+        new Mesh(assets.hero('card'), assets.heroMaterial),
+        ray,
+        new Sprite(assets.flareMaterial),
+      ],
+      release: () => {
+        assets.unbindRay(ray);
+      },
+    };
   }
 
   get active(): CrateId | null {

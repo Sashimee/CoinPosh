@@ -8,12 +8,15 @@ import {
 } from '@coinposh/shared';
 import {
   AdditiveBlending,
+  BufferGeometry,
   Group,
   PerspectiveCamera,
+  Scene,
   Vector3,
   Mesh,
   MeshBasicNodeMaterial,
   MeshPhysicalNodeMaterial,
+  Sprite,
   type Material,
   type Node,
   type Object3D,
@@ -37,6 +40,7 @@ import { UnboxAssets, UnboxStage } from '../../vfx/cinematics/unbox/index.ts';
 import { RARITY_COLORS, VFX_COLORS } from '../../vfx/palette.ts';
 import { CRATE_RIDE, POSITION_UNIT } from '@coinposh/sim/snapshot';
 import { CrateRide } from './ride.ts';
+import { bindCrateWarmup, FramePrimer } from './warmup.ts';
 import {
   crateShine,
   GLINT_OFF,
@@ -538,5 +542,202 @@ describe('UnboxDirector held by an open sheet', () => {
     unbox.enqueue(opened(B));
     expect(started).toEqual([]);
     expect(unbox.active).toBeNull();
+  });
+});
+
+describe('crate warm-up', () => {
+  const FRAMING = { position: new Vector3(0, 0.5, 0.6), target: new Vector3(0, 0, -0.05), fov: 40 };
+  const roll: Roll = RollSchema.parse({
+    rarity: 'legendary',
+    rewards: [{ kind: 'currency', currency: 'pearls', amount: 25 }],
+    proof: { serverSeedHash: 'a'.repeat(64), clientSeed: 'velvet', nonce: 1 },
+    pity: { rare: 0, exquisite: 0, legendary: 0 },
+  });
+  const wallet = WalletSchema.parse({
+    coins: 10,
+    bullion: 0,
+    goldBars: 0,
+    pearls: 25,
+    keys: 0,
+    tickets: 0,
+    stars: 0,
+  });
+
+  function materialOf(part: Object3D): Material {
+    if (part instanceof Mesh || part instanceof Sprite) return part.material as Material;
+    throw new Error(`Warm part ${part.name} draws no material`);
+  }
+
+  /** The unbox's own primer draws the same materials; the cinematic is what is being checked. */
+  function underUnboxPrimer(object: Object3D): boolean {
+    for (let node: Object3D | null = object; node; node = node.parent) {
+      if (node.name === 'unbox-primer') return true;
+    }
+    return false;
+  }
+
+  function table() {
+    const scene = new Group();
+    const unbox = new UnboxDirector({
+      parent: scene,
+      camera: new PerspectiveCamera(40, 9 / 16),
+      framing: () => FRAMING,
+      events: createBus<CrateEvents>(),
+      reducedMotion: () => false,
+      card: (): UnboxCard => {
+        let shown = false;
+        return {
+          get shown() {
+            return shown;
+          },
+          show: () => {
+            shown = true;
+          },
+          dispose: () => undefined,
+        };
+      },
+    });
+    const view = new TableCrateView(scene);
+    const idle: (() => void)[] = [];
+    const listeners = new Set<(deltaSeconds: number) => void>();
+    const stage = {
+      renderer: {} as object,
+      onFrame(listener: (deltaSeconds: number) => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    let play: (() => void) | null = null;
+    const warmup = bindCrateWarmup({
+      stage,
+      primer: new FramePrimer(scene, (task) => idle.push(task)),
+      unbox: () => unbox.warmParts(),
+      table: () => view.warmParts(),
+      warmed: () => {
+        unbox.prime();
+      },
+      playable: (start) => {
+        play = start;
+        return () => undefined;
+      },
+    });
+    /** One table frame: listeners, then what the crate primer draws, then the idle slot after it. */
+    const frame = (): Material[] => {
+      for (const listener of listeners) listener(FRAME);
+      const drawn = [...(scene.getObjectByName('crate-primer')?.children ?? [])];
+      for (const part of drawn) {
+        part.onAfterRender(
+          null as never,
+          new Scene(),
+          new PerspectiveCamera(),
+          new BufferGeometry(),
+          materialOf(part),
+          new Group(),
+        );
+      }
+      for (const task of idle.splice(0)) task();
+      return drawn.map(materialOf);
+    };
+    return { scene, unbox, view, stage, warmup, frame, playable: () => play?.() };
+  }
+
+  it('draws nothing before the table is playable', () => {
+    const { scene, warmup, frame } = table();
+    for (let i = 0; i < 30; i++) expect(frame()).toEqual([]);
+    expect(warmup.warming).toBe(false);
+    expect(scene.getObjectByName('unbox-primer')).toBeUndefined();
+  });
+
+  it('links each unbox material on its own frame after playable, then hands over to the unbox primer', () => {
+    const { scene, unbox, warmup, frame, playable } = table();
+    playable();
+    const linked: Material[] = [];
+    for (let i = 0; i < 7; i++) {
+      const drawn = frame();
+      expect(drawn).toHaveLength(1);
+      linked.push(...drawn);
+    }
+    expect(new Set(linked).size).toBe(7);
+    expect(warmup.warming).toBe(false);
+    expect(warmup.warmed).toBe(true);
+    expect(frame()).toEqual([]);
+    expect(scene.getObjectByName('crate-primer')?.children).toEqual([]);
+    const unboxPrimer = scene.getObjectByName('unbox-primer');
+    expect(unboxPrimer?.children.map(materialOf)).toEqual([linked[0]]);
+    unbox.dispose();
+  });
+
+  it('warms every material the unbox cinematic draws', () => {
+    const { scene, unbox } = table();
+    const warm = unbox.warmParts();
+    const linked = new Set(warm.parts.map(materialOf));
+    warm.release();
+    expect(linked.size).toBe(7);
+    expect(warm.parts.some((part) => part instanceof Sprite)).toBe(true);
+
+    unbox.enqueue({
+      crateId: 'crate_AAAAAAAAAAAAAAAA' as CrateId,
+      roll,
+      wallet,
+      at: new Vector3(0, -0.075, 0.085),
+    });
+    const drawn = new Set<Material>();
+    for (let i = 0; i < 600 && !unbox.cinematic?.revealed; i++) {
+      unbox.update(FRAME);
+      scene.traverseVisible((object) => {
+        if (underUnboxPrimer(object)) return;
+        if (object instanceof Mesh || object instanceof Sprite) drawn.add(materialOf(object));
+      });
+    }
+    expect(unbox.cinematic?.revealed).toBe(true);
+    const crate = new Set(meshesUnder(scene.getObjectByName('crate:standby') ?? new Group()));
+    const unboxDrawn = [...drawn].filter(
+      (material) => ![...crate].some((mesh) => mesh.material === material),
+    );
+    expect(unboxDrawn.length).toBeGreaterThan(0);
+    for (const material of unboxDrawn) expect(linked).toContain(material);
+    unbox.dispose();
+  });
+
+  it('draws the table crate as a spawned crate does, and releases it from wherever it hung', () => {
+    const parent = new Group();
+    const view = new TableCrateView(parent);
+    view.spawn(crateId(1));
+    const spawned = meshesUnder(parent);
+    const warm = view.warmParts();
+    const parts = warm.parts as Mesh[];
+    expect(parts.map((mesh) => mesh.material)).toEqual(spawned.map((mesh) => mesh.material));
+    expect(parts.map((mesh) => mesh.geometry)).toEqual(spawned.map((mesh) => mesh.geometry));
+    expect(parts.map((mesh) => mesh.castShadow)).toEqual([true, true, false]);
+    expect(parts.map((mesh) => mesh.renderOrder)).toEqual(spawned.map((mesh) => mesh.renderOrder));
+    const holder = new Group();
+    holder.add(...parts);
+    warm.release();
+    expect(holder.children).toEqual([]);
+    expect(view.count).toBe(1);
+    view.dispose();
+  });
+
+  it('links the unbox and the table crate again on a swapped renderer', () => {
+    const { view, stage, frame, playable } = table();
+    playable();
+    for (let i = 0; i < 7; i++) frame();
+    const crate = view.warmParts();
+    const crateMaterials = crate.parts.map(materialOf);
+    crate.release();
+
+    stage.renderer = {};
+    const relinked: Material[] = [];
+    for (let i = 0; i < 14; i++) relinked.push(...frame());
+    expect(relinked).toHaveLength(10);
+    for (const material of crateMaterials) expect(relinked).toContain(material);
+  });
+
+  it('takes its primer out of the scene on dispose, mid-warm-up', () => {
+    const { scene, warmup, frame, playable } = table();
+    playable();
+    frame();
+    warmup.dispose();
+    expect(scene.getObjectByName('crate-primer')).toBeUndefined();
   });
 });
