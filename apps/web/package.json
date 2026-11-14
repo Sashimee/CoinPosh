@@ -7,14 +7,15 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e && tsc --noEmit -p scripts",
     "lint": "eslint .",
     "test": "vitest run",
     "e2e": "playwright test -c e2e/playwright.config.ts --project=e2e --trace off",
     "perf": "playwright test -c e2e/playwright.config.ts --project=perf --trace off",
     "lighthouse": "playwright test -c e2e/playwright.config.ts --project=perf --trace off lighthouse.perf.ts",
     "bundle:check": "node e2e/bundle-size.ts",
-    "test:perf": "vitest run --config vitest.perf.config.ts"
+    "test:perf": "vitest run --config vitest.perf.config.ts",
+    "poster:capture": "node scripts/capture-poster.ts"
   },
   "dependencies": {
     "@coinposh/economy": "workspace:*",

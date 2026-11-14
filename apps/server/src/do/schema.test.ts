@@ -262,7 +262,7 @@ describe('a player stored before Venue Ascension', () => {
       sql.exec('DROP TABLE ascensions');
       sql.exec('DROP TABLE family_office_levels');
       const before = migrationIndex('CREATE TABLE IF NOT EXISTS ascensions');
-      expect(before).toBe(MIGRATIONS.length - 1);
+      expect(before).toBe(migrationIndex('CREATE TABLE IF NOT EXISTS safes') - 1);
       sql.exec('UPDATE schema_version SET version = ?', before);
       expect(tables()).toEqual([]);
 
