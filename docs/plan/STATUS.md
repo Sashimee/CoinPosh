@@ -337,6 +337,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-28.09 | todo | | Waits on T-28.01. Jukebox |
 | T-28.10 | todo | | Waits on T-28.08. Challenge, jukebox and codex UI |
 | T-28.11 | todo | | Waits on T-28.03, T-28.04, T-28.05, T-28.06, T-28.09, T-28.10, T-26.06. Content wiring and e2e |
+| P-213 | done | task/P-213 (merge 1240142) | Boot poster re-rendered from the live table by the committed apps/web/scripts/capture-poster.ts, held until the heap is on the table, with apps/web/e2e/poster.spec.ts and hud tests (folds P-521) (4171ea1); pnpm check green after merge; follow-ups queued as P-541..P-543 |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
