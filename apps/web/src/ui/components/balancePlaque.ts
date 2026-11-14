@@ -1,5 +1,5 @@
 import type { Currency, Wallet } from '@coinposh/shared';
-import { watch } from '../../app/store.ts';
+import { createStore, watch, type Store } from '../../app/store.ts';
 import { formatBalance, formatInteger } from '../../i18n/index.ts';
 import { feedback, tr, type UiContext } from '../context.ts';
 import { fromMarkup, h, rectOf, restartAnimation } from '../dom.ts';
@@ -193,6 +193,7 @@ export class PayoutLedger {
   readonly #chips = new Map<WalletChip, { shown: number; target: number }>();
   readonly #caps = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #collecting = new Set<string>();
+  readonly #open = new Set<string>();
   readonly #capMs: number;
   readonly #warn: (message: string) => void;
 
@@ -209,8 +210,14 @@ export class PayoutLedger {
   }
 
   hold(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void {
+    this.#open.add(id);
     this.coins.hold(id, credit.coins ?? 0);
     this.goldBars.hold(id, credit.goldBars ?? 0);
+  }
+
+  /** A reveal is open or its payout is still in flight, whatever it credits. */
+  get busy(): boolean {
+    return this.#open.size > 0 || this.#collecting.size > 0;
   }
 
   retract(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void {
@@ -241,6 +248,7 @@ export class PayoutLedger {
   collect(id: string, payout: Payout): readonly ChipCount[] {
     this.#clearCap(id);
     if (this.#holds(id)) this.#collecting.add(id);
+    this.#open.delete(id);
     const counts: ChipCount[] = [];
     for (const currency of WALLET_CHIPS) {
       const to = payout.wallet[currency];
@@ -267,6 +275,7 @@ export class PayoutLedger {
   /** Ends `id`'s payout: whatever has not landed shows at once. */
   finish(id: string): void {
     this.#collecting.delete(id);
+    this.#open.delete(id);
     this.#clearCap(id);
     this.coins.release(id);
     this.goldBars.release(id);
@@ -284,6 +293,7 @@ export class PayoutLedger {
     for (const timer of this.#caps.values()) clearTimeout(timer);
     this.#caps.clear();
     this.#collecting.clear();
+    this.#open.clear();
     this.coins.releaseAll();
     this.goldBars.releaseAll();
     for (const currency of WALLET_CHIPS) this.#reach(currency);
@@ -301,7 +311,8 @@ export class PayoutLedger {
 
   #settle(id: string): void {
     this.#clearCap(id);
-    const had = this.#holds(id);
+    const opened = this.#open.delete(id);
+    const had = this.#holds(id) || opened;
     this.coins.release(id);
     this.goldBars.release(id);
     if (had) this.changed();
@@ -327,6 +338,20 @@ interface PayoutChannel extends WalletPayout {
 }
 
 const channels = new WeakMap<object, PayoutChannel>();
+const busyStores = new WeakMap<object, Store<{ readonly busy: boolean }>>();
+
+/**
+ * Whether a crate or safe reveal on `owner`'s HUD is open or still paying out, from its open to
+ * the moment its last line lands or it goes away. False while no plaque is attached.
+ */
+export function payoutBusy(owner: object): Store<{ readonly busy: boolean }> {
+  let found = busyStores.get(owner);
+  if (!found) {
+    found = createStore<{ readonly busy: boolean }>({ busy: false });
+    busyStores.set(owner, found);
+  }
+  return found;
+}
 
 /**
  * The payout shared by everything that credits `owner`'s HUD, such as a UI's store. Until the
@@ -562,8 +587,13 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
     for (const chip of chips) showChip(chip, animate);
     purse.hidden = chips.every((chip) => chip.el.hidden);
   };
+  const busy = payoutBusy(ctx.store);
+  const syncBusy = (): void => {
+    busy.setState({ busy: ledger.busy });
+  };
   const ledger = new PayoutLedger(() => {
     paint(true);
+    syncBusy();
   });
 
   const targetOf = (currency: Currency): HTMLElement => {
@@ -650,6 +680,7 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   const payout: WalletPayout = {
     hold(id, credit) {
       ledger.hold(id, credit);
+      syncBusy();
     },
     retract(id, credit) {
       ledger.retract(id, credit);
@@ -662,6 +693,7 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
     },
     collect(id, given) {
       const counts = ledger.collect(id, given);
+      syncBusy();
       const into = isReducedMotion() ? null : flightLayer();
       if (!into) {
         ledger.finish(id);
@@ -681,6 +713,7 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
     },
     release(id) {
       ledger.release(id);
+      syncBusy();
     },
   };
   ctx.own(walletPayoutFor(ctx.store).attach(payout));
@@ -749,6 +782,7 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
     for (const restore of [...lifted]) restore();
     flying.clear();
     ledger.releaseAll();
+    busy.setState({ busy: false });
     layer?.remove();
   });
   return wrap;

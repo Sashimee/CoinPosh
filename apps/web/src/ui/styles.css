@@ -240,6 +240,42 @@
   height: 18px;
 }
 
+.cp-in-hand-glyph {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: var(--cp-gold-brushed);
+  background: radial-gradient(circle, rgb(var(--cp-ivory-rgb) / 0.35), transparent 70%);
+  filter: drop-shadow(0 0 6px rgb(var(--cp-gold-brushed-rgb) / 0.75));
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.cp-in-hand-glyph .cp-icon {
+  width: 16px;
+  height: 16px;
+}
+
+[data-testid='hud-in-hand'].is-receiving {
+  animation: cp-in-hand-receive 520ms ease-out;
+}
+
+@keyframes cp-in-hand-receive {
+  0% {
+    border-color: var(--cp-gold-brushed);
+    box-shadow: 0 0 0 0 rgb(var(--cp-gold-brushed-rgb) / 0.55);
+  }
+
+  100% {
+    box-shadow: 0 0 0 10px rgb(var(--cp-gold-brushed-rgb) / 0);
+  }
+}
+
 .cp-wallet-spark {
   position: absolute;
   top: 0;

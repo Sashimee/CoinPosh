@@ -5,7 +5,7 @@ import type { PanelId, UiState } from '../app/state.ts';
 import { browserStorage } from '../app/settings.ts';
 import { createStore, watch, type Store } from '../app/store.ts';
 import { formatInteger, type InterpolationValues, type Language } from '../i18n/index.ts';
-import { createBalancePlaque } from './components/balancePlaque.ts';
+import { createBalancePlaque, payoutBusy } from './components/balancePlaque.ts';
 import { createComboLadder } from './components/comboLadder.ts';
 import { createConciergeNotice, createDecorumMeter } from './components/decorumMeter.ts';
 import type { MeterRail } from './components/meterRail.ts';
@@ -13,8 +13,8 @@ import { makePressable } from './components/pressable.ts';
 import { coinFloorFrontHalf, coinFloorRect, planMeterRails } from './components/railLayout.ts';
 import { createTierStamp, type TierStamp } from './components/tierStamp.ts';
 import { createUpgradeNudge } from './components/upgradeNudge.ts';
-import { tr, type UiContext } from './context.ts';
-import { fromMarkup, h, listen, restartAnimation } from './dom.ts';
+import { feedback, tr, type UiContext } from './context.ts';
+import { fromMarkup, h, listen, rectOf, restartAnimation } from './dom.ts';
 import { icon } from './icons.ts';
 import { Localizer } from './localize.ts';
 import { schedule } from './motion/loop.ts';
@@ -406,6 +406,15 @@ export function vaultIsEmpty(vaultCoins: number, inHandCoins: number): boolean {
 
 interface InHandState {
   readonly coins: number;
+  /** A payout holds the split between the plaque and the hand, or is handing it over. */
+  readonly held: boolean;
+  /** This change moves coins from the plaque into the hand as one step of a handover. */
+  readonly handover: boolean;
+}
+
+export interface InHandOptions {
+  readonly held?: boolean;
+  readonly handover?: boolean;
 }
 
 // TODO(app owner): carry the drop buffer in UiState and UiApp.setWallet; until then it rides
@@ -415,7 +424,7 @@ const inHandByStore = new WeakMap<Store<UiState>, Store<InHandState>>();
 function inHandStore(store: Store<UiState>): Store<InHandState> {
   let found = inHandByStore.get(store);
   if (!found) {
-    found = createStore<InHandState>({ coins: 0 });
+    found = createStore<InHandState>({ coins: 0, held: false, handover: false });
     inHandByStore.set(store, found);
   }
   return found;
@@ -425,11 +434,152 @@ function inHandStore(store: Store<UiState>): Store<InHandState> {
  * Reports the worth of the pre-minted drop buffer to the HUD mounted on `store`: coins already
  * paid for out of the wallet, so they sit beside the Vault plaque, never inside its figure.
  */
-export function setInHand(store: Store<UiState>, coins: number): void {
+export function setInHand(store: Store<UiState>, coins: number, options: InHandOptions = {}): void {
   if (!Number.isFinite(coins) || coins < 0) {
     throw new RangeError(`setInHand: coins in hand must be a finite number ≥ 0, got ${coins}`);
   }
-  inHandStore(store).setState({ coins });
+  inHandStore(store).setState({
+    coins,
+    held: options.held ?? false,
+    handover: options.handover ?? false,
+  });
+}
+
+/** How long the plaque keeps a payout's refill on show once the payout's hold lets go. */
+export const HANDOVER_DWELL_MS = 1_200;
+/** The gap between the handover's steps; each step is one coin glyph flying into the hand. */
+export const HANDOVER_STEP_MS = 120;
+export const HANDOVER_MAX_STEPS = 6;
+
+/** What the in-hand readout shows, and how the plaque and the hand split the coins. */
+export interface InHandView {
+  readonly coins: number;
+  readonly held: boolean;
+  readonly handover: boolean;
+}
+
+export interface InHandHandoverOptions {
+  /** The handover moved a step on its own: read the view again. */
+  readonly changed: () => void;
+  readonly reducedMotion: () => boolean;
+  /** Runs `run` after `ms`; returns the way to cancel it. */
+  readonly later?: (ms: number, run: () => void) => () => void;
+}
+
+type HandoverPhase = 'idle' | 'held' | 'dwell' | 'handing';
+
+function laterByTimer(ms: number, run: () => void): () => void {
+  const timer = setTimeout(run, ms);
+  return () => {
+    clearTimeout(timer);
+  };
+}
+
+/**
+ * Splits the coins in hand from the Vault around a payout. While a payout holds the plaque, the
+ * hand keeps what it showed when the hold began, less the drops made since, so a drop-buffer
+ * refill bought with the winnings stays on the plaque and the hand never blanks to 0 behind a
+ * reveal. Once the hold lets go, the plaque keeps the payout on show for HANDOVER_DWELL_MS, then
+ * hands the refill to the hand in up to HANDOVER_MAX_STEPS steps (one under reduced motion).
+ * Only the split moves: the plaque plus the hand is always the readout's total.
+ */
+export class InHandHandover {
+  #phase: HandoverPhase = 'idle';
+  #shown = 0;
+  #target = 0;
+  #step = 0;
+  #stepping = false;
+  #cancel: (() => void) | null = null;
+  readonly #later: (ms: number, run: () => void) => () => void;
+
+  constructor(private readonly options: InHandHandoverOptions) {
+    this.#later = options.later ?? laterByTimer;
+  }
+
+  /**
+   * The view for a hand of `target` coins out of `total` (the Vault plus the hand) while a
+   * payout is `holding` or not.
+   */
+  view(target: number, total: number, holding: boolean): InHandView {
+    this.#target = target;
+    if (holding) {
+      if (this.#phase !== 'held') {
+        this.#stop();
+        this.#phase = 'held';
+      }
+    } else if (this.#phase === 'held') {
+      this.#phase = 'dwell';
+      this.#cancel = this.#later(HANDOVER_DWELL_MS, () => {
+        this.#cancel = null;
+        this.#startHanding();
+      });
+    }
+    if (this.#phase === 'idle') this.#shown = target;
+    return {
+      coins: Math.max(0, Math.min(this.#shown, total)),
+      held: this.#phase !== 'idle',
+      handover: this.#stepping,
+    };
+  }
+
+  /** A drop took a coin worth `value` from the hand. */
+  spent(value: number): void {
+    if (this.#phase !== 'idle') this.#shown = Math.max(0, this.#shown - value);
+  }
+
+  get held(): boolean {
+    return this.#phase !== 'idle';
+  }
+
+  dispose(): void {
+    this.#stop();
+    this.#phase = 'idle';
+  }
+
+  #startHanding(): void {
+    const owed = this.#target - this.#shown;
+    if (owed <= 0) {
+      this.#phase = 'idle';
+      this.options.changed();
+      return;
+    }
+    this.#phase = 'handing';
+    this.#step = this.options.reducedMotion()
+      ? owed
+      : Math.max(1, Math.ceil(owed / HANDOVER_MAX_STEPS));
+    this.#handStep();
+  }
+
+  #handStep(): void {
+    this.#cancel = null;
+    const owed = this.#target - this.#shown;
+    if (owed <= 0) {
+      this.#phase = 'idle';
+      this.options.changed();
+      return;
+    }
+    this.#shown += Math.min(this.#step, owed);
+    this.#stepping = true;
+    try {
+      this.options.changed();
+    } finally {
+      this.#stepping = false;
+    }
+    if (this.#phase !== 'handing') return;
+    if (this.#target - this.#shown <= 0) {
+      this.#phase = 'idle';
+      this.options.changed();
+      return;
+    }
+    this.#cancel = this.#later(HANDOVER_STEP_MS, () => {
+      this.#handStep();
+    });
+  }
+
+  #stop(): void {
+    this.#cancel?.();
+    this.#cancel = null;
+  }
 }
 
 /** What the in-hand readout under the plaque says for `coins`. */
@@ -461,13 +611,45 @@ const IN_HAND_DIP: Keyframe[] = [
   { translate: '0 0', opacity: 1 },
 ];
 const IN_HAND_DIP_MS = 320;
+/** One coin glyph's hop from the plaque into the hand during a handover. */
+const HANDOVER_FLIGHT_MS = 460;
+const HANDOVER_FLIGHT_SAMPLES = 10;
+const HANDOVER_FADE_MS = 320;
+const HANDOVER_FADE: Keyframe[] = [{ opacity: 0.2 }, { opacity: 1 }];
+
+function middleOf(el: Element): { readonly x: number; readonly y: number } {
+  const rect = rectOf(el);
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+/** A short hop from the plaque's coin to the hand's, bowed out to one side by `lean`. */
+function handoverFrames(from: Element, to: Element, lean: number): Keyframe[] {
+  const a = middleOf(from);
+  const b = middleOf(to);
+  const control = { x: (a.x + b.x) / 2 + lean, y: Math.min(a.y, b.y) - 18 };
+  const frames: Keyframe[] = [];
+  for (let i = 0; i <= HANDOVER_FLIGHT_SAMPLES; i += 1) {
+    const t = i / HANDOVER_FLIGHT_SAMPLES;
+    const e = t * t * (3 - 2 * t);
+    const u = 1 - e;
+    const x = u * u * a.x + 2 * u * e * control.x + e * e * b.x;
+    const y = u * u * a.y + 2 * u * e * control.y + e * e * b.y;
+    const scale = 1.15 - 0.55 * t;
+    frames.push({
+      offset: t,
+      transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, -50%) scale(${scale.toFixed(3)})`,
+      opacity: t < 0.12 ? t / 0.12 : 1 - 0.4 * Math.max(0, (t - 0.85) / 0.15),
+    });
+  }
+  return frames;
+}
 
 /**
  * The drop buffer as a small tab tucked under the Vault plaque: coin, count and "In hand". It
  * stays out of sight until the buffer first holds coins, then keeps its place and dims when
  * the buffer runs dry, so a refill never shifts the HUD.
  */
-function createInHandReadout(ctx: UiContext): HTMLElement {
+function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   const coin = icon('coin');
   coin.setAttribute('style', 'width: 12px; height: 12px');
   const value = h('span', { attrs: { 'aria-hidden': 'true' } });
@@ -503,23 +685,105 @@ function createInHandReadout(ctx: UiContext): HTMLElement {
   });
   const inHand = inHandStore(ctx.store);
 
-  const paint = (coins: number): void => {
-    const copy = inHandCopy((key, values) => tr(ctx, key, values), coins, ctx.i18n.language);
-    value.textContent = copy.value;
-    label.textContent = copy.label;
-    spoken.textContent = copy.spoken;
+  /** Digits wait for the glyph that carries them; any other change paints them at once. */
+  let digitsFor = 0;
+  const paintDigits = (coins: number): void => {
+    value.textContent = formatInteger(coins, ctx.i18n.language);
     readout.style.opacity = coins > 0 ? '' : '0.45';
   };
+  const paint = (coins: number, digits: boolean): void => {
+    const copy = inHandCopy((key, values) => tr(ctx, key, values), coins, ctx.i18n.language);
+    label.textContent = copy.label;
+    spoken.textContent = copy.spoken;
+    if (digits) {
+      digitsFor += 1;
+      paintDigits(coins);
+    }
+  };
+
+  let layer: HTMLElement | null = null;
+  const flightLayer = (): HTMLElement | null => {
+    if (layer?.isConnected) return layer;
+    const host = readout.closest('.cp-ui-host');
+    if (!host) return null;
+    layer = h('div', { class: 'cp-wallet-flights', attrs: { 'aria-hidden': 'true' } });
+    host.append(layer);
+    return layer;
+  };
+  const flights = new Set<() => void>();
+  let lean = 1;
+  /** Flies one coin glyph from the plaque into the hand; false when there is nowhere to fly. */
+  const fly = (landed: () => void): boolean => {
+    const into = flightLayer();
+    if (!into) return false;
+    const from = plaque.querySelector('.cp-plaque-amount .cp-icon') ?? plaque;
+    const glyph = h(
+      'span',
+      { class: 'cp-in-hand-glyph', attrs: { 'data-testid': 'hud-in-hand-glyph' } },
+      icon('coin'),
+    );
+    into.append(glyph);
+    lean = -lean;
+    glyph.animate(handoverFrames(from, coin, lean * 26), {
+      duration: HANDOVER_FLIGHT_MS,
+      easing: 'linear',
+      fill: 'both',
+    });
+    const timer = setTimeout(() => {
+      finish();
+      landed();
+    }, HANDOVER_FLIGHT_MS);
+    const finish = (): void => {
+      clearTimeout(timer);
+      glyph.remove();
+      flights.delete(finish);
+    };
+    flights.add(finish);
+    return true;
+  };
+
+  const handOver = (coins: number): void => {
+    if (isReducedMotion()) {
+      paint(coins, true);
+      value.animate(HANDOVER_FADE, { duration: HANDOVER_FADE_MS, easing: 'ease-out' });
+      plaque
+        .querySelector('.cp-plaque-amount')
+        ?.animate(HANDOVER_FADE, { duration: HANDOVER_FADE_MS, easing: 'ease-out' });
+      feedback(ctx, 'tick');
+      return;
+    }
+    paint(coins, false);
+    const carried = digitsFor;
+    const flown = fly(() => {
+      if (carried === digitsFor) paintDigits(Math.min(coins, inHand.getState().coins));
+      pop.kick(IN_HAND_POP_VELOCITY);
+      restartAnimation(readout, 'is-receiving');
+      feedback(ctx, 'tick');
+    });
+    if (!flown) {
+      paint(coins, true);
+      pop.kick(IN_HAND_POP_VELOCITY);
+    }
+  };
+
   ctx.own(
     watch(
       inHand,
       (s) => s.coins,
       (coins, previous) => {
         if (coins > 0) readout.hidden = false;
-        paint(coins);
+        if (previous !== undefined && !readout.hidden && coins > previous) {
+          if (inHand.getState().handover) {
+            handOver(coins);
+            return;
+          }
+          paint(coins, true);
+          pop.kick(IN_HAND_POP_VELOCITY);
+          return;
+        }
+        paint(coins, true);
         if (previous === undefined || readout.hidden) return;
-        if (coins > previous) pop.kick(IN_HAND_POP_VELOCITY);
-        else if (coins < previous && !isReducedMotion()) {
+        if (coins < previous && !isReducedMotion()) {
           coin.animate(IN_HAND_DIP, { duration: IN_HAND_DIP_MS, easing: 'ease-out' });
         }
       },
@@ -527,11 +791,13 @@ function createInHandReadout(ctx: UiContext): HTMLElement {
   );
   ctx.own(
     ctx.loc.bind(() => {
-      paint(inHand.getState().coins);
+      paint(inHand.getState().coins, true);
     }),
   );
   ctx.own(() => {
     pop.stop();
+    for (const finish of [...flights]) finish();
+    layer?.remove();
   });
   return readout;
 }
@@ -539,7 +805,9 @@ function createInHandReadout(ctx: UiContext): HTMLElement {
 /**
  * Dims the plaque and has the Concierge point at the ledge while the Vault the server reports
  * and the coins in hand cannot pay for a drop. It only reads the balance: refilling an empty Vault is the server's
- * Steward's allowance (02-ECONOMY.md), and its credit clears this like any other.
+ * Steward's allowance (02-ECONOMY.md), and its credit clears this like any other. A crate or safe
+ * reveal, and the payout it hands to the Vault and the hand, is news that outranks it: the notice
+ * stays down until the payout has landed, and comes back only if the Vault is still empty then.
  */
 function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   const title = h('span', { class: 'cp-vault-empty-title' });
@@ -566,6 +834,8 @@ function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElemen
   ctx.loc.text(hint, () => tr(ctx, 'hud.vaultEmpty.hint'));
 
   const inHand = inHandStore(ctx.store);
+  const busy = payoutBusy(ctx.store);
+  const paying = (): boolean => busy.getState().busy || inHand.getState().held;
   const isEmpty = (): boolean => vaultIsEmpty(ctx.store.getState().coins, inHand.getState().coins);
   let shown = false;
   let settle: ReturnType<typeof setTimeout> | undefined;
@@ -580,19 +850,24 @@ function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElemen
     reveal.jump(0);
     void reveal.to(1);
   };
-  const hide = (): void => {
+  const hide = (at = false): void => {
     clearTimeout(settle);
     clearTimeout(asked);
     if (!shown) return;
     shown = false;
     plaque.classList.remove('is-empty');
     notice.classList.remove('is-asked', 'is-nudged');
+    if (at) {
+      reveal.jump(0);
+      notice.hidden = true;
+      return;
+    }
     void reveal.to(0, SPRINGS.snappy).then(() => {
       if (!shown) notice.hidden = true;
     });
   };
   const answerTap = (): void => {
-    if (!isEmpty() || !isPlayable()) return;
+    if (!isEmpty() || !isPlayable() || paying()) return;
     show();
     notice.classList.add('is-asked');
     if (!isReducedMotion()) restartAnimation(notice, 'is-nudged');
@@ -604,6 +879,11 @@ function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElemen
 
   let empty: boolean | undefined;
   const follow = (): void => {
+    if (paying()) {
+      empty = undefined;
+      hide(true);
+      return;
+    }
     const now = isEmpty();
     if (now === empty) return;
     empty = now;
@@ -616,6 +896,7 @@ function createVaultEmptyNotice(ctx: UiContext, plaque: HTMLElement): HTMLElemen
   follow();
   ctx.own(ctx.store.subscribe(follow));
   ctx.own(inHand.subscribe(follow));
+  ctx.own(busy.subscribe(follow));
   ctx.own(
     listen(
       window,
@@ -733,7 +1014,7 @@ export function createHud(ctx: UiContext): Hud {
     { class: 'cp-hud-top' },
     bannerSlot,
     plaque,
-    createInHandReadout(ctx),
+    createInHandReadout(ctx, plaque),
     createVaultEmptyNotice(ctx, plaque),
     createUpgradeNudge(ctx, {
       trigger: upgradesButton,
