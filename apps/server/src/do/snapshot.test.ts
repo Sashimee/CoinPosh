@@ -8,6 +8,8 @@ import {
   type StateResponse,
   type TableSnapshotResponse,
 } from '@coinposh/shared';
+import { COIN, PLAYFIELD } from '@coinposh/sim/layout';
+import { POSITION_UNIT } from '@coinposh/sim/snapshot';
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { newIdempotencyKey, newSession, type Session } from '../test/client.ts';
@@ -36,8 +38,10 @@ import {
 
 const FLAT = [0, 0, 0, 32_767] as const;
 const FLOOR_Y = 160;
-/** The front lip: the furthest forward a coin's centre may rest. */
-const LIP_Z = 5_000;
+/** The front lip's edge. */
+const LIP_Z = Math.round(PLAYFIELD.fieldFrontZ / POSITION_UNIT);
+/** The furthest forward a coin's centre may rest: overhanging the lip by a radius (P-624). */
+const LIP_LIMIT_Z = Math.round((PLAYFIELD.fieldFrontZ + COIN.radius) / POSITION_UNIT);
 const FORGED_COIN_ID = 'coin_AAAAAAAAAAAAAAAAAAAA';
 const FORGED_CRATE_ID = 'crate_AAAAAAAAAAAAAAAAAAAA';
 const SPAWN_Z = CHUTE_POSE.z;
@@ -440,12 +444,37 @@ describe('POST /v1/table/snapshot pipeline', () => {
         session,
         body(table, {
           pusher: { tickInCycle: 120 },
-          coins: [pose(a, 0, LIP_Z + 1), pose(b, 3_000, -5_000), tilted, pose(d, 9_000, 2_000)],
+          coins: [
+            pose(a, 0, LIP_LIMIT_Z + 1),
+            pose(b, 3_000, -5_000),
+            tilted,
+            pose(d, 9_000, 2_000),
+          ],
         }),
       );
       expect(result).toEqual({ seq: 1, stored: 1, ignored: 3 });
       expect((await stored(session))?.poses.map((tuple) => tuple[0])).toEqual([d]);
       expect(await flags(session)).toMatchObject({ 'snapshot.implausible': 3 });
+    });
+
+    it('stores coins the heap holds overhanging the lip, up to a radius past it', async () => {
+      const session = await newSession();
+      const table = await booted(session);
+      const [a, b, c] = table.coins.map((coin) => coin.id);
+      if (a === undefined || b === undefined || c === undefined) throw new Error('No heap coins.');
+      const result = await accept(
+        session,
+        body(table, {
+          coins: [
+            pose(a, -9_000, LIP_Z + 1),
+            pose(b, 0, LIP_LIMIT_Z - 1),
+            pose(c, 9_000, LIP_LIMIT_Z),
+          ],
+        }),
+      );
+      expect(result).toEqual({ seq: 1, stored: 3, ignored: 0 });
+      expect((await stored(session))?.poses.map((tuple) => tuple[0])).toEqual([a, b, c]);
+      expect(await flags(session)).toMatchObject({ 'snapshot.implausible': 0 });
     });
 
     it('drops the later of two coins sunk into each other', async () => {
