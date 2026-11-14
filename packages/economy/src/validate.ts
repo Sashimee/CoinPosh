@@ -3,16 +3,21 @@ import {
   CATALOG_KEY,
   CATALOG_KEY_MAX_LENGTH,
   CatalogKeySchema,
+  CHARM_KINDS,
+  CharmTypeIdSchema,
   COIN_TIER_IDS,
   CollectibleIdSchema,
   CURRENCY_IDS,
   DROP_SOURCE_IDS,
   RARITY_IDS,
   SafeTypeIdSchema,
+  SYNERGY_TAGS,
   UpgradeLineIdSchema,
   VENUE_IDS,
+  type CharmKind,
 } from '@coinposh/shared';
 import { validateRateEnvelope } from './config.ts';
+import { charmLoadoutValueCapBp } from './config/charms.ts';
 import { ODDS_SCALE, oddsTotal, weightToPercent } from './odds.ts';
 import { rarityRank } from './pity.ts';
 import {
@@ -89,6 +94,9 @@ function checkKeys(config: EconomyConfig, report: Report): void {
     }
   }
   for (const [i, t] of config.pacing.entries()) check(`pacing[${i}].id`, t.id);
+  for (const id of Object.keys(config.charms.drops)) {
+    check(`charms.drops.${id}`, id, CharmTypeIdSchema);
+  }
 }
 
 function checkCurrencies(config: EconomyConfig, report: Report): void {
@@ -364,6 +372,186 @@ function checkProgression(config: EconomyConfig, report: Report): void {
   }
 }
 
+function checkCharmParams(config: EconomyConfig, report: Report): void {
+  const { charms } = config;
+  for (const kind of CHARM_KINDS) {
+    const def = charms.kinds[kind];
+    const path = `charms.kinds.${kind}`;
+    if (def.tags.length === 0) report(path, 'needs at least one synergy tag');
+    if (new Set(def.tags).size !== def.tags.length) report(path, 'lists a tag twice');
+    for (const tag of def.tags) {
+      if (!(SYNERGY_TAGS as readonly string[]).includes(tag)) report(path, `unknown tag "${tag}"`);
+    }
+    if (!Object.hasOwn(def.params, def.boosted)) {
+      report(path, `boosted names "${def.boosted}", which is not one of its params`);
+    }
+    for (const [name, param] of Object.entries(def.params)) {
+      const at = `${path}.params.${name}`;
+      if (param.levels.length !== charms.maxLevel) {
+        report(at, `needs ${charms.maxLevel} levels, has ${param.levels.length}`);
+      }
+      param.levels.forEach((value, i) => {
+        if (!isPositiveInt(value)) {
+          report(`${at}.levels[${i}]`, `must be a positive integer, got ${value}`);
+        }
+        const prev = param.levels[i - 1];
+        if (prev === undefined) return;
+        const worse = param.sense === 'more' ? value < prev : value > prev;
+        if (worse) {
+          report(`${at}.levels[${i}]`, `a level must never weaken the charm (${prev} → ${value})`);
+        }
+      });
+    }
+  }
+}
+
+function checkCharmSets(config: EconomyConfig, report: Report, kindsComplete: boolean): void {
+  const { charms } = config;
+  const tiers = new Set<string>();
+  charms.setBonuses.forEach((bonus, i) => {
+    const path = `charms.setBonuses[${i}] (${bonus.tag} ×${bonus.pieces})`;
+    if (!(SYNERGY_TAGS as readonly string[]).includes(bonus.tag)) report(path, 'unknown tag');
+    if (tiers.has(`${bonus.tag}:${bonus.pieces}`)) report(path, 'duplicate tier');
+    tiers.add(`${bonus.tag}:${bonus.pieces}`);
+    if (!Number.isInteger(bonus.pieces) || bonus.pieces < 2) {
+      report(path, 'pieces must be an integer ≥ 2');
+    }
+    for (const key of ['effectBoostBp', 'valueBp'] as const) {
+      if (!Number.isInteger(bonus[key]) || bonus[key] < 0) {
+        report(path, `${key} must be a non-negative integer`);
+      }
+    }
+    if (kindsComplete) {
+      const carriers = CHARM_KINDS.filter((kind) => charms.kinds[kind].tags.includes(bonus.tag));
+      if (bonus.pieces > carriers.length) {
+        report(path, `only ${carriers.length} kinds carry ${bonus.tag}, so no loadout reaches it`);
+      }
+    }
+    for (const lower of charms.setBonuses) {
+      if (lower.tag !== bonus.tag || !(lower.pieces < bonus.pieces)) continue;
+      if (!(bonus.effectBoostBp > lower.effectBoostBp && bonus.valueBp >= lower.valueBp)) {
+        report(path, `must beat the ${lower.pieces}-piece tier`);
+      }
+    }
+  });
+  for (const tag of SYNERGY_TAGS) {
+    for (const pieces of [2, 3]) {
+      if (!tiers.has(`${tag}:${pieces}`)) {
+        report('charms.setBonuses', `${tag} needs a ${pieces}-piece tier`);
+      }
+    }
+  }
+}
+
+function checkCharmDrops(config: EconomyConfig, report: Report): void {
+  const { charms, album } = config;
+  let total = 0;
+  const weightByKind = new Map<CharmKind, number>();
+  for (const [id, drop] of Object.entries(charms.drops)) {
+    const path = `charms.drops.${id}`;
+    if (!(CHARM_KINDS as readonly string[]).includes(drop.kind)) {
+      report(path, `unknown kind "${drop.kind}"`);
+    }
+    if ((CHARM_KINDS as readonly string[]).includes(id) && id !== drop.kind) {
+      report(path, `a kind's own id must play as that kind, got "${drop.kind}"`);
+    }
+    if (!Number.isInteger(drop.weight) || drop.weight < 0) {
+      report(path, `weight must be a non-negative integer, got ${drop.weight}`);
+    }
+    total += drop.weight;
+    weightByKind.set(drop.kind, (weightByKind.get(drop.kind) ?? 0) + drop.weight);
+  }
+  if (total !== ODDS_SCALE) {
+    report('charms.drops', `weights sum to ${weightToPercent(total)} %, must be exactly 100 %`);
+  }
+  for (const kind of CHARM_KINDS) {
+    if (!((weightByKind.get(kind) ?? 0) > 0)) report('charms.drops', `no drop ever grants ${kind}`);
+  }
+  // Album entries are charms by the `…Charm` id convention the album endpoint already reads.
+  album.forEach((set, i) => {
+    for (const item of set.items) {
+      if (item.id.endsWith('Charm') && !Object.hasOwn(charms.drops, item.id)) {
+        report(`album[${i}] (${set.id})`, `charm "${item.id}" maps to no kind in charms.drops`);
+      }
+    }
+  });
+}
+
+/**
+ * Exact over every set of distinct kinds (2^6 loadouts): what a loadout may mint never exceeds
+ * the rate envelope's per-charm value budget times the charms slotted. A repeated kind adds its
+ * own cap but no set progress, so the per-kind bound covers repeats.
+ */
+function checkCharmValueBudget(config: EconomyConfig, perCharmBp: number, report: Report): void {
+  const { charms } = config;
+  for (const kind of CHARM_KINDS) {
+    const cap = charms.kinds[kind].valueCapBp;
+    if (!Number.isInteger(cap) || cap < 0 || cap > perCharmBp) {
+      report(
+        `charms.kinds.${kind}.valueCapBp`,
+        `must be an integer in [0, ${perCharmBp}], got ${cap}`,
+      );
+    }
+  }
+  for (let mask = 1; mask < 1 << CHARM_KINDS.length; mask += 1) {
+    const loadout = CHARM_KINDS.filter((_, i) => (mask & (1 << i)) !== 0);
+    const minted = charmLoadoutValueCapBp(loadout, charms);
+    const budget = loadout.length * perCharmBp;
+    if (minted > budget) {
+      report(
+        'charms',
+        `loadout ${loadout.join(' + ')} may mint ${minted} bp, over the envelope's ${budget} bp`,
+      );
+    }
+  }
+}
+
+function checkCharms(config: EconomyConfig, report: Report): void {
+  const { charms } = config;
+  if (!isPositiveInt(charms.tickRateHz)) report('charms.tickRateHz', 'must be a positive integer');
+  if (!isPositiveInt(charms.maxLevel)) report('charms.maxLevel', 'must be a positive integer');
+  if (charms.copiesToLevel.length !== charms.maxLevel) {
+    report(
+      'charms.copiesToLevel',
+      `needs ${charms.maxLevel} entries, has ${charms.copiesToLevel.length}`,
+    );
+  }
+  if (charms.copiesToLevel[0] !== 1) {
+    report('charms.copiesToLevel', 'the first copy must be level 1');
+  }
+  charms.copiesToLevel.forEach((copies, i) => {
+    const prev = charms.copiesToLevel[i - 1];
+    if (!isPositiveInt(copies) || (prev !== undefined && !(copies > prev))) {
+      report(`charms.copiesToLevel[${i}]`, 'copies must be positive integers rising every level');
+    }
+  });
+  const { mastery } = charms;
+  for (const key of ['maxLevel', 'activationsBase', 'growth'] as const) {
+    if (!isPositiveInt(mastery[key])) report(`charms.mastery.${key}`, 'must be a positive integer');
+  }
+  if (!(mastery.growth > 1)) report('charms.mastery.growth', 'must exceed 1');
+  if (!Number.isInteger(mastery.effectBpPerLevel) || mastery.effectBpPerLevel < 0) {
+    report('charms.mastery.effectBpPerLevel', 'must be a non-negative integer');
+  }
+  if (!Number.isInteger(charms.setBoostCapBp) || charms.setBoostCapBp < 0) {
+    report('charms.setBoostCapBp', 'must be a non-negative integer');
+  }
+
+  checkIdsExactly(report, 'charms.kinds', Object.keys(charms.kinds), CHARM_KINDS);
+  const kindsComplete = CHARM_KINDS.every((kind) => Object.hasOwn(charms.kinds, kind));
+  if (kindsComplete) checkCharmParams(config, report);
+  checkCharmSets(config, report, kindsComplete);
+  checkCharmDrops(config, report);
+
+  const perCharm = config.rateEnvelope.fallValue.value?.perCharm;
+  if (perCharm === undefined) {
+    report('charms', 'rateEnvelope.fallValue must budget value per charm');
+  } else if (kindsComplete) {
+    // perCharm is a float share (0.06); the catalog speaks basis points.
+    checkCharmValueBudget(config, Math.floor(perCharm * ODDS_SCALE + 1e-9), report);
+  }
+}
+
 function checkPacing(config: EconomyConfig, report: Report): void {
   checkIdsExactly(
     report,
@@ -404,6 +592,7 @@ export function validateEconomyConfig(config: EconomyConfig): readonly Validatio
   checkDrops(config, report);
   checkSafes(config, report);
   checkProgression(config, report);
+  checkCharms(config, report);
   checkPacing(config, report);
   checkRateEnvelope(config, report);
   return issues;

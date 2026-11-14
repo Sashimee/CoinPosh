@@ -1,26 +1,13 @@
-/**
- * The six Charm Board pieces (00-VISION §2), spelled like the catalog keys the shared fixtures
- * use. Local until packages/shared grows a charm kind union; the glue (T-3.01) maps catalog
- * charm types onto these.
- */
-export const CHARM_KINDS = [
-  'golden-peg',
-  'velvet-ropes',
-  'magnet-cufflinks',
-  'brass-bumper',
-  'butler',
-  'perfume-atomizer',
-] as const;
+import { charms } from '@coinposh/economy';
+import type { CharmKind, SynergyTag } from '@coinposh/shared';
 
-export type CharmKind = (typeof CHARM_KINDS)[number];
-
-export const SYNERGY_TAGS = ['gilded', 'magnetic', 'kinetic', 'service', 'fragrant'] as const;
-
-export type SynergyTag = (typeof SYNERGY_TAGS)[number];
-
-export function isCharmKind(value: unknown): value is CharmKind {
-  return typeof value === 'string' && (CHARM_KINDS as readonly string[]).includes(value);
-}
+export {
+  CHARM_KINDS,
+  isCharmKind,
+  SYNERGY_TAGS,
+  type CharmKind,
+  type SynergyTag,
+} from '@coinposh/shared';
 
 /** Enamel colour each synergy tag inlays in the plinth ring and lends to the activation flash. */
 export const SYNERGY_COLORS: Readonly<Record<SynergyTag, string>> = {
@@ -31,13 +18,14 @@ export const SYNERGY_COLORS: Readonly<Record<SynergyTag, string>> = {
   fragrant: '#E79BC4',
 };
 
+/** Each kind's synergy tags from the economy catalog, primary tag first. */
 export const DEFAULT_CHARM_TAGS: Readonly<Record<CharmKind, readonly SynergyTag[]>> = {
-  'golden-peg': ['gilded'],
-  'velvet-ropes': ['service'],
-  'magnet-cufflinks': ['magnetic'],
-  'brass-bumper': ['kinetic'],
-  butler: ['service'],
-  'perfume-atomizer': ['fragrant'],
+  'golden-peg': charms.kinds['golden-peg'].tags,
+  'velvet-ropes': charms.kinds['velvet-ropes'].tags,
+  'magnet-cufflinks': charms.kinds['magnet-cufflinks'].tags,
+  'brass-bumper': charms.kinds['brass-bumper'].tags,
+  butler: charms.kinds.butler.tags,
+  'perfume-atomizer': charms.kinds['perfume-atomizer'].tags,
 };
 
 /**
