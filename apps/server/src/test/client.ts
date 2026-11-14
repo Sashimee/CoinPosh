@@ -119,7 +119,11 @@ export async function send(
 
 export async function guestSignIn(
   device: Device,
-  options: { locale?: Locale; idempotencyKey?: IdempotencyKey } = {},
+  options: {
+    locale?: Locale;
+    idempotencyKey?: IdempotencyKey;
+    via?: SendOptions['via'];
+  } = {},
 ): Promise<Response> {
   return send(device, endpoints.authGuest.path, {
     body: {
@@ -128,6 +132,7 @@ export async function guestSignIn(
       locale: options.locale ?? 'en',
     },
     ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+    ...(options.via === undefined ? {} : { via: options.via }),
   });
 }
 
@@ -137,9 +142,10 @@ export interface Session {
   readonly call: (path: string, options?: SendOptions) => Promise<Response>;
 }
 
-export async function newSession(): Promise<Session> {
+/** A signed-in guest; `via` sends its sign-in and every call to an app other than the deployed worker. */
+export async function newSession(options: { via?: SendOptions['via'] } = {}): Promise<Session> {
   const device = await newDevice();
-  const response = await guestSignIn(device);
+  const response = await guestSignIn(device, options);
   if (response.status !== 200) {
     throw new Error(`Guest sign-in failed with ${response.status}: ${await response.text()}`);
   }
@@ -147,7 +153,11 @@ export async function newSession(): Promise<Session> {
   return {
     device,
     tokens,
-    call: (path, options = {}) =>
-      send(device, path, { accessToken: tokens.accessToken, ...options }),
+    call: (path, callOptions = {}) =>
+      send(device, path, {
+        accessToken: tokens.accessToken,
+        ...(options.via === undefined ? {} : { via: options.via }),
+        ...callOptions,
+      }),
   };
 }
