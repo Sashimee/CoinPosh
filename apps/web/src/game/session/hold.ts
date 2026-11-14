@@ -1,5 +1,6 @@
 import type { TableSync } from '../../net/index.ts';
 import type { TableCapture } from './capture.ts';
+import type { PagePort } from './triggers.ts';
 
 /** How long a held table runs again to land a coin it cannot pose yet. */
 export const HOLD_SETTLE_STEP_MS = 250;
@@ -12,6 +13,8 @@ export interface TableHoldDeps {
   readonly sim: { pause(): void; resume(): void };
   readonly capture: Pick<TableCapture, 'refresh' | 'capture' | 'unposed'>;
   readonly table: Pick<TableSync, 'flush' | 'snapshot' | 'subscribe' | 'superseded'>;
+  /** The sim resumes itself when the page is shown, so a held table is paused again. */
+  readonly page: Pick<PagePort, 'visible' | 'onVisibilityChange'>;
   readonly wait: (ms: number) => Promise<void>;
 }
 
@@ -31,12 +34,26 @@ export interface TableHold {
  * posed. A table another page holds is already still and can upload nothing, so it is left be.
  */
 export function holdTable(deps: TableHoldDeps): TableHold {
-  const { sim, capture, table, wait } = deps;
+  const { capture, table, page, wait } = deps;
   if (table.superseded) return { posed: Promise.resolve(), release: () => undefined };
   let released = false;
   // Read through a call: `release()` flips it while this hold awaits, which narrowing cannot see.
   const isReleased = (): boolean => released;
+  let settling = false;
+  const sim = {
+    pause: () => {
+      settling = false;
+      deps.sim.pause();
+    },
+    resume: () => {
+      settling = true;
+      deps.sim.resume();
+    },
+  };
   sim.pause();
+  const stopShown = page.onVisibilityChange(() => {
+    if (!released && !settling && page.visible()) deps.sim.pause();
+  });
 
   const still = async (): Promise<void> => {
     // A sample asked for before the pause may still be on its way; the next one is taken after
@@ -86,6 +103,7 @@ export function holdTable(deps: TableHoldDeps): TableHold {
     release() {
       if (released) return;
       released = true;
+      stopShown();
       sim.resume();
     },
   };

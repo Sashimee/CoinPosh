@@ -324,6 +324,8 @@ async function tableInPlay() {
   const reports: (() => void)[] = [];
   let nextSimId = 1;
   let fusedSimId: number | null = null;
+  let running = true;
+  const shownListeners = new Set<() => void>();
   sync.subscribe((event) => {
     if (event.type !== 'claimSettled' || event.claim.kind !== 'fusion' || fusedSimId === null) {
       return;
@@ -393,27 +395,46 @@ async function tableInPlay() {
         sync.claimFusion([a, b, c], simTick());
       });
     },
-    hold(): TableHold {
+    /** True while the sim ticks: a ticking sim can fuse or drop a coin. */
+    running: (): boolean => running,
+    /** The tab comes back: the bridge resumes the sim before any other listener runs. */
+    show(): void {
+      running = true;
+      for (const listener of shownListeners) listener();
+    },
+    hold(options: { readonly seesShown?: boolean } = {}): TableHold {
       return holdTable({
         sim: {
-          pause: () => undefined,
+          pause: () => {
+            running = false;
+          },
           resume: () => {
+            running = true;
             for (const body of bodies.values()) body.airborne = Math.max(0, body.airborne - 1);
           },
         },
         capture,
         table: sync,
+        page: {
+          visible: () => true,
+          onVisibilityChange: (listener) => {
+            if (options.seesShown === false) return () => undefined;
+            shownListeners.add(listener);
+            return () => shownListeners.delete(listener);
+          },
+        },
         wait: (ms) => {
           time.advance(ms);
           return Promise.resolve();
         },
       });
     },
-    async boot(hold: () => TableHold): Promise<void> {
+    async boot(hold: () => TableHold, duringDrain: () => void = () => undefined): Promise<void> {
       await createRetake({
         hold,
         simReady: () => Promise.resolve(),
         boot: async () => {
+          duringDrain();
           await sync.drainBeforeBoot();
           await pageBoot();
         },
@@ -471,6 +492,47 @@ describe('demo handle: a reboot while coins move during the drain', () => {
     expect(demo.refunds()).toBe(0);
     expect(table.coins()).toHaveLength(4);
     expect(laid(table.coins())).toBe(true);
+  });
+
+  it('refunds nothing when the tab is shown again while the boot drains', async () => {
+    const demo = handle();
+    const table = await tableInPlay();
+    await table.drop(3);
+    await table.upload();
+    let ranThroughDrain = false;
+    await table.boot(
+      () => table.hold(),
+      () => {
+        table.show();
+        ranThroughDrain = table.running();
+        if (ranThroughDrain) {
+          table.fuse();
+          table.report();
+        }
+      },
+    );
+    expect(ranThroughDrain).toBe(false);
+    expect(demo.refunds()).toBe(0);
+    expect(table.coins()).toHaveLength(3);
+    expect(laid(table.coins())).toBe(true);
+  });
+
+  it('refunds the coin a fusion mints when the shown tab resumes the held table mid-drain', async () => {
+    const demo = handle();
+    const table = await tableInPlay();
+    await table.drop(3);
+    await table.upload();
+    await table.boot(
+      () => table.hold({ seesShown: false }),
+      () => {
+        table.show();
+        if (table.running()) {
+          table.fuse();
+          table.report();
+        }
+      },
+    );
+    expect(demo.refunds()).toBe(1);
   });
 
   it('refunds that coin when the boot does not wait for it to land', async () => {

@@ -17,6 +17,7 @@ interface Options {
   /** How many uploads the server rate limits before taking one. */
   readonly deferrals?: number;
   readonly refresh?: () => Promise<void>;
+  readonly duringWait?: (page: { turn(visible: boolean): void }) => void;
 }
 
 function table(options: Options = {}) {
@@ -26,6 +27,8 @@ function table(options: Options = {}) {
   let deferrals = options.deferrals ?? 0;
   let queued = false;
   const waits: number[] = [];
+  const shown = new Set<() => void>();
+  let visible = true;
   const deps: TableHoldDeps = {
     sim: {
       pause: () => log.push('pause'),
@@ -65,13 +68,29 @@ function table(options: Options = {}) {
         return () => listeners.delete(listener);
       },
     },
+    page: {
+      visible: () => visible,
+      onVisibilityChange: (listener) => {
+        shown.add(listener);
+        return () => shown.delete(listener);
+      },
+    },
     wait: (ms) => {
       waits.push(ms);
       log.push(`wait ${String(ms)}`);
+      options.duringWait?.(page);
       return Promise.resolve();
     },
   };
-  return { deps, log, waits, listeners };
+  const page = {
+    /** The page changes visibility; the bridge has already paused or resumed the sim. */
+    turn(next: boolean): void {
+      visible = next;
+      for (const listener of shown) listener();
+    },
+    listening: (): number => shown.size,
+  };
+  return { deps, log, waits, listeners, page };
 }
 
 describe('holdTable', () => {
@@ -142,6 +161,56 @@ describe('holdTable', () => {
     hold.release();
     await hold.posed;
     expect(log).toEqual(['pause', 'sample', 'resume', 'sample', 'flush']);
+  });
+
+  it('pauses the table again when the page is shown while it is held', async () => {
+    const { deps, log, page } = table();
+    const hold = holdTable(deps);
+    await hold.posed;
+    log.length = 0;
+    page.turn(false);
+    expect(log).toEqual([]);
+    page.turn(true);
+    expect(log).toEqual(['pause']);
+  });
+
+  it('lets a settle step run on when the page is shown during it', async () => {
+    const { deps, log } = table({
+      unposedFor: 2,
+      duringWait: (page) => {
+        page.turn(false);
+        page.turn(true);
+      },
+    });
+    await holdTable(deps).posed;
+    const still = ['sample', 'sample', 'flush'];
+    expect(log).toEqual([
+      'pause',
+      ...still,
+      'resume',
+      `wait ${String(HOLD_SETTLE_STEP_MS)}`,
+      'pause',
+      ...still,
+      'upload',
+      'flush',
+    ]);
+  });
+
+  it('stops watching the page once released, so a shown page plays on', async () => {
+    const { deps, log, page } = table();
+    const hold = holdTable(deps);
+    await hold.posed;
+    hold.release();
+    log.length = 0;
+    page.turn(true);
+    expect(log).toEqual([]);
+    expect(page.listening()).toBe(0);
+  });
+
+  it('does not watch the page of a table another page holds', () => {
+    const { deps, page } = table({ superseded: true });
+    holdTable(deps);
+    expect(page.listening()).toBe(0);
   });
 
   it('passes on a sample that failed, for the retake to release the table', async () => {
