@@ -1,4 +1,4 @@
-import type { MintedCoin, Roll, StateResponse } from '@coinposh/shared';
+import type { MintedCoin, Roll, Safe, StateResponse } from '@coinposh/shared';
 import type { Object3D } from 'three/webgpu';
 import { browserVibrate } from './app/feedback.ts';
 import { mountUi, type UiApp } from './app/index.ts';
@@ -60,6 +60,7 @@ import {
 } from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
+import { mountSafesTrigger } from './ui/hud.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
 import type { Vfx } from './vfx/index.ts';
@@ -166,6 +167,8 @@ interface ProbeCounts {
   cratesSpawned: number;
   cratesOpened: number;
   cratesCollected: number;
+  safesOpened: number;
+  safesCollected: number;
 }
 
 declare global {
@@ -198,6 +201,8 @@ const probe: {
     cratesSpawned: 0,
     cratesOpened: 0,
     cratesCollected: 0,
+    safesOpened: 0,
+    safesCollected: 0,
   },
 };
 window.__coinposh = {
@@ -233,6 +238,8 @@ const ui = mountUi(uiRoot);
 let audio: AudioEngine | null = null;
 /** Mounted once play starts; until then the boot state's venue is the one played. */
 let ascensionHud: AscensionHud | null = null;
+/** Mounted once the player's table has loaded. */
+let safesSheet: SafesSheet | null = null;
 
 const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
@@ -263,6 +270,12 @@ const hydrated = netReady
   });
 
 void bootScene(canvas, hydrated);
+
+void hydrated
+  .then((boot) => (boot ? mountSafesSheet(boot) : undefined))
+  .catch((error: unknown) => {
+    console.error('CoinPosh safes failed to mount; the game continues without Safes.', error);
+  });
 
 // The music loop is rendered offline now, before any gesture, so the first tap only has to
 // unlock the context and the track starts without a render hitch.
@@ -354,6 +367,8 @@ interface NetBoot {
   readonly vault: VaultTracker;
   /** Re-reads the table from the server, for a wallet change TableSync did not see. */
   readonly resync: (reason: string) => void;
+  /** Runs `listener` each time a resync has re-read the table; returns the way to stop. */
+  readonly onResynced: (listener: () => void) => () => void;
 }
 
 /**
@@ -365,10 +380,12 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   const vault = trackVault(app, net.table, state);
   net.table.hydrate(state);
   app.setUpgradeLevels(state.venue.upgrades);
+  const resynced = new Set<() => void>();
   const resync = (reason: string): void => {
     net.table.resume().then(
       () => {
         vault.resumed();
+        for (const listener of [...resynced]) listener();
       },
       (error: unknown) => {
         console.error(`CoinPosh net: the table did not resync after ${reason}.`, error);
@@ -387,7 +404,18 @@ async function hydrateNet(net: Net, app: UiApp): Promise<NetBoot> {
   teardown.push(() => {
     document.removeEventListener('visibilitychange', resyncWhenShown);
   });
-  return { net, state, vault, resync };
+  return {
+    net,
+    state,
+    vault,
+    resync,
+    onResynced(listener) {
+      resynced.add(listener);
+      return () => {
+        resynced.delete(listener);
+      };
+    },
+  };
 }
 
 /**
@@ -802,6 +830,7 @@ async function bootScene(
     boot.net.table.hydrate(state);
     ui.setUpgradeLevels(state.venue.upgrades);
     boot.vault.adopted(state);
+    safesSheet?.adopt(state);
   };
 
   /** The new sim is ready before the old run goes, so the table never blanks. */
@@ -932,6 +961,121 @@ function mountAscensionDoor(stage: Stage, boot: NetBoot, relay: TableRelay): voi
     relay.dispose();
     hud.dispose();
   });
+}
+
+interface SafesSheet {
+  /** A collected crate roll: any safe it granted is listed before the server is re-read. */
+  granted(roll: Roll): void;
+  /** A fresh boot of the table ("Play here") reported this inventory and wallet. */
+  adopt(state: Pick<StateResponse, 'inventory' | 'wallet'>): void;
+}
+
+function grantedSafes(roll: Roll): readonly Safe[] {
+  return roll.rewards.flatMap((reward) => (reward.kind === 'safe' ? [reward.safe] : []));
+}
+
+/**
+ * The Safes sheet and its dock button. The list and the Keys balance are the server's: re-read
+ * after every resync of the table (crate collects, purchases, the tab coming back, ascensions),
+ * and after each open. A read that left before an open, or before a newer read landed, is
+ * dropped, so a safe just opened never comes back. The HUD's readouts confirm against the
+ * server once a safe's payout has flown in.
+ */
+async function mountSafesSheet(boot: NetBoot): Promise<void> {
+  const dock = uiRoot.querySelector<HTMLElement>('[data-testid="hud-dock"]');
+  if (!dock) {
+    throw new Error(
+      'CoinPosh boot: the HUD dock ([data-testid="hud-dock"]) is missing, so the Safes button has nowhere to sit; mount the UI before the safes.',
+    );
+  }
+  const safesApi = await import('./game/safes/index.ts');
+  const safes = safesApi.mountSafes({
+    ui,
+    host: uiRoot,
+    api: safesApi.netSafesApi(boot.net.client),
+    clock: boot.net.clock,
+    safes: boot.state.inventory.safes,
+    wallet: boot.state.wallet,
+    audio: () => audio,
+    vibrate: browserVibrate(),
+    inventoryTarget: () => uiRoot.querySelector<HTMLElement>('.cp-plaque'),
+    refresh: () => {
+      boot.resync('the server turned a safe open down as stale');
+    },
+  });
+  const trigger = mountSafesTrigger({
+    ui,
+    dock,
+    label: () => ui.i18n.t(safesApi.safesKey('open')),
+    onPress: () => {
+      if (ui.store.getState().panel !== null) ui.store.setState({ panel: null });
+      safes.open();
+    },
+  });
+  trigger.update({ count: safes.safes.length, ready: safes.readyCount() });
+
+  let asked = 0;
+  let current = 0;
+  const adopt = (state: Pick<StateResponse, 'inventory' | 'wallet'>): void => {
+    current = asked;
+    safes.setSafes(state.inventory.safes);
+    safes.setWallet(state.wallet);
+  };
+  const sync = (): void => {
+    asked += 1;
+    const ticket = asked;
+    boot.net.client.call('state').then(
+      (fresh) => {
+        if (ticket <= current) return;
+        current = ticket;
+        safes.setSafes(fresh.inventory.safes);
+        safes.setWallet(fresh.wallet);
+      },
+      (error: unknown) => {
+        console.warn(
+          'CoinPosh safes: the safes list did not refresh; the next resync of the table reads it again.',
+          error,
+        );
+      },
+    );
+  };
+  const outdateReads = (): void => {
+    current = asked;
+  };
+  const { counts } = probe;
+  const offs = [
+    safes.events.on('safes:changed', (tally) => {
+      trigger.update(tally);
+    }),
+    safes.events.on('safe:requested', outdateReads),
+    safes.events.on('safe:opened', () => {
+      counts.safesOpened += 1;
+      outdateReads();
+      // Brings the roll's credit into the HUD now, where the payout hold keeps it until collect.
+      boot.resync('a safe was opened');
+    }),
+    safes.events.on('safe:collected', ({ wallet }) => {
+      counts.safesCollected += 1;
+      safes.setWallet(wallet);
+      boot.resync('a safe was collected');
+    }),
+    boot.onResynced(sync),
+  ];
+  safesSheet = {
+    granted(roll) {
+      const owned = new Set(safes.safes.map((safe) => safe.id));
+      const fresh = grantedSafes(roll).filter((safe) => !owned.has(safe.id));
+      if (fresh.length > 0) safes.setSafes([...safes.safes, ...fresh]);
+    },
+    adopt,
+  };
+  teardown.push(() => {
+    safesSheet = null;
+    for (const off of offs) off();
+    trigger.dispose();
+    safes.dispose();
+  });
+  sync();
 }
 
 interface Scope {
@@ -1626,6 +1770,7 @@ function mountTableCrates(
     crates.events.on('crate:collected', ({ crateId, roll }) => {
       counts.cratesCollected += 1;
       payouts.collected(crateId, coinLineLandsInMs(cratesApi, roll));
+      safesSheet?.granted(roll);
       boot.resync('a Vault Crate was collected');
     }),
     crates.events.on('crate:rejected', ({ crateId }) => {
