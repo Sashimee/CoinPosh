@@ -78,26 +78,9 @@ const POSTER_FADE_MS = 600;
  * live table holds nearly as many coins; leaving earlier shows the heap filling in.
  */
 const POSTER_HEAP_SHARE = 0.9;
-/**
- * The poster shows the pusher retracted, where a fresh table starts. A software renderer's shader
- * stall can let the sim run on under the poster, so it also waits for the pusher to come back.
- * The pusher spends about a quarter of its cycle under this stroke, a second at 60 Hz, so frames
- * that slow still land in it.
- */
-const POSTER_PUSHER_STROKE = 0.15;
-/**
- * Two 240-tick pusher cycles, counted from the first frame after the stall, so a pusher that
- * never retracts cannot strand the poster.
- */
-const POSTER_POSE_WAIT_TICKS = 480;
 
 export interface BootProbe {
-  readonly sim: {
-    readonly renderTick: number;
-    readonly coins: number;
-    /** 0 retracted to 1 at full stroke (SimBridgeStats). */
-    readonly pusherStroke: number;
-  } | null;
+  readonly sim: { readonly renderTick: number; readonly coins: number } | null;
   readonly playable: boolean;
   /** How the booted table was laid; null while no sim runs or it had no table to lay. */
   readonly restored: { readonly poses: number; readonly heapSlots: number } | null;
@@ -114,27 +97,20 @@ export function posterHeapTarget(restored: BootProbe['restored']): number {
 
 /**
  * Returns a per-frame check that turns true on the second lit frame drawing enough of the laid
- * table to match the poster, with the pusher back where the poster shows it: the first such frame
- * also links the coins' shaders, and the stall that follows it stays under the poster instead of
- * freezing the table mid-fade.
+ * table to match the poster: the first such frame also links the coins' shaders, and the stall
+ * that follows it stays under the poster instead of freezing the table mid-fade. It waits for
+ * nothing more: taps drop coins from playable on, and the sim would run on under the poster.
  */
 export function createPosterGate(probe: BootProbe): () => boolean {
   let heapTick: number | null = null;
-  let poseFromTick: number | null = null;
   return () => {
     const { sim } = probe;
     if (!sim || sim.renderTick <= 0 || sim.coins < posterHeapTarget(probe.restored)) {
       heapTick = null;
-      poseFromTick = null;
       return false;
     }
     heapTick ??= sim.renderTick;
-    if (sim.renderTick <= heapTick) return false;
-    poseFromTick ??= sim.renderTick;
-    return (
-      sim.pusherStroke <= POSTER_PUSHER_STROKE ||
-      sim.renderTick - poseFromTick >= POSTER_POSE_WAIT_TICKS
-    );
+    return sim.renderTick > heapTick;
   };
 }
 

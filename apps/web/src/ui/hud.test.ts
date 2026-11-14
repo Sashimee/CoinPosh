@@ -54,7 +54,7 @@ describe('dockAffordableCount', () => {
 });
 
 interface FakeBoot {
-  sim: { renderTick: number; coins: number; pusherStroke: number } | null;
+  sim: { renderTick: number; coins: number } | null;
   playable: boolean;
   restored: { poses: number; heapSlots: number } | null;
 }
@@ -63,8 +63,8 @@ function freshBoot(): FakeBoot {
   return { sim: null, playable: false, restored: { poses: 0, heapSlots: openingHeap.coins } };
 }
 
-function frame(renderTick: number, coins: number, pusherStroke = 0): FakeBoot['sim'] {
-  return { renderTick, coins, pusherStroke };
+function frame(renderTick: number, coins: number): FakeBoot['sim'] {
+  return { renderTick, coins };
 }
 
 const HEAP_TARGET = Math.ceil(openingHeap.coins * 0.9);
@@ -97,7 +97,7 @@ describe('createPosterGate', () => {
     boot.sim = frame(12, HEAP_TARGET);
     expect(mayLeave(), 'the frame that first draws the heap').toBe(false);
     expect(mayLeave(), 'the same sim tick drawn again').toBe(false);
-    boot.sim = frame(13, HEAP_TARGET, 0.02);
+    boot.sim = frame(13, HEAP_TARGET);
     expect(mayLeave()).toBe(true);
   });
 
@@ -111,30 +111,13 @@ describe('createPosterGate', () => {
     expect(mayLeave()).toBe(true);
   });
 
-  it('waits for the pusher to come back to the retracted pose the poster shows', () => {
+  it('leaves on the frame after the heap, wherever the pusher is', () => {
     const boot = freshBoot();
     const mayLeave = createPosterGate(boot);
     boot.sim = frame(12, openingHeap.coins);
-    mayLeave();
-    boot.sim = frame(105, openingHeap.coins, 0.84);
-    expect(mayLeave(), 'a shader stall let the pusher run out under the poster').toBe(false);
-    boot.sim = frame(200, openingHeap.coins, 0.16);
     expect(mayLeave()).toBe(false);
-    boot.sim = frame(230, openingHeap.coins, 0.15);
-    expect(mayLeave()).toBe(true);
-  });
-
-  it('gives up on the pose after more than a pusher cycle, so the poster is never stranded', () => {
-    const boot = freshBoot();
-    const mayLeave = createPosterGate(boot);
-    boot.sim = frame(12, openingHeap.coins, 0.5);
-    mayLeave();
-    boot.sim = frame(330, openingHeap.coins, 0.5);
-    expect(mayLeave(), 'the cycle is counted from the first frame after the stall').toBe(false);
-    boot.sim = frame(809, openingHeap.coins, 0.5);
-    expect(mayLeave()).toBe(false);
-    boot.sim = frame(810, openingHeap.coins, 0.5);
-    expect(mayLeave()).toBe(true);
+    boot.sim = frame(105, openingHeap.coins);
+    expect(mayLeave(), 'a shader stall let the sim run on, so the poster leaves now').toBe(true);
   });
 
   it('starts over when the heap drops under the target before a second frame', () => {

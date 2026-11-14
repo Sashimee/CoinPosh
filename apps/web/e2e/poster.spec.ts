@@ -11,22 +11,43 @@ const HEAP_TARGET = Math.ceil(openingHeap.coins * 0.9);
 /** The table band P-213 compares: the shelf heap and the front deck at 390x844. */
 const BAND = { top: 300, bottom: 560 } as const;
 const MAX_LUMINANCE_DIFF = 0.08;
+/** The poster leaves within this of the first frame holding 90 % of the opening heap. */
+const MAX_HEAP_TO_FADE_MS = 500;
 /**
- * scripts/capture-poster.ts renders the poster on the high tier, the table a phone that holds the
- * frame rate shows; SwiftShader would otherwise boot the low tier.
+ * Taps drop coins from playable on, and the poster has pointer-events none, so it may not hide
+ * them for long: the heap fills in after playable, then the bound above.
  */
-const POSTER_QUALITY = '?quality=high';
+const MAX_PLAYABLE_TO_FADE_MS = 2_000;
+
+/**
+ * The boots the poster must match: the one a new player gets (the auto-picked tier at the
+ * suite's DPR 1), and the one scripts/capture-poster.ts renders it from.
+ */
+const BOOTS = [
+  { name: 'the default boot', query: '', deviceScaleFactor: 1 },
+  { name: 'the capture boot', query: '?quality=high', deviceScaleFactor: 1.5 },
+] as const;
 
 interface PosterExit {
   /** `fade` when the poster took `is-lit`, `removed` when it left the DOM. */
   readonly kind: 'fade' | 'removed';
   readonly coins: number;
   readonly transition: string;
+  /** `performance.now()` when the step was seen. */
+  readonly at: number;
+}
+
+interface BootMarks {
+  /** When `window.__coinposh.playable` first read true. */
+  playableAt?: number;
+  /** When the first frame holding `heapTarget` coins had been drawn. */
+  heapAt?: number;
 }
 
 declare global {
   interface Window {
     __posterExits?: PosterExit[];
+    __bootMarks?: BootMarks;
     /** The live table, copied from #stage in the task that started the poster's exit. */
     __posterFrame?: OffscreenCanvas;
   }
@@ -39,9 +60,29 @@ declare global {
  * later under SwiftShader, with the pusher moved.
  */
 async function watchPoster(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+  await page.addInitScript((heapTarget: number) => {
     const exits: PosterExit[] = [];
     window.__posterExits = exits;
+    const marks: BootMarks = {};
+    window.__bootMarks = marks;
+    const playableTimer = setInterval(() => {
+      if (window.__coinposh?.playable !== true) return;
+      marks.playableAt = performance.now();
+      clearInterval(playableTimer);
+    }, 4);
+    // Registered before the app's render loop, so each callback runs ahead of that frame's draw:
+    // the heap counts as drawn at the callback after the first frame that held it. The first
+    // frame to draw the coins can stall a software GPU for a second, with the page frozen.
+    let heapSeen = false;
+    const watchHeap = (): void => {
+      if (heapSeen) {
+        marks.heapAt = performance.now();
+        return;
+      }
+      heapSeen = (window.__coinposh?.sim?.coins ?? 0) >= heapTarget;
+      requestAnimationFrame(watchHeap);
+    };
+    requestAnimationFrame(watchHeap);
     let poster: HTMLElement | null = null;
     let transition = '';
     const getContext = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'getContext')
@@ -56,13 +97,20 @@ async function watchPoster(page: Page): Promise<void> {
     } as typeof getContext;
     const record = (kind: PosterExit['kind']): void => {
       if (exits.some((e) => e.kind === kind)) return;
+      // Read before the copy: drawing the WebGL canvas waits on the GPU, which is not the poster.
+      const at = performance.now();
       const stage = document.getElementById('stage');
       if (exits.length === 0 && stage instanceof HTMLCanvasElement) {
         const frame = new OffscreenCanvas(innerWidth, innerHeight);
         frame.getContext('2d')?.drawImage(stage, 0, 0, innerWidth, innerHeight);
         window.__posterFrame = frame;
       }
-      exits.push({ kind, coins: window.__coinposh?.sim?.coins ?? 0, transition });
+      exits.push({
+        kind,
+        coins: window.__coinposh?.sim?.coins ?? 0,
+        transition,
+        at,
+      });
     };
     new MutationObserver(() => {
       if (!poster) {
@@ -73,7 +121,28 @@ async function watchPoster(page: Page): Promise<void> {
       if (poster.classList.contains('is-lit')) record('fade');
       if (!poster.isConnected) record('removed');
     }).observe(document, { subtree: true, childList: true, attributes: true });
+  }, HEAP_TARGET);
+}
+
+/** Checks the poster's exit came right after the heap, and so not long after playable. */
+async function expectPromptExit(page: Page, exit: PosterExit | undefined): Promise<void> {
+  const marks = await page.evaluate(() => window.__bootMarks ?? {});
+  const { heapAt, playableAt } = marks;
+  expect(exit, 'the poster left').toBeDefined();
+  expect(heapAt, 'a frame drew 90 % of the opening heap').toBeDefined();
+  expect(playableAt, 'the table became playable').toBeDefined();
+  if (!exit || heapAt === undefined || playableAt === undefined) return;
+  test.info().annotations.push({
+    type: 'timing',
+    description: `heap +${Math.round(exit.at - heapAt)} ms, playable +${Math.round(exit.at - playableAt)} ms to the poster's exit`,
   });
+  expect(exit.at - heapAt, 'the poster leaves soon after the heap is in').toBeLessThanOrEqual(
+    MAX_HEAP_TO_FADE_MS,
+  );
+  expect(
+    exit.at - playableAt,
+    'the poster does not hide a playable table for long',
+  ).toBeLessThanOrEqual(MAX_PLAYABLE_TO_FADE_MS);
 }
 
 async function untilPosterGone(page: Page): Promise<PosterExit[]> {
@@ -132,48 +201,55 @@ function compareBand(page: Page): Promise<BandComparison> {
 }
 
 test.describe('boot poster (P-213)', () => {
-  // The pixel ratio scripts/capture-poster.ts renders the poster at, so both frames are one render.
-  test.use({ deviceScaleFactor: 1.5 });
+  for (const boot of BOOTS) {
+    test.describe(boot.name, () => {
+      test.use({ deviceScaleFactor: boot.deviceScaleFactor });
 
-  test('stays up until the opening heap is drawn, then fades onto a table that matches it', async ({
-    page,
-  }) => {
-    await watchPoster(page);
-    await page.goto(gameUrl(POSTER_QUALITY));
-    const exits = await untilPosterGone(page);
-    await reviewShot(page, 'poster-live-table');
+      test('stays up until the opening heap is drawn, then fades onto a table that matches it', async ({
+        page,
+      }) => {
+        await watchPoster(page);
+        await page.goto(gameUrl(boot.query));
+        const exits = await untilPosterGone(page);
+        await reviewShot(page, `poster-live-table-dpr${boot.deviceScaleFactor}`);
 
-    const [first] = exits;
-    expect(first?.kind, 'the poster fades before it is removed').toBe('fade');
-    expect(first?.transition, 'the fade is a CSS transition').not.toBe('0s');
-    expect(
-      first?.coins,
-      'the live table holds the opening heap when the fade starts',
-    ).toBeGreaterThanOrEqual(HEAP_TARGET);
+        const [first] = exits;
+        expect(first?.kind, 'the poster fades before it is removed').toBe('fade');
+        expect(first?.transition, 'the fade is a CSS transition').not.toBe('0s');
+        expect(
+          first?.coins,
+          'the live table holds the opening heap when the fade starts',
+        ).toBeGreaterThanOrEqual(HEAP_TARGET);
+        await expectPromptExit(page, first);
 
-    const fadeFrame = await page.evaluate(async () => {
-      const blob = await window.__posterFrame?.convertToBlob({ type: 'image/png' });
-      if (!blob) return null;
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let binary = '';
-      for (const byte of bytes) binary += String.fromCharCode(byte);
-      return btoa(binary);
+        const fadeFrame = await page.evaluate(async () => {
+          const blob = await window.__posterFrame?.convertToBlob({ type: 'image/png' });
+          if (!blob) return null;
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          let binary = '';
+          for (const byte of bytes) binary += String.fromCharCode(byte);
+          return btoa(binary);
+        });
+        if (fadeFrame) {
+          const path = test.info().outputPath('table-at-fade.png');
+          await writeFile(path, Buffer.from(fadeFrame, 'base64'));
+          await test.info().attach('table-at-fade', { path, contentType: 'image/png' });
+        }
+        // P-213 compares the poster with the table at playable. This build turns playable before
+        // the heap drops in, so the table the poster uncovers is the one copied as its fade
+        // starts; expectPromptExit keeps that moment close to playable.
+        const { diff, liveLuma } = await compareBand(page);
+        expect(liveLuma, 'the live table was copied, not a blank buffer').toBeGreaterThan(0.05);
+        test.info().annotations.push({
+          type: 'luminance',
+          description: `mean |ΔL| over y ${BAND.top}-${BAND.bottom}: ${(diff * 100).toFixed(2)} %`,
+        });
+        expect(diff, 'the poster matches the live table over the table band').toBeLessThanOrEqual(
+          MAX_LUMINANCE_DIFF,
+        );
+      });
     });
-    if (fadeFrame) {
-      const path = test.info().outputPath('table-at-fade.png');
-      await writeFile(path, Buffer.from(fadeFrame, 'base64'));
-      await test.info().attach('table-at-fade', { path, contentType: 'image/png' });
-    }
-    const { diff, liveLuma } = await compareBand(page);
-    expect(liveLuma, 'the live table was copied, not a blank buffer').toBeGreaterThan(0.05);
-    test.info().annotations.push({
-      type: 'luminance',
-      description: `mean |ΔL| over y ${BAND.top}-${BAND.bottom}: ${(diff * 100).toFixed(2)} %`,
-    });
-    expect(diff, 'the poster matches the live table over the table band').toBeLessThanOrEqual(
-      MAX_LUMINANCE_DIFF,
-    );
-  });
+  }
 
   test('cuts instead of fading under reduced motion', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -183,6 +259,7 @@ test.describe('boot poster (P-213)', () => {
     expect(exits.map((e) => e.kind)).toEqual(['removed']);
     expect(exits[0]?.transition).toBe('0s');
     expect(exits[0]?.coins).toBeGreaterThanOrEqual(HEAP_TARGET);
+    await expectPromptExit(page, exits[0]);
   });
 
   test(`weighs at most ${POSTER_MAX_BYTES / 1000} kB`, async () => {
