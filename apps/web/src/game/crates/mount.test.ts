@@ -253,6 +253,7 @@ describe('a crate holds its credit from open to collect', () => {
     const calls: string[] = [];
     const payout: WalletPayout = {
       hold: (id) => calls.push(`hold ${id}`),
+      retract: (id) => calls.push(`retract ${id}`),
       arm: (id) => calls.push(`arm ${id}`),
       disarm: (id) => calls.push(`disarm ${id}`),
       collect: (id) => calls.push(`collect ${id}`),
