@@ -3,7 +3,8 @@ import { SIM_VERSION } from '../constants.ts';
 import type { SimInput } from '../inputs.ts';
 import type { MechanicsConfig } from '../mechanics/index.ts';
 import { type RestoreEntry, Sim, type SimOptions } from '../sim.ts';
-import { PUSHER } from '../table/index.ts';
+import { COIN } from '../coin.ts';
+import { PLAYFIELD, PUSHER } from '../table/index.ts';
 import settledTable from './fixtures/settled-table.json' with { type: 'json' };
 import { type CoinPose, type SimTableSnapshot, SIM_SNAPSHOT_VERSION } from './snapshot.ts';
 import { pusherBox, validateSnapshot } from './validate.ts';
@@ -62,6 +63,12 @@ const SETTLED_RAW: SimTableSnapshot = {
 };
 /** SETTLED_RAW without coin 23, which overhangs a side gutter (see the pinned hash test). */
 const SETTLED = kept(SETTLED_RAW);
+
+/** Coins a settled Demo table left asleep overhanging the lip, rejected before P-624. */
+const LIP_COINS: readonly CoinPose[] = [
+  { id: 0, p: [662, 142, 5303], q: [175, 22071, 141, 24218], rest: 'asleep' },
+  { id: 1, p: [5615, 458, 5055], q: [117, -13023, -153, 30067], rest: 'asleep' },
+];
 
 const live: Sim[] = [];
 
@@ -214,6 +221,54 @@ describe('Sim.create({ restore })', () => {
     expect(atSecond).toMatchInlineSnapshot(`"0609e515127fb408"`);
     const [atMinute] = play(sim, 3540, 3540, steadyDrops);
     expect(atMinute).toMatchInlineSnapshot(`"ae7e0b2e8272d895"`);
+  });
+
+  it('keeps the coins a live table leaves resting on the lip, and restores them there bit for bit', async () => {
+    const lip = Math.round(PLAYFIELD.fieldFrontZ / 1e-5);
+    const source = await create({
+      seed: SEED,
+      mechanics: WORKER_MECHANICS,
+      openingHeap: { coins: 110 },
+    });
+    play(source, 900, 900, (tick) => (tick < 600 ? steadyDrops(tick) : []));
+    const snapshot = source.snapshot();
+    const overhanging = snapshot.coins.filter((pose) => pose.rest === 'asleep' && pose.p[2] > lip);
+    expect(overhanging.length).toBeGreaterThan(0);
+    expect(validateSnapshot(snapshot)).toEqual({ ok: snapshot.coins, dropped: [] });
+    const a = await restore(snapshot);
+    const b = await restore(JSON.parse(JSON.stringify(snapshot)) as SimTableSnapshot);
+    expect(b.hash()).toBe(a.hash());
+    expect(play(b, 600, 60, steadyDrops)).toEqual(play(a, 600, 60, steadyDrops));
+    const restored = await restore(snapshot);
+    play(restored, 120, 120);
+    const after = new Map(restored.snapshot().coins.map((pose) => [pose.id, pose]));
+    for (const pose of overhanging) {
+      const index = snapshot.coins.indexOf(pose);
+      const now = after.get(index);
+      expect(now?.rest, `coin ${pose.id} stays on the lip`).toBe('asleep');
+      expect(now?.p, `coin ${pose.id} stays on the lip`).toEqual(pose.p);
+    }
+  });
+
+  it('restores the observed lip poses and drops a coin one unit past the tipping point', async () => {
+    const tip = Math.round((PLAYFIELD.fieldFrontZ + COIN.radius) / 1e-5);
+    const atTip: CoinPose = { id: 2, p: [-15000, 160, tip], q: [0, 0, 0, 32767], rest: 'asleep' };
+    const pastTip: CoinPose = { ...atTip, id: 3, p: [15000, 160, tip + 1] };
+    const table: SimTableSnapshot = {
+      version: SIM_SNAPSHOT_VERSION,
+      pusherTickInCycle: 0,
+      coins: [...LIP_COINS, atTip, pastTip],
+    };
+    const verdict = validateSnapshot(table);
+    expect(verdict).toEqual({
+      ok: [...LIP_COINS, atTip],
+      dropped: [{ id: 3, reason: 'out_of_bounds' }],
+    });
+    const sim = await restore({ ...table, coins: verdict.ok });
+    expect(sim.snapshot().coins.map(({ p, q }) => ({ p, q }))).toEqual(
+      verdict.ok.map(({ p, q }) => ({ p, q })),
+    );
+    await expect(restore(table)).rejects.toThrow('(3: out_of_bounds)');
   });
 
   it('restores the settled fixture so a coin at rest snapshots back to exactly its pose', async () => {
@@ -508,6 +563,13 @@ describe('Sim.create({ restore })', () => {
       const tick = SETTLED.pusherTickInCycle;
       await expect(
         restoreWith([{ kind: 'pose', pose: { ...pose, p: [0, 22001, 0] } }], {}, tick),
+      ).rejects.toThrow(`(${pose.id}: out_of_bounds)`);
+      await expect(
+        restoreWith(
+          [{ kind: 'pose', pose: { ...pose, p: [0, 160, 6351], q: [0, 0, 0, 32767] } }],
+          {},
+          tick,
+        ),
       ).rejects.toThrow(`(${pose.id}: out_of_bounds)`);
       await expect(
         restoreWith(
