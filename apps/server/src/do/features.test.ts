@@ -379,3 +379,47 @@ describe('the per-call conservation check', () => {
     expect(resolveFeatureHandler('sample', 'book').feature).toBe(sampleFeature);
   });
 });
+
+const LARGE_LEDGER_LEGS = 200_000;
+const FEATURE_CALL_BUDGET_MS = 150;
+
+/** Appends `legs` balanced mint → house legs straight into the ledger, as a long-lived player has. */
+function seedLargeLedger(sql: SqlStorage, legs: number): void {
+  sql.exec(
+    `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
+     INSERT INTO ledger (tx_id, at, kind, account, unit, delta, ref, idempotency_key)
+     SELECT 'seed-' || (i / 2), 0, 'grant.starting', CASE i % 2 WHEN 0 THEN 'mint' ELSE 'house' END,
+            'coins', CASE i % 2 WHEN 0 THEN -1 ELSE 1 END, NULL, NULL
+     FROM n`,
+    legs,
+  );
+}
+
+describe('feature calls on a large ledger', () => {
+  const harness = createFeatureHarness([sampleFeature]);
+
+  it(
+    `answer a GET and a wallet-only write within ${FEATURE_CALL_BUDGET_MS} ms each`,
+    { timeout: 60_000 },
+    async () => {
+      const player = await harness.player();
+      await player.call('sampleBook');
+      await runInDurableObject(player.stub, (_do, ctx) => {
+        seedLargeLedger(ctx.storage.sql, LARGE_LEDGER_LEGS);
+      });
+
+      const readStarted = performance.now();
+      expect(await player.call('sampleBook')).toEqual({ stamps: [] });
+      const readMs = performance.now() - readStarted;
+
+      const writeStarted = performance.now();
+      const stamped = await player.call('sampleStamp', { motto: 'Patience pays' });
+      const writeMs = performance.now() - writeStarted;
+
+      expect(stamped.book.stamps).toHaveLength(1);
+      expect(readMs).toBeLessThan(FEATURE_CALL_BUDGET_MS);
+      expect(writeMs).toBeLessThan(FEATURE_CALL_BUDGET_MS);
+      await expectConserved(player.session);
+    },
+  );
+});

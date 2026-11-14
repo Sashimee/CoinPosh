@@ -14,6 +14,7 @@ import type {
 } from '../features/types.ts';
 import type { FairRoll } from '../rng/fair.ts';
 import {
+  type Account,
   checkTxKinds,
   commit,
   ConservationError,
@@ -185,6 +186,14 @@ interface AppendedLeg extends Record<string, SqlStorageValue> {
   readonly delta: number;
 }
 
+/** Accounts whose balances must match entity rows (coins, crates, items), not just the ledger. */
+const ENTITY_ACCOUNTS: ReadonlySet<string> = new Set<Account>(['buffer', 'table', 'inventory']);
+const CURRENCY_UNITS: ReadonlySet<string> = new Set(CURRENCIES);
+
+function touchesEntities(legs: readonly AppendedLeg[]): boolean {
+  return legs.some((leg) => ENTITY_ACCOUNTS.has(leg.account) || !CURRENCY_UNITS.has(leg.unit));
+}
+
 function latestSeq(sql: SqlStorage): number {
   return sql.exec<{ seq: number | null }>('SELECT MAX(seq) AS seq FROM ledger').one().seq ?? 0;
 }
@@ -193,9 +202,10 @@ function latestSeq(sql: SqlStorage): number {
  * Re-checks what the handler appended against what it changed: every row is one of the
  * feature's own kinds, every transaction balances per unit, and each wallet balance moved
  * by exactly its wallet legs. Raw `sql` is in the handler's hands, so this is what stops a
- * feature from writing the wallet or the ledger behind `commit`'s back. The host's own
- * conservation check then catches balanced legs on an account (table, inventory) whose entity
- * rows the handler did not write to match.
+ * feature from writing the wallet or the ledger behind `commit`'s back. Only when a leg lands
+ * on an entity-backed account or a non-currency unit does the host's full conservation check
+ * run, to catch legs whose coin, crate or item rows the handler did not write to match: that
+ * check sums the whole append-only ledger, so a leg-free read or a wallet-only write skips it.
  */
 function assertFeatureConserved(
   host: FeatureHost,
@@ -248,7 +258,7 @@ function assertFeatureConserved(
       );
     }
   }
-  if (!host.conserved()) {
+  if (touchesEntities(legs) && !host.conserved()) {
     throw new ConservationError(
       `Feature "${feature.id}" left the ledger disagreeing with the entity tables; a leg on ` +
         `table, buffer or inventory needs the matching coin, crate or item row in the same call.`,
