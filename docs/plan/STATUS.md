@@ -147,7 +147,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-92.10 | done | task/T-92.10 (merge 82654b5) | Crate ride snapshot and restore on CRATE_RIDE bounds (ride.ts, view.ts, crates.test.ts; daf58bf); pnpm check green after merge |
 | T-2.01-p1 | done | task/T-2.01-p1 (merge d42cf4e) | Safes numbers and catalog in packages/economy (config/safes.ts, drops.ts, validate.ts, 02-ECONOMY.md) (d1abbdd); pnpm check green after merge |
 | T-2.01-p2 | done | task/T-2.01-p2 (merge f39f252) | Server: safes route, storage, timers, key spend, pity (b1d7f20); pnpm check green after merge |
-| T-2.01 | in progress (parts merged: T-2.01-p1, T-2.01-p2) | | Waits on T-1.18. Key-locked Safes (server + client + cinematic). Parts T-2.01-p1, T-2.01-p2, T-2.01-p3. Parts merged: T-2.01-p1 (merge d42cf4e), T-2.01-p2 (merge f39f252); parts pending: T-2.01-p3 (blocked in review) |
+| T-2.01 | done | | Waits on T-1.18. Key-locked Safes (server + client + cinematic). Parts T-2.01-p1, T-2.01-p2, T-2.01-p3. Parts merged: T-2.01-p1 (merge d42cf4e), T-2.01-p2 (merge f39f252), T-2.01-p3 (merge eaac8b0) |
 | T-2.02 | todo | | Waits on T-1.18. Scratch Cards (GPU scratch mask) |
 | T-2.03 | todo | | Waits on T-1.18. Gacha Capsule Machine |
 | T-2.04 | done | task/T-2.04 (merge d411f01) | Odds & "Certified Fair" UI (apps/web/src/ui/fair, EN/FR/DE fair.json). Fix round (c196d1f): Web Crypto failure shows a distinct verify "unavailable" state with a throwing crypto.subtle test; odds row/total aria labels interpolated via i18next; main.ts mount and pity log stay queued in POLISH; pnpm check green after merge |
@@ -338,7 +338,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-28.10 | todo | | Waits on T-28.08. Challenge, jukebox and codex UI |
 | T-28.11 | todo | | Waits on T-28.03, T-28.04, T-28.05, T-28.06, T-28.09, T-28.10, T-26.06. Content wiring and e2e |
 | P-213 | done | task/P-213 (merge 1240142) | Boot poster re-rendered from the live table by the committed apps/web/scripts/capture-poster.ts, held until the heap is on the table, with apps/web/e2e/poster.spec.ts and hud tests (folds P-521) (4171ea1); pnpm check green after merge; follow-ups queued as P-541..P-543 |
-| T-2.01-p3 | blocked(review: safes panel render() re-appends every row on each 1 s countdown tick, so a focused row button loses keyboard focus to body; no browser test covers it) | task/T-2.01-p3 (a99d6f8, not merged) | Fix: insert a row only when new or out of place, add a browser/e2e assertion that focus survives a countdown tick; main.ts/HUD/pity wiring queued as P-544..P-547; branch kept |
+| T-2.01-p3 | done | task/T-2.01-p3 (merge eaac8b0) | Client safes panel, controller and dial/door cinematic; fix round keeps focus across countdown ticks (503cf23); main.ts/HUD/pity wiring queued as P-544..P-547; pnpm check green after merge |
 | P-465 | done | task/P-465 (merge 09eb259) | Demo-only window.__coinposh.demo test handle, fix round (cd4131f): live-mode null test restored; unblocks T-92.09; pnpm check green after merge |
 | P-510 | blocked(review: P-511 Vault assertion passes with the fix reverted because no coin falls between crate open and reveal; POLISH.md edited outside owns) | task/P-510 (694a607, not merged) | Fix: record counts.frontFalls at open and reveal, hard-assert at least one front fall, make the scenario deterministic, re-verify the reverted build fails on the Vault; drop the P-524 POLISH line; follow-ups queued as P-548, P-549; branch kept |
 
