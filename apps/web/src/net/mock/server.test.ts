@@ -24,6 +24,7 @@ import {
   venues,
   type UpgradeLevelMap,
 } from '@coinposh/economy';
+import type * as SharedModule from '@coinposh/shared';
 import {
   ClaimsResponseSchema,
   DropResponseSchema,
@@ -38,7 +39,7 @@ import {
   type MintedCoin,
   type QuestId,
 } from '@coinposh/shared';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { loadOrCreateDeviceKey } from '../device.ts';
 import { verifyFairProofMembership } from '../fair.ts';
@@ -58,6 +59,7 @@ import {
   serverWallet,
   type Player,
 } from '../test/harness.ts';
+import type { WireResponse } from '../wire.ts';
 import type { MockServer } from './server.ts';
 import { MOCK_RULES } from './rules.ts';
 import type { MockStorage } from './persist.ts';
@@ -1989,7 +1991,7 @@ const sampleQuests: MockFeature = {
           expiresAt: ctx.now + 86_400_000,
         },
         rewards: [reward],
-        wallet: ctx.player.wallet,
+        wallet: ctx.wallet(),
       };
     },
   },
@@ -2018,6 +2020,22 @@ async function forgeClaim(target: MockServer, player: Player, body: unknown) {
     body: JSON.stringify(body),
     token: await accessToken(player),
   });
+}
+
+async function forgeQuests(target: MockServer, player: Player) {
+  return forge(target, player.device, {
+    method: 'GET',
+    path: '/v1/quests',
+    body: null,
+    token: await accessToken(player),
+  });
+}
+
+/** What a request that hit a Demo bug answers: a 500 whose message names the bug. */
+function bugReport(response: WireResponse): string {
+  expect(response.status).toBe(500);
+  expect(errorCode(response)).toBe('internal');
+  return ErrorEnvelopeSchema.parse(response.body).error.message;
 }
 
 describe('feature modules', () => {
@@ -2074,15 +2092,98 @@ describe('feature modules', () => {
     expect(ledgerWallet(featured, id)).toEqual(wallet);
   });
 
-  it('refuses a feature answer that breaks the endpoint response contract', async () => {
+  it('refuses a feature answer that breaks the endpoint response contract, paying nothing', async () => {
     const broken: MockFeature = {
       id: 'sample.broken',
-      handlers: { quests: () => ({ quests: [], streak: { days: -1, freezes: 0 } }) },
+      handlers: {
+        quests: (ctx) => {
+          ctx.grant('quest.claim', { keys: SAMPLE_KEYS }, QUEST_A);
+          ctx.setState({ claimed: [QUEST_A] });
+          return { quests: [], streak: { days: -1, freezes: 0 } };
+        },
+      },
     };
-    const { player } = await open([broken]);
+    const { featured, player } = await open([broken]);
+    const id = requirePlayerId(player);
+    const wallet = serverWallet(featured, id);
+    const ledger = featured.ledger().length;
     const error = await player.client.call('quests').catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiRequestError);
     expect((error as ApiRequestError).code).toBe('internal');
+    expect(serverWallet(featured, id)).toEqual(wallet);
+    expect(featured.ledger()).toHaveLength(ledger);
+    expect(featured.world.featureState('sample.broken')).toBeUndefined();
+  });
+
+  it('holds grants and state until the handler returns, so a refusal after a grant pays nothing', async () => {
+    const seen: unknown[] = [];
+    const refusing: MockFeature = {
+      id: 'sample.refusing',
+      handlers: {
+        questsClaim: (ctx, { body }) => {
+          ctx.grant('quest.claim', { keys: SAMPLE_KEYS }, body.questId);
+          ctx.setState({ claimed: [body.questId] });
+          seen.push(ctx.state(), ctx.wallet().keys - ctx.player.wallet.keys);
+          throw new MockFailure('conflict', 'The board closed mid-claim.');
+        },
+      },
+    };
+    const { featured, player } = await open([refusing]);
+    const id = requirePlayerId(player);
+    const wallet = serverWallet(featured, id);
+    const ledger = featured.ledger().length;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(errorCode(await forgeClaim(featured, player, { questId: QUEST_A }))).toBe('conflict');
+    }
+    expect(seen).toEqual([
+      { claimed: [QUEST_A] },
+      SAMPLE_KEYS,
+      { claimed: [QUEST_A] },
+      SAMPLE_KEYS,
+    ]);
+    expect(serverWallet(featured, id)).toEqual(wallet);
+    expect(featured.ledger()).toHaveLength(ledger);
+    expect(featured.world.featureState('sample.refusing')).toBeUndefined();
+  });
+
+  it('pays nothing when the held state is not plain JSON, and names the feature', async () => {
+    const leaky: MockFeature = {
+      id: 'sample.leaky',
+      handlers: {
+        quests: (ctx) => {
+          ctx.grant('quest.claim', { keys: SAMPLE_KEYS }, QUEST_A);
+          ctx.setState({ at: new Date(ctx.now) });
+          return { quests: [], streak: { days: 0, freezes: 0 } };
+        },
+      },
+    };
+    const { featured, player } = await open([leaky]);
+    const id = requirePlayerId(player);
+    const wallet = serverWallet(featured, id);
+    const ledger = featured.ledger().length;
+    expect(bugReport(await forgeQuests(featured, player))).toMatch(
+      /sample\.leaky state cannot be stored/,
+    );
+    expect(serverWallet(featured, id)).toEqual(wallet);
+    expect(featured.ledger()).toHaveLength(ledger);
+  });
+
+  it('refuses a grant of a negative or fractional amount when it is made', async () => {
+    const greedy = (amount: number): MockFeature => ({
+      id: 'sample.greedy',
+      handlers: {
+        quests: (ctx) => {
+          ctx.grant('quest.claim', { keys: amount });
+          return { quests: [], streak: { days: 0, freezes: 0 } };
+        },
+      },
+    });
+    for (const amount of [-1, 0.5]) {
+      const { featured, player } = await open([greedy(amount)]);
+      expect(bugReport(await forgeQuests(featured, player))).toMatch(
+        /"sample\.greedy" granted .* keys for quest\.claim/,
+      );
+    }
   });
 
   it('never swallows an absence, so the offline vault still pays after a feature call', async () => {
@@ -2123,6 +2224,61 @@ describe('feature modules', () => {
 
     const restored = MockWorld.restore(reloaded.world.serialize());
     expect(restored.featureState('sample.quests')).toEqual({ claimed: [QUEST_A, QUEST_B] });
+  });
+
+  describe('a theme endpoint with no built-in route', () => {
+    const SampleTallySchema = z.strictObject({ tally: z.number().int().nonnegative() });
+
+    async function themed(features: readonly MockFeature[]) {
+      vi.resetModules();
+      vi.doMock('@coinposh/shared', async (importOriginal) => {
+        const shared = await importOriginal<typeof SharedModule>();
+        const registry = shared.composeEndpoints(shared.endpoints, {
+          sampleTally: shared.get('/v1/sample/tally', SampleTallySchema),
+        });
+        return { ...shared, endpoints: registry, ENDPOINT_NAMES: Object.keys(registry) };
+      });
+      try {
+        const harness = await import('../test/harness.ts');
+        const clock = new harness.FakeTime();
+        const themedServer = harness.createMockServer({
+          now: clock.now,
+          storage: null,
+          features,
+          lifecycle: null,
+        });
+        const player = await harness.connectPlayer(themedServer, clock);
+        const tally = async () =>
+          harness.forge(themedServer, player.device, {
+            method: 'GET',
+            path: '/v1/sample/tally',
+            body: null,
+            token: await player.session.accessToken(),
+          });
+        return { tally };
+      } finally {
+        vi.doUnmock('@coinposh/shared');
+        vi.resetModules();
+      }
+    }
+
+    it('is served by the feature module that claims it', async () => {
+      const sampleTally = {
+        id: 'sample.tally',
+        handlers: { sampleTally: () => ({ tally: 7 }) },
+      } as unknown as MockFeature;
+      const { tally } = await themed([sampleTally]);
+      const response = await tally();
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ tally: 7 });
+    });
+
+    it('fails loudly, naming the endpoint and where to register, when no feature claims it', async () => {
+      const { tally } = await themed([]);
+      expect(bugReport(await tally())).toMatch(
+        /no Demo route serves sampleTally\..*MOCK_FEATURES \(apps\/web\/src\/net\/features\/registry\.ts\)/,
+      );
+    });
   });
 
   it('refuses two features handling one endpoint, naming both', () => {

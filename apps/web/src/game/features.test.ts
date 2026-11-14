@@ -1,6 +1,7 @@
 import { CoinIdSchema } from '@coinposh/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { createBus } from '../app/bus.ts';
+import type { AudioEngine } from '../audio/index.ts';
 import { createI18n } from '../i18n/core.ts';
 import { connectPlayer, createMockServer, FakeTime } from '../net/test/harness.ts';
 import { Haptics } from '../vfx/haptics.ts';
@@ -12,7 +13,37 @@ import {
 } from './features.ts';
 import type { GameEvents } from './systems/events.ts';
 
-async function context(reduced = false): Promise<GameFeatureContext> {
+/** Stands in for the audio engine, recording the ladder steps a feature plays. */
+function recordingAudio(steps: number[]): AudioEngine {
+  const silent = () => undefined;
+  return {
+    unlocked: true,
+    whenUnlocked: Promise.resolve(),
+    activeVoices: 0,
+    playImpact: silent,
+    comboStep: (step) => {
+      steps.push(step);
+    },
+    setComboTier: silent,
+    setIntensity: silent,
+    duckMusic: silent,
+    startMusic: () => Promise.resolve(),
+    stopMusic: silent,
+    setVolume: silent,
+    getVolume: () => 1,
+    setMono: silent,
+    dispose: () => Promise.resolve(),
+  };
+}
+
+interface Devices {
+  /** Null until the test unlocks it, as the engine is before the first gesture. */
+  audio: AudioEngine | null;
+  readonly steps: number[];
+  readonly vibrations: number[][];
+}
+
+async function context(reduced = false, devices?: Devices): Promise<GameFeatureContext> {
   const time = new FakeTime();
   const player = await connectPlayer(createMockServer({ now: time.now, storage: null }), time);
   const i18n = createI18n({
@@ -27,8 +58,18 @@ async function context(reduced = false): Promise<GameFeatureContext> {
     events: createBus<GameEvents>(),
     api: player.client,
     i18n,
-    audio: () => null,
-    haptics: () => new Haptics(undefined, () => 0),
+    audio: () => devices?.audio ?? null,
+    haptics: () =>
+      new Haptics(
+        {
+          userActivation: { hasBeenActive: true },
+          vibrate: (pattern) => {
+            devices?.vibrations.push(pattern);
+            return true;
+          },
+        },
+        () => 0,
+      ),
     reducedMotion: () => reduced,
   };
 }
@@ -57,6 +98,7 @@ function sampleTally() {
         total += amount;
         motion.push(ctx.reducedMotion());
         lines.push(ctx.i18n.t('sample:banked', { amount: total }));
+        ctx.audio()?.comboStep(lines.length);
         ctx.haptics()?.pulse('tick');
       });
       return { dispose: off };
@@ -83,19 +125,26 @@ function recorder(log: string[], id: string, failOn?: 'mount' | 'dispose'): Game
 
 describe('mountGameFeatures', () => {
   it('gives a feature the bus, API, i18n and accessors, and silences it on dispose', async () => {
-    const ctx = await context(true);
+    const devices: Devices = { audio: null, steps: [], vibrations: [] };
+    const ctx = await context(true, devices);
     const sample = sampleTally();
     const handle = mountGameFeatures([sample.feature], ctx);
     ctx.events.emit('value:credited', credited(40));
+    expect(devices.steps).toEqual([]);
+    devices.audio = recordingAudio(devices.steps);
     ctx.events.emit('value:credited', credited(2));
     await vi.waitFor(() => {
       expect(sample.boardLoaded()).toBe(true);
     });
     expect(sample.lines).toEqual(['40 en banque', '42 en banque']);
     expect(sample.motion).toEqual([true, true]);
+    expect(devices.steps).toEqual([2]);
+    expect(devices.vibrations).toEqual([[6], [6]]);
     handle.dispose();
     ctx.events.emit('value:credited', credited(8));
     expect(sample.lines).toHaveLength(2);
+    expect(devices.steps).toEqual([2]);
+    expect(devices.vibrations).toHaveLength(2);
   });
 
   it('mounts in order and disposes in reverse, once', async () => {

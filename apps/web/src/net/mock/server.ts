@@ -19,6 +19,7 @@ import {
   type AccountLinkRequest,
   type AccountNonceRequest,
   type AccountUnlinkRequest,
+  type Currency,
   type DevicePublicKey,
   type Endpoint,
   type ErrorCode,
@@ -30,6 +31,7 @@ import {
   type SignInRequest,
   type StateQuery,
   type TableSnapshotRequest,
+  type Wallet,
 } from '@coinposh/shared';
 import { fromBase64Url, randomBase62, sha256Hex, utf8Bytes } from '../encoding.ts';
 import { NetworkError, type ApiOperation } from '../errors.ts';
@@ -52,8 +54,10 @@ import {
   MockWorld,
   RestoreError,
   deviceThumbprint,
+  type GrantReason,
   type LedgerEntry,
   type MockPlayer,
+  type WorldEndpoint,
 } from './world.ts';
 
 /** `down` refuses every request; `dropResponses` runs it but loses the answer, like a cut connection. */
@@ -358,6 +362,37 @@ const REPLAYS_SUCCESS_ONLY: ReadonlySet<MockOperation> = new Set(['tableSnapshot
  * nonce request is refused when sent again rather than answered with its tokens or nonce.
  */
 const BURNS_KEY: ReadonlySet<MockOperation> = new Set(['accountNonce', 'authSignIn']);
+
+/**
+ * The endpoints `MockWorld.handle` has a route for. A theme endpoint is not one of them: the
+ * Demo serves it only through the feature module that claims it.
+ */
+const WORLD_ROUTES = {
+  state: true,
+  tableDrop: true,
+  tableClaims: true,
+  tableNudge: true,
+  tableInputs: true,
+  upgradesBuy: true,
+  charmsEquip: true,
+  cratesOpen: true,
+  safesOpen: true,
+  gachaPull: true,
+  scratchReveal: true,
+  ascend: true,
+  album: true,
+  fairSeeds: true,
+  fairRotate: true,
+  quests: true,
+  questsClaim: true,
+  season: true,
+  leaderboard: true,
+  eventsCurrent: true,
+} as const satisfies Record<WorldEndpoint, true>;
+
+function hasWorldRoute(name: MockOperation): name is WorldEndpoint {
+  return Object.hasOwn(WORLD_ROUTES, name);
+}
 
 const ROUTES: readonly (readonly [MockOperation, Endpoint])[] = [
   ...ENDPOINT_NAMES.map((name) => [name, endpoints[name]] as const),
@@ -802,20 +837,54 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   }
 
+  /**
+   * A feature handler's context, whose writes are held until `commit`: the state first, since
+   * it is the write that can refuse its value, then every grant, so a handler that throws or
+   * answers off contract leaves no payout behind for a retry to repeat.
+   */
   function featureContext(
     feature: MockFeature,
     player: MockPlayer,
     at: number,
-  ): MockFeatureContext {
-    return {
+  ): { readonly context: MockFeatureContext; readonly commit: () => void } {
+    let held: { readonly value: unknown } | null = null;
+    const grants: {
+      readonly reason: GrantReason;
+      readonly delta: Partial<Record<Currency, number>>;
+      readonly ref: string | null;
+    }[] = [];
+    const context: MockFeatureContext = {
       player,
       now: at,
-      state: () => world.featureState(feature.id),
+      state: () => (held === null ? world.featureState(feature.id) : structuredClone(held.value)),
       setState: (value) => {
-        world.setFeatureState(feature.id, value);
+        held = { value };
       },
       grant: (reason, delta, ref = null) => {
-        world.grant(player, at, reason, delta, ref);
+        for (const [currency, amount] of Object.entries(delta)) {
+          if (!Number.isSafeInteger(amount) || amount < 0) {
+            throw new Error(
+              `Mock feature "${feature.id}" granted ${String(amount)} ${currency} for ${reason}; grant whole, non-negative amounts.`,
+            );
+          }
+        }
+        grants.push({ reason, delta: { ...delta }, ref });
+      },
+      wallet: () => {
+        const wallet: Wallet = { ...player.wallet };
+        for (const { delta } of grants) {
+          for (const [currency, amount] of Object.entries(delta) as [Currency, number][]) {
+            wallet[currency] += amount;
+          }
+        }
+        return wallet;
+      },
+    };
+    return {
+      context,
+      commit: () => {
+        if (held !== null) world.setFeatureState(feature.id, held.value);
+        for (const { reason, delta, ref } of grants) world.grant(player, at, reason, delta, ref);
       },
     };
   }
@@ -896,6 +965,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     let response: WireResponse;
     try {
       let result: unknown;
+      let commit: (() => void) | null = null;
       if (isAccountOperation(found.name)) {
         result = await runAccount(found.name, auth, body, at);
       } else if (found.name === 'authGuest' || found.name === 'authRefresh') {
@@ -929,27 +999,34 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           query = parsed.data as StateQuery;
         }
         const feature = features.get(found.name);
-        if (feature === undefined) {
-          result =
-            found.name === 'tableSnapshot'
-              ? world.snapshot(player, body as TableSnapshotRequest, at)
-              : await world.handle(
-                  player,
-                  found.name,
-                  body as never,
-                  params?.data as never,
-                  at,
-                  query,
-                );
-          world.touch(player, at);
-        } else {
+        if (feature !== undefined) {
           // No touch: only the world's routes record a silence before marking the player
           // active, so a feature answered first after one must not erase the offline earnings.
-          result = await feature.handler(featureContext(feature.feature, player, at), {
+          const pending = featureContext(feature.feature, player, at);
+          result = await feature.handler(pending.context, {
             body: body as never,
             params: params?.data as never,
             query,
           });
+          commit = pending.commit;
+        } else if (found.name === 'tableSnapshot') {
+          result = world.snapshot(player, body as TableSnapshotRequest, at);
+          world.touch(player, at);
+        } else if (hasWorldRoute(found.name)) {
+          result = await world.handle(
+            player,
+            found.name,
+            body as never,
+            params?.data as never,
+            at,
+            query,
+          );
+          world.touch(player, at);
+        } else {
+          const unrouted: string = found.name;
+          throw new Error(
+            `Mock: no Demo route serves ${unrouted}. Its theme's Demo task registers the feature module that handles it (apps/web/src/net/features/<theme>/) in MOCK_FEATURES (apps/web/src/net/features/registry.ts).`,
+          );
         }
       }
       const checked = found.endpoint.response.safeParse(result);
@@ -959,6 +1036,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           `Mock ${found.name} broke its own response contract: ${checked.error.message}`,
         );
       }
+      commit?.();
       response = { status: 200, body: JSON.parse(JSON.stringify(checked.data)) as unknown };
     } catch (error) {
       if (!(error instanceof MockFailure)) throw error;
