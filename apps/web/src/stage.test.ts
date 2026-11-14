@@ -3,7 +3,12 @@ import { QUALITY_PROFILES } from './scene/quality/tiers.ts';
 import type * as Tiers from './scene/quality/tiers.ts';
 
 const events: string[] = [];
-const rendererBehaviour = { failFirstFrame: false };
+const rendererBehaviour = { failFirstFrame: false, failNextFrame: false };
+const frameState = {
+  loop: null as ((time: number) => void) | null,
+  coinUpdates: 0,
+  suspend: vi.fn(),
+};
 
 vi.mock('three/webgpu', () => {
   class Color {
@@ -33,8 +38,9 @@ vi.mock('three/webgpu', () => {
       events.push('renderer.init');
       return Promise.resolve();
     }
-    setAnimationLoop(loop: unknown) {
+    setAnimationLoop(loop: ((time: number) => void) | null) {
       events.push(loop === null ? 'loop:stop' : 'loop:start');
+      frameState.loop = loop;
       return Promise.resolve();
     }
     dispose() {
@@ -48,7 +54,9 @@ vi.mock('three/webgpu', () => {
 vi.mock('./scene/coins/index.ts', () => ({
   CoinField: class {
     object = {};
-    update = vi.fn();
+    update = () => {
+      frameState.coinUpdates += 1;
+    };
     bake = () => events.push('coins.bake');
     setCastShadows = vi.fn();
     castShadowsFrom = vi.fn();
@@ -67,9 +75,14 @@ vi.mock('./scene/quality/index.ts', async () => {
       return Promise.resolve({
         profile: tiers.QUALITY_PROFILES.low,
         post: { setLook: vi.fn() },
+        governor: { suspend: frameState.suspend },
         render: () => {
           events.push('frame:drawn');
           if (rendererBehaviour.failFirstFrame) throw new Error('first frame failed');
+          if (rendererBehaviour.failNextFrame) {
+            rendererBehaviour.failNextFrame = false;
+            throw new Error('frame failed');
+          }
         },
         dispose: () => events.push('adaptive.dispose'),
       });
@@ -100,6 +113,10 @@ const COINS = { capacity: 8, radius: 0.17 };
 beforeEach(() => {
   events.length = 0;
   rendererBehaviour.failFirstFrame = false;
+  rendererBehaviour.failNextFrame = false;
+  frameState.loop = null;
+  frameState.coinUpdates = 0;
+  frameState.suspend.mockClear();
   performance.clearMarks();
   vi.stubGlobal('document', { createElement: fakeCanvas });
   vi.stubGlobal('window', {});
@@ -166,5 +183,87 @@ describe('createStage boot marks', () => {
       '[CoinPosh] WebGPU renderer failed to start, retrying on WebGL2',
       expect.any(Error),
     );
+  });
+});
+
+function runLoopFrame(time = 16): void {
+  if (frameState.loop === null) throw new Error('The animation loop is not running.');
+  frameState.loop(time);
+}
+
+describe('Stage.drawFrame', () => {
+  it('draws a still frame without advancing the stage and suspends the governor', async () => {
+    const stage = await createStage(fakeCanvas(), { coins: COINS });
+    const listener = vi.fn();
+    stage.onFrame(listener);
+    const coinUpdatesBefore = frameState.coinUpdates;
+    const drawn = stage.drawFrame();
+    events.length = 0;
+
+    runLoopFrame();
+
+    await expect(drawn).resolves.toBeUndefined();
+    expect(events).toEqual(['frame:drawn']);
+    expect(listener).not.toHaveBeenCalled();
+    expect(frameState.coinUpdates).toBe(coinUpdatesBefore);
+    expect(frameState.suspend).toHaveBeenCalledTimes(1);
+    await stage.dispose();
+  });
+
+  it('advances the stage on a frame nobody waits on, without suspending the governor', async () => {
+    const stage = await createStage(fakeCanvas(), { coins: COINS });
+    const listener = vi.fn();
+    stage.onFrame(listener);
+    const coinUpdatesBefore = frameState.coinUpdates;
+
+    runLoopFrame();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(frameState.coinUpdates).toBe(coinUpdatesBefore + 1);
+    expect(frameState.suspend).not.toHaveBeenCalled();
+    await stage.dispose();
+  });
+
+  it('rejects every waiter with the error of a still frame that fails to render, then rethrows it', async () => {
+    const stage = await createStage(fakeCanvas(), { coins: COINS });
+    const first = stage.drawFrame();
+    const second = stage.drawFrame();
+    rendererBehaviour.failNextFrame = true;
+
+    expect(() => {
+      runLoopFrame();
+    }).toThrow('frame failed');
+
+    await expect(first).rejects.toThrow('frame failed');
+    await expect(second).rejects.toThrow('frame failed');
+    expect(frameState.suspend).not.toHaveBeenCalled();
+    await stage.dispose();
+  });
+
+  it('settles a waiter only once: the frame after a still frame advances again', async () => {
+    const stage = await createStage(fakeCanvas(), { coins: COINS });
+    const listener = vi.fn();
+    stage.onFrame(listener);
+    const drawn = stage.drawFrame();
+    runLoopFrame(16);
+    await drawn;
+
+    runLoopFrame(32);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(frameState.suspend).toHaveBeenCalledTimes(1);
+    await stage.dispose();
+  });
+
+  it('resolves a pending waiter on dispose, and resolves at once once disposed', async () => {
+    const stage = await createStage(fakeCanvas(), { coins: COINS });
+    const pending = stage.drawFrame();
+
+    await stage.dispose();
+
+    await expect(pending).resolves.toBeUndefined();
+    events.length = 0;
+    await expect(stage.drawFrame()).resolves.toBeUndefined();
+    expect(events).toEqual([]);
   });
 });

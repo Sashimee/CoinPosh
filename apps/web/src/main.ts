@@ -1322,8 +1322,7 @@ function coinsDrawn(stage: Stage, bridge: SimBridge): Promise<void> {
 async function drawWarmFrame(stage: Stage, effects: AttachedVfx | null): Promise<void> {
   if (effects) {
     try {
-      await effects.warmup();
-      return;
+      if (await effects.warmup()) return;
     } catch (error) {
       console.error(
         'CoinPosh effects could not pre-link their shaders; the first effects may stutter.',
@@ -1352,9 +1351,10 @@ interface AttachedVfx {
   readonly vfx: Vfx;
   /**
    * Links the effects' programs (flash, ring, sparks, foil) with one post-pass frame, so the
-   * first fusion or OBSCENE does not stall on them. Settles after the frame that runs it.
+   * first fusion or OBSCENE does not stall on them. Settles after the frame that runs it, true
+   * when it drew one: a renderer swap still waiting to be adopted skips the frame.
    */
-  warmup(): Promise<void>;
+  warmup(): Promise<boolean>;
 }
 
 /**
@@ -1381,17 +1381,18 @@ function attachVfx(stage: Stage, vfxModule: typeof VfxModule): AttachedVfx | nul
   }
   let renderer = stage.renderer;
   let live = true;
-  let queued: Promise<void> | null = null;
-  let previous: Promise<void> = Promise.resolve();
+  let queued: Promise<boolean> | null = null;
+  let previous: Promise<unknown> = Promise.resolve();
   // One warmup frame at a time; the requests made before it starts share it.
-  const warmup = (): Promise<void> => {
+  const warmup = (): Promise<boolean> => {
     if (queued) return queued;
     const run = previous.then(async () => {
       queued = null;
       // A swap still waiting for the next frame warms the new renderer once it is adopted.
-      if (!live || stage.renderer !== renderer) return;
+      if (!live || stage.renderer !== renderer) return false;
       await vfx.warmup(() => stage.drawFrame());
       performance.mark(VFX_WARMED_MARK);
+      return true;
     });
     queued = run;
     previous = run.catch(() => undefined);
