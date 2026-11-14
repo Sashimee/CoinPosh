@@ -149,7 +149,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-2.01-p2 | done | task/T-2.01-p2 (merge f39f252) | Server: safes route, storage, timers, key spend, pity (b1d7f20); pnpm check green after merge |
 | T-2.01 | done | | Waits on T-1.18. Key-locked Safes (server + client + cinematic). Parts T-2.01-p1, T-2.01-p2, T-2.01-p3. Parts merged: T-2.01-p1 (merge d42cf4e), T-2.01-p2 (merge f39f252), T-2.01-p3 (merge eaac8b0) |
 | T-2.02-p1 | done | task/T-2.02-p1 (merge 6faa121) | Scratch Cards server part: reveal route (apps/server/src/routes/scratch.ts), card storage in PlayerDO schema/entities and ledger grants (841029d); follow-ups P-587, P-588; pnpm check green after merge |
-| T-2.02 | in progress (parts merged: T-2.02-p1 (6faa121)) | | Waits on T-1.18. Scratch Cards (GPU scratch mask); T-2.02-p2 pending |
+| T-2.02-p2 | done | task/T-2.02-p2 (merge 8731f9c) | Scratch Cards client part: game/scratch controller, mount and session; vfx/scratch card, GPU scratch mask, foil flakes and 3-match reveal (4c0dedb); follow-ups P-595..P-601; pnpm check green after merge |
+| T-2.02 | done | parts merged: T-2.02-p1 (6faa121), T-2.02-p2 (8731f9c) | Scratch Cards (GPU scratch mask); all parts merged |
 | T-2.03-p1 | done | task/T-2.03-p1 (merge 5228103) | Gacha Capsule Machine scene: procedural 3D machine, crank, chute and capsule pop in apps/web/src/scene/gacha/** (0e711fe); pnpm check green after merge |
 | T-2.03 | done | | Gacha Capsule Machine, parts T-2.03-p1. Parts merged: T-2.03-p1 (merge 5228103) |
 | T-2.04 | done | task/T-2.04 (merge d411f01) | Odds & "Certified Fair" UI (apps/web/src/ui/fair, EN/FR/DE fair.json). Fix round (c196d1f): Web Crypto failure shows a distinct verify "unavailable" state with a throwing crypto.subtle test; odds row/total aria labels interpolated via i18next; main.ts mount and pity log stay queued in POLISH; pnpm check green after merge |
