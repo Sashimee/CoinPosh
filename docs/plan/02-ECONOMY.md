@@ -374,6 +374,155 @@ hold, and `charmKindOf` maps each to the kind its theme names. The pearl necklac
 one (2 %) so the album's last charm stays a chase. Any id no table maps throws, and a test walks
 every season tier, quest, crate, safe, album entry and drop to prove each charm id resolves.
 
+## Soirée Nights (T-3.06)
+
+An 8-minute run (`soiree.durationMs` 480 000 ms) on a fresh table seed. The server starts the
+run, seats the guests, rolls every perk draft and pays the run. The client plays the table and
+reports only the claims it already sends. The server judges each guest from table claims it
+accepted inside that guest's window, and the client never reports that a guest was served.
+`POST /v1/soiree/finish` is idempotent. Before `startedAt + durationMs` it is refused unless
+every seated guest is already resolved. Run rewards are crates and keys only: no coins, pearls
+or Stars, so the run never pays in a currency the main loop prices against.
+
+Numbers live in `packages/economy/src/config/soiree.ts`. `validateSoireeConfig` checks every
+rule below, and `soiree.test.ts` proves each one (fast-check for seating, drafts and Favor
+conservation, the sim for the cap).
+
+### Run shape
+
+- Three acts with `seatsPerAct` 2, so each run seats 6 guests, drawn uniformly from the 3 guests
+  of each act. Acts arrive in order and the requests get harder.
+- 10 s interlude between guests, for the draft.
+- The slowest seating (the longest windows plus interludes) has to fit in the run, so a perfect
+  night is always possible. `validateSoireeConfig` checks every seat plan against `durationMs`.
+- One rewarded run a day (`rewardedRunsPerDay` 1). Later runs that day play for fun and pay
+  nothing. This limit is load-bearing (see the sim evidence).
+
+| Act | Guest | Request (front-edge falls) | Window | Favors |
+|---|---|---|---|---|
+| 1 | Debutante | 15 copper | 45 s | 1 |
+| 1 | Pianist | 20 copper | 60 s | 1 |
+| 1 | Sommelier | 2 silver | 50 s | 1 |
+| 2 | Heiress | 3 silver | 45 s | 2 |
+| 2 | Countess | 5 silver | 60 s | 2 |
+| 2 | Ambassador | 1 gold | 60 s | 2 |
+| 3 | Admiral | 8 silver | 75 s | 3 |
+| 3 | Maharani | 3 gold | 80 s | 3 |
+| 3 | The Duke | 1 platinum | 90 s | 3 |
+
+Every request is `{ kind: 'falls', tier, count, windowMs }`, and `tier` is a `CoinTierId`. The
+sizes are a first cut taken from the tier ladder. A physics pass has to measure per-tier front
+falls before T-3.06-p4 locks them (follow-up below).
+
+### Favors and the draft
+
+A served guest pays the Favors in the table. After each guest except the last, the server offers
+3 distinct perks drawn uniformly from the 8 below (each shows with probability 3/8 = 37.5 %, the
+odds the draft screen shows). The player picks one they can pay for, or passes and keeps their
+Favors. Picking spends the cost, and the balance never goes negative. The server stamps
+`startsAt` and `endsAt` on its own clock, and a new pick replaces the one running.
+
+Perks reuse existing upgrade stats (`pusherSpeed`, `dropRate`, `coinValue`, `crateChance`,
+`fusionWindow`), so the sim and the rate envelope already model them. Worth is `duration ×
+magnitude × elasticity` in session-seconds (the cap below explains this unit).
+
+| Id | Stat | Magnitude | Duration | Cost | Worth (s) |
+|---|---|---|---|---|---|
+| `butlerService` | dropRate | +15 % | 40 s | 1 | 9.6 |
+| `midnightBuffet` | crateChance | +30 % | 60 s | 1 | 9.9 |
+| `velvetRope` | fusionWindow | +40 % | 75 s | 1 | 12.0 |
+| `champagneTower` | coinValue | +15 % | 60 s | 2 | 21.6 |
+| `grandEntrance` | pusherSpeed | +10 % | 60 s | 2 | 14.4 |
+| `crystalChandelier` | crateChance | +50 % | 60 s | 2 | 16.5 |
+| `goldLeaf` | coinValue | +25 % | 45 s | 3 | 27.0 |
+| `stringQuartet` | pusherSpeed | +20 % | 60 s | 3 | 28.8 |
+
+Cheap perks are small and long and rich ones are short, so saving Favors for a 3-cost perk is a
+real choice. No perk runs longer than a quarter of the run.
+
+### Run rewards
+
+Scaled by guests served, and never less for one more guest served:
+
+| Guests served | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| Soirée crates | 0 | 1 | 2 | 2 | 3 | 3 | 3 |
+| Perfect crate | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| Keys | 0 | 0 | 0 | 1 | 1 | 2 | 2 |
+| Worth (session-s) | 0 | 29.6 | 59.2 | 59.2 | 88.8 | 88.8 | 171.7 |
+
+Each step adds a crate or a key. Keys only open safes sooner (already paid at once in
+`safes.test.ts`), so they carry no income worth and the 2→3 and 4→5 steps leave the worth flat.
+Crates open as Vault Crates through the existing reward rows, with these odds. Both sum to 100 %
+and are the ones shown:
+
+| Odds | Common | Fine | Rare | Exquisite | Legendary | Heirloom | Worth (s) |
+|---|---|---|---|---|---|---|---|
+| Soirée crate | 40 % | 32 % | 18 % | 7 % | 2.75 % | 0.25 % | 29.6 |
+| Perfect crate | 0 | 0 | 65 % | 25 % | 9 % | 1 % | 82.9 |
+| Vault Crate (reference) | | | | | | | 15.5 |
+
+A Soirée crate is worth about two Vault Crates. The perfect crate (rare or better) is the reward
+for a flawless night.
+
+### The cap, and why
+
+Value is counted in session-seconds: what a run adds, in the seconds of ordinary play that earn
+the same income. A crate's worth is its expected `incomeSeconds`, plus its `safeChance` times the
+mean Gold Safe it may hold. A perk's worth is `duration × magnitude × elasticity`. The
+elasticity is how much session income (coins plus crate income) rises per unit of the stat. The
+balancing sim measured it across a 6 h active session, seeds 1–3, with the vault crate mean
+taken with pity:
+
+| Stat | Measured max | Declared bound |
+|---|---|---|
+| coinValue | 2.29 | 2.4 |
+| pusherSpeed | 2.29 | 2.4 |
+| dropRate | 1.54 | 1.6 |
+| crateChance | 0.51 | 0.55 |
+| fusionWindow | 0.37 | 0.4 |
+
+The test checks that every bound is at least the measured value and within 15 % of it. A bound
+that is too loose would hide real headroom.
+
+`soireeBonusBound` adds the richest reward tier (171.7 s) to the most perk worth any run can
+draft (96.0 s). That perk figure comes from a DP over every seat plan and Favor balance, with
+every draft assumed to offer the best perk affordable. A brute force over all 9⁵ draft paths
+agrees. The total, 267.7 s, must stay under the cap: `maxBonusShare` 0.6 × 480 s = **288
+session-seconds**. A perfect night is worth at most 60 % more than spending its 8 minutes on the
+ordinary table, enough to be the best 8 minutes of the day without becoming the economy.
+
+### Sim evidence
+
+`soiree.test.ts` folds a full cap into the economy once every `period` seconds of play. It
+lifts every coin stat by `1 + 288 / period`, adds the run's 4 crates as extra Vault Crates, and
+raises charm odds until those crates hold the run's charms. It then reruns the balancing sim
+(`days 3, players 24`, seeds 1–3):
+
+| Run | ascendVenue1 (3–5 h) | Casual (≈ 2 days) | V2 ratio (≈ 1.6) | Season (≈ 30 h) |
+|---|---|---|---|---|
+| Baseline | 12 109–12 231 s | 1.50 | 1.55–1.58 | 28.3 h |
+| Cap every 7 200 s (active) | 11 688–11 800 s | 1.50 | 1.57–1.59 | 27.8 h |
+| Cap every 3 000 s | 10 736–10 999 s (seed 1 misses) | 1.50 | 1.55–1.60 | 27.0 h |
+
+First upgrade (15 s), first Charm (14 s) and the first album set (694–883 s) stay well inside
+their targets in every row.
+
+- One rewarded run per casual day (50 min) keeps the casual ascension on 1.50 days. The test
+  proves it with the casual period set to `sessions × minutes / rewardedRunsPerDay` = 3 000 s.
+- An active player who earned a capped run every 50 minutes would push Venue 1 below 3 h
+  (10 736 s on seed 1). The daily limit is what stops that: at one run a day an active player
+  gets a run far less often than every 2 h, and the 7 200 s row already passes every target.
+  Raising `rewardedRunsPerDay`, or lifting the cap above 288, must rerun this test.
+
+### Follow-ups
+
+- T-3.06-p2 (server): open Soirée crates at their stamped rarity (the `Reward` domain has no
+  crate kind yet), and stretch the rate envelope by the perk running at claim time.
+- T-3.06-p3/p4: register `soireeEndpoints` into `endpoints` with their fixtures and Demo
+  handlers, and measure per-tier front falls to confirm the request sizes.
+- A balance report for the Soirée fold in `docs/plan/balance-reports/`.
+
 ## Expansion economy (M10+, founder Q&A 2026-11-09)
 
 **Every number in this section is an initial target for economy-designer to tune**

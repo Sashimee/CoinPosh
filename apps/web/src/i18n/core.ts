@@ -115,3 +115,95 @@ export function createI18n(options: I18nOptions): I18n {
     },
   };
 }
+
+const LOCALE_FILE = /(?:^|\/)locales\/([^/]+)\/([^/]+)\.json$/;
+const NAMESPACE_NAME = /^[a-z][A-Za-z0-9_-]*$/;
+
+export interface LocaleFile {
+  readonly language: Language;
+  readonly namespace: string;
+}
+
+/** Reads a locale file's language and namespace from its `locales/<language>/<ns>.json` path. */
+export function localeFile(path: string): LocaleFile {
+  const [, language, namespace] = LOCALE_FILE.exec(path) ?? [];
+  if (language === undefined || namespace === undefined) {
+    throw new Error(`Locale file ${path} is not at locales/<language>/<namespace>.json`);
+  }
+  if (!isLanguage(language)) {
+    throw new Error(
+      `Locale file ${path} is for unsupported language "${language}"; use one of ${LANGUAGES.join(', ')}`,
+    );
+  }
+  if (!NAMESPACE_NAME.test(namespace)) {
+    throw new Error(
+      `Locale file ${path} has an invalid namespace "${namespace}"; start with a lowercase letter and use letters, digits, "_" or "-"`,
+    );
+  }
+  return { language, namespace };
+}
+
+/** Builds inline resources from eagerly globbed locale files, keyed by their paths. */
+export function resourcesFromFiles(files: Readonly<Record<string, ResourceTree>>): Resources {
+  const resources: Record<Language, Record<string, ResourceTree>> = { en: {}, fr: {}, de: {} };
+  for (const [path, tree] of Object.entries(files)) {
+    const { language, namespace } = localeFile(path);
+    resources[language][namespace] = tree;
+  }
+  return resources;
+}
+
+/** Lazy locale files keyed by path, as `import.meta.glob` hands them over. */
+export type NamespaceLoaders = Readonly<Record<string, () => Promise<ResourceTree>>>;
+
+export type LoadNamespace = (namespace: string) => Promise<void>;
+
+/**
+ * Loads a namespace's locale files into `i18n`, every language at once so a language switch
+ * never shows a raw key. Each namespace loads once and a failed load is tried again by the next
+ * call; one already registered in every language resolves without fetching anything.
+ */
+export function createNamespaceLoader(i18n: I18n, loaders: NamespaceLoaders): LoadNamespace {
+  const files = new Map<string, Map<Language, () => Promise<ResourceTree>>>();
+  for (const [path, load] of Object.entries(loaders)) {
+    const { language, namespace } = localeFile(path);
+    const byLanguage = files.get(namespace) ?? new Map<Language, () => Promise<ResourceTree>>();
+    byLanguage.set(language, load);
+    files.set(namespace, byLanguage);
+  }
+  const pending = new Map<string, Promise<void>>();
+
+  async function load(namespace: string): Promise<void> {
+    if (LANGUAGES.every((language) => i18n.instance.hasResourceBundle(language, namespace))) return;
+    const byLanguage = files.get(namespace);
+    if (byLanguage === undefined) {
+      throw new Error(
+        `No locale files for namespace "${namespace}"; add locales/<language>/${namespace}.json for ${LANGUAGES.join(', ')}`,
+      );
+    }
+    const trees = await Promise.all(
+      LANGUAGES.map(async (language) => {
+        const loadTree = byLanguage.get(language);
+        if (loadTree === undefined) {
+          throw new Error(
+            `Namespace "${namespace}" has no ${language} strings; add locales/${language}/${namespace}.json`,
+          );
+        }
+        return [language, await loadTree()] as const;
+      }),
+    );
+    for (const [language, tree] of trees) i18n.addResourceBundle(language, namespace, tree);
+  }
+
+  return (namespace) => {
+    let loading = pending.get(namespace);
+    if (loading === undefined) {
+      loading = load(namespace).catch((error: unknown) => {
+        pending.delete(namespace);
+        throw error;
+      });
+      pending.set(namespace, loading);
+    }
+    return loading;
+  };
+}

@@ -1,0 +1,220 @@
+import { CoinIdSchema } from '@coinposh/shared';
+import { describe, expect, it, vi } from 'vitest';
+import { createBus } from '../app/bus.ts';
+import type { AudioEngine } from '../audio/index.ts';
+import { createI18n } from '../i18n/core.ts';
+import { connectPlayer, createMockServer, FakeTime } from '../net/test/harness.ts';
+import { Haptics } from '../vfx/haptics.ts';
+import {
+  mountGameFeatures,
+  type GameFeature,
+  type GameFeatureContext,
+  type GameFeatureErrorReport,
+} from './features.ts';
+import type { GameEvents } from './systems/events.ts';
+
+/** Stands in for the audio engine, recording the ladder steps a feature plays. */
+function recordingAudio(steps: number[]): AudioEngine {
+  const silent = () => undefined;
+  return {
+    unlocked: true,
+    whenUnlocked: Promise.resolve(),
+    activeVoices: 0,
+    playImpact: silent,
+    comboStep: (step) => {
+      steps.push(step);
+    },
+    setComboTier: silent,
+    setIntensity: silent,
+    duckMusic: silent,
+    startMusic: () => Promise.resolve(),
+    stopMusic: silent,
+    setVolume: silent,
+    getVolume: () => 1,
+    setMono: silent,
+    dispose: () => Promise.resolve(),
+  };
+}
+
+interface Devices {
+  /** Null until the test unlocks it, as the engine is before the first gesture. */
+  audio: AudioEngine | null;
+  readonly steps: number[];
+  readonly vibrations: number[][];
+}
+
+async function context(reduced = false, devices?: Devices): Promise<GameFeatureContext> {
+  const time = new FakeTime();
+  const player = await connectPlayer(createMockServer({ now: time.now, storage: null }), time);
+  const i18n = createI18n({
+    language: 'fr',
+    resources: {
+      en: { ui: {}, sample: { banked: 'Banked {{amount}}' } },
+      fr: { ui: {}, sample: { banked: '{{amount}} en banque' } },
+      de: { ui: {}, sample: { banked: '{{amount}} verbucht' } },
+    },
+  });
+  return {
+    events: createBus<GameEvents>(),
+    api: player.client,
+    i18n,
+    audio: () => devices?.audio ?? null,
+    haptics: () =>
+      new Haptics(
+        {
+          userActivation: { hasBeenActive: true },
+          vibrate: (pattern) => {
+            devices?.vibrations.push(pattern);
+            return true;
+          },
+        },
+        () => 0,
+      ),
+    reducedMotion: () => reduced,
+  };
+}
+
+const credited = (amount: number): GameEvents['value:credited'] => ({
+  amount,
+  coinId: CoinIdSchema.parse('coin_AAAAAAAAAAAAAAAA'),
+  tier: null,
+  position: null,
+  cascade: null,
+});
+
+/** A sample feature: tallies credited value from the bus and reads the quest board on mount. */
+function sampleTally() {
+  const lines: string[] = [];
+  const motion: boolean[] = [];
+  let boardLoaded = false;
+  const feature: GameFeature = {
+    id: 'sample.tally',
+    mount(ctx) {
+      let total = 0;
+      void ctx.api.call('quests').then(() => {
+        boardLoaded = true;
+      });
+      const off = ctx.events.on('value:credited', ({ amount }) => {
+        total += amount;
+        motion.push(ctx.reducedMotion());
+        lines.push(ctx.i18n.t('sample:banked', { amount: total }));
+        ctx.audio()?.comboStep(lines.length);
+        ctx.haptics()?.pulse('tick');
+      });
+      return { dispose: off };
+    },
+  };
+  return { feature, lines, motion, boardLoaded: () => boardLoaded };
+}
+
+function recorder(log: string[], id: string, failOn?: 'mount' | 'dispose'): GameFeature {
+  return {
+    id,
+    mount() {
+      if (failOn === 'mount') throw new Error(`${id} mount broke`);
+      log.push(`mount ${id}`);
+      return {
+        dispose() {
+          if (failOn === 'dispose') throw new Error(`${id} dispose broke`);
+          log.push(`dispose ${id}`);
+        },
+      };
+    },
+  };
+}
+
+describe('mountGameFeatures', () => {
+  it('gives a feature the bus, API, i18n and accessors, and silences it on dispose', async () => {
+    const devices: Devices = { audio: null, steps: [], vibrations: [] };
+    const ctx = await context(true, devices);
+    const sample = sampleTally();
+    const handle = mountGameFeatures([sample.feature], ctx);
+    ctx.events.emit('value:credited', credited(40));
+    expect(devices.steps).toEqual([]);
+    devices.audio = recordingAudio(devices.steps);
+    ctx.events.emit('value:credited', credited(2));
+    await vi.waitFor(() => {
+      expect(sample.boardLoaded()).toBe(true);
+    });
+    expect(sample.lines).toEqual(['40 en banque', '42 en banque']);
+    expect(sample.motion).toEqual([true, true]);
+    expect(devices.steps).toEqual([2]);
+    expect(devices.vibrations).toEqual([[6], [6]]);
+    handle.dispose();
+    ctx.events.emit('value:credited', credited(8));
+    expect(sample.lines).toHaveLength(2);
+    expect(devices.steps).toEqual([2]);
+    expect(devices.vibrations).toHaveLength(2);
+  });
+
+  it('mounts in order and disposes in reverse, once', async () => {
+    const log: string[] = [];
+    const handle = mountGameFeatures(
+      [recorder(log, 'a'), recorder(log, 'b'), recorder(log, 'c')],
+      await context(),
+    );
+    handle.dispose();
+    handle.dispose();
+    expect(log).toEqual(['mount a', 'mount b', 'mount c', 'dispose c', 'dispose b', 'dispose a']);
+  });
+
+  it('reports a feature whose mount throws and keeps the others running', async () => {
+    const log: string[] = [];
+    const report = vi.fn<GameFeatureErrorReport>();
+    const handle = mountGameFeatures(
+      [recorder(log, 'a'), recorder(log, 'broken', 'mount'), recorder(log, 'c')],
+      await context(),
+      report,
+    );
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report.mock.calls[0]?.[0]).toMatch(/"broken" failed to mount/);
+    expect(report.mock.calls[0]?.[1]).toEqual(new Error('broken mount broke'));
+    handle.dispose();
+    expect(log).toEqual(['mount a', 'mount c', 'dispose c', 'dispose a']);
+  });
+
+  it('reports a feature whose dispose throws and still tears the rest down', async () => {
+    const log: string[] = [];
+    const report = vi.fn<GameFeatureErrorReport>();
+    const handle = mountGameFeatures(
+      [recorder(log, 'a'), recorder(log, 'sticky', 'dispose'), recorder(log, 'c')],
+      await context(),
+      report,
+    );
+    handle.dispose();
+    expect(log).toEqual(['mount a', 'mount sticky', 'mount c', 'dispose c', 'dispose a']);
+    expect(report).toHaveBeenCalledWith(
+      expect.stringMatching(/"sticky" failed to dispose/),
+      new Error('sticky dispose broke'),
+    );
+  });
+
+  it('reports to console.error by default', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      mountGameFeatures([recorder([], 'broken', 'mount')], await context());
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/"broken" failed to mount; the game continues without it/),
+        expect.any(Error),
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('refuses two features with one id before mounting either', async () => {
+    const log: string[] = [];
+    const ctx = await context();
+    expect(() => mountGameFeatures([recorder(log, 'twin'), recorder(log, 'twin')], ctx)).toThrow(
+      /"twin" is registered twice/,
+    );
+    expect(log).toEqual([]);
+  });
+
+  it('mounts nothing for an empty list', async () => {
+    const ctx = await context();
+    expect(() => {
+      mountGameFeatures([], ctx).dispose();
+    }).not.toThrow();
+  });
+});

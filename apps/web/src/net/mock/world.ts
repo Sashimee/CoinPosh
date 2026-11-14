@@ -114,7 +114,7 @@ import {
 } from '@coinposh/sim/snapshot';
 import { randomBase62 } from '../encoding.ts';
 import { newSeed, nextRoll, reveal, type FairSeedState } from './fair.ts';
-import type { PersistedPlayer, PersistedWorld } from './persist.ts';
+import { FeatureIdSchema, type PersistedPlayer, type PersistedWorld } from './persist.ts';
 import { MOCK_RULES } from './rules.ts';
 import {
   CHUTE_POSE,
@@ -152,6 +152,27 @@ export class RestoreError extends Error {
     this.name = 'RestoreError';
   }
 }
+
+/** The rule behind an `over_envelope` claim refusal. */
+export type EnvelopeCheck =
+  | 'clock_ahead'
+  | 'tick_order'
+  | 'fall_travel'
+  | 'fall_same_tick'
+  | 'fall_window'
+  | 'fusion_settle'
+  | 'fusion_window';
+
+export interface EnvelopeRefusal {
+  readonly kind: Claim['kind'];
+  readonly tick: number;
+  readonly check: EnvelopeCheck;
+  /** The numbers the check compared, for a person reading a failed run. */
+  readonly detail: string;
+}
+
+/** Refusals kept per player, newest last; a run that needs more is already broken. */
+const ENVELOPE_REFUSALS_RETAINED = 200;
 
 export interface LedgerEntry {
   readonly seq: number;
@@ -274,6 +295,9 @@ export interface MockPlayer {
 const DROP_TIER = coinTiers[0];
 /** Ledger reasons that move wallet coins through play, matching the server's play kinds. */
 const PLAY_REASONS: ReadonlySet<string> = new Set(['drop.debit', 'drop.prepay', 'claim.fall']);
+/** Feature reward kinds {@link MockWorld.grant} may write, matching the server's TxKinds. */
+const GRANT_REASONS = new Set(['quest.claim', 'streak.milestone', 'season.tier'] as const);
+export type GrantReason = typeof GRANT_REASONS extends Set<infer R> ? R : never;
 const MS_PER_TICK = 1000 / MOCK_RULES.ticksPerSecond;
 
 function ticksFor(ms: number): number {
@@ -502,6 +526,57 @@ function envelopeMax(
   return Math.ceil(base * scale - 1e-9);
 }
 
+/**
+ * Why `value` would not come back from `JSON.stringify` then `JSON.parse` as it went in, or null
+ * when it would. A feature's state must survive a reload exactly, so anything JSON drops or
+ * rewrites (undefined, a Date, NaN, a class instance) is refused instead of quietly changing.
+ */
+function jsonLoss(value: unknown, path: string, open: Set<object>): string | null {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && !Object.is(value, -0) ? null : `${path} is ${String(value)}`;
+  }
+  if (typeof value === 'function') return `${path} is a function`;
+  if (typeof value !== 'object') return `${path} is ${typeof value}`;
+  if (open.has(value)) return `${path} refers back to itself`;
+  const proto: unknown = Object.getPrototypeOf(value);
+  const isArray = Array.isArray(value);
+  if (isArray ? proto !== Array.prototype : proto !== Object.prototype && proto !== null) {
+    const name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+    return `${path} is a ${typeof name === 'string' && name !== '' ? name : 'class instance'}, not plain data`;
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) return `${path} has symbol keys`;
+  open.add(value);
+  try {
+    if (isArray) {
+      const items = value as unknown[];
+      for (let i = 0; i < items.length; i++) {
+        if (!(i in items)) return `${path}[${i}] is a hole`;
+        const loss = jsonLoss(items[i], `${path}[${i}]`, open);
+        if (loss !== null) return loss;
+      }
+      return null;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      if (key === '__proto__') return `${path} has a __proto__ key`;
+      const loss = jsonLoss(item, `${path}.${key}`, open);
+      if (loss !== null) return loss;
+    }
+    return null;
+  } finally {
+    open.delete(value);
+  }
+}
+
+/** Why `featureId` cannot store `value`, or null when it can. */
+function featureStateIssue(featureId: string, value: unknown): string | null {
+  if (!FeatureIdSchema.safeParse(featureId).success) {
+    return `"${featureId}" is not a feature id; use lowercase letters, digits, ".", "_" or "-", starting with a letter`;
+  }
+  const loss = jsonLoss(value, featureId, new Set());
+  return loss === null ? null : `${featureId} state cannot be stored because ${loss}`;
+}
+
 function emptyWallet(): Wallet {
   return { coins: 0, bullion: 0, goldBars: 0, pearls: 0, keys: 0, tickets: 0, stars: 0 };
 }
@@ -515,6 +590,8 @@ export class MockWorld {
   readonly #byDevice = new Map<string, PlayerId>();
   /** Page lives this world was restored through; 0 for a world that started in this page. */
   #epoch = 0;
+  /** Each feature module's state, kept as its JSON so no caller can mutate a stored value. */
+  readonly #features = new Map<string, string>();
   /**
    * Openable crates whose claim this page life accepted. The client that holds that claim may
    * still have its open in flight, so an in-page re-boot must not lay the crate back at the lip.
@@ -523,6 +600,8 @@ export class MockWorld {
   readonly #claimedThisPage = new Set<CrateId>();
   /** Table snapshots accepted per player in this page life; never stored, like the claims above. */
   readonly #acceptedSnapshots = new Map<PlayerId, number>();
+  /** Every `over_envelope` claim refusal of this page life and the check behind it; never stored. */
+  readonly #envelopeRefusals = new Map<PlayerId, EnvelopeRefusal[]>();
 
   /**
    * A seeded Demo page replays the same `crypto` stream after every reload, so ids minted in a
@@ -541,7 +620,32 @@ export class MockWorld {
       ledger: this.#ledger.map((entry) => ({ ...entry, delta: { ...entry.delta } })),
       checkpoints: [...this.#checkpoints].map(([id, wallet]) => [id, { ...wallet }]),
       players: [...this.#players.values()].map(persistPlayer),
+      features: Object.fromEntries(
+        [...this.#features].map(([id, json]) => [id, JSON.parse(json) as unknown]),
+      ),
     };
+  }
+
+  /** A fresh copy of the state `featureId` last stored, or undefined when it stored none. */
+  featureState(featureId: string): unknown {
+    const json = this.#features.get(featureId);
+    return json === undefined ? undefined : (JSON.parse(json) as unknown);
+  }
+
+  /**
+   * Stores a feature module's state with the world, so it is saved in the same write as the
+   * ledger its rewards credit. `undefined` clears the slot; any other value must be plain JSON
+   * data, or this throws naming the feature.
+   */
+  setFeatureState(featureId: string, value: unknown): void {
+    const issue = featureStateIssue(featureId, value === undefined ? null : value);
+    if (issue !== null) {
+      throw new Error(
+        `Mock feature state: ${issue}. Store plain JSON data: objects, arrays, strings, finite numbers, booleans or null.`,
+      );
+    }
+    if (value === undefined) this.#features.delete(featureId);
+    else this.#features.set(featureId, JSON.stringify(value));
   }
 
   /**
@@ -574,6 +678,11 @@ export class MockWorld {
       }
       lastSeq = entry.seq;
       world.#ledger.push({ ...entry, delta: { ...entry.delta } });
+    }
+    for (const [featureId, value] of Object.entries(data.features)) {
+      const issue = featureStateIssue(featureId, value);
+      if (issue !== null) throw new RestoreError(`feature ${issue}`);
+      world.#features.set(featureId, JSON.stringify(value));
     }
     for (const player of world.#players.values()) {
       const replayed = world.ledgerCheckpoint(player.id);
@@ -647,6 +756,24 @@ export class MockWorld {
   /** How many table snapshots this page life accepted from the player, for the Demo test handle. */
   acceptedSnapshots(id: PlayerId): number {
     return this.#acceptedSnapshots.get(id) ?? 0;
+  }
+
+  /** The claims this page life refused as `over_envelope` for the player, oldest first. */
+  envelopeRefusals(id: PlayerId): readonly EnvelopeRefusal[] {
+    return [...(this.#envelopeRefusals.get(id) ?? [])];
+  }
+
+  #noteEnvelopeRefusal(id: PlayerId, refusal: EnvelopeRefusal): void {
+    let refusals = this.#envelopeRefusals.get(id);
+    if (refusals === undefined) {
+      refusals = [];
+      this.#envelopeRefusals.set(id, refusals);
+    }
+    refusals.push(refusal);
+    if (refusals.length > ENVELOPE_REFUSALS_RETAINED) refusals.shift();
+    console.warn(
+      `[CoinPosh Demo] ${refusal.kind} claim refused (${refusal.check}): ${refusal.detail}`,
+    );
   }
 
   player(id: PlayerId): MockPlayer | undefined {
@@ -756,6 +883,29 @@ export class MockWorld {
     const playCoins = moved.coins;
     if (playCoins !== undefined && PLAY_REASONS.has(reason)) this.#logPlay(player, now, playCoins);
     this.#append(player, now, reason, moved, ref);
+  }
+
+  /**
+   * Pays a Demo feature module's reward (a quest, a streak milestone, a season tier) through the
+   * same ledger as every other balance change. Rewards only ever add value, so a negative amount
+   * is refused rather than quietly turned into a debit.
+   */
+  grant(
+    player: MockPlayer,
+    now: number,
+    reason: GrantReason,
+    delta: Partial<Record<Currency, number>>,
+    ref: string | null = null,
+  ): void {
+    if (!GRANT_REASONS.has(reason)) {
+      throw new Error(`Mock ledger: ${reason} is not a feature reward reason.`);
+    }
+    for (const [currency, amount] of Object.entries(delta) as [Currency, number][]) {
+      if (amount < 0) {
+        throw new Error(`Mock ledger: ${reason} tried to take ${-amount} ${currency}.`);
+      }
+    }
+    this.#credit(player, now, reason, delta, ref);
   }
 
   #append(
@@ -1768,7 +1918,7 @@ export class MockWorld {
 
   /**
    * Claims are checked against server state only: the tick must map to fresh server time and
-   * move forward, the coin must have had time to reach the edge since it spawned, and falls and
+   * not fall behind the last coin claim, the coin must have had time to reach the edge since it spawned, and falls and
    * fusions stay inside a sliding window of plausible throughput (01-ARCHITECTURE.md Layer 2).
    */
   #claim(player: MockPlayer, claim: Claim, now: number): ClaimResult {
@@ -1778,11 +1928,17 @@ export class MockWorld {
       status: 'rejected',
       reason,
     });
+    const refuse = (check: EnvelopeCheck, detail: string): ClaimResult => {
+      this.#noteEnvelopeRefusal(player.id, { kind: claim.kind, tick: claim.tick, check, detail });
+      return reject('over_envelope');
+    };
     const verdict = this.#tickClock(player, claim.tick, now);
-    if (verdict === 'ahead') return reject('over_envelope');
+    if (verdict === 'ahead') {
+      return refuse('clock_ahead', `tick ${claim.tick} maps past server time plus the slack`);
+    }
     if (verdict === 'expired') return reject('expired');
     if (player.lastClaimTick !== null && claim.tick < player.lastClaimTick) {
-      return reject('over_envelope');
+      return refuse('tick_order', `tick ${claim.tick} < last claim tick ${player.lastClaimTick}`);
     }
     switch (claim.kind) {
       case 'fall': {
@@ -1797,15 +1953,20 @@ export class MockWorld {
           return reject('not_on_table');
         }
         const travel = pushTravelTicks(MIN_FALL_TICKS[record.origin], levelMap(player));
-        if (claim.tick < record.spawnTick + travel) return reject('over_envelope');
+        if (claim.tick < record.spawnTick + travel) {
+          return refuse(
+            'fall_travel',
+            `${record.origin} coin spawned at ${record.spawnTick} fell at ${claim.tick}, under ${travel} ticks`,
+          );
+        }
         const { maxPerTick } = MOCK_RULES.fallEnvelope;
         const max = envelopeMax(player, MOCK_RULES.fallEnvelope.max, rateEnvelope.falls);
         const sameTick = player.recentFalls.filter((tick) => tick === claim.tick).length;
-        if (
-          sameTick >= maxPerTick ||
-          !admitToWindow(player.recentFalls, claim.tick, FALL_WINDOW_TICKS, max)
-        ) {
-          return reject('over_envelope');
+        if (sameTick >= maxPerTick) {
+          return refuse('fall_same_tick', `${sameTick} falls already claimed at ${claim.tick}`);
+        }
+        if (!admitToWindow(player.recentFalls, claim.tick, FALL_WINDOW_TICKS, max)) {
+          return refuse('fall_window', `${max} falls already inside ${FALL_WINDOW_TICKS} ticks`);
         }
         player.recentFalls.push(claim.tick);
         player.lastClaimTick = claim.tick;
@@ -1846,16 +2007,15 @@ export class MockWorld {
         if (records.some((record) => record.coin.tier !== tier)) return reject('tier_mismatch');
         const next = nextCoinTier(tier);
         if (next === null) return reject('max_tier');
-        if (
-          unsettled ||
-          !admitToWindow(
-            player.recentFusions,
-            claim.tick,
-            FUSION_WINDOW_TICKS,
-            envelopeMax(player, MOCK_RULES.fusionEnvelope.max, rateEnvelope.fusions),
-          )
-        ) {
-          return reject('over_envelope');
+        if (unsettled) {
+          return refuse('fusion_settle', `an input spawned under ${MIN_FUSION_TICKS} ticks ago`);
+        }
+        const fusionMax = envelopeMax(player, MOCK_RULES.fusionEnvelope.max, rateEnvelope.fusions);
+        if (!admitToWindow(player.recentFusions, claim.tick, FUSION_WINDOW_TICKS, fusionMax)) {
+          return refuse(
+            'fusion_window',
+            `${fusionMax} fusions already inside ${FUSION_WINDOW_TICKS} ticks`,
+          );
         }
         player.recentFusions.push(claim.tick);
         player.lastClaimTick = claim.tick;
@@ -1875,6 +2035,8 @@ export class MockWorld {
         return { status: 'accepted', credited: 0, cascade: null, minted };
       }
       case 'crate': {
+        // The client claims a crate at its newest sim tick but settles coin falls at the trailing
+        // render tick, so a crate claim must not push the tick floor past falls still in flight.
         const record = player.crates.get(claim.crateId);
         if (record === undefined) {
           return reject(
@@ -1888,11 +2050,9 @@ export class MockWorld {
           if (claim.tick < record.spawnTick) return reject('not_on_table');
           record.relaidIn = null;
           this.#claimedThisPage.add(claim.crateId);
-          player.lastClaimTick = claim.tick;
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
         }
         if (claim.tick < record.spawnTick) return reject('not_on_table');
-        player.lastClaimTick = claim.tick;
         if (claim.edge === 'front') {
           record.state = 'openable';
           this.#claimedThisPage.add(claim.crateId);

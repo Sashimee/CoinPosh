@@ -15,19 +15,16 @@ import type { AppEnv } from '../http/context.ts';
 import { authenticate, respond } from '../http/signed.ts';
 
 /**
- * How many of each album item the player owns, from the append-only `crate_opens` record a
- * crate open writes in the same transaction as its ledger legs: the album card the mint put in
- * the inventory (`collectible_id`, checked against the ledger by `conservation()`) and the
- * charm the roll drew (`charm_type`), which Demo counts in the album too.
+ * How many of each album card the player owns, from the append-only `crate_opens` record a
+ * crate open writes in the same transaction as the ledger leg that mints the card into the
+ * inventory (`collectible_id`, checked against the ledger by `conservation()`). Charms are not
+ * counted: the server keeps no charm inventory yet (P-665), so a charm entry stays unowned.
  */
 function ownedCounts(sql: SqlStorage): Map<string, number> {
   const rows = sql
     .exec<{ id: string; n: number }>(
-      `SELECT id, COUNT(*) AS n FROM (
-         SELECT collectible_id AS id FROM crate_opens WHERE collectible_id IS NOT NULL
-         UNION ALL
-         SELECT charm_type AS id FROM crate_opens WHERE charm_type IS NOT NULL
-       ) GROUP BY id`,
+      `SELECT collectible_id AS id, COUNT(*) AS n FROM crate_opens
+       WHERE collectible_id IS NOT NULL GROUP BY collectible_id`,
     )
     .toArray();
   return new Map(rows.map((row) => [row.id, row.n]));
@@ -61,12 +58,22 @@ export function readAlbum(sql: SqlStorage): AlbumResponse {
   };
 }
 
-/** The permanent global coin multiplier bonus: each completed set's `globalBonus`, summed. */
-export function albumBonus(sql: SqlStorage): number {
+/** The ids of the economy sets whose every item the player owns, in config order. */
+export function completedAlbumSets(sql: SqlStorage): string[] {
   const owned = ownedCounts(sql);
+  return album
+    .filter((set) => set.items.every((item) => (owned.get(item.id) ?? 0) > 0))
+    .map((set) => set.id);
+}
+
+/**
+ * The permanent global coin multiplier bonus of `completed` sets: each one's `globalBonus` as
+ * the economy config states it now, so a retune reaches every player on their next mint. A set
+ * the config no longer lists adds nothing.
+ */
+export function albumBonusOf(completed: readonly string[]): number {
   return album.reduce(
-    (bonus, set) =>
-      set.items.every((item) => (owned.get(item.id) ?? 0) > 0) ? bonus + set.globalBonus : bonus,
+    (bonus, set) => (completed.includes(set.id) ? bonus + set.globalBonus : bonus),
     0,
   );
 }

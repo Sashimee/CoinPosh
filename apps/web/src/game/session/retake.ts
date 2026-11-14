@@ -1,4 +1,11 @@
+import type { TableHold } from './hold.ts';
+
 export interface RetakeSteps<Booted, Laid> {
+  /**
+   * Stills the table this page plays and has the server pose it, so the boot lays every coin
+   * on it; the boot waits for `posed`. It is released only when the retake fails.
+   */
+  readonly hold: () => TableHold;
   /**
    * Resolves once a fresh sim worker in this page reports ready. It runs before the table is
    * taken, so a page that cannot run a sim never takes the table from the tab still playing it.
@@ -17,17 +24,24 @@ export interface RetakeSteps<Booted, Laid> {
 /**
  * "Play here" as one call: a sim must be ready before the table is taken, and this page adopts
  * the new session only once the table is laid in a ready sim, so play resumes the moment the
- * lease is ours. Rejects with the step that failed; the caller keeps "Play here" up to retry.
+ * lease is ours. The table in play holds still meanwhile, and moves again if the retake fails.
+ * Rejects with the step that failed; the caller keeps "Play here" up to retry.
  */
 export function createRetake<Booted, Laid>(steps: RetakeSteps<Booted, Laid>): () => Promise<void> {
   return async () => {
-    await steps.simReady();
-    const booted = await steps.boot();
-    const laid = await steps.lay(booted);
+    const held = steps.hold();
     try {
-      steps.play(laid, booted);
+      await Promise.all([steps.simReady(), held.posed]);
+      const booted = await steps.boot();
+      const laid = await steps.lay(booted);
+      try {
+        steps.play(laid, booted);
+      } catch (error) {
+        steps.discard(laid);
+        throw error;
+      }
     } catch (error) {
-      steps.discard(laid);
+      held.release();
       throw error;
     }
   };

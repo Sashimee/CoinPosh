@@ -35,6 +35,7 @@ import { createBus } from '../../app/bus.ts';
 import type { ImpactEvent } from '../../audio/index.ts';
 import type { DuckOptions } from '../../audio/index.ts';
 import { createI18n, LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
+import type { FairOpenOptions } from '../../ui/fair/index.ts';
 import type { ApiClient } from '../../net/client.ts';
 import type { Connectivity, Scheduler } from '../../net/connectivity.ts';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
@@ -84,6 +85,7 @@ import {
   pityLineCopy,
   placeCrateCard,
   placeSkipHint,
+  pressFairChip,
   rewardLineCopy,
   SKIP_HINT_GAP,
   type CratesT,
@@ -1497,10 +1499,11 @@ describe('crates against the Demo Mode server', () => {
     await table.flush();
     playerId = requirePlayerId(player);
     let seconds = 0;
+    let heldTicks = 0;
     const sim = {
       stats: {
         get tick() {
-          return time.tick();
+          return time.tick() - heldTicks;
         },
         get pusherStroke() {
           return strokeAt(seconds);
@@ -1562,6 +1565,16 @@ describe('crates against the Demo Mode server', () => {
       await controller.settled();
     };
 
+    /** Frames keep coming while the sim stands still, as under an overlay or a stalled worker. */
+    const hold = (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        const tick = sim.stats.tick;
+        time.advance(100);
+        heldTicks += time.tick() - heldTicks - tick;
+        controller.update(0.1);
+      }
+    };
+
     return {
       table,
       controller,
@@ -1570,6 +1583,8 @@ describe('crates against the Demo Mode server', () => {
       opened,
       drop,
       play,
+      hold,
+      sim,
       get drops() {
         return drops;
       },
@@ -1731,6 +1746,55 @@ describe('crates against the Demo Mode server', () => {
     expectConserved();
   });
 
+  it('holds a crate while the sim is held, so its next pose is not refused as a teleport', async () => {
+    const { table: booted } = await player.client.call('state', { query: { hydrate: 'boot' } });
+    const session = booted.session;
+    if (session === undefined) throw new Error('Expected the boot to issue a table session');
+    const game = await setup();
+    while (game.controller.riding.length === 0) await game.drop();
+    const [ride] = game.controller.riding;
+    if (!ride) throw new Error('Expected a crate on the table.');
+    const mock = server.world.player(playerId);
+    if (!mock) throw new Error('Expected the mock player');
+    let seq = 0;
+    const upload = async () => {
+      const crates = game.controller.snapshot();
+      seq += 1;
+      const response = await player.client.snapshot(
+        { session, seq, tick: game.sim.stats.tick, pusher: { tickInCycle: 0 }, coins: [], crates },
+        {},
+      );
+      expect(response.stored).toBe(crates.length);
+      return crates;
+    };
+
+    for (let i = 0; i < 10; i++) {
+      time.advance(100);
+      game.controller.update(0.1);
+    }
+    expect(ride.phase).toBe('riding');
+    const riding = await upload();
+    expect(mock.tableSnapshot?.cratePoses).toEqual(riding);
+
+    const tick = game.sim.stats.tick;
+    const { seconds, position } = ride;
+    game.hold(80);
+    expect(game.sim.stats.tick).toBe(tick);
+    expect(ride.seconds).toBe(seconds);
+    expect(ride.position).toEqual(position);
+
+    for (let i = 0; i < 3; i++) {
+      time.advance(100);
+      game.controller.update(0.1);
+    }
+    expect(ride.seconds).toBeCloseTo(seconds + (game.sim.stats.tick - tick) / 60, 9);
+    const resumed = await upload();
+    expect(resumed[0]?.[3]).toBeGreaterThan(Math.round(seconds * 1000));
+    expect(mock.tableSnapshot?.cratePoses).toEqual(resumed);
+    expect(mock.snapshotFlags['snapshot.teleport']).toBe(0);
+    expectConserved();
+  });
+
   it('stops listening once disposed', async () => {
     const game = await setup();
     game.controller.dispose();
@@ -1800,16 +1864,15 @@ describe('overlapping crate opens', () => {
     events.on('crate:album', ({ crateId, progress }) =>
       albums.push({ crateId, owned: progress.teakDeckCoin?.owned }),
     );
-    const controller = new CrateController({
-      table,
-      client,
-      sim: { stats: { tick: 0, pusherStroke: 0 } },
-      events,
-    });
+    const sim = { stats: { tick: 0, pusherStroke: 0 } };
+    const controller = new CrateController({ table, client, sim, events });
     const a = 'crate_AAAAAAAAAAAAAAAA' as CrateId;
     const b = 'crate_BBBBBBBBBBBBBBBB' as CrateId;
     controller.adopt([crate(a), crate(b)]);
-    for (let t = 0; t < CRATE_RIDE_SECONDS.max + 1; t += 1 / 30) controller.update(1 / 30);
+    for (let t = 0; t < CRATE_RIDE_SECONDS.max + 1; t += 1 / 30) {
+      sim.stats.tick += 2;
+      controller.update(1 / 30);
+    }
     expect(controller.riding).toHaveLength(0);
     for (const crateId of [a, b]) {
       const settled = {
@@ -1895,7 +1958,7 @@ describe('adopting the table the server laid', () => {
       const event = { type: 'dropSettled', spawnedCrates: ids.map(crate) } as unknown as TableEvent;
       for (const listener of listeners) listener(event);
     };
-    return { controller, events, log, claims, step, at, drop, now: () => seconds };
+    return { controller, sim, events, log, claims, step, at, drop, now: () => seconds };
   }
 
   /** The tuples as they come back from the server: through JSON, as `layout.crates` poses. */
@@ -2012,6 +2075,28 @@ describe('adopting the table the server laid', () => {
     expect(controller.snapshot()).toEqual([]);
   });
 
+  it('rides on sim ticks only: frames with no tick hold it and a tick that steps back moves nothing', () => {
+    const { controller, sim, step, drop } = session();
+    for (let i = 0; i < 30; i++) step();
+    drop(A);
+    for (let i = 0; i < 30; i++) step();
+    const [ride] = controller.riding;
+    if (!ride) throw new Error('crate A did not spawn');
+    expect(ride.seconds).toBeCloseTo(30 / 60, 9);
+    const { position } = ride;
+
+    for (let i = 0; i < 300; i++) controller.update(0.1);
+    expect(ride.seconds).toBeCloseTo(30 / 60, 9);
+    expect(ride.position).toEqual(position);
+
+    sim.stats.tick = 5;
+    controller.update(STEP);
+    expect(ride.seconds).toBeCloseTo(30 / 60, 9);
+    sim.stats.tick += 6;
+    controller.update(STEP);
+    expect(ride.seconds).toBeCloseTo(36 / 60, 9);
+  });
+
   it('adopts a crate it already rides only once', () => {
     const { upload } = rideThenUpload(60);
     const { controller, log } = session();
@@ -2048,5 +2133,34 @@ describe('adopting the table the server laid', () => {
       controller.adopt([crate(A)], [{ kind: 'pose', pose: [B, 0, 0, 0, 'riding'] }]);
     }).toThrow(/names crate crate_B/);
     expect(controller.riding).toHaveLength(0);
+  });
+});
+
+describe('pressFairChip', () => {
+  const proof = { serverSeedHash: 'c'.repeat(64), clientSeed: 'velvet', nonce: 7 };
+  const chip = {} as HTMLElement;
+
+  it('opens the shared fairness panel on the verify tab with the roll proof when wired', () => {
+    const calls: [HTMLElement, FairOpenOptions][] = [];
+    let sheets = 0;
+    pressFairChip(
+      chip,
+      { proof },
+      (trigger, options) => calls.push([trigger, options]),
+      () => {
+        sheets += 1;
+      },
+    );
+    expect(calls).toEqual([[chip, { tab: 'verify', source: 'vaultCrate', proof }]]);
+    expect(calls[0]?.[0]).toBe(chip);
+    expect(sheets).toBe(0);
+  });
+
+  it('keeps the card seal sheet when no openFair hook is given', () => {
+    let sheets = 0;
+    pressFairChip(chip, { proof }, undefined, () => {
+      sheets += 1;
+    });
+    expect(sheets).toBe(1);
   });
 });

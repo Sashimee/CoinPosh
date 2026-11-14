@@ -68,3 +68,4 @@ export * from './offlineRate.ts';
 export * from './quests.ts';
 export * from './safes.ts';
 export * from './season.ts';
+export * from './soiree.ts';
