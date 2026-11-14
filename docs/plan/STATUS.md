@@ -363,6 +363,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-626 | blocked(review: e2e not green; demo-reload still refunds unposed coins 1 of 4, table-persistence re-boot cases race the resumed sim) | task/P-626 (3602038, not merged) | Waits on the upload-after-settle/pagehide snapshot fix (P-654), reboot pause (P-656), crate ride on sim time (P-655), fused body cleanup (P-657); fix the seq-0 read and play-on ledger check in table-persistence.spec.ts on retry; first-tap profile P-658; branch kept |
 | P-645 | done | task/P-645 (merge 391dd67) | Server POST /v1/crates/open with crate.open ledger kind, collectible unit for the album card and append-only crate_opens table (folds P-646, P-433, P-533; P-647 decision: card ledgered inside crate.open) (dbe4a06); pnpm check green after merge; follow-ups P-664..P-666 |
 | P-639 | done | task/P-639 (merge 01bddb2) | Honest front-edge falls are no longer refused as over_envelope by the Demo mock (world.ts), with core.test, mock server.test and apps/web/e2e/honest-falls.spec.ts cases (35616ad); folds P-657 (refused fusion claim removes the fused body from the sim); pnpm check green after merge; follow-ups P-667, P-668 |
+| P-655 | done | task/P-655 (merge 59974b0) | Crate ride advances on sim ticks, so a held sim holds its crates and their poses are no longer refused as teleports (controller.ts, ride.ts, crates.test.ts; 9031c25); pnpm check green after merge; follow-up P-669 |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
