@@ -1361,6 +1361,15 @@ function wireTableSession(wiring: SessionWiring, scope: Scope): () => SessionMod
       },
       capture,
       table: net.table,
+      page: {
+        visible: () => documentPage.visible(),
+        // A retake that lays the new table disposes this scope, and the hold with the old sim.
+        onVisibilityChange(listener) {
+          const stop = documentPage.onVisibilityChange(listener);
+          scope.add(stop);
+          return stop;
+        },
+      },
       wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     });
 }
