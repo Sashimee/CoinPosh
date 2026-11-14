@@ -336,3 +336,59 @@ test('a crate won before the reload but never opened opens once after it', async
   await page.waitForTimeout(3_000);
   expect((await probe(page)).counts.cratesOpened).toBe(1);
 });
+
+/** What the in-hand pill announces to screen readers: coins left in the prepaid drop buffer. */
+async function inHand(page: Page): Promise<number> {
+  const text = await page.locator('[data-testid=hud-in-hand] .cp-sr-only').textContent();
+  const digits = text?.replace(/\D/g, '') ?? '';
+  if (digits === '') throw new Error(`The in-hand pill announced no count: "${text ?? ''}"`);
+  return Number(digits);
+}
+
+const QUICK_TAPS = 4;
+/** The reload lands while the last drops are still in the air, well before the table settles. */
+const QUICK_RELOAD_MS = 1_000;
+
+test('a reload right after a few drops keeps the coins just dropped on the table', async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  await bootGame(page);
+  const fromSeq = (await storedWorld(page))?.nextSeq ?? 0;
+  const full = await inHand(page);
+
+  for (let i = 0; i < QUICK_TAPS; i += 1) {
+    if (i > 0) await page.waitForTimeout(TAP_EVERY_MS);
+    await tapDrop(page);
+  }
+  const tappedAt = Date.now();
+  // Each drop the server takes refills the hand, so a full hand means every tap was paid for.
+  await expect
+    .poll(() => inHand(page), { intervals: [16], timeout: QUICK_RELOAD_MS / 2 })
+    .toBeGreaterThanOrEqual(full);
+  const coins = await tableCoins(page);
+  const hand = await inHand(page);
+
+  expect(Date.now() - tappedAt, 'the reload goes out while the drops are in the air').toBeLessThan(
+    QUICK_RELOAD_MS,
+  );
+  await page.reload({ waitUntil: 'commit' });
+  await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
+    timeout: 60_000,
+    polling: 16,
+  });
+  const coinsAfter = await tableCoins(page);
+  const handAfter = await inHand(page);
+  const refunds = vaultMoves(await storedWorld(page), fromSeq).filter(
+    (entry) => entry.reason === 'refund.table',
+  );
+  testInfo.annotations.push({
+    type: 'quick reload',
+    description: `coins ${String(coins)} -> ${String(coinsAfter)}, in hand ${String(hand)} -> ${String(handAfter)}, ${String(refunds.length)} refunds`,
+  });
+  expect(coinsAfter, 'the coins just dropped are still on the table').toBeGreaterThanOrEqual(coins);
+  expect(handAfter, 'the drops just paid for did not come back to the hand').toBeLessThanOrEqual(
+    hand,
+  );
+  expect(refunds, 'no drop made since the last snapshot was taken back').toEqual([]);
+});

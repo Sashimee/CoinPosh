@@ -1,10 +1,11 @@
 import { rateEnvelopeDerivation } from '@coinposh/economy';
 import type { CoinId, CratePoseTuple, PoseTuple } from '@coinposh/shared';
-import { TICK_RATE_HZ } from '@coinposh/sim/layout';
+import { COIN, DROP_ZONE, PLAYFIELD, PUSHER, TICK_RATE_HZ } from '@coinposh/sim/layout';
 import {
   CRATE_RIDE,
   DEFAULT_PUSHER_MOTION,
   POSITION_UNIT,
+  ROTATION_UNIT,
   SIM_SNAPSHOT_VERSION,
   validateSnapshot,
   type CoinPose,
@@ -75,6 +76,41 @@ export const CHUTE_POSE: CratePose = {
   elapsedMs: 0,
   phase: 'riding',
 };
+
+const CHUTE_COLUMN_SPACING = 0.03;
+const CHUTE_HALF_SPAN = 0.15;
+const CHUTE_ROW_GAP = 0.003;
+
+/**
+ * Flat, awake poses in the drop chute for coins dropped since the last stored snapshot, in
+ * the order given: one row of columns spreading out from the centre, then the next row above
+ * it, up to the wall top. A coin past the last slot gets no pose.
+ */
+export function chutePoses(ids: readonly CoinId[]): PoseTuple[] {
+  const columns: number[] = [0];
+  for (let x = CHUTE_COLUMN_SPACING; x <= CHUTE_HALF_SPAN + 1e-9; x += CHUTE_COLUMN_SPACING) {
+    columns.push(x, -x);
+  }
+  const floor = PUSHER.height + DROP_ZONE.height;
+  const rise = 2 * COIN.halfThickness + CHUTE_ROW_GAP;
+  const rows = Math.floor((PLAYFIELD.wallHeight - floor) / rise) + 1;
+  const z = Math.round(DROP_ZONE.z / POSITION_UNIT);
+  return ids.slice(0, columns.length * rows).map((id, index) => {
+    const x = columns[index % columns.length] ?? 0;
+    const y = floor + Math.floor(index / columns.length) * rise;
+    return [
+      id,
+      Math.round(x / POSITION_UNIT),
+      Math.round(y / POSITION_UNIT),
+      z,
+      0,
+      0,
+      0,
+      ROTATION_UNIT,
+      'awake',
+    ];
+  });
+}
 
 /** What the ticks say passed, but never more than the server's clock saw, plus jitter. */
 export function elapsedSeconds(ticks: number, since: number, now: number): number {

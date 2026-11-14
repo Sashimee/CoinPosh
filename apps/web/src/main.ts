@@ -64,7 +64,7 @@ import {
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
 import type { AccountUi } from './ui/account/clock.ts';
-import { mountSafesTrigger, setInHand } from './ui/hud.ts';
+import { InHandHandover, mountSafesTrigger, setInHand } from './ui/hud.ts';
 import { settingsAccountSlot } from './ui/panels/settingsPanel.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
 import type * as VfxModule from './vfx/index.ts';
@@ -556,6 +556,7 @@ interface VaultTracker {
   /**
    * While `hold` holds crate winnings back from the Vault, a buffer refill stays in the plaque
    * rather than moving into the hand, so the held Vault never dips and its coin line adds up.
+   * Once it lets go, the plaque keeps the payout on show and then hands the refill over.
    */
   holdWith(hold: VaultHold): () => void;
 }
@@ -584,7 +585,15 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
   let refillValue = state.table.buffer.at(-1)?.value ?? 0;
   let awaitingSync = false;
   let hold: VaultHold | null = null;
-  let shownInHand = 0;
+  const hand = new InHandHandover({
+    changed: () => {
+      refresh();
+    },
+    reducedMotion: isReducedMotion,
+  });
+  teardown.push(() => {
+    hand.dispose();
+  });
   const refresh = (): void => {
     const balance = table.balance;
     if (!balance) return;
@@ -596,13 +605,20 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
       provisionalCoins: balance.provisionalCoins,
       goldBars: balance.wallet.goldBars,
     });
-    const inHand = hold?.holding() ? Math.min(readout.inHand, shownInHand) : readout.inHand;
-    shownInHand = inHand;
-    setInHand(app.store, inHand);
+    const view = hand.view(
+      readout.inHand,
+      readout.coins + readout.inHand,
+      hold?.holding() ?? false,
+    );
+    setInHand(app.store, view.coins, view);
+    const coins = readout.coins + readout.inHand - view.coins;
+    // The hand pinned behind a reveal still counts coins the wallet has spent on the buffer, so
+    // the plaque can show less than the wallet; nothing beyond what it shows is offered to spend.
     app.setWallet({
       ...balance.wallet,
       ...readout,
-      coins: readout.coins + readout.inHand - inHand,
+      coins,
+      spendableCoins: Math.min(readout.spendableCoins, coins),
     });
   };
   const forgetBuffer = (): void => {
@@ -630,6 +646,7 @@ function trackVault(app: UiApp, table: Net['table'], state: StateResponse): Vaul
       if (coin) {
         known.shift();
         refillValue = coin.value;
+        hand.spent(coin.value);
       }
       refresh();
     },

@@ -1,4 +1,5 @@
 import {
+  endpoints,
   HEADERS,
   tableSnapshotEndpoint,
   type StateResponse,
@@ -160,6 +161,10 @@ function keepalives(): WireRequest[] {
   return snapshotRequests().filter((request) => request.keepalive === true);
 }
 
+function dropRequests(): WireRequest[] {
+  return alice.requests.filter((request) => request.path === endpoints.tableDrop.path);
+}
+
 function stored() {
   return server.world.player(requirePlayerId(alice))?.tableSnapshot ?? null;
 }
@@ -271,6 +276,55 @@ describe('TableSync keepalive, with a scheduler that fires', () => {
     });
     const body = JSON.parse(keepalives()[0]?.body ?? 'null') as TableSnapshotRequest;
     expect(body.seq).toBe(2);
+  });
+
+  it('pagehide sends the drops queued since the last settled snapshot, in order, as keepalive requests', async () => {
+    const timers = new FiringScheduler();
+    const { sync, outbox, state } = await openTable(timers);
+    time.advance(1_000);
+    sync.snapshot(capture(state, time.tick()));
+    await sync.flush();
+    expect(stored()?.seq).toBe(1);
+
+    const tickets = [];
+    for (let i = 0; i < 3; i++) {
+      time.advance(150);
+      tickets.push(sync.drop(0, time.tick()));
+    }
+    const queued = outbox.ops.map((op) => op.key);
+    expect(queued).toHaveLength(3);
+    expect(dropRequests()).toEqual([]);
+    expect(timers.pending).toBe(1);
+
+    sync.pagehide();
+    await vi.waitFor(() => {
+      expect(dropRequests()).toHaveLength(3);
+    });
+    expect(dropRequests().every((request) => request.keepalive === true)).toBe(true);
+    expect(dropRequests().map((request) => request.headers[HEADERS.idempotencyKey])).toEqual(
+      queued,
+    );
+    const player = server.world.player(requirePlayerId(alice));
+    for (const ticket of tickets) {
+      const coin = ticket?.coin;
+      if (coin === null || coin === undefined) throw new Error('Expected a buffered coin.');
+      expect(player?.coins.get(coin.id)?.place).toBe('table');
+    }
+  });
+
+  it('pagehide adds no copy of a drop already on the wire', async () => {
+    const timers = new FiringScheduler();
+    const { sync, outbox } = await openTable(timers);
+    time.advance(150);
+    sync.drop(0, time.tick());
+    timers.fire();
+    await sync.flush();
+    expect(dropRequests()).toHaveLength(1);
+    expect(dropRequests()[0]?.keepalive).toBe(true);
+    sync.pagehide();
+    await sync.flush();
+    expect(dropRequests()).toHaveLength(1);
+    expect(outbox.size).toBe(0);
   });
 
   it('queues what the capture said when it was taken, not what the caller later wrote into it', async () => {

@@ -1,17 +1,31 @@
 import type { UpgradeCostRule, UpgradeLineDef } from '../types.ts';
 
+/**
+ * What a first boot holds: `spendableCoins` on the Vault plaque on top of the copper drop buffer
+ * the wallet pre-pays at signup. The plaque shows only spendable coins (P-536), so the starting
+ * coins cover both. `dropBufferCoins` is the larger boot buffer of the two hosts (server
+ * PREMINT_BUFFER_TARGET 16, Demo MOCK_RULES.bufferSize 12). Balance evidence: P-617.
+ */
+export const bootBankroll = {
+  spendableCoins: 20,
+  dropBufferCoins: 16,
+} as const;
+
 export const upgradeCostRule = {
   minGrowth: 1.12,
   maxGrowth: 1.18,
 } as const satisfies UpgradeCostRule;
 
-/** Per-venue tree (reset on Ascension) followed by The Family Office (permanent, Gold Bars). */
+/**
+ * Per-venue tree (reset on Ascension) followed by The Family Office (permanent, Gold Bars).
+ * Every coin line costs more than the starting coins, so the first upgrade is earned (P-193).
+ */
 export const upgradeLines = [
   {
     id: 'pusherSpeed',
     scope: 'venue',
     currency: 'coins',
-    baseCost: 25,
+    baseCost: 37,
     growth: 1.16,
     maxLevel: 50,
     effect: { stat: 'pusherSpeed', base: 1, perLevel: 0.06 },
@@ -20,7 +34,7 @@ export const upgradeLines = [
     id: 'dropRate',
     scope: 'venue',
     currency: 'coins',
-    baseCost: 30,
+    baseCost: 38,
     growth: 1.18,
     maxLevel: 25,
     effect: { stat: 'dropRate', base: 1, perLevel: 0.03 },
@@ -104,6 +118,10 @@ export const upgradeLines = [
     baseCost: 2,
     growth: 1.14,
     maxLevel: 20,
-    effect: { stat: 'startingCoins', base: 20, perLevel: 250 },
+    effect: {
+      stat: 'startingCoins',
+      base: bootBankroll.spendableCoins + bootBankroll.dropBufferCoins,
+      perLevel: 250,
+    },
   },
 ] as const satisfies readonly UpgradeLineDef[];

@@ -64,15 +64,18 @@ export const COIN_SHAPE: DiscShape = {
 /**
  * The space a coin's centre may be in (92-table-persistence 1.3), in POSITION_UNIT, each
  * a whole number of units: inside the inner walls, not over a side gutter; in front of
- * the backboard and not past the lip; above the floor and below the wall top. A coin
- * over a gutter or past the lip is falling, and its claim drains before the table
- * boots, so dropping its pose costs the player nothing. No disc reaches further than
- * its radius sideways, so these keep every coin out of the walls and the backboard;
- * the floor (FLOOR_BOX) bounds it more tightly from below.
+ * the backboard and no more than a radius past the lip; above the floor and below the
+ * wall top. A coin over a gutter is falling, and its claim drains before the table
+ * boots, so dropping its pose costs the player nothing. Over the lip the heap holds
+ * coins overhanging it, asleep with their centre up to 3 mm past the edge (P-624), so
+ * the bound there is the furthest a coin still touches the floor: beyond it no part of
+ * the coin is over the floor and nothing on the table can hold it up. No disc reaches
+ * further than its radius sideways, so these keep every coin out of the walls and the
+ * backboard; the floor (FLOOR_BOX) bounds it more tightly from below.
  */
 const LIMIT_X = Math.round((PLAYFIELD.fieldHalfWidth - COIN.radius) / POSITION_UNIT);
 const LIMIT_Z_MIN = Math.round((BACKBOARD.frontZ + COIN.radius) / POSITION_UNIT);
-const LIMIT_Z_MAX = Math.round(PLAYFIELD.fieldFrontZ / POSITION_UNIT);
+const LIMIT_Z_MAX = Math.round((PLAYFIELD.fieldFrontZ + COIN.radius) / POSITION_UNIT);
 const LIMIT_Y_MIN = Math.round(-COIN.halfThickness / POSITION_UNIT);
 const LIMIT_Y_MAX = Math.round(PLAYFIELD.wallHeight / POSITION_UNIT);
 const REST_STATES: readonly string[] = ['awake', 'asleep', 'frozen'];
