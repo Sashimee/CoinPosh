@@ -393,6 +393,28 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     expect(warnings).toHaveLength(1);
   });
 
+  it('is busy from any open, even one that credits nothing, until it lands or goes', () => {
+    const { ledger: book } = ledger(100);
+    book.coins.observe(0);
+    expect(book.busy).toBe(false);
+    book.hold('keys-only', { keys: 2 });
+    expect(book.busy, 'a reveal is open even with no coins to hold').toBe(true);
+    book.release('keys-only');
+    expect(book.busy).toBe(false);
+    book.hold('a', { coins: 4 });
+    book.collect('a', { wallet: wallet({ coins: 4 }), lines: [line('coins', 4)] });
+    expect(book.busy, 'the coin line is still in flight').toBe(true);
+    book.finish('a');
+    expect(book.busy).toBe(false);
+    book.hold('b', { coins: 3 });
+    book.arm('b');
+    vi.advanceTimersByTime(100);
+    expect(book.busy, 'the cap let an uncollected card go').toBe(false);
+    book.hold('c', {});
+    book.releaseAll();
+    expect(book.busy).toBe(false);
+  });
+
   it('releaseAll empties every hold and timer, as on teardown', () => {
     const { ledger: book, warnings } = ledger(100);
     book.coins.observe(0);
