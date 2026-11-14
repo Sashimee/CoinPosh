@@ -361,6 +361,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-507 | todo | | Re-run after P-616 merges |
 | P-627 | blocked(review: P-628 playable <= venue + 300 ms not met, budget floored at 1,800 ms; warm frame after playable stalls the first tap) | task/P-627 (11a7c6c, not merged) | Split the vfx warmup across idle frames and budget longestFrameAfterTapMs; venue shader linking off the critical path (P-652); perf summary row (P-653); BOOT_TO_FIRST_DROP_MS must not be loosened; branch kept |
 | P-626 | blocked(review: e2e not green; demo-reload still refunds unposed coins 1 of 4, table-persistence re-boot cases race the resumed sim) | task/P-626 (3602038, not merged) | Waits on the upload-after-settle/pagehide snapshot fix (P-654), reboot pause (P-656), crate ride on sim time (P-655), fused body cleanup (P-657); fix the seq-0 read and play-on ledger check in table-persistence.spec.ts on retry; first-tap profile P-658; branch kept |
+| P-645 | done | task/P-645 (merge 391dd67) | Server POST /v1/crates/open with crate.open ledger kind, collectible unit for the album card and append-only crate_opens table (folds P-646, P-433, P-533; P-647 decision: card ledgered inside crate.open) (dbe4a06); pnpm check green after merge; follow-ups P-664..P-666 |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
