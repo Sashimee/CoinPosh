@@ -43,7 +43,10 @@ export function isLastIdentity(account: Account | null, provider: IdentityProvid
 }
 
 export type AccountProblem =
-  | { readonly kind: 'cancelled' | 'inUse' | 'invalidToken' | 'unavailable' | 'offline' | 'failed' }
+  | {
+      readonly kind:
+        'cancelled' | 'inUse' | 'notLinked' | 'invalidToken' | 'unavailable' | 'offline' | 'failed';
+    }
   | { readonly kind: 'swapFailed'; readonly retry: () => Promise<SessionSwap> };
 
 interface NamedError {
@@ -73,6 +76,7 @@ export function accountProblem(error: unknown): AccountProblem {
         : { kind: 'failed' };
     case 'AccountRequestError':
       if (code === 'identity_in_use') return { kind: 'inUse' };
+      if (code === 'not_found') return { kind: 'notLinked' };
       if (code === 'invalid_id_token') return { kind: 'invalidToken' };
       if (code === 'provider_unavailable') return { kind: 'unavailable' };
       return { kind: 'failed' };
@@ -85,9 +89,18 @@ export function problemKey(problem: AccountProblem): AccountKey {
   return `status.${problem.kind}`;
 }
 
-/** A cancel or an unavailable provider is not the player's fault: the line stays calm. */
+const CALM_PROBLEMS: ReadonlySet<AccountProblem['kind']> = new Set([
+  'cancelled',
+  'unavailable',
+  'notLinked',
+]);
+
+/**
+ * A cancel, an unavailable provider or a sign-in with no save linked yet is not the player's
+ * fault: the line stays calm.
+ */
 export function problemTone(problem: AccountProblem): 'calm' | 'warn' {
-  return problem.kind === 'cancelled' || problem.kind === 'unavailable' ? 'calm' : 'warn';
+  return CALM_PROBLEMS.has(problem.kind) ? 'calm' : 'warn';
 }
 
 export const PROMPT_STORAGE_KEY = 'coinposh.account.prompt.v1';

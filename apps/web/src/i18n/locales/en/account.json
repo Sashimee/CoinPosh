@@ -49,6 +49,7 @@
     "unlinked": "{{provider}} unlinked.",
     "cancelled": "Nothing changed.",
     "inUse": "That {{provider}} account already keeps another save.",
+    "notLinked": "{{provider}} doesn’t keep a CoinPosh save yet. Link it here to keep this one.",
     "invalidToken": "{{provider}} could not confirm it was you. Please try again.",
     "unavailable": "{{provider}} sign-in is not available right now. Your save is safe on this device.",
     "offline": "You seem to be offline. Your save is safe; try again once you are connected.",

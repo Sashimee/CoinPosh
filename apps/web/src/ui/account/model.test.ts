@@ -102,6 +102,14 @@ describe('accountProblem', () => {
     );
   });
 
+  it('tells a sign-in with no linked save apart from a failure, calmly', () => {
+    const problem = accountProblem(named('AccountRequestError', { code: 'not_found' }));
+    expect(problem.kind).toBe('notLinked');
+    expect(problemTone(problem)).toBe('calm');
+    expect(problemKey(problem)).toBe('status.notLinked');
+    expect(accountProblem(named('NetworkError', { code: 'not_found' })).kind).toBe('offline');
+  });
+
   it('keeps cancels and missing SDKs calm', () => {
     for (const error of [
       named('SignInCancelledError'),

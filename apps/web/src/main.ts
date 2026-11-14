@@ -62,7 +62,7 @@ import {
 } from './ui/components/balancePlaque.ts';
 import { holdForCrateCinematics } from './ui/components/cinematicHold.ts';
 import { isReducedMotion, onReducedMotionChange } from './ui/motion/reduced.ts';
-import type { AccountUi } from './ui/account/index.ts';
+import type { AccountUi } from './ui/account/clock.ts';
 import { mountSafesTrigger } from './ui/hud.ts';
 import { settingsAccountSlot } from './ui/panels/settingsPanel.ts';
 import { hexToRgbChannels } from './ui/theme.ts';
@@ -248,6 +248,8 @@ let safesSheet: SafesSheet | null = null;
 let accountUi: AccountUi | null = null;
 /** Re-lays the table on the save a sign-in moved onto; null until the scene plays. */
 let relayAccountSwap: ((state: StateResponse) => void) | null = null;
+/** The latest save a sign-in moved onto before the scene played; the scene lays it once it can. */
+let pendingAccountSwap: StateResponse | null = null;
 
 const teardown: (() => void)[] = [];
 const runTeardown = (): void => {
@@ -957,6 +959,9 @@ async function bootScene(
     relayAccountSwap = null;
     swapRelay?.dispose();
   });
+  const swappedEarly = pendingAccountSwap;
+  pendingAccountSwap = null;
+  if (swappedEarly) relayAccountSwap(swappedEarly);
   mountAscensionDoor(stage, boot, relay);
 }
 
@@ -1161,7 +1166,7 @@ async function warmSim(simModule: typeof SimWorkerModule): Promise<void> {
 
 /** Optional Google and Apple sign-in in Settings, and the once-per-device nudge toward it. */
 async function mountAccount(boot: NetBoot): Promise<void> {
-  const { mountAccountUi } = await import('./ui/account/index.ts');
+  const { mountAccountUi } = await import('./ui/account/clock.ts');
   let subscribed: Promise<AccountClient> | null = null;
   const client = (): Promise<AccountClient> =>
     (subscribed ??= boot.net
@@ -1173,6 +1178,7 @@ async function mountAccount(boot: NetBoot): Promise<void> {
               relayAccountSwap(state);
               return;
             }
+            pendingAccountSwap = state;
             ui.setUpgradeLevels(state.venue.upgrades);
             boot.vault.adopted(state);
             safesSheet?.adopt(state);

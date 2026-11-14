@@ -61,6 +61,7 @@ describe('account strings', () => {
     const problems: AccountProblem['kind'][] = [
       'cancelled',
       'inUse',
+      'notLinked',
       'invalidToken',
       'unavailable',
       'offline',

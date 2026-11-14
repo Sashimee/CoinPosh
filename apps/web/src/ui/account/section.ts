@@ -13,7 +13,7 @@ import { feedback, type UiContext } from '../context.ts';
 import { h, restartAnimation } from '../dom.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
 import { brandMark, sealMark } from './brand.ts';
-import type { ChoiceSheet } from './choice.ts';
+import type { ChoiceResult, ChoiceSheet } from './choice.ts';
 import type { AccountKey, AccountT } from './i18n.ts';
 import {
   accountProblem,
@@ -30,7 +30,8 @@ export interface AccountSectionOptions {
   readonly ctx: UiContext;
   readonly t: AccountT;
   readonly client: () => Promise<AccountClient>;
-  readonly choice: ChoiceSheet;
+  /** Where the progress-choice sheet mounts; its code loads only when a sign-in needs it. */
+  readonly sheetHost: HTMLElement;
   /** Every account the server reported, after a load, a link, an unlink or a sign-in. */
   readonly onAccount: (account: Account) => void;
 }
@@ -108,6 +109,7 @@ export function createAccountSection(options: AccountSectionOptions): AccountSec
   let unlinking: IdentityProvider | null = null;
   let status: Status | null = null;
   let choosing = false;
+  let choiceSheet: Promise<ChoiceSheet> | null = null;
 
   const renderDisposers: (() => void)[] = [];
   const renderCtx: UiContext = { ...ctx, own: (dispose) => renderDisposers.push(dispose) };
@@ -263,7 +265,11 @@ export function createAccountSection(options: AccountSectionOptions): AccountSec
               'span',
               { class: 'cp-account-linked-text' },
               h('span', { class: 'cp-account-linked-name', text: name }),
-              h('span', { class: 'cp-field-hint', text: identity.emailHint ?? since }),
+              h('span', {
+                class: 'cp-field-hint',
+                text: identity.emailHint ?? since,
+                attrs: { title: identity.emailHint ?? since },
+              }),
             ),
           );
           if (confirming === identity.provider) {
@@ -464,9 +470,16 @@ export function createAccountSection(options: AccountSectionOptions): AccountSec
     }
     choosing = true;
     render();
-    const result = await options.choice.choose(outcome, provider, el).finally(() => {
+    let result: ChoiceResult;
+    try {
+      const sheet = await loadChoice().catch((error: unknown) => {
+        outcome.keepGuest();
+        throw error;
+      });
+      result = await sheet.choose(outcome, provider, el);
+    } finally {
       choosing = false;
-    });
+    }
     mode = 'link';
     if (result.kind === 'account') {
       adopt(result.swap.account);
@@ -500,9 +513,26 @@ export function createAccountSection(options: AccountSectionOptions): AccountSec
     }
   }
 
-  async function finishSwap(retry: () => Promise<SessionSwap>): Promise<void> {
+  function loadChoice(): Promise<ChoiceSheet> {
+    choiceSheet ??= import('./choice.ts')
+      .then(({ createChoiceSheet }) => {
+        const sheet = createChoiceSheet(ctx, t);
+        options.sheetHost.append(sheet.el);
+        return sheet;
+      })
+      .catch((error: unknown) => {
+        choiceSheet = null;
+        throw error;
+      });
+    return choiceSheet;
+  }
+
+  async function finishSwap(
+    retry: () => Promise<SessionSwap>,
+    provider: IdentityProvider,
+  ): Promise<void> {
     status = null;
-    pending = { provider: 'google', phase: 'busy', abort: new AbortController(), flow: null };
+    pending = { provider, phase: 'busy', abort: new AbortController(), flow: null };
     render();
     try {
       const swap = await retry();
@@ -511,7 +541,7 @@ export function createAccountSection(options: AccountSectionOptions): AccountSec
       swapped(swap);
     } catch (error) {
       pending = null;
-      fail(error, 'google', 'signin');
+      fail(error, provider, 'signin');
     }
   }
 
@@ -535,7 +565,7 @@ export function createAccountSection(options: AccountSectionOptions): AccountSec
       action = {
         key: 'finish',
         run: () => {
-          void finishSwap(problem.retry);
+          void finishSwap(problem.retry, provider);
         },
       };
     }

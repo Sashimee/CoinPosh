@@ -49,6 +49,7 @@
     "unlinked": "{{provider}} délié.",
     "cancelled": "Rien n’a changé.",
     "inUse": "Ce compte {{provider}} garde déjà une autre partie.",
+    "notLinked": "{{provider}} ne garde encore aucune partie CoinPosh. Liez-le ici pour garder celle-ci.",
     "invalidToken": "{{provider}} n’a pas pu confirmer que c’était vous. Veuillez réessayer.",
     "unavailable": "La connexion avec {{provider}} n’est pas disponible pour l’instant. Votre partie reste en sûreté sur cet appareil.",
     "offline": "Vous semblez hors ligne. Votre partie est en sûreté ; réessayez une fois connecté.",

@@ -264,7 +264,10 @@
 
 .cp-account-linked-text .cp-field-hint {
   margin: 0;
-  overflow-wrap: anywhere;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cp-account-linked-name {
