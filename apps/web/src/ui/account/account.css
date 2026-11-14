@@ -3,6 +3,28 @@
   pointer-events: none;
 }
 
+/* The progress choice opens over the Settings sheet, not the table: a translucent panel or the
+   shared navy scrim would let the settings rows read through it, so it is opaque and the
+   settings beneath sink into a deeper dark. */
+.cp-account-root .cp-backdrop {
+  background:
+    radial-gradient(120% 80% at 50% 100%, rgb(var(--cp-navy-lacquer-rgb) / 0.55), transparent 70%),
+    rgb(0 0 0 / 0.62);
+}
+
+.cp-account-root .cp-sheet {
+  background:
+    linear-gradient(170deg, rgb(var(--cp-ivory-rgb) / 0.08), transparent 30%), var(--cp-lacquer);
+  box-shadow:
+    0 -18px 48px rgb(0 0 0 / 0.5),
+    var(--cp-glow-inner);
+}
+
+.cp-ui-host[data-quality='high'] .cp-account-root .cp-sheet-layer.is-open .cp-sheet {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .cp-account {
   position: relative;
   border-radius: var(--cp-radius-md);

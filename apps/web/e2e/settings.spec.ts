@@ -37,6 +37,10 @@ test.describe('settings (P-54)', () => {
 
     await expect(page.locator('html')).toHaveAttribute('lang', 'fr');
     await expect(page.getByTestId('dock-settings')).toHaveAttribute('aria-label', 'Réglages');
+    await expect(
+      sheet.getByTestId('account-section'),
+      'the French account strings load into the open section',
+    ).toContainText('Garder ma progression');
     await expect
       .poll(() => savedSettings(page), { message: 'the debounced save lands' })
       .toMatchObject({
@@ -233,6 +237,15 @@ function bootMarks(page: Page, step: string): Promise<number> {
  * Links fake Google on this tab's save, then reloads the tab as a second device whose guest save
  * has progress of its own, and signs in with fake Google there. Resolves on the choice sheet.
  */
+/**
+ * Every coin the save holds as the HUD shows it: the Vault plaque plus the drop buffer's separate
+ * in-hand readout (P-536), which is what a save summary counts.
+ */
+async function heldCoins(page: Page): Promise<number> {
+  const inHand = await page.locator('[data-testid=hud-in-hand] .cp-sr-only').textContent();
+  return (await vaultBalance(page)) + Number((inHand ?? '').replace(/\D/g, ''));
+}
+
 async function signInFromSecondDevice(page: Page): Promise<Locator> {
   await bootGame(page, { query: '?quality=low' });
   let sheet = await openSettings(page);
@@ -296,7 +309,7 @@ test.describe('account progress choice (T-10.04, folds P-487)', () => {
     await expect(guestCard).toContainText('Riviera');
     await expect(accountCard).toContainText(ACCOUNT_VENUE.name);
     await expect(accountCard).toContainText('With your Google account');
-    const guestCoins = await vaultBalance(page);
+    const guestCoins = await heldCoins(page);
     const accountCoins = guestCoins + ACCOUNT_EXTRA.coins;
     await expect(guestCard).toHaveAttribute(
       'aria-label',
@@ -330,7 +343,7 @@ test.describe('account progress choice (T-10.04, folds P-487)', () => {
       `Your ${ACCOUNT_VENUE.name} save is on the table`,
     );
     await expect(settings.getByTestId('account-linked-google')).toBeVisible();
-    await expect.poll(() => vaultBalance(page)).toBe(accountCoins);
+    await expect.poll(() => heldCoins(page)).toBe(accountCoins);
     await reviewShot(page, 'account-swapped-390x844');
     expect(unexpectedErrors(pageErrors, testInfo)).toEqual([]);
   });
@@ -341,8 +354,14 @@ test.describe('account progress choice (T-10.04, folds P-487)', () => {
   }, testInfo) => {
     await page.setViewportSize({ width: 360, height: 640 });
     const choice = await signInFromSecondDevice(page);
-    const guestCoins = await vaultBalance(page);
+    const guestCoins = await heldCoins(page);
     await choice.getByTestId('account-choice-account').click();
+    await expect
+      .poll(() => cardMoves(choice.getByTestId('account-choice-account')), {
+        message: 'the picked card has landed',
+      })
+      .toBe(false);
+    await reviewShot(page, 'account-choice-360x640');
     await choice.locator('.cp-sheet-close').click();
 
     await expect(choice).toBeHidden();
@@ -350,7 +369,7 @@ test.describe('account progress choice (T-10.04, folds P-487)', () => {
       "You are playing this device's save",
     );
     expect(await bootMarks(page, 'account-swapped')).toBe(0);
-    expect(await vaultBalance(page)).toBe(guestCoins);
+    expect(await heldCoins(page)).toBe(guestCoins);
     expect(unexpectedErrors(pageErrors, testInfo)).toEqual([]);
   });
 

@@ -24,6 +24,10 @@ const STATIC_REEXPORT = /\bexport\s*(?:\*|\{[^}]*\})\s*from\s*["']\.\/([\w.-]+\.
  */
 const ACCOUNT_ON_TAP_BUDGET = 7.5 * 1024;
 const ACCOUNT_CHUNK = /^account-[\w-]+\.js$/;
+/** Named by vite.config.ts chunkFileName: every chunk built only from ui/account and its strings. */
+const ACCOUNT_UI_CHUNK = /^accountUi-[\w-]+\.js$/;
+/** One per non-English language; a player only ever loads the one they read. */
+const ACCOUNT_UI_STRINGS_CHUNK = /^accountUi-account-[\w-]+\.js$/;
 const SAFES_DOCK_CHUNK = /^safes-[\w-]+\.js$/;
 const SAFES_SHEET_CHUNK = /^safesSheet-[\w-]+\.js$/;
 
@@ -45,6 +49,7 @@ interface Measured {
   readonly rows: Row[];
   readonly lazyThree: boolean;
   readonly eagerAccount: readonly string[];
+  readonly eagerAccountUi: readonly string[];
   readonly eagerSafes: readonly string[];
   readonly initial: readonly string[];
 }
@@ -98,6 +103,13 @@ function sum(files: readonly string[], size: (file: string) => number): number {
   return files.reduce((total, file) => total + size(file), 0);
 }
 
+/** What one player downloads at most: every account UI chunk, and one translation of the strings. */
+function accountUiBytes(files: readonly string[], size: (file: string) => number): number {
+  const strings = files.filter((file) => ACCOUNT_UI_STRINGS_CHUNK.test(file));
+  const code = files.filter((file) => !ACCOUNT_UI_STRINGS_CHUNK.test(file));
+  return sum(code, size) + Math.max(0, ...strings.map(size));
+}
+
 function measure(): Measured {
   const js = readdirSync(ASSETS).filter((file) => file.endsWith('.js'));
   const initial = [...staticClosure(entryScripts())];
@@ -107,6 +119,8 @@ function measure(): Measured {
   if (workers.length === 0) fail('no *.worker-*.js chunk in dist/assets; update the gate');
   const account = js.filter((file) => ACCOUNT_CHUNK.test(file));
   if (account.length === 0) fail('no account-*.js chunk in dist/assets; update the gate');
+  const accountUi = js.filter((file) => ACCOUNT_UI_CHUNK.test(file));
+  if (accountUi.length === 0) fail('no accountUi-*.js chunk in dist/assets; update the gate');
   const safesDock = js.filter((file) => SAFES_DOCK_CHUNK.test(file));
   if (safesDock.length === 0) fail('no safes-*.js chunk in dist/assets; update the gate');
   const safesSheet = js.filter((file) => SAFES_SHEET_CHUNK.test(file));
@@ -139,6 +153,7 @@ function measure(): Measured {
     ...three,
     ...workers,
     ...account,
+    ...accountUi,
     ...safesDock,
     ...safesSheet,
   ]);
@@ -150,6 +165,12 @@ function measure(): Measured {
     { key: 'wasm', label: 'Rapier wasm', files: wasmFiles, bytes: wasmBytes },
     { key: 'otherLazyJs', label: 'Other lazy JS', files: otherLazy, bytes: sum(otherLazy, gz) },
     { key: 'accountOnTap', label: 'Account (on tap)', files: account, bytes: sum(account, gz) },
+    {
+      key: 'accountUi',
+      label: 'Account UI (post-boot)',
+      files: accountUi,
+      bytes: accountUiBytes(accountUi, gz),
+    },
     {
       key: 'safesDock',
       label: 'Safes dock (after boot)',
@@ -167,6 +188,7 @@ function measure(): Measured {
     rows,
     lazyThree: !three.some((file) => initial.includes(file)),
     eagerAccount: account.filter((file) => initial.includes(file)),
+    eagerAccountUi: accountUi.filter((file) => initial.includes(file)),
     eagerSafes: [...safesDock, ...safesSheet].filter((file) => initial.includes(file)),
     initial,
   };
@@ -176,7 +198,7 @@ function kb(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} kB`;
 }
 
-const { rows, lazyThree, eagerAccount, eagerSafes, initial } = measure();
+const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, initial } = measure();
 const lines = [
   '### Bundle budgets (gzip)',
   '',
@@ -209,6 +231,14 @@ lines.push(
     : `FAIL: account code is in the initial load (${eagerAccount.join(', ')}).`,
 );
 if (eagerAccount.length > 0) failures.push('account code is statically reachable from index.html');
+lines.push(
+  eagerAccountUi.length === 0
+    ? 'The account UI chunks are lazy: the prompt clock loads after boot, the section on first need.'
+    : `FAIL: account UI code is in the initial load (${eagerAccountUi.join(', ')}).`,
+);
+if (eagerAccountUi.length > 0) {
+  failures.push('account UI code is statically reachable from index.html');
+}
 lines.push(
   eagerSafes.length === 0
     ? 'The safes chunks are lazy: the dock loads after the table, the sheet on the first press.'

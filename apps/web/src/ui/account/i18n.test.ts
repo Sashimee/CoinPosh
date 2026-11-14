@@ -9,8 +9,9 @@ import {
   type ResourceTree,
 } from '../../i18n/index.ts';
 import {
-  ACCOUNT_STRINGS,
+  ACCOUNT_NAMESPACE,
   accountKey,
+  accountStrings,
   accountT,
   registerAccountStrings,
   type AccountKey,
@@ -23,11 +24,17 @@ function leaves(tree: ResourceTree, prefix = ''): [string, string][] {
   );
 }
 
-function setup(language: Language) {
+async function setup(language: Language) {
   const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
-  registerAccountStrings(i18n);
+  await registerAccountStrings(i18n, language);
   return i18n;
 }
+
+const ACCOUNT_STRINGS = Object.fromEntries(
+  await Promise.all(
+    LANGUAGES.map(async (language) => [language, await accountStrings(language)] as const),
+  ),
+) as Record<Language, ResourceTree>;
 
 const placeholders = (text: string) =>
   [...text.matchAll(/\{\{(\w+)\}\}/g)].map((match) => match[1] ?? '').sort();
@@ -56,8 +63,8 @@ describe('account strings', () => {
     }
   });
 
-  it.each(LANGUAGES)('%s resolves every key the section builds from its data', (language) => {
-    const i18n = setup(language);
+  it.each(LANGUAGES)('%s resolves every key the section builds from its data', async (language) => {
+    const i18n = await setup(language);
     const problems: AccountProblem['kind'][] = [
       'cancelled',
       'inUse',
@@ -93,33 +100,39 @@ describe('account strings', () => {
     ['en', /fake/i],
     ['fr', /factice/i],
     ['de', /fake/i],
-  ] as const)('%s labels the Demo provider as fake everywhere it appears', (language, word) => {
-    const t = accountT(setup(language));
-    for (const key of ['demo.badge', 'demo.link', 'demo.signin', 'demo.note'] as const) {
-      expect(t(key, { provider: 'Google' }), key).toMatch(word);
-    }
-  });
+  ] as const)(
+    '%s labels the Demo provider as fake everywhere it appears',
+    async (language, word) => {
+      const t = accountT(await setup(language));
+      for (const key of ['demo.badge', 'demo.link', 'demo.signin', 'demo.note'] as const) {
+        expect(t(key, { provider: 'Google' }), key).toMatch(word);
+      }
+    },
+  );
 
   it.each([
     ['en', 'On this device: Riviera. Gold bars: 3. Coins: 1,200. Played now.'],
     ['fr', 'Sur cet appareil : Riviera. Lingots : 3. Pièces : 1,200. Jouée now.'],
     ['de', 'Auf diesem Gerät: Riviera. Goldbarren: 3. Münzen: 1,200. Gespielt now.'],
-  ] as const)('%s reads a save summary out with its own punctuation', (language, expected) => {
-    const t = accountT(setup(language));
-    expect(
-      t('choice.summary', {
-        save: t('choice.device'),
-        venue: 'Riviera',
-        goldBars: '3',
-        coins: '1,200',
-        when: 'now',
-      }),
-    ).toBe(expected);
-  });
+  ] as const)(
+    '%s reads a save summary out with its own punctuation',
+    async (language, expected) => {
+      const t = accountT(await setup(language));
+      expect(
+        t('choice.summary', {
+          save: t('choice.device'),
+          venue: 'Riviera',
+          goldBars: '3',
+          coins: '1,200',
+          when: 'now',
+        }),
+      ).toBe(expected);
+    },
+  );
 
-  it.each(['fr', 'de'] as const)('%s is translated, not copied from English', (language) => {
-    const t = accountT(setup(language));
-    const english = accountT(setup('en'));
+  it.each(['fr', 'de'] as const)('%s is translated, not copied from English', async (language) => {
+    const t = accountT(await setup(language));
+    const english = accountT(await setup('en'));
     const keys = [
       'title',
       'intro.guest',
@@ -130,5 +143,17 @@ describe('account strings', () => {
       'status.cancelled',
     ] as const;
     expect(keys.filter((key) => t(key) === english(key))).toEqual([]);
+  });
+
+  it('reads English until a lazily loaded language arrives, then switches to it', async () => {
+    // i18next stores bundles into the resources object it was given, so this one is its own.
+    const i18n = createI18n({ language: 'en', resources: { en: {}, fr: {}, de: {} } });
+    await registerAccountStrings(i18n, 'en');
+    expect(i18n.instance.hasResourceBundle('fr', ACCOUNT_NAMESPACE)).toBe(false);
+    i18n.changeLanguage('fr');
+    const t = accountT(i18n);
+    expect(t('title')).toBe(leaves(ACCOUNT_STRINGS.en).find(([key]) => key === 'title')?.[1]);
+    await registerAccountStrings(i18n, 'fr');
+    expect(t('title')).toBe(leaves(ACCOUNT_STRINGS.fr).find(([key]) => key === 'title')?.[1]);
   });
 });

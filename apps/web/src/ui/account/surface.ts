@@ -28,10 +28,24 @@ export interface AccountSurface {
  * host the progress-choice sheet mounts in. It loads the first time Settings opens or the
  * prompt is due, so a player who never looks pays nothing for it.
  */
-export function mountAccountSurface(options: AccountSurfaceOptions): AccountSurface {
+export async function mountAccountSurface(options: AccountSurfaceOptions): Promise<AccountSurface> {
   const { ctx } = options;
-  registerAccountStrings(ctx.i18n);
+  await registerAccountStrings(ctx.i18n, ctx.i18n.language);
   const t = accountT(ctx.i18n);
+  ctx.own(
+    ctx.i18n.onLanguageChanged((language) => {
+      registerAccountStrings(ctx.i18n, language)
+        .then(() => {
+          ctx.loc.refresh();
+        })
+        .catch((error: unknown) => {
+          console.error(
+            `CoinPosh account: the ${language} account strings could not load; they read in English until the next language change.`,
+            error,
+          );
+        });
+    }),
+  );
 
   const prompt = createPromptCard({
     ctx,

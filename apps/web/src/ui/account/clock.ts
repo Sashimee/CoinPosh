@@ -3,6 +3,7 @@ import type { UiApp } from '../../app/index.ts';
 import type { SettingsStorage } from '../../app/settings.ts';
 import { watch } from '../../app/store.ts';
 import type { AccountClient } from '../../net/index.ts';
+import { announcementHoldFor } from '../components/announcementHold.ts';
 import type { UiContext } from '../context.ts';
 import { Localizer } from '../localize.ts';
 import {
@@ -15,7 +16,7 @@ import {
   type PromptRecord,
   type PromptTrigger,
 } from './model.ts';
-import type { AccountSurface } from './surface.ts';
+import type { AccountSurface, AccountSurfaceOptions } from './surface.ts';
 
 /** How often play time is counted toward the two-hour prompt. */
 export const PLAY_TICK_MS = 15_000;
@@ -33,6 +34,10 @@ export interface AccountUiOptions {
   readonly playing: () => boolean;
   readonly storage: SettingsStorage | null;
   readonly now?: () => number;
+  /** Whether the tab is on screen; defaults to the document's visibility. */
+  readonly visible?: () => boolean;
+  /** Builds the section and the prompt; defaults to importing them on first need. */
+  readonly mountSurface?: (options: AccountSurfaceOptions) => Promise<AccountSurface>;
 }
 
 export interface AccountUi {
@@ -48,6 +53,14 @@ export interface AccountUi {
  */
 export function mountAccountUi(options: AccountUiOptions): AccountUi {
   const now = options.now ?? (() => Date.now());
+  const visible = options.visible ?? (() => document.visibilityState === 'visible');
+  const mountSurface =
+    options.mountSurface ??
+    ((surfaceOptions: AccountSurfaceOptions) =>
+      import('./surface.ts').then(({ mountAccountSurface }) =>
+        mountAccountSurface(surfaceOptions),
+      ));
+  const cinematics = announcementHoldFor(options.ui.store);
   const disposers: (() => void)[] = [];
   const loc = new Localizer(options.ui.i18n);
   const ctx: UiContext = {
@@ -69,17 +82,20 @@ export function mountAccountUi(options: AccountUiOptions): AccountUi {
   };
 
   const surface = (): Promise<AccountSurface | null> => {
-    loading ??= import('./surface.ts')
-      .then(({ mountAccountSurface }) => {
-        if (disposed) return null;
-        mounted = mountAccountSurface({
-          ctx,
-          bannerSlot: options.ui.bannerSlot,
-          host: options.host,
-          slot: options.slot,
-          client: options.client,
-          onAccount,
-        });
+    loading ??= mountSurface({
+      ctx,
+      bannerSlot: options.ui.bannerSlot,
+      host: options.host,
+      slot: options.slot,
+      client: options.client,
+      onAccount,
+    })
+      .then((ready) => {
+        if (disposed) {
+          ready.dispose();
+          return null;
+        }
+        mounted = ready;
         return mounted;
       })
       .catch((error: unknown) => {
@@ -91,6 +107,7 @@ export function mountAccountUi(options: AccountUiOptions): AccountUi {
 
   let record = loadRecord(options.storage);
   let queued: PromptReason | null = null;
+  let showing: PromptReason | null = null;
   let checking = false;
 
   const save = (): void => {
@@ -105,7 +122,8 @@ export function mountAccountUi(options: AccountUiOptions): AccountUi {
     }
   };
 
-  const calm = (): boolean => ctx.store.getState().panel === null && !mounted?.prompt.visible;
+  const calm = (): boolean =>
+    ctx.store.getState().panel === null && !cinematics.held && !mounted?.prompt.visible;
 
   const showWhenCalm = (): void => {
     if (queued === null || !calm()) return;
@@ -116,6 +134,7 @@ export function mountAccountUi(options: AccountUiOptions): AccountUi {
         queued = null;
         record = { ...record, shown: reason };
         save();
+        showing = reason;
         ready.prompt.show(reason);
       })
       .catch((error: unknown) => {
@@ -172,12 +191,27 @@ export function mountAccountUi(options: AccountUiOptions): AccountUi {
     ),
   );
 
+  ctx.own(
+    cinematics.onChange((held) => {
+      if (!held) {
+        showWhenCalm();
+        return;
+      }
+      // A crate the player did not ask for has the screen: the card steps aside and comes back
+      // after the cinematic, instead of counting as seen.
+      if (mounted?.prompt.visible && showing !== null) {
+        queued = showing;
+        mounted.prompt.hide();
+      }
+    }),
+  );
+
   let last = now();
   const tick = setInterval(() => {
     const at = now();
     const elapsed = at - last;
     last = at;
-    if (document.visibilityState !== 'visible' || !options.playing()) return;
+    if (!visible() || !options.playing()) return;
     record = addPlay(record, elapsed);
     save();
     considerLoudly('tick');

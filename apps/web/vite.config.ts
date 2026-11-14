@@ -126,6 +126,20 @@ function pureSharedValues(): Plugin {
   };
 }
 
+const ACCOUNT_UI_MODULE =
+  /[\\/]src[\\/](?:ui[\\/]account[\\/][^\\/]+|i18n[\\/]locales[\\/]\w+[\\/]account\.json)$/;
+
+/**
+ * The account UI (the post-boot prompt clock, the Settings section, the progress choice and
+ * their strings) ships under `accountUi-*`, so the bundle gate budgets it apart from the net
+ * layer's `account-*` sign-in chunks and from the rest of the lazy JS.
+ */
+function chunkFileName(chunk: { readonly moduleIds: readonly string[] }): string {
+  const accountUi =
+    chunk.moduleIds.length > 0 && chunk.moduleIds.every((id) => ACCOUNT_UI_MODULE.test(id));
+  return accountUi ? 'assets/accountUi-[name]-[hash].js' : 'assets/[name]-[hash].js';
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', 'VITE_');
   const apiUrl = resolveApiUrl(env.VITE_API_URL);
@@ -160,6 +174,9 @@ export default defineConfig(({ mode }) => {
       // Only Safari before 17 lacks modulepreload, and there the preloaded chunks still load through
       // their imports, so the polyfill is bytes on the critical path for no change in behavior.
       modulePreload: { polyfill: false },
+      rolldownOptions: {
+        output: { chunkFileNames: chunkFileName },
+      },
     },
   };
 });
