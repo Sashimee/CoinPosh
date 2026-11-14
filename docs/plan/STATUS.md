@@ -340,7 +340,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-213 | done | task/P-213 (merge 1240142) | Boot poster re-rendered from the live table by the committed apps/web/scripts/capture-poster.ts, held until the heap is on the table, with apps/web/e2e/poster.spec.ts and hud tests (folds P-521) (4171ea1); pnpm check green after merge; follow-ups queued as P-541..P-543 |
 | T-2.01-p3 | done | task/T-2.01-p3 (merge eaac8b0) | Client safes panel, controller and dial/door cinematic; fix round keeps focus across countdown ticks (503cf23); main.ts/HUD/pity wiring queued as P-544..P-547; pnpm check green after merge |
 | P-465 | done | task/P-465 (merge 09eb259) | Demo-only window.__coinposh.demo test handle, fix round (cd4131f): live-mode null test restored; unblocks T-92.09; pnpm check green after merge |
-| P-510 | blocked(review: P-511 Vault assertion passes with the fix reverted because no coin falls between crate open and reveal; POLISH.md edited outside owns) | task/P-510 (694a607, not merged) | Fix: record counts.frontFalls at open and reveal, hard-assert at least one front fall, make the scenario deterministic, re-verify the reverted build fails on the Vault; drop the P-524 POLISH line; follow-ups queued as P-548, P-549; branch kept |
+| P-510 | done | task/P-510 (merge 5acaaeb) | Crate HUD hold kept while the director holds the unbox behind a sheet; fix round (fca3729) folds P-511, P-549 with a deterministic front-fall assertion; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
