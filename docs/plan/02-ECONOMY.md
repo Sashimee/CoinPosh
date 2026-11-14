@@ -32,6 +32,25 @@ chart) for review.
 - Ascension Gold Bars: `floor( sqrt(lifetimeBullionThisVenue / threshold) × 10 )`.
 - Pity counters: Rare guaranteed within 10 opens, Exquisite within 40, Legendary within 120.
 
+## Starting bankroll (P-617)
+
+The Vault plaque shows only spendable coins: the copper drop buffer the wallet pre-pays at
+signup is the separate "in hand" readout (P-536). So a first boot opens on
+`startingCoins − bufferSize × 1` spendable coins, and that figure must read as a bankroll, not
+as a near-empty Vault.
+
+- **Starting coins: 36** (the Trust Fund line's level-0 stat), `bootBankroll` in
+  `packages/economy/src/config/upgrades.ts`: **20 spendable** on top of the larger boot buffer
+  (server 16 coppers, Demo 12). The server boots to Vault 20 + 16 in hand, the Demo to
+  Vault 24 + 12 in hand. It was 20, which left 4 and 8.
+- **The first upgrade is still earned** (P-193): every coin line costs more than the starting
+  coins. Pusher Speed 25 → **37**, Drop Rate 30 → **38**, Coin Value 40 (unchanged). On the
+  server the coins a new player must win before the first buy stay at 17 (was 25 − 8, now
+  37 − 20); the Demo needs 13.
+- `src/config.test.ts` pins both rules. Evidence: `balance-reports/P-617-starting-bankroll.txt`.
+  Shipped sim first upgrade p90 17 s → 15 s, Ascend Venue 1 p50 3 h 17 min → 3 h 23 min, every
+  pacing target still in band, and no rate-envelope limit rises.
+
 ## Drop tables (initial; displayed in-game)
 
 | Rarity | Vault Crate | Safe (Gold) | Gacha | Scratch |
@@ -78,13 +97,14 @@ Nothing else in the economy refills an empty Vault during play, so the house doe
 
 Numbers and rule: `packages/economy/src/config/allowance.ts` (`stewardAllowance`,
 `claimStewardAllowance`). Sim evidence (`src/config/allowance.test.ts`, the economy sim's player
-on a ledge that never pays, fast-check over pour rates that empty the 20-coin Vault inside 30 s):
+on a ledge that never pays, fast-check over pour rates that empty the 36-coin starting Vault
+inside 30 s; P-617 re-run):
 
 | Pour rate | Broke at | Without allowance | With allowance |
 |---|---|---|---|
-| 0.7 drops/s | 29 s | no drop for > 90 s | drops again at 36 s (7 s wait) |
-| 0.8 drops/s (sim default) | 25 s | no drop for > 95 s | drops again at 32 s (7 s wait) |
-| 4 drops/s | 5 s | no drop for > 115 s | drops again at 12 s (7 s wait) |
+| 0.8 drops/s (sim default) | 45 s | no drop again by 150 s | drops again at 52 s (7 s wait) |
+| 1.24 drops/s (slowest pour that empties it in 30 s) | 29 s | no drop again by 150 s | drops again at 36 s (7 s wait) |
+| 4 drops/s | 9 s | no drop again by 150 s | drops again at 16 s (7 s wait) |
 
 Ceiling: `10 / 120 s` = 0.083 coins/s, under a quarter of the sim's base active net rate
 (0.43 coins/s), so going broke never pays better than playing. At 90 s the ceiling (0.111) broke
