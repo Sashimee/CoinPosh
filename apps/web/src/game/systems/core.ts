@@ -178,6 +178,14 @@ interface HeldFall {
   readonly seen: Tick;
 }
 
+/** A sim fusion the server cannot be asked for yet: an input has no coin bound to it so far. */
+interface HeldFusion {
+  readonly simIds: readonly [number, number, number];
+  /** Each input's coin, taken as soon as it is bound, since the body may leave before the rest. */
+  readonly coins: (MintedCoin | null)[];
+  readonly fusedId: number | null;
+}
+
 const NOTHING_GONE: ReadonlyMap<number, TablePoint> = new Map();
 
 /**
@@ -231,6 +239,15 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   let fallsAtLastClaimTick = 0;
   /** Sim id of the coin each fusion claim makes, keyed by the claim's first coin. */
   const fusedBodies = new Map<CoinId, number>();
+  const heldFusions: HeldFusion[] = [];
+  /** Fused bodies whose own claim has not settled, held or in flight. */
+  const unsettledFused = new Set<number>();
+  /** Unsettled fused bodies that already left the table, as a chained fusion's input does. */
+  const departedFused = new Set<number>();
+  /** Coins minted for fused bodies that had already left by the time their claim settled. */
+  const departedCoins = new Map<number, MintedCoin>();
+  /** Falls of fused bodies that left before their claim settled, claimed once it does. */
+  const parkedFalls = new Map<number, Omit<HeldFall, 'coin'>>();
   const lip: TablePoint = { x: 0, y: 0, z: options.bounds.fieldFrontZ };
 
   let aim = 0;
@@ -333,8 +350,10 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
         } else {
           const buffered = bufferedKeys.get(event.key);
           bufferedKeys.delete(event.key);
-          if (buffered !== undefined && buffered !== event.coin.id)
+          if (buffered !== undefined && buffered !== event.coin.id) {
             ledger.replace(buffered, event.coin);
+            reidentifyHeld(buffered, event.coin);
+          }
         }
         events.emit('drop:confirmed', { coin: event.coin });
         break;
@@ -350,8 +369,9 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
         if (claim.kind === 'fusion') {
           const fusedId = fusedBodies.get(claim.coinIds[0]);
           fusedBodies.delete(claim.coinIds[0]);
-          if (fusedId !== undefined && result.status === 'accepted' && result.minted !== null) {
-            ledger.bind(fusedId, result.minted);
+          if (fusedId !== undefined) {
+            settleFused(fusedId, result.status === 'accepted' ? result.minted : null);
+            claimHeldFusions();
           }
           break;
         }
@@ -382,8 +402,13 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
             claimedFalls.delete(claim.coinId);
             events.emit('fall:refused', { coinId: claim.coinId, reason: null });
           }
-          if (claim.kind === 'fusion') fusedBodies.delete(claim.coinIds[0]);
+          if (claim.kind === 'fusion') {
+            const fusedId = fusedBodies.get(claim.coinIds[0]);
+            fusedBodies.delete(claim.coinIds[0]);
+            if (fusedId !== undefined) settleFused(fusedId, null);
+          }
         }
+        claimHeldFusions();
         break;
       case 'nudgeSettled':
         applyFreeze(event.decorum, event.frozenUntil);
@@ -461,21 +486,111 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const fell = (simId: number, edge: FallEdge, position: TablePoint, seen: Tick = tick()): void => {
     settledIds.add(simId);
     simFalls.delete(simId);
+    ledger.reach(simId);
     const coin = ledger.claimable(simId);
     ledger.release(simId);
+    if (!coin && unsettledFused.has(simId)) {
+      parkedFalls.set(simId, { edge, position, seen });
+      return;
+    }
     heldFalls.push({ coin, edge, position, seen });
     flushFalls();
   };
 
-  const fuse = (fusion: FusionReport, fusedId: number | null): void => {
-    const coins = fusion.simIds.map((id) => ledger.claimable(id));
-    const sources = fusion.simIds.map((id) => watcher.lastPosition(id) ?? fusion.center);
+  const claimFusion = (
+    coins: readonly [MintedCoin, MintedCoin, MintedCoin],
+    fusedId: number | null,
+  ): void => {
     const [a, b, c] = coins;
+    table.claimFusion([a.id, b.id, c.id], fusionClaimTick());
+    if (fusedId !== null) fusedBodies.set(a.id, fusedId);
+  };
+
+  /** An input with no coin yet is waiting only while it is a fused body whose claim is in flight. */
+  const inputCoin = (simId: number): MintedCoin | 'waiting' | 'lost' => {
+    const coin = ledger.claimable(simId) ?? departedCoins.get(simId);
+    if (coin) return coin;
+    return unsettledFused.has(simId) ? 'waiting' : 'lost';
+  };
+
+  const gather = (held: HeldFusion): 'ready' | 'waiting' | 'lost' => {
+    let waiting = false;
+    for (const [slot, simId] of held.simIds.entries()) {
+      if (held.coins[slot]) continue;
+      const coin = inputCoin(simId);
+      if (coin === 'lost') return 'lost';
+      if (coin === 'waiting') {
+        waiting = true;
+        continue;
+      }
+      held.coins[slot] = coin;
+      departedCoins.delete(simId);
+    }
+    return waiting ? 'waiting' : 'ready';
+  };
+
+  /** A fusion the server can never be asked for leaves its fused body unminted too. */
+  const abandon = (held: HeldFusion): void => {
+    for (const simId of held.simIds) departedCoins.delete(simId);
+    if (held.fusedId !== null) settleFused(held.fusedId, null);
+  };
+
+  /** A fusion's own fused body is unsettled until the server answers the fusion's claim. */
+  function settleFused(fusedId: number, minted: MintedCoin | null): void {
+    unsettledFused.delete(fusedId);
+    const departed = departedFused.delete(fusedId);
+    const parked = parkedFalls.get(fusedId);
+    if (parked) {
+      parkedFalls.delete(fusedId);
+      heldFalls.push({ ...parked, coin: minted });
+      flushFalls();
+      return;
+    }
+    if (minted === null) return;
+    if (departed) departedCoins.set(fusedId, minted);
+    else ledger.bind(fusedId, minted);
+  }
+
+  /** Claims each held fusion whose inputs are all bound now, and drops those that never will be. */
+  function claimHeldFusions(): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const held of [...heldFusions]) {
+        const state = gather(held);
+        if (state === 'waiting') continue;
+        heldFusions.splice(heldFusions.indexOf(held), 1);
+        changed = true;
+        const [a, b, c] = held.coins;
+        if (state === 'ready' && a && b && c) claimFusion([a, b, c], held.fusedId);
+        else abandon(held);
+      }
+    }
+  }
+
+  function reidentifyHeld(previous: CoinId, coin: MintedCoin): void {
+    for (const held of heldFusions) {
+      held.coins.forEach((candidate, slot) => {
+        if (candidate?.id === previous) held.coins[slot] = coin;
+      });
+    }
+  }
+
+  const fuse = (fusion: FusionReport, fusedId: number | null): void => {
+    const sources = fusion.simIds.map((id) => watcher.lastPosition(id) ?? fusion.center);
+    if (fusedId !== null) unsettledFused.add(fusedId);
+    ledger.reach(Math.max(...fusion.simIds));
+    const held: HeldFusion = { simIds: fusion.simIds, coins: [null, null, null], fusedId };
+    const state = gather(held);
+    const [a, b, c] = held.coins;
     let claimed = false;
-    if (a && b && c) {
-      table.claimFusion([a.id, b.id, c.id], fusionClaimTick());
-      if (fusedId !== null) fusedBodies.set(a.id, fusedId);
+    if (state === 'ready' && a && b && c) {
+      claimFusion([a, b, c], fusedId);
       claimed = true;
+    } else if (state === 'waiting') {
+      heldFusions.push(held);
+    } else {
+      abandon(held);
     }
     events.emit('coin:fusion', { sources, center: fusion.center, tier: fusion.tier, claimed });
   };
@@ -664,6 +779,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       for (const body of vanished) {
         if (settledIds.has(body.id)) continue;
         if (fusedAway.delete(body.id) || body.edge === null) {
+          if (unsettledFused.has(body.id)) departedFused.add(body.id);
           ledger.release(body.id);
         } else {
           fell(body.id, body.edge, body.position);
