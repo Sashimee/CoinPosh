@@ -6,5 +6,6 @@ export * from './loot.ts';
 export * from './meta.ts';
 export * from './progression.ts';
 export * from './social.ts';
+export * from './soiree.ts';
 export * from './state.ts';
 export * from './table.ts';

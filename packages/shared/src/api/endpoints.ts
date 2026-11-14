@@ -51,6 +51,14 @@ import {
   LeaderboardParamsSchema,
   LeaderboardResponseSchema,
 } from './social.ts';
+import {
+  SoireeDraftRequestSchema,
+  SoireeDraftResponseSchema,
+  SoireeFinishRequestSchema,
+  SoireeFinishResponseSchema,
+  SoireeStartRequestSchema,
+  SoireeStartResponseSchema,
+} from './soiree.ts';
 import { StateResponseSchema } from './state.ts';
 import {
   ClaimsRequestSchema,
@@ -192,6 +200,20 @@ export const accountEndpoints = {
 export type AccountEndpoints = typeof accountEndpoints;
 export type AccountEndpointName = keyof AccountEndpoints;
 export const ACCOUNT_ENDPOINT_NAMES = Object.keys(accountEndpoints) as AccountEndpointName[];
+
+// TODO(lead-architect): spread into `endpoints` in the same change that adds their fixtures to
+// `test/fixtures.ts` and their Demo handlers to `apps/web/src/net/mock/world.ts` (T-3.06 p3/p4);
+// both are mapped over every EndpointName, so registering them first breaks their typecheck.
+/** Soirée Nights (T-3.06): the server seats, judges and pays the run; the client only plays it. */
+export const soireeEndpoints = {
+  soireeStart: post('/v1/soiree/start', SoireeStartRequestSchema, SoireeStartResponseSchema),
+  soireeDraft: post('/v1/soiree/draft', SoireeDraftRequestSchema, SoireeDraftResponseSchema),
+  soireeFinish: post('/v1/soiree/finish', SoireeFinishRequestSchema, SoireeFinishResponseSchema),
+} as const satisfies Record<string, Endpoint>;
+
+export type SoireeEndpoints = typeof soireeEndpoints;
+export type SoireeEndpointName = keyof SoireeEndpoints;
+export const SOIREE_ENDPOINT_NAMES = Object.keys(soireeEndpoints) as SoireeEndpointName[];
 
 export type Endpoints = typeof endpoints;
 export type EndpointName = keyof Endpoints;
