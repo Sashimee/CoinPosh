@@ -166,6 +166,7 @@ describe('demo handle: refunds() and wallet()', () => {
   it('counts one boot refund per dropped coin the boot could not lay', async () => {
     const demo = handle();
     await drop(2);
+    await upload(1, []);
     await demo.reboot();
     expect(demo.refunds()).toBe(2);
     const id = requirePlayerId(page);

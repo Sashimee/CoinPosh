@@ -118,6 +118,7 @@ import type { PersistedPlayer, PersistedWorld } from './persist.ts';
 import { MOCK_RULES } from './rules.ts';
 import {
   CHUTE_POSE,
+  chutePoses,
   CRATE_MAX_RIDE_SECONDS,
   elapsedSeconds,
   judgePoses,
@@ -1247,17 +1248,23 @@ export class MockWorld {
 
   /**
    * Starts a new table session and places every table coin and crate, as the server's
-   * bootTable: a coin from its stored pose when the sim's checks still pass it, a heap coin
-   * without one at its heap slot, any other coin refunded at most what was paid for it.
+   * bootTable: a coin from its stored pose when the sim's checks still pass it, a coin dropped
+   * since that snapshot back in the drop chute, a heap coin without either at its heap slot,
+   * any other coin refunded at most what was paid for it.
    */
   #bootTable(player: MockPlayer, now: number): { layout: TableLayout; crates: TableCrate[] } {
     const stored = player.tableSnapshot;
     const usable =
       stored !== null && stored.pusherTick < DEFAULT_PUSHER_MOTION.periodTicks ? stored : null;
     const pusherTick = usable?.pusherTick ?? 0;
+    const dropped = this.#droppedSince(player, stored);
     const session = this.#startTableSession(player, now);
     const before = this.#tableCoins(player).map((coin) => coin.id);
-    const poses = judgePoses(before, usable?.poses ?? [], pusherTick).ok;
+    const kept = judgePoses(before, usable?.poses ?? [], pusherTick).ok;
+    const unsettled = dropped.filter((id) => !kept.has(id));
+    const relaid = judgePoses(before, [...kept.values(), ...chutePoses(unsettled)], pusherTick).ok;
+    // A chute pose never displaces a settled one: if laying them would cost one, none is laid.
+    const poses = [...kept.keys()].every((id) => relaid.has(id)) ? relaid : kept;
     for (const id of before) {
       const record = this.#record(player, id);
       if (record.heapSlot !== null || poses.has(id)) continue;
@@ -1278,8 +1285,8 @@ export class MockWorld {
 
     const coins = this.#tableCoins(player);
     const crates = this.#tableCrates(player);
-    const relaid = this.#openableCrates(player);
-    for (const record of relaid) record.relaidIn = session;
+    const reopened = this.#openableCrates(player);
+    for (const record of reopened) record.relaidIn = session;
     const cratePoses = new Map(
       (usable?.cratePoses ?? [])
         .filter((tuple) => checkCratePose(toCratePose(tuple), CRATE_MAX_RIDE_SECONDS).ok)
@@ -1308,10 +1315,32 @@ export class MockWorld {
           const pose = cratePoses.get(record.crate.id);
           return pose === undefined ? { kind: 'chute' as const } : { kind: 'pose' as const, pose };
         }),
-        ...relaid.map((record) => ({ kind: 'pose' as const, pose: lipPose(record.crate.id) })),
+        ...reopened.map((record) => ({ kind: 'pose' as const, pose: lipPose(record.crate.id) })),
       ],
     };
-    return { layout, crates: [...crates, ...relaid].map((record) => record.crate) };
+    return { layout, crates: [...crates, ...reopened].map((record) => record.crate) };
+  }
+
+  /**
+   * Table coins dropped after the stored snapshot was taken, oldest first: the closing page could
+   * not tell where they came to rest, but they were paid for and are still on the table.
+   */
+  #droppedSince(player: MockPlayer, stored: StoredSnapshot | null): CoinId[] {
+    if (stored !== null && stored.session !== player.tableSession) return [];
+    // A boot poses or refunds every coin it finds, so its own snapshot at tick 0 (seq 0) leaves
+    // unposed only coins dropped after it, even one dropped on that very first tick.
+    const since = stored?.tick ?? -Infinity;
+    return [...player.coins.values()]
+      .filter(
+        (record) =>
+          record.place === 'table' &&
+          record.origin === 'drop' &&
+          record.heapSlot === null &&
+          record.spawnTick !== null &&
+          record.spawnTick >= since,
+      )
+      .sort((a, b) => (a.spawnTick ?? 0) - (b.spawnTick ?? 0))
+      .map((record) => record.coin.id);
   }
 
   /** Crates won over the lip whose open never reached the server, oldest first. */

@@ -345,23 +345,25 @@ export class TableSync {
   /**
    * The page is going away: send the queued snapshot with the request signed ahead of time,
    * since nothing can be signed or awaited now. It goes only when nothing is queued before it,
-   * so it never overtakes a drop or claim; otherwise it waits in the outbox for the next load.
-   * A drain may already have sealed it and still be signing its own upload, or be waiting to
-   * retry one that failed, so a sealed snapshot goes too unless its upload is on the wire, which
-   * is a keepalive request already. A copy that lands twice shares its key, so the server replays.
+   * so it never overtakes a drop or claim. A drain may already have sealed it and still be
+   * signing its own upload, or be waiting to retry one that failed, so a sealed snapshot goes
+   * too unless its upload is on the wire, which is a keepalive request already. A copy that
+   * lands twice shares its key, so the server replays.
+   *
+   * Anything else queued, such as the drops made since the last settled snapshot, is drained
+   * now instead of after a timer or a retry delay that will never fire: every upload is a
+   * keepalive request, so each one the closing page gets onto the wire still arrives, in order.
    */
   pagehide(): void {
     const keepalive = this.#keepalive;
-    if (
-      keepalive === null ||
-      this.#deps.outbox.head() !== keepalive.op ||
-      this.#onWire === keepalive.op
-    ) {
+    const { outbox } = this.#deps;
+    if (keepalive !== null && outbox.head() === keepalive.op && this.#onWire !== keepalive.op) {
+      this.#keepalive = null;
+      if (!keepalive.op.sent) void outbox.seal(keepalive.op);
+      this.#deps.client.sendKeepalive(keepalive.request);
       return;
     }
-    this.#keepalive = null;
-    if (!keepalive.op.sent) void this.#deps.outbox.seal(keepalive.op);
-    this.#deps.client.sendKeepalive(keepalive.request);
+    if (outbox.size > 0) void this.flush();
   }
 
   /** Sends everything queued now; resolves once the outbox is empty or the server is unreachable. */
@@ -474,7 +476,7 @@ export class TableSync {
 
   async #send(op: OutboxOp): Promise<void> {
     const { client } = this.#deps;
-    const options = { idempotencyKey: op.key, retries: 0 };
+    const options = { idempotencyKey: op.key, retries: 0, keepalive: true };
     switch (op.kind) {
       case 'drop':
         this.#applyDrop(op, await client.call('tableDrop', { body: op.body }, options));
@@ -503,7 +505,6 @@ export class TableSync {
         try {
           const result = await client.snapshot(op.body, {
             ...options,
-            keepalive: true,
             onWire: () => {
               this.#onWire = op;
             },

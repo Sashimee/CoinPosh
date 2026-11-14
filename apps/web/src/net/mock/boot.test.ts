@@ -67,6 +67,22 @@ async function dropBuffered(state: StateResponse, count: number): Promise<DropRe
   return drops;
 }
 
+/** Uploads a settled snapshot that poses none of the table coins, as one taken mid-fall would. */
+async function settleUnposed(state: StateResponse): Promise<void> {
+  time.advance(2_000);
+  await alice.client.snapshot(
+    {
+      session: session(state),
+      seq: 1,
+      tick: simTick(),
+      pusher: { tickInCycle: 0 },
+      coins: [],
+      crates: [],
+    },
+    { idempotencyKey: newIdempotencyKey() },
+  );
+}
+
 function entries(reason: string) {
   const id = requirePlayerId(alice);
   return server.ledger().filter((entry) => entry.playerId === id && entry.reason === reason);
@@ -95,6 +111,7 @@ describe('Demo Mode boot (hydrate=boot)', () => {
     const state = await boot();
     const before = wallet().coins;
     const drops = await dropBuffered(state, 5);
+    await settleUnposed(state);
     const after = await boot();
     const refunds = entries('refund.table');
     expect(refunds.map((entry) => entry.ref).sort()).toEqual(
@@ -110,6 +127,44 @@ describe('Demo Mode boot (hydrate=boot)', () => {
     expect(wallet().coins).toBe(before);
     await boot();
     expect(entries('refund.table')).toHaveLength(refunds.length);
+    expectConserved();
+  });
+
+  it('lays coins dropped since the last snapshot back in the drop chute, paid for and not refunded', async () => {
+    const state = await boot();
+    const drops = await dropBuffered(state, 4);
+    const paid = wallet();
+    const after = await boot();
+    const dropped = drops.map((drop) => drop.coin.id);
+    expect(after.table.coins.map((coin) => coin.id)).toEqual(expect.arrayContaining(dropped));
+    const placements = dropped.map(
+      (id) => after.table.layout?.coins[after.table.coins.findIndex((coin) => coin.id === id)],
+    );
+    const poses = placements.map((placement) =>
+      placement?.kind === 'pose' ? placement.pose : null,
+    );
+    expect(poses.map((pose) => pose?.[0])).toEqual(dropped);
+    expect(new Set(poses.map((pose) => pose?.slice(1, 4).join())).size).toBe(dropped.length);
+    expect(entries('refund.table')).toEqual([]);
+    expect(wallet()).toEqual(paid);
+
+    const again = await boot();
+    expect(again.table.coins.map((coin) => coin.id)).toEqual(expect.arrayContaining(dropped));
+    expect(entries('refund.table')).toEqual([]);
+    expectConserved();
+  });
+
+  it('relays a coin dropped on the first tick after the boot, its own snapshot tick', async () => {
+    const state = await boot();
+    const coin = state.table.buffer[0];
+    if (coin === undefined) throw new Error('The buffer is empty.');
+    time.advance(100);
+    await alice.client.call('tableDrop', {
+      body: { session: session(state), x: 0, tick: 0, coinId: coin.id },
+    });
+    const after = await boot();
+    expect(after.table.coins.map((onTable) => onTable.id)).toContain(coin.id);
+    expect(entries('refund.table')).toEqual([]);
     expectConserved();
   });
 
@@ -198,6 +253,7 @@ describe('Demo Mode boot (hydrate=boot)', () => {
     expect(first.flatMap((drop) => drop.spawnedCrates)).toHaveLength(1);
     const stars = entries('season.drops').length;
     for (let round = 0; round < 3; round++) {
+      await settleUnposed(state);
       state = await boot();
       const again = await dropBuffered(state, crateSpawn.ftueScriptedDrop);
       expect(again.flatMap((drop) => drop.spawnedCrates)).toEqual([]);
