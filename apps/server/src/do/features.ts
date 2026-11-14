@@ -20,6 +20,7 @@ import {
   ConservationError,
   featureTxKind,
   LedgerTx,
+  type LedgerUnit,
   readWallet,
   registerTxKinds,
   txKindOwner,
@@ -167,6 +168,35 @@ export function applyFeatureTables(
   });
 }
 
+/**
+ * The entity-side totals that the ledger's table, buffer and inventory balances must match.
+ * Each is an indexed count or sum over entity rows, so reading it never scans the ledger.
+ */
+export interface EntityFingerprint {
+  readonly bufferPaid: number;
+  readonly tableValue: number;
+  readonly tableCrates: number;
+  readonly cratesHeld: number;
+  readonly collectiblesHeld: number;
+  readonly safesHeld: number;
+  readonly scratchCardsHeld: number;
+}
+
+/** The ledger balance each fingerprint field backs. */
+const ENTITY_BACKING: readonly {
+  readonly field: keyof EntityFingerprint;
+  readonly account: Account;
+  readonly unit: LedgerUnit;
+}[] = [
+  { field: 'bufferPaid', account: 'buffer', unit: 'coins' },
+  { field: 'tableValue', account: 'table', unit: 'coins' },
+  { field: 'tableCrates', account: 'table', unit: 'crate' },
+  { field: 'cratesHeld', account: 'inventory', unit: 'crate' },
+  { field: 'collectiblesHeld', account: 'inventory', unit: 'collectible' },
+  { field: 'safesHeld', account: 'inventory', unit: 'safe' },
+  { field: 'scratchCardsHeld', account: 'inventory', unit: 'scratchCard' },
+];
+
 /** What the PlayerDO lends a feature handler; everything else of the DO stays private. */
 export interface FeatureHost {
   readonly sql: SqlStorage;
@@ -174,8 +204,7 @@ export interface FeatureHost {
   transactionSync<T>(run: () => T): T;
   roll(purpose: string, ref: string | null, now: EpochMs): FairRoll;
   requireLease(session: TableSessionId | undefined): void;
-  /** The PlayerDO's full ledger-against-entities check, which covers table, buffer and inventory. */
-  conserved(): boolean;
+  entityFingerprint(): EntityFingerprint;
 }
 
 interface AppendedLeg extends Record<string, SqlStorageValue> {
@@ -188,37 +217,41 @@ interface AppendedLeg extends Record<string, SqlStorageValue> {
 
 /** Accounts whose balances must match entity rows (coins, crates, items), not just the ledger. */
 const ENTITY_ACCOUNTS: ReadonlySet<string> = new Set<Account>(['buffer', 'table', 'inventory']);
-const CURRENCY_UNITS: ReadonlySet<string> = new Set(CURRENCIES);
-
-function touchesEntities(legs: readonly AppendedLeg[]): boolean {
-  return legs.some((leg) => ENTITY_ACCOUNTS.has(leg.account) || !CURRENCY_UNITS.has(leg.unit));
-}
 
 function latestSeq(sql: SqlStorage): number {
   return sql.exec<{ seq: number | null }>('SELECT MAX(seq) AS seq FROM ledger').one().seq ?? 0;
 }
 
+interface CallSnapshot {
+  readonly sinceSeq: number;
+  readonly wallet: Wallet;
+  readonly entities: EntityFingerprint;
+}
+
+function addTo(map: Map<string, number>, key: string, delta: number): void {
+  map.set(key, (map.get(key) ?? 0) + delta);
+}
+
 /**
  * Re-checks what the handler appended against what it changed: every row is one of the
- * feature's own kinds, every transaction balances per unit, and each wallet balance moved
- * by exactly its wallet legs. Raw `sql` is in the handler's hands, so this is what stops a
- * feature from writing the wallet or the ledger behind `commit`'s back. Only when a leg lands
- * on an entity-backed account or a non-currency unit does the host's full conservation check
- * run, to catch legs whose coin, crate or item rows the handler did not write to match: that
- * check sums the whole append-only ledger, so a leg-free read or a wallet-only write skips it.
+ * feature's own kinds, every transaction balances per unit, each wallet balance moved by
+ * exactly its wallet legs, and each table, buffer and inventory balance moved by exactly as
+ * much as its coin, crate or item rows. Raw `sql` is in the handler's hands, so this is what
+ * stops a feature from writing the wallet, the ledger or the entity rows behind `commit`'s
+ * back. The DO was conserved before the call, so matching the appended legs against the change
+ * in the entity fingerprint keeps it conserved without ever scanning the ledger.
  */
 function assertFeatureConserved(
   host: FeatureHost,
   feature: ServerFeature,
-  sinceSeq: number,
-  walletBefore: Wallet,
+  before: CallSnapshot,
   mayMoveValue: boolean,
 ): void {
   const { sql } = host;
   const legs = sql
     .exec<AppendedLeg>(
       'SELECT tx_id, kind, account, unit, delta FROM ledger WHERE seq > ? ORDER BY seq',
-      sinceSeq,
+      before.sinceSeq,
     )
     .toArray();
   if (legs.length > 0 && !mayMoveValue) {
@@ -226,18 +259,30 @@ function assertFeatureConserved(
       `Feature "${feature.id}" moved value on a read; value only moves under an Idempotency-Key (a POST).`,
     );
   }
+  const entitiesAfter = host.entityFingerprint();
+  if (
+    !mayMoveValue &&
+    ENTITY_BACKING.some(({ field }) => entitiesAfter[field] !== before.entities[field])
+  ) {
+    throw new ConservationError(
+      `Feature "${feature.id}" changed coin, crate or item rows on a read; value only moves ` +
+        `under an Idempotency-Key (a POST).`,
+    );
+  }
   const sums = new Map<string, number>();
   const walletLegs = new Map<string, number>();
+  const entityLegs = new Map<string, number>();
   for (const leg of legs) {
     if (txKindOwner(leg.kind) !== feature.id) {
       throw new ConservationError(
         `Feature "${feature.id}" wrote a "${leg.kind}" ledger row; it may only write its own txKinds.`,
       );
     }
-    const key = `${leg.tx_id} ${leg.unit}`;
-    sums.set(key, (sums.get(key) ?? 0) + leg.delta);
+    addTo(sums, `${leg.tx_id} ${leg.unit}`, leg.delta);
     if (leg.account === 'wallet') {
-      walletLegs.set(leg.unit, (walletLegs.get(leg.unit) ?? 0) + leg.delta);
+      addTo(walletLegs, leg.unit, leg.delta);
+    } else if (ENTITY_ACCOUNTS.has(leg.account)) {
+      addTo(entityLegs, `${leg.account}/${leg.unit}`, leg.delta);
     }
   }
   for (const [key, sum] of sums) {
@@ -249,7 +294,7 @@ function assertFeatureConserved(
   }
   const walletAfter = readWallet(sql);
   for (const currency of CURRENCIES) {
-    const moved = walletAfter[currency] - walletBefore[currency];
+    const moved = walletAfter[currency] - before.wallet[currency];
     const legged = walletLegs.get(currency) ?? 0;
     if (moved !== legged) {
       throw new ConservationError(
@@ -258,11 +303,25 @@ function assertFeatureConserved(
       );
     }
   }
-  if (touchesEntities(legs) && !host.conserved()) {
-    throw new ConservationError(
-      `Feature "${feature.id}" left the ledger disagreeing with the entity tables; a leg on ` +
-        `table, buffer or inventory needs the matching coin, crate or item row in the same call.`,
-    );
+  for (const { field, account, unit } of ENTITY_BACKING) {
+    const balance = `${account}/${unit}`;
+    const moved = entitiesAfter[field] - before.entities[field];
+    const legged = entityLegs.get(balance) ?? 0;
+    entityLegs.delete(balance);
+    if (moved !== legged) {
+      throw new ConservationError(
+        `Feature "${feature.id}" moved ${balance} by ${legged} in the ledger but by ${moved} in ` +
+          `its entity rows; a leg on table, buffer or inventory needs the matching coin, crate ` +
+          `or item row in the same call.`,
+      );
+    }
+  }
+  for (const [balance, legged] of entityLegs) {
+    if (legged !== 0) {
+      throw new ConservationError(
+        `Feature "${feature.id}" moved ${balance} by ${legged}, a balance no entity rows back.`,
+      );
+    }
   }
 }
 
@@ -310,10 +369,13 @@ export function runFeatureHandler(
       host.requireLease(session);
     },
   };
-  const sinceSeq = latestSeq(sql);
-  const walletBefore = readWallet(sql);
+  const before: CallSnapshot = {
+    sinceSeq: latestSeq(sql),
+    wallet: readWallet(sql),
+    entities: host.entityFingerprint(),
+  };
   const output = run(ctx, input);
-  assertFeatureConserved(host, feature, sinceSeq, walletBefore, idempotencyKey !== null);
+  assertFeatureConserved(host, feature, before, idempotencyKey !== null);
   return output;
 }
 

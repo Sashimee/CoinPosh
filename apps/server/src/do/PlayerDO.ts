@@ -133,6 +133,7 @@ import {
   registeredServerFeatures,
   resolveFeatureHandler,
   runFeatureHandler,
+  type EntityFingerprint,
   type FeatureHost,
 } from './features.ts';
 import { migrate } from './schema.ts';
@@ -568,22 +569,21 @@ export class PlayerDO
       mint: ledgerBalance(this.sql, 'mint', 'coins'),
     };
     const walletCoins = wallet.coins;
-    const buffer = this.entities.coinsIn('buffer');
-    const bufferPaid = buffer.reduce((total, coin) => total + coin.paid, 0);
-    const tableValue = this.entities
-      .coinsIn('table')
-      .reduce((total, coin) => total + coin.value, 0);
-    const tableCrates = this.entities.cratesOnTable().length;
+    const {
+      bufferPaid,
+      tableValue,
+      tableCrates,
+      cratesHeld,
+      collectiblesHeld,
+      safesHeld,
+      scratchCardsHeld,
+    } = this.entityFingerprint();
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
-    const cratesHeld = countHeldCrates(this.sql);
     const ledgerCratesHeld = ledgerBalance(this.sql, 'inventory', 'crate');
-    const collectiblesHeld = countCollectiblesGranted(this.sql);
     const ledgerCollectiblesHeld = ledgerBalance(this.sql, 'inventory', 'collectible');
     const unitSettled = (unit: Leg['unit']) =>
       ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, unit), 0) === 0;
-    const safesHeld = countLockedSafes(this.sql);
     const ledgerSafesHeld = ledgerBalance(this.sql, 'inventory', 'safe');
-    const scratchCardsHeld = countHeldScratchCards(this.sql);
     const ledgerScratchCardsHeld = ledgerBalance(this.sql, 'inventory', 'scratchCard');
     const conserved =
       ledger.wallet === walletCoins &&
@@ -606,7 +606,7 @@ export class PlayerDO
     return {
       walletCoins,
       ledger,
-      bufferCoins: buffer.length,
+      bufferCoins: this.entities.countCoinsIn('buffer'),
       bufferPaid,
       tableValue,
       tableCrates,
@@ -718,7 +718,28 @@ export class PlayerDO
       requireLease: (session) => {
         this.requireLease(session);
       },
-      conserved: () => this.conservation().conserved,
+      entityFingerprint: () => this.entityFingerprint(),
+    };
+  }
+
+  private entityFingerprint(): EntityFingerprint {
+    const coins = this.sql
+      .exec<{ paid: number | null; value: number | null }>(
+        `SELECT SUM(CASE state WHEN 'buffer' THEN paid END) AS paid,
+                SUM(CASE state WHEN 'table' THEN value END) AS value
+         FROM coins WHERE state IN ('buffer', 'table')`,
+      )
+      .one();
+    return {
+      bufferPaid: coins.paid ?? 0,
+      tableValue: coins.value ?? 0,
+      tableCrates: this.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM crates WHERE state = 'table'")
+        .one().n,
+      cratesHeld: countHeldCrates(this.sql),
+      collectiblesHeld: countCollectiblesGranted(this.sql),
+      safesHeld: countLockedSafes(this.sql),
+      scratchCardsHeld: countHeldScratchCards(this.sql),
     };
   }
 

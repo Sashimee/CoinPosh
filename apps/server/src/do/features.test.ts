@@ -258,12 +258,52 @@ const rogueEndpoints = {
   ),
   rogueTable: post('/v1/rogue/table', z.strictObject({}), z.strictObject({ ok: z.literal(true) })),
   rogueRead: get('/v1/rogue/read', z.strictObject({ ok: z.literal(true) })),
+  rogueCoinRow: post(
+    '/v1/rogue/coinRow',
+    z.strictObject({}),
+    z.strictObject({ ok: z.literal(true) }),
+  ),
+  rogueCrateRow: post(
+    '/v1/rogue/crateRow',
+    z.strictObject({}),
+    z.strictObject({ ok: z.literal(true) }),
+  ),
+  rogueHeldCrateRow: post(
+    '/v1/rogue/heldCrateRow',
+    z.strictObject({}),
+    z.strictObject({ ok: z.literal(true) }),
+  ),
+  rogueUnbacked: post(
+    '/v1/rogue/unbacked',
+    z.strictObject({}),
+    z.strictObject({ ok: z.literal(true) }),
+  ),
+  rogueCoinRowRead: get('/v1/rogue/coinRowRead', z.strictObject({ ok: z.literal(true) })),
+  rogueCrateRowRead: get('/v1/rogue/crateRowRead', z.strictObject({ ok: z.literal(true) })),
   rogueSavepoint: post(
     '/v1/rogue/savepoint',
     z.strictObject({}),
     z.strictObject({ ok: z.boolean() }),
   ),
 } as const;
+
+function insertTableCoin(ctx: FeatureDoContext, value: number): void {
+  ctx.sql.exec(
+    "INSERT INTO coins (id, tier, value, state, minted_at) VALUES (?, 'gold', ?, 'table', ?)",
+    crypto.randomUUID(),
+    value,
+    ctx.now,
+  );
+}
+
+function insertCrate(ctx: FeatureDoContext, state: 'table' | 'claimed'): void {
+  ctx.sql.exec(
+    "INSERT INTO crates (id, kind, state, spawned_tick, spawned_at) VALUES (?, 'vault', ?, 0, ?)",
+    crypto.randomUUID(),
+    state,
+    ctx.now,
+  );
+}
 
 const rogueFeature = {
   id: 'rogue',
@@ -276,6 +316,12 @@ const rogueFeature = {
     deps.mount(rogueEndpoints.rogueTable, 'table');
     deps.mount(rogueEndpoints.rogueRead, 'read');
     deps.mount(rogueEndpoints.rogueSavepoint, 'savepoint');
+    deps.mount(rogueEndpoints.rogueCoinRow, 'coinRow');
+    deps.mount(rogueEndpoints.rogueCrateRow, 'crateRow');
+    deps.mount(rogueEndpoints.rogueHeldCrateRow, 'heldCrateRow');
+    deps.mount(rogueEndpoints.rogueUnbacked, 'unbacked');
+    deps.mount(rogueEndpoints.rogueCoinRowRead, 'coinRow');
+    deps.mount(rogueEndpoints.rogueCrateRowRead, 'crateRow');
   },
   doHandlers: {
     wallet: (ctx: FeatureDoContext) => {
@@ -316,6 +362,22 @@ const rogueFeature = {
       }
       return { ok: false };
     },
+    coinRow: (ctx: FeatureDoContext) => {
+      insertTableCoin(ctx, 100_000);
+      return { ok: true };
+    },
+    crateRow: (ctx: FeatureDoContext) => {
+      insertCrate(ctx, 'table');
+      return { ok: true };
+    },
+    heldCrateRow: (ctx: FeatureDoContext) => {
+      insertCrate(ctx, 'claimed');
+      return { ok: true };
+    },
+    unbacked: (ctx: FeatureDoContext) => {
+      ctx.commit(ctx.ledgerTx('rogue.pay').move('mint', 'inventory', 'coins', 5, null));
+      return { ok: true };
+    },
   },
   tables: [],
   txKinds: ['rogue.pay'],
@@ -324,14 +386,20 @@ const rogueFeature = {
 describe('the per-call conservation check', () => {
   const harness = createFeatureHarness([sampleFeature, rogueFeature]);
 
-  async function coins(playerId: PlayerId): Promise<number> {
-    return runInDurableObject(
-      env.PLAYER.get(env.PLAYER.idFromName(playerId)),
-      (_do, ctx) =>
-        ctx.storage.sql
-          .exec<{ balance: number }>("SELECT balance FROM wallet WHERE currency = 'coins'")
-          .one().balance,
-    );
+  /** The wallet and how many ledger, coin and crate rows the player has: what a refusal must leave alone. */
+  async function footprint(playerId: PlayerId) {
+    return runInDurableObject(env.PLAYER.get(env.PLAYER.idFromName(playerId)), (_do, ctx) => {
+      const count = (table: string) =>
+        ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).one().n;
+      return {
+        wallet: ctx.storage.sql
+          .exec('SELECT currency, balance FROM wallet ORDER BY currency')
+          .toArray(),
+        ledger: count('ledger'),
+        coins: count('coins'),
+        crates: count('crates'),
+      };
+    });
   }
 
   it.each([
@@ -340,26 +408,35 @@ describe('the per-call conservation check', () => {
     ['opens another feature’s kind', 'rogueForeign'],
     ['commits an unbalanced transaction', 'rogueUnbalanced'],
     ['posts table coins no coin row backs', 'rogueTable'],
+    ['posts inventory coins no entity row can back', 'rogueUnbacked'],
+    ['inserts a table coin with no ledger legs', 'rogueCoinRow'],
+    ['inserts a table crate with no ledger legs', 'rogueCrateRow'],
+    ['inserts a held crate with no ledger legs', 'rogueHeldCrateRow'],
   ] as const)('refuses a feature that %s, writing nothing', async (_label, name) => {
     const player = await harness.player();
-    const before = await coins(player.playerId);
+    const before = await footprint(player.playerId);
     await expectError(await player.send(name, { body: {} }), 500, 'internal');
-    expect(await coins(player.playerId)).toBe(before);
+    expect(await footprint(player.playerId)).toEqual(before);
     await expectConserved(player.session);
   });
 
-  it('refuses a read that moves value', async () => {
+  it.each([
+    ['moves value', 'rogueRead'],
+    ['inserts a table coin', 'rogueCoinRowRead'],
+    ['inserts a table crate', 'rogueCrateRowRead'],
+  ] as const)('refuses a read that %s, writing nothing', async (_label, name) => {
     const player = await harness.player();
-    const before = await coins(player.playerId);
-    await expectError(await player.send('rogueRead'), 500, 'internal');
-    expect(await coins(player.playerId)).toBe(before);
+    const before = await footprint(player.playerId);
+    await expectError(await player.send(name), 500, 'internal');
+    expect(await footprint(player.playerId)).toEqual(before);
+    await expectConserved(player.session);
   });
 
   it('lets a handler roll back a savepoint and keep the rest of the call', async () => {
     const player = await harness.player();
-    const before = await coins(player.playerId);
+    const before = await footprint(player.playerId);
     expect(await player.call('rogueSavepoint', {})).toEqual({ ok: true });
-    expect(await coins(player.playerId)).toBe(before);
+    expect(await footprint(player.playerId)).toEqual(before);
     await expectConserved(player.session);
   });
 
@@ -395,15 +472,42 @@ function seedLargeLedger(sql: SqlStorage, legs: number): void {
   );
 }
 
+const placerEndpoints = {
+  placerPlace: post(
+    '/v1/placer/place',
+    z.strictObject({}),
+    z.strictObject({ ok: z.literal(true) }),
+  ),
+} as const;
+
+/** An honest entity-backed write: mints a table coin and posts the legs that pay for it. */
+const placerFeature = {
+  id: 'placer',
+  endpoints: placerEndpoints,
+  routes(_app, deps) {
+    deps.mount(placerEndpoints.placerPlace, 'place');
+  },
+  doHandlers: {
+    place: (ctx: FeatureDoContext) => {
+      insertTableCoin(ctx, 5);
+      ctx.commit(ctx.ledgerTx('placer.place').move('mint', 'table', 'coins', 5, null));
+      return { ok: true };
+    },
+  },
+  tables: [],
+  txKinds: ['placer.place'],
+} satisfies ServerFeature<typeof placerEndpoints>;
+
 describe('feature calls on a large ledger', () => {
-  const harness = createFeatureHarness([sampleFeature]);
+  const harness = createFeatureHarness([sampleFeature, placerFeature]);
 
   it(
-    `answer a GET and a wallet-only write within ${FEATURE_CALL_BUDGET_MS} ms each`,
+    `answer a GET, a wallet-only write and an entity-backed write within ${FEATURE_CALL_BUDGET_MS} ms each`,
     { timeout: 60_000 },
     async () => {
       const player = await harness.player();
       await player.call('sampleBook');
+      await player.call('placerPlace', {});
       await runInDurableObject(player.stub, (_do, ctx) => {
         seedLargeLedger(ctx.storage.sql, LARGE_LEDGER_LEGS);
       });
@@ -416,9 +520,14 @@ describe('feature calls on a large ledger', () => {
       const stamped = await player.call('sampleStamp', { motto: 'Patience pays' });
       const writeMs = performance.now() - writeStarted;
 
+      const placeStarted = performance.now();
+      expect(await player.call('placerPlace', {})).toEqual({ ok: true });
+      const placeMs = performance.now() - placeStarted;
+
       expect(stamped.book.stamps).toHaveLength(1);
       expect(readMs).toBeLessThan(FEATURE_CALL_BUDGET_MS);
       expect(writeMs).toBeLessThan(FEATURE_CALL_BUDGET_MS);
+      expect(placeMs).toBeLessThan(FEATURE_CALL_BUDGET_MS);
       await expectConserved(player.session);
     },
   );
