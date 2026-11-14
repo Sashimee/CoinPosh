@@ -149,7 +149,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-2.01-p2 | done | task/T-2.01-p2 (merge f39f252) | Server: safes route, storage, timers, key spend, pity (b1d7f20); pnpm check green after merge |
 | T-2.01 | done | | Waits on T-1.18. Key-locked Safes (server + client + cinematic). Parts T-2.01-p1, T-2.01-p2, T-2.01-p3. Parts merged: T-2.01-p1 (merge d42cf4e), T-2.01-p2 (merge f39f252), T-2.01-p3 (merge eaac8b0) |
 | T-2.02 | todo | | Waits on T-1.18. Scratch Cards (GPU scratch mask) |
-| T-2.03 | todo | | Waits on T-1.18. Gacha Capsule Machine |
+| T-2.03-p1 | done | task/T-2.03-p1 (merge 5228103) | Gacha Capsule Machine scene: procedural 3D machine, crank, chute and capsule pop in apps/web/src/scene/gacha/** (0e711fe); pnpm check green after merge |
+| T-2.03 | done | | Gacha Capsule Machine, parts T-2.03-p1. Parts merged: T-2.03-p1 (merge 5228103) |
 | T-2.04 | done | task/T-2.04 (merge d411f01) | Odds & "Certified Fair" UI (apps/web/src/ui/fair, EN/FR/DE fair.json). Fix round (c196d1f): Web Crypto failure shows a distinct verify "unavailable" state with a throwing crypto.subtle test; odds row/total aria labels interpolated via i18next; main.ts mount and pity log stay queued in POLISH; pnpm check green after merge |
 | T-2.05 | done | task/T-2.05 (merge c45f2f6) | Inventory & item cards: apps/web/src/ui/inventory/** (rarity-framed 3D cards, sort/filter, duplicate level-up view) (d41904f); shared contract, fuse route, duplicatesPerLevel and main.ts mount queued as P-455..P-458, WebGPU card art check as P-459 (H); pnpm check green after merge |
 | T-3.01 | todo | | Waits on T-2.05. Charm Board (sockets, 6 charms, synergy tags) |
