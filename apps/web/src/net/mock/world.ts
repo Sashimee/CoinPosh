@@ -295,6 +295,9 @@ export interface MockPlayer {
 const DROP_TIER = coinTiers[0];
 /** Ledger reasons that move wallet coins through play, matching the server's play kinds. */
 const PLAY_REASONS: ReadonlySet<string> = new Set(['drop.debit', 'drop.prepay', 'claim.fall']);
+/** Feature reward kinds {@link MockWorld.grant} may write, matching the server's TxKinds. */
+const GRANT_REASONS = new Set(['quest.claim', 'streak.milestone', 'season.tier'] as const);
+export type GrantReason = typeof GRANT_REASONS extends Set<infer R> ? R : never;
 const MS_PER_TICK = 1000 / MOCK_RULES.ticksPerSecond;
 
 function ticksFor(ms: number): number {
@@ -797,6 +800,29 @@ export class MockWorld {
     const playCoins = moved.coins;
     if (playCoins !== undefined && PLAY_REASONS.has(reason)) this.#logPlay(player, now, playCoins);
     this.#append(player, now, reason, moved, ref);
+  }
+
+  /**
+   * Pays a Demo feature module's reward (a quest, a streak milestone, a season tier) through the
+   * same ledger as every other balance change. Rewards only ever add value, so a negative amount
+   * is refused rather than quietly turned into a debit.
+   */
+  grant(
+    player: MockPlayer,
+    now: number,
+    reason: GrantReason,
+    delta: Partial<Record<Currency, number>>,
+    ref: string | null = null,
+  ): void {
+    if (!GRANT_REASONS.has(reason)) {
+      throw new Error(`Mock ledger: ${reason} is not a feature reward reason.`);
+    }
+    for (const [currency, amount] of Object.entries(delta) as [Currency, number][]) {
+      if (amount < 0) {
+        throw new Error(`Mock ledger: ${reason} tried to take ${-amount} ${currency}.`);
+      }
+    }
+    this.#credit(player, now, reason, delta, ref);
   }
 
   #append(

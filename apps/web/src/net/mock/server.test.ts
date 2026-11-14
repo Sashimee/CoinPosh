@@ -55,6 +55,7 @@ import {
 } from '../test/harness.ts';
 import type { MockServer } from './server.ts';
 import { MOCK_RULES } from './rules.ts';
+import { MockWorld, RestoreError } from './world.ts';
 
 let time: FakeTime;
 let server: MockServer;
@@ -1862,5 +1863,89 @@ describe('mock server: state reports ascension progress and the Family Office', 
     await expect(
       alice.client.call('ascend', { body: { venueId: riviera.id } }),
     ).rejects.toMatchObject({ code: 'not_ready' });
+  });
+});
+
+describe('mock server: feature rewards are granted through the single ledger', () => {
+  beforeEach(async () => {
+    await state();
+  });
+
+  function alicePlayer() {
+    const found = server.world.player(requirePlayerId(alice));
+    if (found === undefined) throw new Error('Expected Alice in the mock world.');
+    return found;
+  }
+
+  it('writes each grant to the ledger with its reason and ref, and the restored world adds up', () => {
+    const player = alicePlayer();
+    const before = { ...player.wallet };
+    const at = time.now();
+    server.world.grant(player, at, 'quest.claim', { coins: 120, stars: 2 }, 'quest_daily_drops');
+    server.world.grant(player, at, 'streak.milestone', { keys: 1 }, 'streak_7');
+    server.world.grant(player, at, 'season.tier', { bullion: 3 }, 'tier_4');
+
+    const granted = server.world.ledger
+      .slice(-3)
+      .map(({ reason, delta, ref, at: when }) => ({ reason, delta, ref, when }));
+    expect(granted).toEqual([
+      {
+        reason: 'quest.claim',
+        delta: { coins: 120, stars: 2 },
+        ref: 'quest_daily_drops',
+        when: at,
+      },
+      { reason: 'streak.milestone', delta: { keys: 1 }, ref: 'streak_7', when: at },
+      { reason: 'season.tier', delta: { bullion: 3 }, ref: 'tier_4', when: at },
+    ]);
+    expect(player.wallet.coins).toBe(before.coins + 120);
+    expect(player.wallet.stars).toBe(before.stars + 2);
+    expect(player.wallet.keys).toBe(before.keys + 1);
+    expect(player.wallet.bullion).toBe(before.bullion + 3);
+    expectConserved();
+
+    const restored = MockWorld.restore(server.world.serialize());
+    expect(restored.player(player.id)?.wallet).toEqual(player.wallet);
+    expect(restored.ledger.slice(-3).map((entry) => entry.reason)).toEqual([
+      'quest.claim',
+      'streak.milestone',
+      'season.tier',
+    ]);
+  });
+
+  it('defaults ref to null and records nothing for an all-zero grant', () => {
+    const player = alicePlayer();
+    server.world.grant(player, time.now(), 'season.tier', { stars: 1 });
+    expect(server.world.ledger.at(-1)).toMatchObject({ reason: 'season.tier', ref: null });
+    const length = server.world.ledger.length;
+    server.world.grant(player, time.now(), 'quest.claim', { coins: 0 }, 'quest_x');
+    expect(server.world.ledger.length).toBe(length);
+  });
+
+  it('refuses debits, fractional amounts and reasons outside the feature kinds', () => {
+    const player = alicePlayer();
+    const wallet = { ...player.wallet };
+    const length = server.world.ledger.length;
+    expect(() => {
+      server.world.grant(player, time.now(), 'quest.claim', { coins: -50 });
+    }).toThrow(/quest\.claim tried to take 50 coins/);
+    expect(() => {
+      server.world.grant(player, time.now(), 'quest.claim', { coins: 1.5 });
+    }).toThrow(/non-integer/);
+    expect(() => {
+      server.world.grant(player, time.now(), 'claim.fall' as never, { coins: 10 });
+    }).toThrow(/not a feature reward reason/);
+    expect(player.wallet).toEqual(wallet);
+    expect(server.world.ledger.length).toBe(length);
+    expectConserved();
+  });
+
+  it('refuses to restore stored data whose grant was tampered with', () => {
+    server.world.grant(alicePlayer(), time.now(), 'quest.claim', { coins: 40 }, 'quest_a');
+    const data = server.world.serialize();
+    const last = data.ledger.at(-1);
+    if (last === undefined) throw new Error('Expected a ledger entry.');
+    last.delta = { coins: 4000 };
+    expect(() => MockWorld.restore(data)).toThrow(RestoreError);
   });
 });
