@@ -94,6 +94,13 @@ export const BUNDLE_BUDGETS = {
    * 6.6 kB gzip on 2026-11-14.
    */
   safesSheet: 7 * 1024,
+  /**
+   * P-425 / P-102: the self-hosted woff2 subsets in public/fonts, counted as served (woff2 is
+   * already Brotli inside, so gzip would only hide the bytes). Cormorant Garamond 600, 700 and
+   * 700 italic plus Manrope 500 and 700: 85.3 kB on 2026-11-14. P-102 caps the payload at 120 kB;
+   * the budget sits just above the build, so even the 5 % tolerance stays well under that cap.
+   */
+  fonts: 90 * 1024,
 } as const;
 
 /** P-124: a budget fails once exceeded by more than this share. */
