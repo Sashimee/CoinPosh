@@ -30,6 +30,11 @@ export interface TableCapture {
   refresh(): Promise<void>;
   /** The latest sample as the server takes it, or null before the first one landed. */
   capture(): SnapshotCapture | null;
+  /**
+   * Server coins in the latest sample whose pose the server would drop, as a coin still in the
+   * air over its neighbours: an upload now leaves them to a boot's refund.
+   */
+  unposed(): number;
 }
 
 type PoseTail = PoseTuple extends readonly [CoinId, ...infer Tail] ? Tail : never;
@@ -39,6 +44,8 @@ interface Sample {
   readonly tickInCycle: number;
   /** Poses the server can accept, by sim id, in ascending id order. */
   readonly poses: readonly { readonly simId: number; readonly pose: PoseTail }[];
+  /** Sim ids of the bodies left out of `poses`. */
+  readonly dropped: readonly number[];
 }
 
 /**
@@ -54,7 +61,7 @@ export function createTableCapture(deps: TableCaptureDeps): TableCapture {
 
   const take = async (): Promise<void> => {
     const { tick, table } = await deps.sample();
-    const { ok } = validateSnapshot(table);
+    const { ok, dropped } = validateSnapshot(table);
     const poses: { simId: number; pose: PoseTail }[] = [];
     for (const pose of ok) {
       if (pose.rest === 'frozen') continue;
@@ -62,7 +69,12 @@ export function createTableCapture(deps: TableCaptureDeps): TableCapture {
       const [qx, qy, qz, qw] = pose.q;
       poses.push({ simId: pose.id, pose: [x, y, z, qx, qy, qz, qw, pose.rest] });
     }
-    latest = { tick: Math.max(0, Math.floor(tick)), tickInCycle: table.pusherTickInCycle, poses };
+    latest = {
+      tick: Math.max(0, Math.floor(tick)),
+      tickInCycle: table.pusherTickInCycle,
+      poses,
+      dropped: dropped.map(({ id }) => id),
+    };
   };
 
   const crateTuples = (): CratePoseTuple[] => {
@@ -98,6 +110,9 @@ export function createTableCapture(deps: TableCaptureDeps): TableCapture {
         coins,
         crates: crateTuples(),
       };
+    },
+    unposed() {
+      return latest?.dropped.filter((simId) => deps.coinOf(simId) !== null).length ?? 0;
     },
   };
 }

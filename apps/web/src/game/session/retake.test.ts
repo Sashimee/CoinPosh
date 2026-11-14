@@ -44,7 +44,9 @@ function page() {
     simReady: [] as Deferred<undefined>[],
     boot: [] as Deferred<Booted>[],
     lay: [] as Deferred<Laid>[],
+    posed: [] as Deferred<undefined>[],
   };
+  const hold = { held: 0, released: 0, waitForPose: false };
   let playFailure: Error | null = null;
   let sims = 1;
   const discarded: Laid[] = [];
@@ -53,6 +55,21 @@ function page() {
   const drawn: string[] = [];
 
   const retake = createRetake<Booted, Laid>({
+    hold: () => {
+      hold.held += 1;
+      let posed: Promise<void> = Promise.resolve();
+      if (hold.waitForPose) {
+        const next = deferred<undefined>();
+        pending.posed.push(next);
+        posed = next.promise;
+      }
+      return {
+        posed,
+        release: () => {
+          hold.released += 1;
+        },
+      };
+    },
     simReady: () => {
       log.push('simReady');
       const next = deferred<undefined>();
@@ -98,6 +115,8 @@ function page() {
 
   return {
     log,
+    hold,
+    retake,
     server,
     table,
     overlay,
@@ -137,6 +156,18 @@ function page() {
       if (!next) throw new Error('no table is being laid');
       sims += 1;
       next.resolve({ session: server.lease, sim: sims });
+      await flush();
+    },
+    async tablePosed() {
+      const next = pending.posed.shift();
+      if (!next) throw new Error('no table is being held');
+      next.resolve(undefined);
+      await flush();
+    },
+    async poseFails(error: Error) {
+      const next = pending.posed.shift();
+      if (!next) throw new Error('no table is being held');
+      next.reject(error);
       await flush();
     },
     async layFails(error: Error) {
@@ -259,5 +290,51 @@ describe('createRetake: superseded, "Play here", re-boot, input resumes', () => 
     p.superseded();
     expect(p.table.input).toBe(false);
     expect(p.overlay.phase).toBe('open');
+  });
+});
+
+describe('createRetake: the table in play holds still for the boot', () => {
+  it('holds the table as the retake starts and boots only once it is posed and a sim is ready', async () => {
+    const p = page();
+    p.hold.waitForPose = true;
+    const done = p.retake();
+    expect(p.hold.held).toBe(1);
+    await p.simIsReady();
+    expect(p.log).not.toContain('boot');
+    await p.tablePosed();
+    expect(p.log.at(-1)).toBe('boot');
+    await p.serverBoots();
+    await p.tableLaid();
+    await done;
+    expect(p.hold.released).toBe(0);
+  });
+
+  it('lets the table move again when the boot cannot be laid or posed', async () => {
+    const p = page();
+    p.superseded();
+    p.overlay.press();
+    await p.simIsReady();
+    await p.serverBoots();
+    await p.layFails(new Error('SimBridge: the restore names an unknown tier'));
+    expect(p.hold).toMatchObject({ held: 1, released: 1 });
+
+    p.hold.waitForPose = true;
+    p.overlay.press();
+    await p.simIsReady();
+    await p.poseFails(new Error('SimBridge.snapshot: the worker failed'));
+    expect(p.log.filter((step) => step === 'boot')).toHaveLength(1);
+    expect(p.hold).toMatchObject({ held: 2, released: 2 });
+    expect(p.overlay.phase).toBe('failed');
+  });
+
+  it('lets the table move again when the laid sim cannot take it', async () => {
+    const p = page();
+    p.failPlay(new Error('CoinPosh: the game systems could not start'));
+    p.superseded();
+    p.overlay.press();
+    await p.simIsReady();
+    await p.serverBoots();
+    await p.tableLaid();
+    expect(p.hold).toMatchObject({ held: 1, released: 1 });
   });
 });

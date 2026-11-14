@@ -111,6 +111,33 @@ describe('createTableCapture', () => {
     expect(capture.capture()?.coins.map(([id]) => id)).toEqual([coinId(1)]);
   });
 
+  it('counts the server coins whose pose an upload would leave out, named as of now', async () => {
+    const coins = [
+      resting(0, 0),
+      { ...resting(1, 0), id: 1 },
+      { id: 2, p: [-9600, 9_000_000, 4400], q: FLAT, rest: 'awake' } satisfies CoinPose,
+      { ...resting(3, 0), id: 3 },
+    ];
+    const held = new Map([
+      [0, coinId(1)],
+      [1, coinId(2)],
+      [3, coinId(4)],
+    ]);
+    const capture = createTableCapture({
+      sample: () => Promise.resolve(sampled(coins)),
+      coinOf: (simId) => held.get(simId) ?? null,
+      crates: () => [],
+    });
+    expect(capture.unposed()).toBe(0);
+    await capture.refresh();
+    expect(capture.unposed()).toBe(2);
+    held.set(2, coinId(3));
+    expect(capture.unposed()).toBe(3);
+    held.delete(1);
+    held.delete(3);
+    expect(capture.unposed()).toBe(1);
+  });
+
   it('reads crates live, skips a fallen one and never poses more than the contract allows', async () => {
     const rides = [
       ride(1, CRATE),
