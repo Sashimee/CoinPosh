@@ -14,8 +14,10 @@ export interface CinematicHoldOptions {
   /**
    * The crate whose unbox is on screen, if any; the director plays opened crates in order. It is
    * read on the frame after an open, so it need not have taken the crate before this hears it.
+   * While `held` (a sheet is open) the director starts nothing, so a crate still queued is
+   * waiting its turn, not dropped; a director that never holds may leave it out.
    */
-  readonly director: { readonly active: string | null };
+  readonly director: { readonly active: string | null; readonly held?: boolean };
   /** Runs `check` once per rendered frame; returns its unsubscribe. */
   readonly onFrame: (check: () => void) => () => void;
   /**
@@ -44,7 +46,8 @@ interface Tracked {
  * cinematic owns it. Every phase has a way out: a claim that never answers lapses after
  * `claimCapMs` and is forgotten (an open that turns up later holds afresh), a refused or failed claim lets go
  * at once, and an opened crate the director never plays (its card or cinematic threw) or drops
- * mid-play lets go on the next frame.
+ * mid-play lets go on the next frame. A crate that opens while the director is held stays
+ * queued until the sheet closes and its turn comes.
  */
 export function holdForCrateCinematics(options: CinematicHoldOptions): () => void {
   const { events, hold, director, onFrame, afterRevealExit } = options;
@@ -76,12 +79,14 @@ export function holdForCrateCinematics(options: CinematicHoldOptions): () => voi
   const check = (): void => {
     if (order.length === 0) return;
     const active = director.active;
+    const held = director.held === true;
     const activeAt = active === null ? -1 : order.indexOf(active);
     for (const [i, crateId] of [...order].entries()) {
       const crate = crates.get(crateId);
       if (!crate) continue;
       if (crate.phase === 'queued') {
         if (crateId === active) crate.phase = 'playing';
+        else if (held) continue;
         else if (active === null || (activeAt >= 0 && i < activeAt)) {
           warn(
             `CoinPosh crates: crate ${crateId} opened but its unbox never played; HUD announcements resume.`,
