@@ -85,6 +85,37 @@ export class CreditHold {
     }
   }
 
+  /**
+   * The server took back `amount` of `id`'s credit after its rise had reached the balance, as
+   * when it refuses a fall whose provisional estimate was held. The balance is about to fall by
+   * that much: the holds give it up instead of the readout, and `id` expects that much less. A
+   * rise another hold absorbed in its place is handed back to that hold as pending again.
+   */
+  retract(id: string, amount: number): void {
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new RangeError(
+        `A credit retraction needs a finite amount ≥ 0, got ${amount} for ${id}.`,
+      );
+    }
+    const target = this.#holds.find((held) => held.id === id);
+    if (!target || this.#seen === null) return;
+    const cut = Math.min(amount, target.pending + target.absorbed);
+    const taken = Math.min(cut, this.withheld);
+    const fromTarget = Math.min(taken, target.absorbed);
+    target.absorbed -= fromTarget;
+    target.pending -= cut - fromTarget;
+    let rest = taken - fromTarget;
+    for (const held of this.#holds) {
+      if (rest <= 0) break;
+      if (held === target) continue;
+      const moved = Math.min(rest, held.absorbed);
+      held.absorbed -= moved;
+      held.pending += moved;
+      rest -= moved;
+    }
+    this.#seen -= taken;
+  }
+
   has(id: string): boolean {
     return this.#holds.some((held) => held.id === id);
   }
@@ -128,6 +159,8 @@ export interface Payout {
 export interface WalletPayout {
   /** The server credited `credit` with this open; keep it off the readouts until collect. */
   hold(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void;
+  /** The server took back part of `id`'s held credit after it reached the balance. */
+  retract(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void;
   /** The crate's card is on screen: start (or restart) the cap on its hold. */
   arm(id: string): void;
   /** The card left the screen for a while (a sheet over it): the cap waits until it is back. */
@@ -178,6 +211,11 @@ export class PayoutLedger {
   hold(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void {
     this.coins.hold(id, credit.coins ?? 0);
     this.goldBars.hold(id, credit.goldBars ?? 0);
+  }
+
+  retract(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void {
+    this.coins.retract(id, credit.coins ?? 0);
+    this.goldBars.retract(id, credit.goldBars ?? 0);
   }
 
   arm(id: string): void {
@@ -300,6 +338,7 @@ export function walletPayoutFor(owner: object): PayoutChannel {
     let view: WalletPayout | null = null;
     const made: PayoutChannel = {
       hold: (id, credit) => view?.hold(id, credit),
+      retract: (id, credit) => view?.retract(id, credit),
       arm: (id) => view?.arm(id),
       disarm: (id) => view?.disarm(id),
       collect: (id, payout) => view?.collect(id, payout),
@@ -611,6 +650,9 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   const payout: WalletPayout = {
     hold(id, credit) {
       ledger.hold(id, credit);
+    },
+    retract(id, credit) {
+      ledger.retract(id, credit);
     },
     arm(id) {
       ledger.arm(id);

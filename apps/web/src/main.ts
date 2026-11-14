@@ -1522,12 +1522,15 @@ interface CratePayoutOrder {
  * exactly the card's coin line, and the falls follow FALLS_AFTER_CRATE_MS after the frame that
  * shows it, as their own pops, each landing ticking the Vault. Reduced motion keeps the order: the coin line shows at
  * once and the falls' pops fade in place. A front fall's provisional estimate is held from its
- * claim and the rest of its credit when the server pays it.
+ * claim and the rest of its credit when the server pays it; a held fall the server refuses takes
+ * its estimate back out of the hold, so the Vault does not dip while the reveal holds.
  */
 function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   const unpaid = new Map<string, ReturnType<typeof setTimeout>>();
   const landing = new Map<string, () => void>();
   const estimates = new Map<MintedCoin['id'], number>();
+  /** The batch each held front fall's estimate went into, so a refusal takes it back from there. */
+  const heldIn = new Map<MintedCoin['id'], string>();
   const releasing = new Set<() => void>();
   let holdUntil = 0;
   let batch: FallBatch | null = null;
@@ -1626,17 +1629,25 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
         events.on('coin:fell', ({ coin, edge }) => {
           if (!coin || edge !== 'front') return;
           estimates.set(coin.id, coin.value);
-          if (active()) payout.hold(current().id, { coins: coin.value });
+          if (!active()) return;
+          const held = current().id;
+          heldIn.set(coin.id, held);
+          payout.hold(held, { coins: coin.value });
         }),
         events.on('value:credited', ({ amount, coinId }) => {
           const estimate = estimates.get(coinId) ?? 0;
           estimates.delete(coinId);
+          heldIn.delete(coinId);
           if (active() && amount > estimate) {
             payout.hold(current().id, { coins: amount - estimate });
           }
         }),
         events.on('fall:refused', ({ coinId }) => {
+          const estimate = estimates.get(coinId) ?? 0;
+          const held = heldIn.get(coinId);
           estimates.delete(coinId);
+          heldIn.delete(coinId);
+          if (held !== undefined) payout.retract(held, { coins: estimate });
         }),
       ];
       return () => {
