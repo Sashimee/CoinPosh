@@ -9,6 +9,8 @@ import {
   ENDPOINT_NAMES,
   endpoints,
   requiresIdempotencyKey,
+  SOIREE_ENDPOINT_NAMES,
+  soireeEndpoints,
   tableSnapshotEndpoint,
   type Endpoint,
   type EndpointName,
@@ -244,6 +246,47 @@ describe('accountEndpoints', () => {
           name,
         ).toContain('unrecognized_keys');
       }
+    }
+  });
+});
+
+describe('soireeEndpoints', () => {
+  const soireeCases: { name: string; endpoint: Endpoint }[] = SOIREE_ENDPOINT_NAMES.map((name) => ({
+    name,
+    endpoint: soireeEndpoints[name],
+  }));
+  const routeOf = ({ endpoint }: { endpoint: Endpoint }) => `${endpoint.method} ${endpoint.path}`;
+
+  it('covers exactly the Soirée run surface of T-3.06', () => {
+    expect(soireeCases.map(routeOf).toSorted()).toEqual([
+      'POST /v1/soiree/draft',
+      'POST /v1/soiree/finish',
+      'POST /v1/soiree/start',
+    ]);
+  });
+
+  it('does not collide with a registered, account or table snapshot route', () => {
+    const taken = new Set([
+      ...cases.map(routeOf),
+      ...ACCOUNT_ENDPOINT_NAMES.map((name) => routeOf({ endpoint: accountEndpoints[name] })),
+      routeOf({ endpoint: tableSnapshotEndpoint }),
+    ]);
+    for (const soireeCase of soireeCases) {
+      expect(taken.has(routeOf(soireeCase)), soireeCase.name).toBe(false);
+    }
+  });
+
+  it('is bearer-only, idempotent and strict, so the client cannot post a tally or a value', () => {
+    for (const { name, endpoint } of soireeCases) {
+      expect(endpoint.auth, name).toBe('bearer');
+      expect(endpoint.params, name).toBeNull();
+      expect(requiresIdempotencyKey(endpoint), name).toBe(true);
+      expect(endpoint.body, name).not.toBeNull();
+      const result = endpoint.body?.safeParse({ value: 1_000_000 });
+      expect(
+        result?.error?.issues.map((issue) => issue.code),
+        name,
+      ).toContain('unrecognized_keys');
     }
   });
 });
