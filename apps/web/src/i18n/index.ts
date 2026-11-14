@@ -58,7 +58,8 @@ export const i18n = createI18n({
  * file its own chunk, so a feature's strings ship with the feature. Await it before the first
  * `t('<namespace>:…')`.
  */
-export const loadNamespace: LoadNamespace = createNamespaceLoader(
+// Pure so a build that never calls it drops the glob, and with it a lazy chunk per locale file.
+export const loadNamespace: LoadNamespace = /* @__PURE__ */ createNamespaceLoader(
   i18n,
   import.meta.glob<ResourceTree>(['./locales/*/*.json', '!./locales/*/ui.json'], {
     import: 'default',
