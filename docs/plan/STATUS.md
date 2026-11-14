@@ -351,6 +351,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-575 | done | task/P-575 (merge c8497a7) | core.ts fuse() holds fusions whose inputs are not yet bound and claims them once their mints land, pairing undrawn coins by sim id (248c132); unblocks T-92.09; follow-ups P-593, P-594; pnpm check green after merge |
 | P-580 | done | task/P-580 (merge 77fdae2) | VFX pipelines warmed before playable and after tier/renderer changes, with apps/web/e2e/shader-warmup.spec.ts and stage tests; review round (30e6978); pnpm check green after merge |
 | P-557 | blocked(review: not delivered; crate album cards cannot be listed in the Inventory from the owns paths, needs a design decision) | (nothing committed) | Waits on the Inventory-vs-Album decision (P-620) and either the inventory owner (P-621) or shared/server (P-622); bundle rows P-623 |
+| P-624 | done | task/P-624 (merge c7a19b9) | validateSnapshot accepts coins resting on the front lip (z up to fieldFrontZ + COIN.radius), with validate.test and restore.test lip cases (e2abe2d); unblocks P-626 / T-92.09 retry; follow-up P-632; pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
