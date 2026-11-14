@@ -11,6 +11,7 @@ import { corsMiddleware } from './http/cors.ts';
 import { ApiFailure } from './http/errors.ts';
 import { originGuardMiddleware, requestIdMiddleware } from './http/signed.ts';
 import { createAccountRoutes } from './routes/account.ts';
+import { createAlbumRoutes } from './routes/album.ts';
 import { createAscendRoutes } from './routes/ascend.ts';
 import { authRoutes } from './routes/auth.ts';
 import { createCrateRoutes } from './routes/crates.ts';
@@ -46,6 +47,7 @@ export function createApp(deps: AppDeps) {
   app.route('/', createUpgradeRoutes(playerStub));
   app.route('/', createAscendRoutes(playerStub));
   app.route('/', createCrateRoutes(playerStub));
+  app.route('/', createAlbumRoutes(playerStub));
   app.route('/', createSafeRoutes(playerStub));
   app.route('/', createScratchRoutes(playerStub));
   mountServerFeatures(app, deps.features ?? SERVER_FEATURES);
