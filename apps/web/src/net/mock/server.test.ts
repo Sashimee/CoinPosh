@@ -110,6 +110,10 @@ function fallAt(coin: MintedCoin, tick: number): Claim {
   return { kind: 'fall', coinId: coin.id, tick, edge: 'front' };
 }
 
+function refusedChecks(player: Player = alice): string[] {
+  return server.world.envelopeRefusals(requirePlayerId(player)).map((refusal) => refusal.check);
+}
+
 async function accessToken(player: Player = alice): Promise<string> {
   return player.session.accessToken();
 }
@@ -680,6 +684,7 @@ describe('mock server: attacks from a compromised client', () => {
       },
     });
     expect(results[0]).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    expect(refusedChecks()).toEqual(['clock_ahead']);
     expect((await claimFall(coin.id)).status).toBe('accepted');
   });
 
@@ -894,6 +899,7 @@ describe('mock server: attacks from a compromised client', () => {
     expect(await claimAt([fallAt(coin, justShort)])).toEqual([
       { status: 'rejected', reason: 'over_envelope' },
     ]);
+    expect(refusedChecks()).toEqual(['fall_travel', 'fall_travel']);
     expect(server.ledger()).toHaveLength(before);
     expect((await claimFall(coin.id)).status).toBe('accepted');
     expectConserved();
@@ -907,6 +913,7 @@ describe('mock server: attacks from a compromised client', () => {
       results.push(...(await claimAt([fallAt(coin, time.tick())])));
     }
     expect(results).toEqual(results.map(() => ({ status: 'rejected', reason: 'over_envelope' })));
+    expect(refusedChecks()).toEqual(results.map(() => 'fall_travel'));
     expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(0);
     expect((await state()).wallet.bullion).toBe(before.bullion);
     expectConserved();
@@ -925,6 +932,7 @@ describe('mock server: attacks from a compromised client', () => {
     expect(results.slice(maxPerTick)).toEqual(
       coins.slice(maxPerTick).map(() => ({ status: 'rejected', reason: 'over_envelope' })),
     );
+    expect(refusedChecks()).toEqual(coins.slice(maxPerTick).map(() => 'fall_same_tick'));
     const best = cascadeTierFor(maxPerTick, cascade);
     expect(results[maxPerTick - 1]).toMatchObject({ cascade: best?.id ?? null });
     expect(server.ledger().filter((entry) => entry.reason === 'claim.fall')).toHaveLength(
@@ -944,6 +952,7 @@ describe('mock server: attacks from a compromised client', () => {
     const results = await claimAt(coins.map((coin, i) => fallAt(coin, start + i * step)));
     expect(results.filter((result) => result.status === 'accepted')).toHaveLength(max);
     expect(results.at(-1)).toEqual({ status: 'rejected', reason: 'over_envelope' });
+    expect(new Set(refusedChecks())).toEqual(new Set(['fall_window']));
     expectConserved();
   });
 
@@ -956,7 +965,35 @@ describe('mock server: attacks from a compromised client', () => {
     expect(await claimAt([fallAt(second, tick - 1)])).toEqual([
       { status: 'rejected', reason: 'over_envelope' },
     ]);
+    expect(refusedChecks()).toEqual(['tick_order']);
     expect((await claimAt([fallAt(second, tick)]))[0]?.status).toBe('accepted');
+  });
+
+  it('P-639: pays an honest fall settled at the render tick after a crate claimed at the newest tick', async () => {
+    let crate = null;
+    let fallen: MintedCoin | null = null;
+    for (let i = 0; i < crateSpawn.ftueScriptedDrop && crate === null; i++) {
+      time.advance(100);
+      const buffered = await bufferedCoin();
+      const response = await alice.client.call('tableDrop', {
+        body: { x: 0, tick: time.tick(), coinId: buffered.id },
+      });
+      crate = response.spawnedCrates[0] ?? null;
+      if (crate === null) await claimFall(response.coin.id);
+      else fallen = response.coin;
+    }
+    if (crate === null || fallen === null) throw new Error('Expected the scripted FTUE crate.');
+    travel();
+    time.advance(500);
+    const newest = time.tick();
+    expect(
+      await claimAt([{ kind: 'crate', crateId: crate.id, tick: newest, edge: 'front' }]),
+    ).toEqual([{ status: 'accepted', credited: 0, cascade: null, minted: null }]);
+    expect(await claimAt([fallAt(fallen, newest - 3)])).toMatchObject([
+      { status: 'accepted', credited: fallen.value },
+    ]);
+    expect(refusedChecks()).toEqual([]);
+    expectConserved();
   });
 
   it('rejects a fusion of coins that have not landed yet', async () => {
@@ -965,6 +1002,7 @@ describe('mock server: attacks from a compromised client', () => {
     expect(await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }])).toEqual([
       { status: 'rejected', reason: 'over_envelope' },
     ]);
+    expect(refusedChecks()).toEqual(['fusion_settle']);
     time.advance(MOCK_RULES.minFusionMsAfterSpawn);
     expect((await claimAt([{ kind: 'fusion', coinIds: ids, tick: time.tick() }]))[0]?.status).toBe(
       'accepted',
