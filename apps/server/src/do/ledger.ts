@@ -35,6 +35,7 @@ export const TX_KINDS = [
   'season.tier',
   'season.rollover',
   'soiree.reward',
+  'soiree.table',
 ] as const;
 export type TxKind = (typeof TX_KINDS)[number];
 

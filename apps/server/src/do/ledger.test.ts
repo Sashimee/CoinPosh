@@ -8,7 +8,7 @@ import { claims, drop, dropAsClient, expectConserved, playerStub, state } from '
 import { ASCEND_TX_KIND } from '../routes/ascend.ts';
 import { CRATE_OPEN_TX_KIND } from '../routes/crates.ts';
 import { SCRATCH_GRANT_TX_KIND, SCRATCH_REVEAL_TX_KIND } from '../routes/scratch.ts';
-import { SOIREE_REWARD_TX_KIND } from '../routes/soiree.ts';
+import { SOIREE_REWARD_TX_KIND, SOIREE_TABLE_TX_KIND } from '../routes/soiree.ts';
 import { commit, ConservationError, LedgerTx, TX_KINDS } from './ledger.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
@@ -211,6 +211,18 @@ describe('LedgerTx', () => {
     expect(() => {
       paidInCrates.assertBalanced();
     }).toThrow(/crate legs sum to -1/);
+  });
+
+  it('lists the house stake on a Soirée table as its own kind, balanced in coins', () => {
+    expect(TX_KINDS).toContain(SOIREE_TABLE_TX_KIND);
+    const staked = new LedgerTx(SOIREE_TABLE_TX_KIND).move('house', 'table', 'coins', 5, 'coin_x');
+    expect(() => {
+      staked.assertBalanced();
+    }).not.toThrow();
+    const conjured = new LedgerTx(SOIREE_TABLE_TX_KIND).post('table', 'coins', 5, 'coin_x');
+    expect(() => {
+      conjured.assertBalanced();
+    }).toThrow(/soiree.table is unbalanced: coins legs sum to 5/);
   });
 
   it('keeps Soirée crates out of the wallet', async () => {

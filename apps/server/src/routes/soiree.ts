@@ -1,11 +1,17 @@
 import {
+  crateIncomeCoins,
+  crateRewards,
   drawSoireeOffer,
+  offlineRate,
   oddsTotal,
+  safes,
   seatSoireeGuests,
   soireeConfig,
   soireeReward,
   soireeRunEndsAt,
   spendSoireeFavors,
+  type CrateRewardDef,
+  type DropSourceId,
   type OddsTable,
   type RarityId,
   type Rng,
@@ -14,6 +20,7 @@ import {
   type SoireeRewardTier,
 } from '@coinposh/economy';
 import {
+  CollectibleIdSchema,
   ENTITY_ID_PREFIXES,
   FairProofSchema,
   RARITY_IDS,
@@ -24,9 +31,14 @@ import {
   SoireeGuestSchema,
   SoireeRewardSchema,
   SoireeRunIdSchema,
+  TableSessionIdSchema,
   type CrateId,
+  type CrateKind,
+  type CrateOpenResponse,
+  type Currency,
   type FairProof,
   type PlayerId,
+  type Reward,
   type SoireeActiveFavor,
   type SoireeDraftRequest,
   type SoireeDraftResponse,
@@ -39,12 +51,20 @@ import {
   type SoireeRunId,
   type SoireeStartRequest,
   type SoireeStartResponse,
+  type EpochMs,
+  type TableSessionId,
 } from '@coinposh/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomBase62 } from '../crypto.ts';
 import { Entities } from '../do/entities.ts';
-import { commit, LedgerTx, type CommitContext, type TxKind } from '../do/ledger.ts';
+import {
+  commit,
+  ConservationError,
+  LedgerTx,
+  type CommitContext,
+  type TxKind,
+} from '../do/ledger.ts';
 import type { Command, DoResult } from '../do/PlayerDO.ts';
 import type { Env } from '../env.ts';
 import type { AppEnv } from '../http/context.ts';
@@ -57,36 +77,53 @@ import {
   respond,
 } from '../http/signed.ts';
 import type { FairSeeds } from '../rng/fair.ts';
+import {
+  ALBUM_CARDS,
+  CRATE_CHARM_TYPES,
+  CRATE_DROP_SOURCES,
+  CRATE_OPEN_TX_KIND,
+} from './crates.ts';
+import { measuredActiveRate } from './offline.ts';
+import { grantSafe, readPity } from './safes.ts';
 
 /**
- * PlayerDO tables for Soirée Nights (T-3.06). A run's seat plan, table seed, drafts and proof are
- * frozen when it starts; afterwards only the draft bookkeeping moves forward, and a finished run
- * is final. The partial unique index keeps one run open per player even if every other check
- * were bypassed. `soiree_crates` stamps the rarity each paid crate was rolled at.
+ * PlayerDO tables for Soirée Nights (T-3.06). A run's seat plan, table seed, table session,
+ * drafts and proof are frozen when it starts; afterwards only the draft bookkeeping moves
+ * forward, its table closes once, and a finished run is final. The partial unique indexes keep
+ * one run open and one run table live per player even if every other check were bypassed.
+ * `soiree_coins` names the coins on a run's own table: the seeded heap the house stakes, and
+ * every coin dropped or fused under the run's table session. `soiree_crates` stamps the rarity
+ * each paid crate was rolled at.
  */
 export const SOIREE_SQL = `
   CREATE TABLE IF NOT EXISTS soiree_runs (
-    id             TEXT PRIMARY KEY,
-    seed           INTEGER NOT NULL CHECK (seed BETWEEN 0 AND 4294967295),
-    started_at     INTEGER NOT NULL CHECK (started_at >= 0),
-    ends_at        INTEGER NOT NULL CHECK (ends_at > started_at),
-    interlude_ms   INTEGER NOT NULL CHECK (interlude_ms >= 0),
-    rewarded       INTEGER NOT NULL CHECK (rewarded IN (0, 1)),
-    guests         TEXT NOT NULL,
-    offers         TEXT NOT NULL,
-    proof          TEXT NOT NULL,
-    last_draft     INTEGER NOT NULL DEFAULT 0 CHECK (last_draft >= 0),
-    favors_spent   INTEGER NOT NULL DEFAULT 0 CHECK (favors_spent >= 0),
-    perk_id        TEXT,
-    perk_starts_at INTEGER,
-    perk_ends_at   INTEGER,
-    finished_at    INTEGER,
-    result         TEXT,
+    id              TEXT PRIMARY KEY,
+    seed            INTEGER NOT NULL CHECK (seed BETWEEN 0 AND 4294967295),
+    started_at      INTEGER NOT NULL CHECK (started_at >= 0),
+    ends_at         INTEGER NOT NULL CHECK (ends_at > started_at),
+    interlude_ms    INTEGER NOT NULL CHECK (interlude_ms >= 0),
+    rewarded        INTEGER NOT NULL CHECK (rewarded IN (0, 1)),
+    guests          TEXT NOT NULL,
+    offers          TEXT NOT NULL,
+    proof           TEXT NOT NULL,
+    session         TEXT NOT NULL UNIQUE,
+    parked_snapshot TEXT,
+    table_closed_at INTEGER,
+    last_draft      INTEGER NOT NULL DEFAULT 0 CHECK (last_draft >= 0),
+    favors_spent    INTEGER NOT NULL DEFAULT 0 CHECK (favors_spent >= 0),
+    perk_id         TEXT,
+    perk_starts_at  INTEGER,
+    perk_ends_at    INTEGER,
+    finished_at     INTEGER,
+    result          TEXT,
     CHECK ((finished_at IS NULL) = (result IS NULL)),
+    CHECK (finished_at IS NULL OR table_closed_at IS NOT NULL),
     CHECK ((perk_id IS NULL) = (perk_starts_at IS NULL) AND (perk_id IS NULL) = (perk_ends_at IS NULL))
   );
   CREATE UNIQUE INDEX IF NOT EXISTS soiree_runs_one_open
     ON soiree_runs ((finished_at IS NULL)) WHERE finished_at IS NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS soiree_runs_one_table
+    ON soiree_runs ((table_closed_at IS NULL)) WHERE table_closed_at IS NULL;
   CREATE INDEX IF NOT EXISTS soiree_runs_started ON soiree_runs (started_at);
 
   CREATE TRIGGER IF NOT EXISTS soiree_runs_commitment_fixed BEFORE UPDATE ON soiree_runs
@@ -99,6 +136,9 @@ export const SOIREE_SQL = `
     OR NEW.guests IS NOT OLD.guests
     OR NEW.offers IS NOT OLD.offers
     OR NEW.proof IS NOT OLD.proof
+    OR NEW.session IS NOT OLD.session
+    OR NEW.parked_snapshot IS NOT OLD.parked_snapshot
+    OR (OLD.table_closed_at IS NOT NULL AND NEW.table_closed_at IS NOT OLD.table_closed_at)
     OR NEW.last_draft < OLD.last_draft
     OR NEW.favors_spent < OLD.favors_spent
     OR OLD.finished_at IS NOT NULL
@@ -109,6 +149,25 @@ export const SOIREE_SQL = `
   CREATE TRIGGER IF NOT EXISTS soiree_runs_no_delete BEFORE DELETE ON soiree_runs
   BEGIN
     SELECT RAISE(ABORT, 'soiree_runs is append-only');
+  END;
+
+  CREATE TABLE IF NOT EXISTS soiree_coins (
+    coin_id TEXT PRIMARY KEY REFERENCES coins (id),
+    run_id  TEXT NOT NULL REFERENCES soiree_runs (id),
+    slot    INTEGER CHECK (slot >= 0),
+    staked  INTEGER NOT NULL CHECK (staked IN (0, 1)),
+    CHECK (slot IS NULL OR staked = 1)
+  );
+  CREATE INDEX IF NOT EXISTS soiree_coins_run ON soiree_coins (run_id);
+
+  CREATE TRIGGER IF NOT EXISTS soiree_coins_no_update BEFORE UPDATE ON soiree_coins
+  BEGIN
+    SELECT RAISE(ABORT, 'a coin keeps the Soirée table it was laid on');
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS soiree_coins_no_delete BEFORE DELETE ON soiree_coins
+  BEGIN
+    SELECT RAISE(ABORT, 'soiree_coins is append-only');
   END;
 
   CREATE TABLE IF NOT EXISTS soiree_crates (
@@ -127,12 +186,13 @@ export const SOIREE_SQL = `
   BEGIN
     SELECT RAISE(ABORT, 'soiree_crates is append-only');
   END;
-
-  CREATE INDEX IF NOT EXISTS coins_settled ON coins (state, settled_at);
 `;
 
 /** The mint pays a run's crates into the inventory and its keys into the wallet. */
 export const SOIREE_REWARD_TX_KIND = 'soiree.reward' satisfies TxKind;
+
+/** The house stakes the run's own table, as it stakes the opening heap. */
+export const SOIREE_TABLE_TX_KIND = 'soiree.table' satisfies TxKind;
 
 const RUN_ID_LENGTH = 20;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -159,6 +219,9 @@ interface RunRow extends Record<string, SqlStorageValue> {
   readonly guests: string;
   readonly offers: string;
   readonly proof: string;
+  readonly session: string;
+  readonly parked_snapshot: string | null;
+  readonly table_closed_at: number | null;
   readonly last_draft: number;
   readonly favors_spent: number;
   readonly perk_id: string | null;
@@ -179,6 +242,11 @@ export interface SoireeRun {
   /** `offers[n - 1]` is draft `n`, which follows guest `n`. */
   readonly offers: readonly (readonly SoireeFavor[])[];
   readonly proof: FairProof;
+  /** The table session the run's own table is played under while it is live. */
+  readonly session: TableSessionId;
+  /** The main table's stored poses, put back when the run's table closes. */
+  readonly parkedSnapshot: string | null;
+  readonly tableClosedAt: number | null;
   /** The latest draft taken or passed; 0 before the first. */
   readonly lastDraft: number;
   readonly favorsSpent: number;
@@ -197,6 +265,9 @@ function toRun(row: RunRow): SoireeRun {
     guests: StoredGuestsSchema.parse(JSON.parse(row.guests)),
     offers: StoredOffersSchema.parse(JSON.parse(row.offers)),
     proof: FairProofSchema.parse(JSON.parse(row.proof)),
+    session: TableSessionIdSchema.parse(row.session),
+    parkedSnapshot: row.parked_snapshot,
+    tableClosedAt: row.table_closed_at,
     lastDraft: row.last_draft,
     favorsSpent: row.favors_spent,
     perk:
@@ -285,16 +356,25 @@ export interface FrontFall {
 }
 
 /**
- * Front-edge falls the server accepted through table claims in `[from, until)`, by the server
- * clock that settled them. Side falls go to the house as `lost` and fusions as `fused`, so only
- * a coin the player really pushed off the front is `claimed`.
+ * Front-edge falls of the run's own table coins the server accepted through table claims in
+ * `[from, until)`, by the server clock that settled them. Side falls go to the house as `lost`
+ * and fusions as `fused`, so only a coin the player really pushed off the front is `claimed`;
+ * a coin of the main table, however it was staged before the run, never counts.
  */
-export function frontFalls(sql: SqlStorage, from: number, until: number): FrontFall[] {
+export function frontFalls(
+  sql: SqlStorage,
+  runId: SoireeRunId,
+  from: number,
+  until: number,
+): FrontFall[] {
   return sql
     .exec<{ tier: string; at: number }>(
-      `SELECT tier, settled_at AS at FROM coins
-       WHERE state = 'claimed' AND settled_at >= ? AND settled_at < ?
-       ORDER BY settled_at, rowid`,
+      `SELECT coins.tier AS tier, coins.settled_at AS at
+       FROM soiree_coins JOIN coins ON coins.id = soiree_coins.coin_id
+       WHERE soiree_coins.run_id = ? AND coins.state = 'claimed'
+         AND coins.settled_at >= ? AND coins.settled_at < ?
+       ORDER BY coins.settled_at, coins.rowid`,
+      runId,
       from,
       until,
     )
@@ -360,7 +440,11 @@ export function judgeSoiree(
 }
 
 function judgeRun(sql: SqlStorage, run: SoireeRun, now: number): GuestVerdict[] {
-  return judgeSoiree(run, frontFalls(sql, run.startedAt, Math.min(now + 1, run.endsAt)), now);
+  return judgeSoiree(
+    run,
+    frontFalls(sql, run.id, run.startedAt, Math.min(now + 1, run.endsAt)),
+    now,
+  );
 }
 
 function isResolved(verdict: GuestVerdict): boolean {
@@ -388,10 +472,100 @@ function rewardedRunsToday(sql: SqlStorage, now: number): number {
 
 const NO_REWARD: SoireeRewardTier = { crates: 0, perfectCrates: 0, keys: 0 };
 
+/** What PlayerDO does to the live table when a run's own table opens and closes. */
+export interface RunTable {
+  /**
+   * Starts the table session the run is played under, superseding the main table's, and
+   * returns it with the main table's stored poses so they can be put back at close.
+   */
+  open(at: EpochMs): { readonly session: TableSessionId; readonly parked: string | null };
+  /** Lays the run's fresh table from its seed, every coin staked by the house. */
+  lay(runId: SoireeRunId, at: EpochMs): void;
+  /**
+   * Settles the run's coins still on its table, puts the main table's poses back and starts a
+   * session nobody holds yet, so the next table op must boot the main table again.
+   */
+  close(run: SoireeRun, at: EpochMs): void;
+}
+
+/** The run whose own table is live, finished or not; at most one. */
+export function liveSoireeRun(sql: SqlStorage): SoireeRun | null {
+  return readRun(sql, 'table_closed_at IS NULL');
+}
+
+/** Closes a run's table once: a boot, an ascension, a finish or the next start may close it. */
+export function closeSoireeTable(
+  sql: SqlStorage,
+  run: SoireeRun,
+  at: EpochMs,
+  table: RunTable,
+): void {
+  if (run.tableClosedAt !== null) return;
+  table.close(run, at);
+  sql.exec('UPDATE soiree_runs SET table_closed_at = ? WHERE id = ?', at, run.id);
+}
+
+/** Puts `coinId` on the run's own table; a seeded coin keeps its heap slot. */
+export function recordSoireeCoin(
+  sql: SqlStorage,
+  runId: SoireeRunId,
+  coinId: string,
+  staked: boolean,
+  slot: number | null = null,
+): void {
+  sql.exec(
+    'INSERT INTO soiree_coins (coin_id, run_id, slot, staked) VALUES (?, ?, ?, ?)',
+    coinId,
+    runId,
+    slot,
+    staked ? 1 : 0,
+  );
+}
+
+export interface SoireeCoinTag {
+  readonly runId: SoireeRunId;
+  /** The house staked it, or it was fused from a coin the house staked. */
+  readonly staked: boolean;
+}
+
+/** The run table a coin was laid, dropped or fused on, or null for a main-table coin. */
+export function soireeCoin(sql: SqlStorage, coinId: string): SoireeCoinTag | null {
+  const row = sql
+    .exec<{ run_id: string; staked: number }>(
+      'SELECT run_id, staked FROM soiree_coins WHERE coin_id = ?',
+      coinId,
+    )
+    .toArray()[0];
+  return row === undefined
+    ? null
+    : { runId: SoireeRunIdSchema.parse(row.run_id), staked: row.staked === 1 };
+}
+
 /**
- * Settles a run inside the caller's storage transaction: judges every guest, rolls the crates'
- * rarities on a fresh fair roll (the plain crates first, then the perfect ones) and pays the
- * tier in one `soiree.reward` transaction. A run past the day's rewarded limit settles with no
+ * The drafted perk in force at `now` by the server clock, while its run's table is live: it
+ * lifts its stat only on the table it was drafted for.
+ */
+export function activeSoireePerk(sql: SqlStorage, now: EpochMs): SoireeFavorDef | null {
+  const row = sql
+    .exec<{ perk_id: string }>(
+      `SELECT perk_id FROM soiree_runs
+       WHERE table_closed_at IS NULL AND perk_starts_at <= ? AND ? < perk_ends_at`,
+      now,
+      now,
+    )
+    .toArray()[0];
+  if (row === undefined) return null;
+  const favor = soireeConfig.favors.find((f) => f.id === row.perk_id);
+  if (favor === undefined) {
+    throw new Error(`Drafted Soirée perk "${row.perk_id}" is missing from soireeConfig.favors.`);
+  }
+  return favor;
+}
+
+/**
+ * Settles a run inside the caller's storage transaction: judges every guest, closes its table,
+ * rolls the crates' rarities on a fresh fair roll (the plain crates first, then the perfect
+ * ones) and pays the tier in one `soiree.reward` transaction. A run past the day's rewarded limit settles with no
  * payout.
  */
 function settleRun(
@@ -399,8 +573,10 @@ function settleRun(
   fair: FairSeeds,
   run: SoireeRun,
   context: CommitContext,
+  table: RunTable,
 ): StoredResult {
   const verdicts = judgeRun(sql, run, context.at);
+  closeSoireeTable(sql, run, context.at, table);
   const results: SoireeGuestResult[] = verdicts.map((v) => ({
     guestId: v.guest.id,
     fulfilled: v.status === 'fulfilled',
@@ -464,12 +640,15 @@ function settleRun(
  * Starts a run inside the caller's storage transaction. One run is open at a time: one still
  * inside its 8 minutes is refused with the time it has left, and one that ran out without a
  * finish is settled first, so a client that lost its run ID is never locked out. The seat plan,
- * table seed and every draft come from one fair roll; the clock is the server's.
+ * table seed and every draft come from one fair roll; the clock is the server's. The run is
+ * played on its own table: a new table session (the one `GET /v1/state` names from now on)
+ * on which the house lays the seed's heap, so only coins of that table can serve a guest.
  */
 export function startSoireeRun(
   sql: SqlStorage,
   fair: FairSeeds,
   context: CommitContext,
+  table: RunTable,
 ): SoireeStartResponse {
   const open = readRun(sql, 'finished_at IS NULL');
   if (open !== null) {
@@ -480,7 +659,7 @@ export function startSoireeRun(
         { retryAfterMs: open.endsAt - context.at },
       );
     }
-    settleRun(sql, fair, open, context);
+    settleRun(sql, fair, open, context, table);
   }
 
   const id = newRunId();
@@ -493,10 +672,12 @@ export function startSoireeRun(
   };
   const startedAt = context.at;
   const rewarded = rewardedRunsToday(sql, startedAt) < soireeConfig.rewardedRunsPerDay;
+  const { session, parked } = table.open(startedAt);
   sql.exec(
     `INSERT INTO soiree_runs
-       (id, seed, started_at, ends_at, interlude_ms, rewarded, guests, offers, proof)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, seed, started_at, ends_at, interlude_ms, rewarded, guests, offers, proof, session,
+        parked_snapshot)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     drawn.seed,
     startedAt,
@@ -506,7 +687,10 @@ export function startSoireeRun(
     JSON.stringify(drawn.guests),
     JSON.stringify(drawn.offers),
     JSON.stringify(proof),
+    session,
+    parked,
   );
+  table.lay(id, startedAt);
   const first = drawn.offers[0];
   if (first === undefined) throw new Error('A Soirée run seats one guest and has no draft.');
   return {
@@ -616,6 +800,7 @@ export function finishSoireeRun(
   fair: FairSeeds,
   body: SoireeFinishRequest,
   context: CommitContext,
+  table: RunTable,
 ): Omit<SoireeFinishResponse, 'wallet'> {
   const run = namedRun(sql, body.runId);
   if (run.result !== null) return run.result;
@@ -626,7 +811,7 @@ export function finishSoireeRun(
       { retryAfterMs: run.endsAt - context.at },
     );
   }
-  return settleRun(sql, fair, run, context);
+  return settleRun(sql, fair, run, context, table);
 }
 
 /** The rarity a Soirée paid this crate at, or null for any other crate. */
@@ -635,6 +820,120 @@ export function soireeCrateRarity(sql: SqlStorage, crateId: string): RarityId | 
     .exec<{ rarity: string }>('SELECT rarity FROM soiree_crates WHERE crate_id = ?', crateId)
     .toArray()[0];
   return row === undefined ? null : RaritySchema.parse(row.rarity);
+}
+
+/** Basis points, as `crateRewards` charm and safe chances are drawn. */
+const BP = 10_000;
+
+/**
+ * Opens a Soirée crate inside the caller's storage transaction, at the rarity the run paid it
+ * at. Past the rarity it opens like any Vault Crate (routes/crates.ts drawCrate, in its order):
+ * the charm chance and kind, the album card of that rarity, then the safe chance, all from one
+ * fair roll, paid as that rarity's `crateRewards`. The rarity was not drawn on the vault table,
+ * so its pity counters stay as they are.
+ */
+export function openSoireeCrate(
+  sql: SqlStorage,
+  fair: FairSeeds,
+  crateId: CrateId,
+  rarity: RarityId,
+  context: CommitContext,
+): Omit<CrateOpenResponse, 'wallet'> {
+  const row = sql
+    .exec<{ kind: CrateKind; state: string; opened: number; held: number }>(
+      `SELECT crates.kind AS kind, crates.state AS state,
+              EXISTS (SELECT 1 FROM crate_opens WHERE crate_id = crates.id) AS opened,
+              (SELECT COALESCE(SUM(delta), 0) FROM ledger
+                WHERE ref = crates.id AND account = 'inventory' AND unit = 'crate') AS held
+       FROM crates WHERE crates.id = ?`,
+      crateId,
+    )
+    .toArray()[0];
+  if (row === undefined) {
+    throw new ApiFailure('not_found', 'No crate with that ID belongs to this account.');
+  }
+  if (row.opened !== 0) {
+    throw new ApiFailure('conflict', 'That crate is already open. Refresh state.');
+  }
+  if (row.state !== 'claimed' || row.held !== 1) {
+    throw new ConservationError(
+      `Soirée crate ${crateId} is ${row.state} with ${row.held} in the inventory; a paid crate is claimed and held once.`,
+    );
+  }
+  const source = CRATE_DROP_SOURCES[row.kind] as DropSourceId;
+  const roll = fair.roll('crate.soiree', crateId, context.at);
+  const reward: CrateRewardDef = crateRewards[rarity];
+
+  let charmType: string | null = null;
+  if (CRATE_CHARM_TYPES.length > 0 && roll.rng.nextInt(BP) < reward.charmChance) {
+    charmType = CRATE_CHARM_TYPES[roll.rng.nextInt(CRATE_CHARM_TYPES.length)] ?? null;
+  }
+  let collectibleId: string | null = null;
+  if (reward.albumCard) {
+    const cards = ALBUM_CARDS.filter((item) => item.rarity === rarity);
+    collectibleId = cards[cards.length > 0 ? roll.rng.nextInt(cards.length) : 0]?.id ?? null;
+  }
+  const safeDrawn = source === safes.crateDrop.source && roll.rng.nextInt(BP) < reward.safeChance;
+
+  const payout: [Currency, number][] = [
+    ['coins', crateIncomeCoins(reward.incomeSeconds, measuredActiveRate(sql), offlineRate)],
+    ['pearls', reward.pearls],
+    ['keys', reward.keys],
+    ['tickets', reward.tickets],
+  ];
+  const tx = new LedgerTx(CRATE_OPEN_TX_KIND).move('inventory', 'house', 'crate', 1, crateId);
+  const rewards: Reward[] = [];
+  for (const [currency, amount] of payout) {
+    if (amount <= 0) continue;
+    tx.move('mint', 'wallet', currency, amount, crateId);
+    rewards.push({ kind: 'currency', currency, amount });
+  }
+  if (collectibleId !== null) {
+    const collectible = CollectibleIdSchema.parse(collectibleId);
+    tx.move('mint', 'inventory', 'collectible', 1, collectible);
+    rewards.push({ kind: 'collectible', collectibleId: collectible });
+  }
+  commit(sql, tx, context);
+
+  let safeId: string | null = null;
+  if (safeDrawn) {
+    const safe = grantSafe(
+      sql,
+      { type: safes.crateDrop.type, source: `crate:${crateId}` },
+      context,
+    );
+    safeId = safe.id;
+    rewards.push({ kind: 'safe', safe });
+  }
+  sql.exec(
+    `INSERT INTO crate_opens (crate_id, opened_at, rarity, scripted, charm_type, collectible_id, safe_id)
+     VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    crateId,
+    context.at,
+    rarity,
+    charmType,
+    collectibleId,
+    safeId,
+  );
+
+  const pityState = readPity(sql, source);
+  return {
+    crateId,
+    roll: {
+      rarity: RaritySchema.parse(rarity),
+      rewards,
+      proof: {
+        serverSeedHash: roll.serverSeedHash,
+        clientSeed: roll.clientSeed,
+        nonce: roll.nonce,
+      },
+      pity: {
+        rare: pityState.rare ?? 0,
+        exquisite: pityState.exquisite ?? 0,
+        legendary: pityState.legendary ?? 0,
+      },
+    },
+  };
 }
 
 export interface SoireeHost {

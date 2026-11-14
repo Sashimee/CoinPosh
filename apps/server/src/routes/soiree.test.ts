@@ -1,11 +1,14 @@
 import {
   coinTiers,
   createRng,
+  crateRewards,
   oddsTotal,
+  openingHeap,
   soireeConfig,
   soireeReward,
   soireeSeatCount,
   type CoinTierId,
+  type SoireeFavorDef,
 } from '@coinposh/economy';
 import {
   endpoints,
@@ -26,14 +29,19 @@ import { IDEMPOTENT_REPLAYED_HEADER } from '../http/cors.ts';
 import { newIdempotencyKey, newSession, type Session } from '../test/client.ts';
 import {
   claims,
+  drop,
+  dropAsClient,
   expectConserved,
   expectError,
   playerStub,
   reload,
+  state,
   tableSession,
 } from '../test/game.ts';
 import {
   judgeSoiree,
+  liveSoireeRun,
+  recordSoireeCoin,
   rollSoiree,
   rollSoireeRarity,
   SOIREE_REWARD_TX_KIND,
@@ -97,28 +105,35 @@ async function finishOk(
 }
 
 /**
- * Pushes `count` coins of `tier` over an edge through the real claims route at the current
- * clock. The house stakes each coin on the table first, as the opening heap does.
+ * Stakes `count` coins of `tier` on the table in play: the live run's own table while one is
+ * open, the main table otherwise. The house stakes each coin, as it stakes the opening heap.
  */
+async function stage(session: Session, tier: CoinTierId, count: number): Promise<string[]> {
+  await tableSession(session);
+  const value = coinTiers.find((t) => t.id === tier)?.value;
+  if (value === undefined) throw new Error(`No coin tier ${tier}.`);
+  return inPlayer(session, (sql) => {
+    const run = liveSoireeRun(sql);
+    return Array.from({ length: count }, () => {
+      const coin = new Entities(sql).mintCoin(tier, value, null, 'table', 0, Date.now());
+      if (run !== null) recordSoireeCoin(sql, run.id, coin.id, true);
+      commit(sql, new LedgerTx('grant.heap').move('house', 'table', 'coins', value, coin.id), {
+        at: Date.now(),
+        idempotencyKey: null,
+      });
+      return coin.id;
+    });
+  });
+}
+
+/** Pushes `count` staged coins of `tier` over an edge through the real claims route now. */
 async function pushOff(
   session: Session,
   tier: CoinTierId,
   count: number,
   edge: 'front' | 'left' | 'right' = 'front',
 ): Promise<void> {
-  await tableSession(session);
-  const value = coinTiers.find((t) => t.id === tier)?.value;
-  if (value === undefined) throw new Error(`No coin tier ${tier}.`);
-  const ids = await inPlayer(session, (sql) =>
-    Array.from({ length: count }, () => {
-      const coin = new Entities(sql).mintCoin(tier, value, null, 'table', 0, Date.now());
-      commit(sql, new LedgerTx('grant.heap').move('house', 'table', 'coins', value, coin.id), {
-        at: Date.now(),
-        idempotencyKey: null,
-      });
-      return coin.id;
-    }),
-  );
+  const ids = await stage(session, tier, count);
   const { results } = await claims(
     session,
     ids.map((coinId) => ({ kind: 'fall', coinId, tick: 0, edge })),
@@ -306,6 +321,42 @@ describe('guest judging from accepted claims', () => {
     clock = run.startedAt + run.durationMs;
     const finished = await finishOk(session, run.runId);
     expect(finished.results[0]).toEqual({ guestId: guest.id, fulfilled: false, progress: 0 });
+    await expectConserved(session);
+  });
+
+  it('counts nothing for same-tier coins staged on the main table before the run', async () => {
+    const session = await newSession();
+    const staged = new Map<string, string[]>();
+    for (const { id } of coinTiers.slice(0, 5)) staged.set(id, await stage(session, id, 30));
+    clock += 1;
+    const run = await startOk(session);
+    const guest = guestAt(run, 1);
+    const sameTier = staged.get(guest.request.tier) ?? [];
+    const ids = sameTier.slice(0, guest.request.count);
+    expect(ids).toHaveLength(guest.request.count);
+
+    const { results } = await claims(
+      session,
+      ids.map((coinId) => ({ kind: 'fall', coinId, tick: 0, edge: 'front' })),
+    );
+    expect(results).toEqual(ids.map(() => ({ status: 'rejected', reason: 'not_on_table' })));
+    const fused = await claims(session, [{ kind: 'fusion', coinIds: sameTier.slice(-3), tick: 0 }]);
+    expect(fused.results).toEqual([{ status: 'rejected', reason: 'not_on_table' }]);
+
+    clock = run.startedAt + run.durationMs;
+    const finished = await finishOk(session, run.runId);
+    expect(finished.results[0]).toEqual({ guestId: guest.id, fulfilled: false, progress: 0 });
+    const left = await inPlayer(
+      session,
+      (sql) =>
+        sql
+          .exec<{ n: number }>(
+            `SELECT COUNT(*) AS n FROM coins WHERE state = 'table' AND id IN (${ids.map(() => '?').join(',')})`,
+            ...ids,
+          )
+          .one().n,
+    );
+    expect(left).toBe(ids.length);
     await expectConserved(session);
   });
 
@@ -631,19 +682,62 @@ describe('POST /v1/soiree/finish', () => {
     await expectConserved(session);
   });
 
-  it('refuses to open a Soirée crate at the vault odds it was not paid at', async () => {
+  it('opens a Soirée crate once, at the rarity it was paid at, leaving the vault pity alone', async () => {
     const session = await newSession();
     const run = await startOk(session);
-    await serve(session, guestAt(run, 1));
-    clock = run.startedAt + run.durationMs;
+    for (const guest of run.guests) await serve(session, guest);
     const finished = await finishOk(session, run.runId);
-    const crate = finished.rewards.find((r) => r.kind === 'crate');
-    if (crate?.kind !== 'crate') throw new Error('One guest served pays a crate.');
-    await expectError(
-      await post(session, endpoints.cratesOpen.path, { crateId: crate.crateId }),
-      409,
-      'not_ready',
+    const paid = finished.rewards.flatMap((r) => (r.kind === 'crate' ? [r] : []));
+    expect(paid.length).toBeGreaterThan(0);
+    const pityBefore = await inPlayer(session, (sql) =>
+      sql.exec('SELECT * FROM pity_counters ORDER BY source, rarity').toArray(),
     );
+
+    for (const crate of paid) {
+      const key = newIdempotencyKey();
+      const response = await post(
+        session,
+        endpoints.cratesOpen.path,
+        { crateId: crate.crateId },
+        key,
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      const opened = endpoints.cratesOpen.response.parse(await response.json());
+      expect(opened.roll.rarity).toBe(crate.rarity);
+      const reward = crateRewards[crate.rarity];
+      for (const currency of ['pearls', 'keys', 'tickets'] as const) {
+        const amount = opened.roll.rewards.find(
+          (r) => r.kind === 'currency' && r.currency === currency,
+        );
+        expect(amount?.kind === 'currency' ? amount.amount : 0).toBe(reward[currency]);
+      }
+      const replay = await post(
+        session,
+        endpoints.cratesOpen.path,
+        { crateId: crate.crateId },
+        key,
+      );
+      expect(replay.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+      await expectError(
+        await post(session, endpoints.cratesOpen.path, { crateId: crate.crateId }),
+        409,
+        'conflict',
+      );
+    }
+    const pityAfter = await inPlayer(session, (sql) =>
+      sql.exec('SELECT * FROM pity_counters ORDER BY source, rarity').toArray(),
+    );
+    expect(pityAfter).toEqual(pityBefore);
+    const held = await inPlayer(
+      session,
+      (sql) =>
+        sql
+          .exec<{ n: number }>(
+            "SELECT COALESCE(SUM(delta), 0) AS n FROM ledger WHERE account = 'inventory' AND unit = 'crate'",
+          )
+          .one().n,
+    );
+    expect(held).toBe(0);
     await expectConserved(session);
   });
 
@@ -699,5 +793,165 @@ describe('Soirée rolls', () => {
       expect(seen.has(rarity)).toBe(soireeConfig.perfectCrateOdds[rarity] > 0);
     }
     expect(oddsTotal(soireeConfig.crateOdds)).toBeGreaterThan(0);
+  });
+});
+
+describe('the run’s own table', () => {
+  function mainTable(session: Session) {
+    return inPlayer(session, (sql) => ({
+      snapshot: sql.exec('SELECT * FROM table_snapshot').toArray(),
+      coins: sql
+        .exec<{ id: string }>(
+          "SELECT id FROM coins WHERE state = 'table' AND id NOT IN (SELECT coin_id FROM soiree_coins) ORDER BY rowid",
+        )
+        .toArray()
+        .map((row) => row.id),
+    }));
+  }
+
+  it('starts its own session on a heap the house stakes from the run, which pays no coins', async () => {
+    const session = await newSession();
+    const before = await reload(session);
+    await startOk(session);
+    const during = await state(session);
+
+    expect(during.table.session).not.toBe(before.table.session);
+    await expectError(
+      await session.call(endpoints.tableDrop.path, {
+        body: { session: before.table.session, x: 0, tick: 0 },
+      }),
+      409,
+      'session_superseded',
+    );
+    expect(during.table.coins).toHaveLength(openingHeap.coins);
+    expect(during.table.coins.every((c) => c.tier === openingHeap.tier)).toBe(true);
+    const mainIds = new Set(before.table.coins.map((c) => c.id));
+    expect(during.table.coins.some((c) => mainIds.has(c.id))).toBe(false);
+
+    const booted = await reload(session);
+    expect(booted.table.layout?.coins).toEqual(
+      Array.from({ length: openingHeap.coins }, (_, slot) => ({ kind: 'heapSlot', slot })),
+    );
+    const heapCoin = booted.table.coins[0];
+    if (heapCoin === undefined) throw new Error('The run table has no heap.');
+    const { results, wallet } = await claims(session, [
+      { kind: 'fall', coinId: heapCoin.id, tick: 0, edge: 'front' },
+    ]);
+    expect(results).toEqual([{ status: 'accepted', credited: 0, cascade: null, minted: null }]);
+    expect(wallet.coins).toBe(booted.wallet.coins);
+    await expectConserved(session);
+  });
+
+  it('settles its coins to the house and puts the main table back when the run finishes', async () => {
+    const session = await newSession();
+    await reload(session);
+    const main = await mainTable(session);
+    const run = await startOk(session);
+    const runSession = await tableSession(session);
+    const [dropped] = await dropAsClient(session, 1);
+    if (dropped === undefined) throw new Error('No drop was made.');
+    const walletBefore = (await state(session)).wallet.coins;
+
+    clock = run.startedAt + run.durationMs;
+    await finishOk(session, run.runId);
+    expect(await tableSession(session)).not.toBe(runSession);
+    expect(await mainTable(session)).toEqual(main);
+    const settled = await inPlayer(session, (sql) =>
+      sql
+        .exec<{ state: string; n: number }>(
+          `SELECT coins.state AS state, COUNT(*) AS n FROM soiree_coins
+           JOIN coins ON coins.id = soiree_coins.coin_id GROUP BY coins.state`,
+        )
+        .toArray(),
+    );
+    expect(settled).toEqual([{ state: 'refunded', n: openingHeap.coins + 1 }]);
+    const after = await state(session);
+    expect(after.table.coins.map((c) => c.id)).toEqual(main.coins);
+    expect(after.wallet.coins).toBe(walletBefore + 1);
+    await expectConserved(session);
+  });
+
+  it('keeps the run table through a boot mid-run and closes it on a boot after the end', async () => {
+    const session = await newSession();
+    const main = (await reload(session)).table.coins.map((c) => c.id);
+    const run = await startOk(session);
+    const midRun = await reload(session);
+    expect(midRun.table.coins.map((c) => c.id)).not.toEqual(main);
+    expect(midRun.table.coins).toHaveLength(openingHeap.coins);
+
+    clock = run.startedAt + run.durationMs;
+    const afterEnd = await reload(session);
+    expect(afterEnd.table.coins.map((c) => c.id)).toEqual(main);
+    const finished = await finishOk(session, run.runId);
+    expect(finished.guestsServed).toBe(0);
+    await expectConserved(session);
+  });
+});
+
+describe('drafted perks', () => {
+  function favor(id: string): SoireeFavorDef {
+    const def = soireeConfig.favors.find((f) => f.id === id);
+    if (def === undefined) throw new Error(`No Soirée favor ${id}.`);
+    return def;
+  }
+
+  function grantPerk(
+    session: Session,
+    perk: SoireeFavorDef,
+    startsAt: number,
+    endsAt = startsAt + perk.durationMs,
+  ) {
+    return inPlayer(session, (sql) => {
+      sql.exec(
+        'UPDATE soiree_runs SET perk_id = ?, perk_starts_at = ?, perk_ends_at = ? WHERE finished_at IS NULL',
+        perk.id,
+        startsAt,
+        endsAt,
+      );
+    });
+  }
+
+  function mintMicros(session: Session, coinId: string) {
+    return inPlayer(
+      session,
+      (sql) =>
+        sql.exec<{ m: number }>('SELECT mint_micros AS m FROM coins WHERE id = ?', coinId).one().m,
+    );
+  }
+
+  it('raises the minted value of drops only inside the champagne tower’s window', async () => {
+    const session = await newSession();
+    const tower = favor('champagneTower');
+    expect(tower.stat).toBe('coinValue');
+    const run = await startOk(session);
+    const base = await mintMicros(session, (await drop(session)).coin.id);
+    await grantPerk(session, tower, clock + 1_000);
+
+    expect(await mintMicros(session, (await drop(session)).coin.id)).toBe(base);
+    clock += 1_000;
+    const boosted = Math.floor((base * (10_000 + tower.magnitudeBp)) / 10_000);
+    expect(await mintMicros(session, (await drop(session)).coin.id)).toBe(boosted);
+    const [reserved] = await dropAsClient(session, 1);
+    if (reserved === undefined) throw new Error('No drop was made.');
+    expect(await mintMicros(session, reserved.coin.id)).toBe(boosted);
+    await expectConserved(session);
+
+    clock += tower.durationMs;
+    expect(await mintMicros(session, (await drop(session)).coin.id)).toBe(base);
+    clock = run.startedAt + run.durationMs;
+    await finishOk(session, run.runId);
+    await expectConserved(session);
+  });
+
+  it('ends with the run table: a perk never lifts the main table', async () => {
+    const session = await newSession();
+    const run = await startOk(session);
+    const base = await mintMicros(session, (await drop(session)).coin.id);
+    clock = run.startedAt + run.durationMs;
+    await grantPerk(session, favor('goldLeaf'), run.startedAt, clock + HOUR_MS);
+    await finishOk(session, run.runId);
+    await reload(session);
+    expect(await mintMicros(session, (await drop(session)).coin.id)).toBe(base);
+    await expectConserved(session);
   });
 });
