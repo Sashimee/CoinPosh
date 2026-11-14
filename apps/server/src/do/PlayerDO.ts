@@ -229,7 +229,8 @@ type MetaKey =
   | 'table_session_max_tick'
   | 'table_session_origin'
   | 'snapshot_tokens'
-  | 'snapshot_tokens_at';
+  | 'snapshot_tokens_at'
+  | 'album_bonus';
 
 const CASCADE_WINDOW_TICKS = cascadeWindowTicks(SIM_TICKS_PER_SECOND);
 
@@ -475,9 +476,13 @@ export class PlayerDO
       const context = { at: now, idempotencyKey: command.idempotencyKey };
       this.adoptFairSeed(now);
       const scripted = this.meta('ftue_crate') === command.body.crateId;
-      const bonusBefore = albumBonus(this.sql);
+      const bonusBefore = this.albumBonus();
       const opened = openCrate(this.sql, this.fair, command.body, context, scripted);
-      if (albumBonus(this.sql) !== bonusBefore) this.repriceBuffer();
+      const bonusAfter = albumBonus(this.sql);
+      if (bonusAfter !== bonusBefore) {
+        this.setMeta('album_bonus', String(bonusAfter));
+        this.repriceBuffer();
+      }
       this.reserveBuffer(context);
       return { ...opened, wallet: readWallet(this.sql) };
     });
@@ -531,7 +536,7 @@ export class PlayerDO
       levels: this.levels(),
       venue: this.venueId(),
       charms: 0,
-      albumBonus: albumBonus(this.sql),
+      albumBonus: this.albumBonus(),
     };
   }
 
@@ -1408,8 +1413,26 @@ export class PlayerDO
    */
   private mintedMicros(tier: CoinTier, levels: UpgradeLevelMap): number {
     const venue = currentVenue(this.sql);
-    const coinValueMultiplier = venue.coinValueMultiplier * (1 + albumBonus(this.sql));
+    const coinValueMultiplier = venue.coinValueMultiplier * (1 + this.albumBonus());
     return mintedCoinMicros(tierDef(tier), { ...venue, coinValueMultiplier }, levels);
+  }
+
+  /**
+   * The completed sets' bonus, kept in meta because every mint reads it and only a crate open
+   * can change it. A player whose crate opens predate the key derives it from them once.
+   */
+  private albumBonus(): number {
+    const stored = this.meta('album_bonus');
+    if (stored === null) {
+      const derived = albumBonus(this.sql);
+      this.setMeta('album_bonus', String(derived));
+      return derived;
+    }
+    const bonus = Number(stored);
+    if (!Number.isFinite(bonus) || bonus < 0) {
+      throw new Error(`PlayerDO meta "album_bonus" is ${stored}, not a non-negative number.`);
+    }
+    return bonus;
   }
 
   private startingCoins(): number {

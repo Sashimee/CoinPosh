@@ -59,7 +59,8 @@ function giveCrate(session: Session): Promise<string> {
 
 /**
  * Books an opened crate that drew `item`, the way openCrate records one: an album card is minted
- * into the inventory in the crate.open transaction, a charm is drawn and recorded only.
+ * into the inventory in the crate.open transaction, a charm is drawn and recorded only. The
+ * cached set bonus is dropped as openCrate would refresh it, so the player derives it again.
  */
 async function bookItem(session: Session, item: string): Promise<void> {
   const crateId = await giveCrate(session);
@@ -77,6 +78,7 @@ async function bookItem(session: Session, item: string): Promise<void> {
       charm ? item : null,
       charm ? null : item,
     );
+    sql.exec("DELETE FROM meta WHERE key = 'album_bonus'");
   });
 }
 
@@ -127,6 +129,21 @@ function bufferMicros(session: Session): Promise<(number | null)[]> {
       .toArray()
       .map((row) => row.micros),
   );
+}
+
+function cachedBonus(session: Session): Promise<number | null> {
+  return inPlayer(session, (sql) => {
+    const row = sql
+      .exec<{ value: string }>("SELECT value FROM meta WHERE key = 'album_bonus'")
+      .toArray()[0];
+    return row === undefined ? null : Number(row.value);
+  });
+}
+
+function completedBonus(response: AlbumResponse): number {
+  return response.sets
+    .filter((set) => set.completed)
+    .reduce((bonus, set) => bonus + setDef(set.id).globalBonus, 0);
 }
 
 function microsWithBonus(bonus: number): number {
@@ -268,13 +285,31 @@ describe('GET /v1/album', () => {
     }
     if (completed === null) throw new Error('20 legendary-or-better opens never drew the card');
 
-    expect(setOf(await getAlbum(session), GALA.id).completed).toBe(true);
+    const response = await getAlbum(session);
+    expect(setOf(response, GALA.id).completed).toBe(true);
+    expect(await cachedBonus(session)).toBe(completedBonus(response));
+    expect(await cachedBonus(session)).toBe(GALA.globalBonus);
     const raised = microsWithBonus(GALA.globalBonus);
     expect(raised).toBeGreaterThan(microsWithBonus(0));
     expect(new Set(await bufferMicros(session))).toEqual(new Set([raised]));
     await dropAsClient(session, 3);
     expect(new Set(await bufferMicros(session))).toEqual(new Set([raised]));
     await expectConserved(session);
+  });
+
+  it('keeps the bonus every mint reads cached, equal to the album after real crate opens', async () => {
+    const session = await newSession();
+    await state(session);
+    expect(await cachedBonus(session)).toBe(0);
+    for (let i = 0; i < 6; i++) await openCrate(session, await giveCrate(session));
+    expect(await cachedBonus(session)).toBe(completedBonus(await getAlbum(session)));
+
+    await bookSet(session, DECK);
+    expect(await cachedBonus(session)).toBeNull();
+    expect((await playerStub(session.tokens.playerId).envelopeTable()).albumBonus).toBe(
+      DECK.globalBonus,
+    );
+    expect(await cachedBonus(session)).toBe(completedBonus(await getAlbum(session)));
   });
 
   it('is read-only: fetching it writes nothing and replays no client value', async () => {
