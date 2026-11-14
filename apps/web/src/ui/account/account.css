@@ -1,0 +1,656 @@
+.cp-account-root {
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* The progress choice opens over the Settings sheet, not the table: a translucent panel or the
+   shared navy scrim would let the settings rows read through it, so it is opaque and the
+   settings beneath sink into a deeper dark. */
+.cp-account-root .cp-backdrop {
+  background:
+    radial-gradient(120% 80% at 50% 100%, rgb(var(--cp-navy-lacquer-rgb) / 0.55), transparent 70%),
+    rgb(0 0 0 / 0.62);
+}
+
+.cp-account-root .cp-sheet {
+  background:
+    linear-gradient(170deg, rgb(var(--cp-ivory-rgb) / 0.08), transparent 30%), var(--cp-lacquer);
+  box-shadow:
+    0 -18px 48px rgb(0 0 0 / 0.5),
+    var(--cp-glow-inner);
+}
+
+.cp-ui-host[data-quality='high'] .cp-account-root .cp-sheet-layer.is-open .cp-sheet {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.cp-account {
+  position: relative;
+  border-radius: var(--cp-radius-md);
+  scroll-margin-top: 12px;
+}
+
+.cp-account .cp-section-title .cp-account-mark {
+  width: 18px;
+  height: 18px;
+}
+
+.cp-account-intro {
+  margin: -2px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--cp-ivory);
+}
+
+.cp-account-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cp-account-mode-title {
+  margin: 0;
+  font-family: var(--cp-font-display);
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--cp-champagne);
+}
+
+.cp-account-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* One shape for both brands: 48 px tall, a pill, logo left, label centred. */
+.cp-account-provider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition:
+    opacity 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.cp-account-provider .cp-account-mark {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+/* Google's dark theme, per its Sign in with Google branding guidelines. */
+.cp-account-provider.is-google {
+  background: #131314;
+  border: 1px solid #8e918f;
+  color: #e3e3e3;
+  font-family: Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Apple's black button with the white logo, per its Human Interface Guidelines. */
+.cp-account-provider.is-apple {
+  background: #000;
+  border: 1px solid #000;
+  color: #fff;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+}
+
+.cp-account-provider.is-demo {
+  background: var(--cp-lacquer-deep);
+  border: 1px dashed var(--cp-hairline);
+  color: var(--cp-champagne);
+  font-family: var(--cp-font-display);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.cp-account-provider.is-demo .cp-account-mark {
+  color: var(--cp-gold-brushed);
+}
+
+.cp-account-provider[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cp-account-provider.is-busy,
+.cp-account-provider.is-waiting {
+  opacity: 1;
+  box-shadow: 0 0 0 2px rgb(var(--cp-gold-brushed-rgb) / 0.6);
+  animation: cp-account-breathe 1400ms ease-in-out infinite;
+}
+
+.cp-account-provider.is-ready {
+  box-shadow: 0 0 0 2px rgb(var(--cp-gold-brushed-rgb) / 0.9);
+}
+
+.cp-account-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-hairline);
+  font-family: var(--cp-font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cp-gold-brushed);
+}
+
+.cp-account-demo-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--cp-ink-muted);
+}
+
+.cp-account-calm {
+  margin: 0;
+}
+
+.cp-account-google-host:empty {
+  display: none;
+}
+
+.cp-account-google-host {
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.cp-account-button {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-hairline);
+  background: var(--cp-lacquer-deep);
+  font-family: var(--cp-font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--cp-champagne);
+  cursor: pointer;
+}
+
+.cp-account-button.is-primary {
+  background: linear-gradient(
+    180deg,
+    rgb(var(--cp-gold-brushed-rgb) / 0.95),
+    rgb(var(--cp-gold-brushed-rgb) / 0.7)
+  );
+  color: var(--cp-navy-lacquer);
+  box-shadow: 0 4px 16px rgb(var(--cp-gold-brushed-rgb) / 0.3);
+}
+
+.cp-account-button.is-quiet {
+  border-color: var(--cp-hairline-soft);
+  background: transparent;
+  font-size: 14px;
+}
+
+.cp-account-button.is-danger {
+  border-color: rgb(var(--cp-coral-sunset-rgb) / 0.8);
+  color: var(--cp-coral-sunset);
+}
+
+.cp-account-button.is-busy {
+  animation: cp-account-breathe 1400ms ease-in-out infinite;
+}
+
+.cp-account-button[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cp-account-link {
+  align-self: center;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cp-gold-brushed);
+  text-decoration: underline;
+  text-decoration-color: var(--cp-hairline);
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.cp-account-linked {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cp-account-linked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cp-account-linked-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-hairline-soft);
+  border-radius: var(--cp-radius-md);
+  background: rgb(var(--cp-navy-lacquer-rgb) / 0.5);
+}
+
+.cp-account-linked-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cp-account-linked-seal {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--cp-hairline);
+  color: var(--cp-gold-brushed);
+}
+
+.cp-account-linked-seal .cp-account-mark {
+  width: 20px;
+  height: 20px;
+}
+
+.cp-account-linked-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.cp-account-linked-text .cp-field-hint {
+  margin: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cp-account-linked-name {
+  font-family: var(--cp-font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--cp-champagne);
+}
+
+.cp-account-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--cp-hairline-soft);
+}
+
+.cp-account-confirm.is-entering {
+  animation: cp-account-rise 260ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+.cp-account-confirm-title {
+  margin: 0;
+  font-weight: 700;
+  color: var(--cp-ivory);
+}
+
+.cp-account .is-warn,
+.cp-account-choice-warning.is-warn {
+  color: var(--cp-warning);
+}
+
+.cp-account-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.cp-account-status:empty {
+  display: none;
+}
+
+.cp-account-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px;
+  border-radius: var(--cp-radius-md);
+  border: 1px solid var(--cp-hairline-soft);
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--cp-ivory);
+}
+
+.cp-account-status[data-tone='ok'] {
+  border-color: var(--cp-hairline);
+  background: rgb(var(--cp-gold-brushed-rgb) / 0.1);
+}
+
+.cp-account-status[data-tone='warn'] {
+  border-color: rgb(var(--cp-coral-sunset-rgb) / 0.6);
+}
+
+.cp-account-status-text {
+  flex: 1 1 180px;
+}
+
+.cp-account-status.is-landing {
+  animation: cp-account-rise 320ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+.cp-account-stamp {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: var(--cp-navy-lacquer);
+  background: radial-gradient(circle at 35% 30%, var(--cp-champagne), var(--cp-gold-brushed));
+  box-shadow: 0 0 14px rgb(var(--cp-gold-brushed-rgb) / 0.55);
+  animation: cp-account-stamp 460ms cubic-bezier(0.2, 1.6, 0.4, 1) both;
+}
+
+.cp-account-stamp .cp-account-mark {
+  width: 20px;
+  height: 20px;
+}
+
+.cp-account.is-sealed::after,
+.cp-account.is-beckoned::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: var(--cp-radius-md);
+  pointer-events: none;
+  box-shadow: 0 0 0 1px var(--cp-hairline);
+  animation: cp-account-halo 900ms ease-out both;
+}
+
+.cp-account.is-beckoned::after {
+  animation-iteration-count: 2;
+}
+
+.cp-account-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: calc(var(--cp-safe-bottom) + 12px);
+}
+
+.cp-account-choice-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cp-account-choice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: var(--cp-radius-md);
+  border: 1px solid var(--cp-hairline-soft);
+  background: rgb(var(--cp-navy-lacquer-rgb) / 0.6);
+  color: var(--cp-ivory);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.cp-account-choice-card.is-picked {
+  border-color: var(--cp-gold-brushed);
+  background: rgb(var(--cp-gold-brushed-rgb) / 0.12);
+  box-shadow:
+    0 0 0 1px var(--cp-gold-brushed),
+    0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.35);
+}
+
+.cp-account-choice-card.is-landing {
+  animation: cp-account-pop 300ms cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+
+.cp-account-choice-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.cp-account-choice-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cp-gold-brushed);
+}
+
+.cp-account-choice-check {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--cp-hairline);
+}
+
+.cp-account-choice-card.is-picked .cp-account-choice-check {
+  background: radial-gradient(circle, var(--cp-gold-brushed) 45%, transparent 50%);
+}
+
+.cp-account-choice-label {
+  font-size: 11px;
+  color: var(--cp-ink-muted);
+}
+
+.cp-account-choice-venue {
+  font-family: var(--cp-font-display);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--cp-champagne);
+  overflow-wrap: anywhere;
+}
+
+.cp-account-choice-stat {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 4px;
+}
+
+.cp-account-choice-stat .cp-icon {
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  color: var(--cp-gold-brushed);
+}
+
+.cp-account-choice-stat .cp-odo {
+  font-family: var(--cp-font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--cp-ivory);
+}
+
+.cp-account-choice-played {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--cp-ink-muted);
+}
+
+.cp-account-choice-warning {
+  margin: 0;
+  min-height: 2.8em;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--cp-ink-muted);
+}
+
+.cp-account-choice-warning.is-landing {
+  animation: cp-account-rise 260ms ease-out both;
+}
+
+.cp-account-choice > .cp-account-button {
+  min-height: 48px;
+}
+
+.cp-account-prompt[hidden] {
+  display: none;
+}
+
+.cp-account-prompt {
+  display: flex;
+  gap: 12px;
+  margin: 0 auto;
+  width: min(100%, 420px);
+  padding: 12px 14px;
+  will-change: translate, opacity;
+}
+
+.cp-account-prompt-seal {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--cp-hairline);
+  color: var(--cp-gold-brushed);
+}
+
+.cp-account-prompt-seal .cp-account-mark {
+  width: 22px;
+  height: 22px;
+}
+
+.cp-account-prompt-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cp-account-prompt-title {
+  margin: 0;
+  font-family: var(--cp-font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--cp-champagne);
+}
+
+.cp-account-prompt-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--cp-ivory);
+}
+
+.cp-account-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.cp-account-prompt-actions .cp-account-button {
+  min-height: 40px;
+  font-size: 15px;
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-account-prompt {
+  transition: opacity 200ms ease;
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-account-provider.is-busy,
+.cp-ui-host[data-motion='reduced'] .cp-account-provider.is-waiting,
+.cp-ui-host[data-motion='reduced'] .cp-account-button.is-busy,
+.cp-ui-host[data-motion='reduced'] .cp-account.is-sealed::after,
+.cp-ui-host[data-motion='reduced'] .cp-account.is-beckoned::after,
+.cp-account-root.is-reduced .cp-account-choice-card.is-landing {
+  animation: none;
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-account-stamp,
+.cp-ui-host[data-motion='reduced'] .cp-account-status.is-landing,
+.cp-ui-host[data-motion='reduced'] .cp-account-confirm.is-entering,
+.cp-account-root.is-reduced .cp-account-choice-warning.is-landing {
+  animation: none;
+  transition: opacity 200ms ease;
+}
+
+@keyframes cp-account-breathe {
+  50% {
+    box-shadow: 0 0 0 2px rgb(var(--cp-gold-brushed-rgb) / 0.25);
+  }
+}
+
+@keyframes cp-account-rise {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+
+@keyframes cp-account-pop {
+  40% {
+    scale: 1.03;
+  }
+}
+
+@keyframes cp-account-stamp {
+  from {
+    opacity: 0;
+    scale: 1.8;
+    rotate: -18deg;
+  }
+}
+
+@keyframes cp-account-halo {
+  from {
+    opacity: 1;
+    box-shadow:
+      0 0 0 1px var(--cp-gold-brushed),
+      0 0 24px rgb(var(--cp-gold-brushed-rgb) / 0.6);
+  }
+  to {
+    opacity: 0;
+    box-shadow:
+      0 0 0 8px rgb(var(--cp-gold-brushed-rgb) / 0),
+      0 0 0 rgb(var(--cp-gold-brushed-rgb) / 0);
+  }
+}
