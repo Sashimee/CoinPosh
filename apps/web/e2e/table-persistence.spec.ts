@@ -5,7 +5,8 @@ import {
   type SimTableSnapshot,
 } from '@coinposh/sim/snapshot';
 import type { DemoPose, DemoStoredSnapshot } from '../src/game/session/demoHandle.ts';
-import { BOOT_TO_FIRST_DROP_MS } from './budgets.ts';
+import { SNAPSHOT_CADENCE } from '../src/net/snapshotCadence.ts';
+import { BOOT_TO_FIRST_DROP_MS, SWIFTSHADER_FRAMES } from './budgets.ts';
 import {
   bootGame,
   coinLedger,
@@ -17,11 +18,25 @@ import {
   test,
 } from './fixtures.ts';
 
+/** Taps that bring the scripted crate out: the FTUE script drops it at the 12th. */
 const DROPS = 20;
-/** Quick enough that the scripted crate, out at drop 12, is still riding when the drops end. */
+/** Quick enough that the scripted crate is still riding when the drops end. */
 const TAP_EVERY_MS = 100;
-/** Long enough for the last coin dropped to land, so the held table has none in the air. */
-const LAND_MS = 1000;
+/** The one ledger reason a restored table books as it plays on: a coin it pushed over the lip. */
+const PLAY_ON_REASON = 'claim.fall';
+/** How often a wait reads the table: two reads this far apart tell a claim in flight. */
+const READ_EVERY_MS = 500;
+/** For the running sim to land its last drops and upload a table that poses all of them. */
+const RUNNING_WHOLE_MS = 60_000;
+/**
+ * For a held table to upload once more: nothing moves in a held sim, so only a claim landing
+ * changes what it would upload, and the cadence's heartbeat sends that change.
+ */
+const HELD_WHOLE_MS = 2 * SNAPSHOT_CADENCE.heartbeatMs;
+/** Holds of the table before the test gives up on one a boot would lay whole. */
+const MAX_HOLDS = 3;
+/** Re-boot calls whose last check found the held table moved on since its whole read. */
+const MAX_REBOOT_TRIES = 5;
 /** 92-table-persistence 1.4: a restored coin sits where its pose put it, to within 1 mm. */
 const POSE_TOLERANCE_M = 0.001;
 /** The sessionStorage key apps/web/src/net/mock/persist.ts keeps the Demo world under. */
@@ -90,12 +105,20 @@ interface TableRead {
   /** Coins the sim holds, fused coins whose claim is still in flight among them. */
   readonly simCoins: number;
   /** Every currency the Demo server holds for the player. */
-  readonly wallet: object;
+  readonly wallet: Readonly<Record<string, number>>;
   readonly refunds: number;
   /** The coins the Demo server keeps on the table, which a boot lays or refunds. */
   readonly serverTable: readonly string[];
-  /** Every Demo ledger entry so far, as `reason ref delta`. */
-  readonly ledger: readonly string[];
+  /** The crates the Demo server keeps on the table, which a boot lays from their poses. */
+  readonly serverCrates: readonly string[];
+  /** Every Demo ledger entry so far. */
+  readonly ledger: readonly LedgerEntry[];
+}
+
+interface LedgerEntry {
+  readonly reason: string;
+  readonly ref: string | null;
+  readonly delta: Readonly<Record<string, number>>;
 }
 
 async function readTable(page: Page): Promise<TableRead> {
@@ -109,24 +132,29 @@ async function readTable(page: Page): Promise<TableRead> {
     if (stored === null) throw new Error(`The Demo world is not in sessionStorage under ${key}.`);
     const { world } = JSON.parse(stored) as {
       world: {
-        ledger: { reason: string; ref: string | null; delta: object }[];
-        players: { coins: { coin: { id: string }; place: string }[] }[];
+        ledger: { reason: string; ref: string | null; delta: Record<string, number> }[];
+        players: {
+          coins: { coin: { id: string }; place: string }[];
+          crates: { crate: { id: string }; state: string }[];
+        }[];
       };
     };
-    const ledger = world.ledger.map(
-      (entry) => `${entry.reason} ${String(entry.ref)} ${JSON.stringify(entry.delta)}`,
-    );
+    const ledger = world.ledger.map(({ reason, ref, delta }) => ({ reason, ref, delta }));
     const serverTable = (world.players[0]?.coins ?? [])
       .filter((record) => record.place === 'table')
       .map((record) => record.coin.id);
+    const serverCrates = (world.players[0]?.crates ?? [])
+      .filter((record) => record.state === 'table')
+      .map((record) => record.crate.id);
     return {
       accepted,
       snapshot: last,
       poses,
       simCoins: p.sim.coins,
-      wallet: demo.wallet(),
+      wallet: { ...demo.wallet() },
       refunds: demo.refunds(),
       serverTable,
+      serverCrates,
       ledger,
     };
   }, DEMO_STORAGE_KEY);
@@ -159,58 +187,63 @@ function notWhole(
   if (unnamed.length > 0) {
     return `the server keeps ${unnamed.join(', ')} on the table, which the sim no longer names: a claim is in flight`;
   }
-  if (needCrate && read.snapshot.crates.length === 0) return 'no crate riding in the last upload';
+  if (needCrate) {
+    const riding = new Set(read.serverCrates);
+    if (!read.snapshot.crates.some((tuple) => riding.has(tuple[0]))) {
+      return `no crate the server keeps on the table rides in the last upload (server: ${read.serverCrates.join(', ') || 'none'})`;
+    }
+  }
   return null;
 }
 
-/** Reads the held table until a boot from it would lay it whole, and returns that read. */
-async function waitUntilWhole(
+type Whole = { readonly whole: TableRead } | { readonly why: string; readonly last: string };
+
+/**
+ * Reads the table every READ_EVERY_MS until a boot from it would lay it whole, for at most
+ * `timeoutMs`, and returns that read or why the last one was not whole.
+ */
+async function pollWhole(
   page: Page,
   fromAccepted: number,
   needCrate: boolean,
-): Promise<TableRead> {
-  const seen: { previous: TableRead | null; whole: TableRead | null; why: string | null } = {
-    previous: null,
-    whole: null,
-    why: 'not read yet',
-  };
-  try {
-    await expect
-      .poll(
-        async () => {
-          const read = await readTable(page);
-          seen.why = notWhole(read, seen.previous, fromAccepted, needCrate);
-          seen.previous = read;
-          if (seen.why === null) seen.whole = read;
-          return seen.why;
-        },
-        { timeout: 60_000, intervals: [500] },
-      )
-      .toBeNull();
-  } catch (error) {
-    const { counts, sim } = await probe(page);
-    const last = {
-      accepted: seen.previous?.accepted,
-      fromAccepted,
-      seq: seen.previous?.snapshot?.seq,
-      crates: seen.previous?.snapshot?.crates,
-      tick: sim?.tick,
-      counts,
-    };
-    throw new Error(
-      `No settle upload ever posed the whole table: ${seen.why ?? 'whole'}; ${JSON.stringify(last)}`,
-      { cause: error },
-    );
+  timeoutMs: number,
+): Promise<Whole> {
+  const deadline = Date.now() + timeoutMs;
+  let previous: TableRead | null = null;
+  let why = 'not read yet';
+  while (Date.now() < deadline) {
+    const read = await readTable(page);
+    const reason = notWhole(read, previous, fromAccepted, needCrate);
+    if (reason === null) return { whole: read };
+    why = reason;
+    previous = read;
+    await page.waitForTimeout(READ_EVERY_MS);
   }
-  if (seen.whole === null) throw new Error('The table read whole but the read was not kept.');
-  return seen.whole;
+  const { counts, sim } = await probe(page);
+  const last = JSON.stringify({
+    accepted: previous?.accepted,
+    fromAccepted,
+    seq: previous?.snapshot?.seq,
+    crates: previous?.snapshot?.crates,
+    tick: sim?.tick,
+    counts,
+  });
+  return { why, last };
 }
 
-/** Drops `count` coins at a thumb's pace and returns the settle uploads counted after the last. */
-async function dropCoins(page: Page, count: number): Promise<number> {
+/**
+ * Drops up to `count` coins at a thumb's pace, stopping early once `enough` says so, and returns
+ * the settle uploads counted after the last.
+ */
+async function dropCoins(
+  page: Page,
+  count: number,
+  enough: () => Promise<boolean> = () => Promise.resolve(false),
+): Promise<number> {
   for (let i = 0; i < count; i += 1) {
     await tapDrop(page);
     await page.waitForTimeout(TAP_EVERY_MS);
+    if (await enough()) break;
   }
   return (await readTable(page)).accepted;
 }
@@ -226,19 +259,26 @@ interface Reboot {
 }
 
 /**
- * Holds the page's sim still through the bridge's own pause message, once the last drops have
- * landed. "Play here" is only reachable from the overlay, and the overlay holds the old sim
- * still (main.ts wireTableSession), so a re-boot from the Demo handle is held the same way: a
- * fall or fusion in the old sim while the re-boot drains would leave the server a coin no
- * upload posed. The page keeps sampling and uploading a held table.
+ * Posts `type` to the sim worker the page plays on. That message is the whole of
+ * SimBridge.pause() and resume(), which keep no state of their own: the worker alone holds the
+ * pause (src/game/simWorker/runtime.ts). The page exposes no bridge, so it goes to the worker.
  */
-async function holdTable(page: Page): Promise<void> {
-  await page.waitForTimeout(LAND_MS);
-  await page.evaluate(() => {
+async function postToSim(page: Page, type: 'pause' | 'resume'): Promise<void> {
+  await page.evaluate((message) => {
     const worker = window.__e2eWorkers?.at(-1);
     if (!worker) throw new Error('No sim worker was started in the page.');
-    worker.postMessage({ type: 'pause' });
-  });
+    worker.postMessage({ type: message });
+  }, type);
+}
+
+/**
+ * Holds the page's sim still. "Play here" is only reachable from the overlay, and the overlay
+ * holds the old sim still (main.ts wireTableSession), so a re-boot from the Demo handle is held
+ * the same way: a fall or fusion in the old sim while the re-boot drains would leave the server
+ * a coin no upload posed. The page keeps sampling and uploading a held table.
+ */
+async function holdTable(page: Page): Promise<void> {
+  await postToSim(page, 'pause');
   let tick = -1;
   await expect
     .poll(
@@ -254,8 +294,37 @@ async function holdTable(page: Page): Promise<void> {
 }
 
 /**
- * Holds the table, waits until a boot from the last upload would lay it whole, and re-boots it
- * in the page as "Play here" does. The last check runs in the same task as the reboot call.
+ * Waits until an upload from the running sim poses every coin it names, holds the sim, and
+ * waits until a boot from the held table would lay it whole, returning that read. A fusion
+ * between the two waits can mint a coin the held table never uploads: its claim lands after the
+ * last upload, and once its frozen pose fails validateSnapshot (a coin fused in the air is out
+ * of bounds) every later capture equals that upload, so the cadence sends none. The sim then
+ * runs on until it uploads whole again and is held again.
+ */
+async function holdWhole(page: Page, fromAccepted: number, needCrate: boolean): Promise<TableRead> {
+  const misses: string[] = [];
+  for (let hold = 1; hold <= MAX_HOLDS; hold += 1) {
+    const running = await pollWhole(page, fromAccepted, needCrate, RUNNING_WHOLE_MS);
+    if ('why' in running) {
+      throw new Error(
+        `No settle upload from the running sim posed the whole table in ${String(RUNNING_WHOLE_MS)} ms: ${running.why}; ${running.last}`,
+      );
+    }
+    await holdTable(page);
+    const held = await pollWhole(page, fromAccepted, needCrate, HELD_WHOLE_MS);
+    if ('whole' in held) return held.whole;
+    misses.push(`hold ${String(hold)}: ${held.why}; ${held.last}`);
+    await postToSim(page, 'resume');
+  }
+  throw new Error(
+    `The held table never read whole in ${String(MAX_HOLDS)} holds: ${misses.join(' | ')}`,
+  );
+}
+
+/**
+ * Holds the table whole and re-boots it in the page as "Play here" does. The last check runs in
+ * the same task as the reboot call; a held table that moved on since its whole read (a claim
+ * landed, an upload was taken) is read again.
  */
 async function rebootWhenWhole(
   page: Page,
@@ -288,34 +357,54 @@ async function rebootWhenWhole(
       );
     }
   }
-  await holdTable(page);
-  for (;;) {
-    const before = await waitUntilWhole(page, fromAccepted, needCrate);
+  let before = await holdWhole(page, fromAccepted, needCrate);
+  const moved: string[] = [];
+  for (let tries = 1; tries <= MAX_REBOOT_TRIES; tries += 1) {
     const run = await page.evaluate(
       async ({ simCoins, accepted }) => {
         const p = window.__coinposh;
         const demo = p?.demo;
         if (!p?.sim || !demo) throw new Error('The page exposes no Demo handle.');
-        if (p.sim.coins !== simCoins || demo.snapshots().accepted !== accepted) return null;
+        const now = { simCoins: p.sim.coins, accepted: demo.snapshots().accepted };
+        if (now.simCoins !== simCoins || now.accepted !== accepted) return { moved: now };
+        // The frame that spans the re-boot's end counts too: a re-boot that blocked the main
+        // thread throughout draws no frame inside it, so it shows only in that one.
         let longestFrameMs = 0;
         let rebooting = true;
         let last = performance.now();
-        const frame = (now: number): void => {
-          longestFrameMs = Math.max(longestFrameMs, now - last);
-          last = now;
+        let framesDone = (): void => undefined;
+        const lastFrame = new Promise<void>((resolve) => {
+          framesDone = resolve;
+        });
+        const frame = (at: number): void => {
+          longestFrameMs = Math.max(longestFrameMs, at - last);
+          last = at;
           if (rebooting) requestAnimationFrame(frame);
+          else framesDone();
         };
         requestAnimationFrame(frame);
         const startedAt = performance.now();
         await demo.reboot();
         const rebootMs = performance.now() - startedAt;
         rebooting = false;
+        await lastFrame;
         return { rebootMs, longestFrameMs };
       },
       { simCoins: before.simCoins, accepted: before.accepted },
     );
-    if (run !== null) return { before, after: await readTable(page), ...run };
+    if (!('moved' in run)) return { before, after: await readTable(page), ...run };
+    moved.push(
+      `sim coins ${String(before.simCoins)} to ${String(run.moved.simCoins)}, accepted uploads ${String(before.accepted)} to ${String(run.moved.accepted)}`,
+    );
+    const again = await pollWhole(page, fromAccepted, needCrate, HELD_WHOLE_MS);
+    if ('why' in again) {
+      throw new Error(`The held table stopped reading whole: ${again.why}; ${again.last}`);
+    }
+    before = again.whole;
   }
+  throw new Error(
+    `The held table moved on between its whole read and the re-boot call in all ${String(MAX_REBOOT_TRIES)} tries: ${moved.join('; ')}`,
+  );
 }
 
 /**
@@ -456,6 +545,45 @@ async function refundReport(page: Page, before: TableRead, count: number): Promi
   return `pusher tick ${String(pusherTick)}; ${coins.join('; ')}`;
 }
 
+/**
+ * Checks that the boot after `before` moved no value: the ledger since holds only falls the
+ * restored table paid as it played on, pushing lip coins over, and the wallet moved by exactly
+ * those. The ledger is read from the tab's storage, which trails the wallet by a write, so the
+ * two are read until they agree.
+ */
+async function expectBootBookedNothing(page: Page, before: TableRead): Promise<void> {
+  let booked = 'not read yet';
+  try {
+    await expect
+      .poll(async () => {
+        const now = await readTable(page);
+        const since = now.ledger.slice(before.ledger.length);
+        booked =
+          since
+            .map((entry) => `${entry.reason} ${String(entry.ref)} ${JSON.stringify(entry.delta)}`)
+            .join('; ') || 'nothing';
+        const wallet: Record<string, number> = { ...before.wallet };
+        for (const entry of since.filter((e) => e.reason === PLAY_ON_REASON)) {
+          for (const [currency, amount] of Object.entries(entry.delta)) {
+            wallet[currency] = (wallet[currency] ?? 0) + amount;
+          }
+        }
+        const currencies = new Set([...Object.keys(wallet), ...Object.keys(now.wallet)]);
+        return {
+          booked: since.filter((e) => e.reason !== PLAY_ON_REASON).map((e) => e.reason),
+          walletOff: [...currencies].filter(
+            (currency) => (wallet[currency] ?? 0) !== (now.wallet[currency] ?? 0),
+          ),
+        };
+      })
+      .toEqual({ booked: [], walletOff: [] });
+  } catch (error) {
+    throw new Error(`The boot moved the Demo wallet or ledger: booked ${booked}`, {
+      cause: error,
+    });
+  }
+}
+
 test.describe('the table survives a re-boot', () => {
   test('a re-boot in the page lays every coin and the crate where they were, refunding nothing', async ({
     page,
@@ -463,7 +591,13 @@ test.describe('the table survives a re-boot', () => {
     test.setTimeout(180_000);
     await watchLaidTables(page);
     await bootGame(page);
-    const fromAccepted = await dropCoins(page, DROPS);
+    // The crate rides on toward the lip and can go over it before the table is held, so the
+    // drops stop once it is out.
+    const fromAccepted = await dropCoins(
+      page,
+      DROPS,
+      async () => (await probe(page)).counts.cratesSpawned > 0,
+    );
     expect((await probe(page)).counts.cratesSpawned, 'the scripted crate is out').toBe(1);
 
     const { before, after, rebootMs, longestFrameMs } = await rebootWhenWhole(
@@ -476,18 +610,17 @@ test.describe('the table survives a re-boot', () => {
       type: 're-boot',
       description: `${String(before.poses.length)} named coins of ${String(before.simCoins)} sim coins, ${String(refunds)} refunds; re-boot ${rebootMs.toFixed(0)} ms, longest frame ${longestFrameMs.toFixed(0)} ms`,
     });
-    const firstDropMs = await timeFirstDrop(page);
-    testInfo.annotations.push({ type: 'first drop', description: `${String(firstDropMs)} ms` });
     const refunded = refunds > 0 ? await refundReport(page, before, after.refunds) : 'none';
     expect(refunds, `refund.table entries the re-boot booked (${refunded})`).toBe(0);
     expect(after.refunds, 'refund.table entries in the Demo ledger').toBe(0);
-    expect(
-      after.wallet,
-      `the wallet the Demo server holds (moved by ${after.ledger.slice(before.ledger.length).join('; ') || 'nothing'})`,
-    ).toEqual(before.wallet);
+    await expectBootBookedNothing(page, before);
+    const firstDropMs = await timeFirstDrop(page);
+    testInfo.annotations.push({ type: 'first drop', description: `${String(firstDropMs)} ms` });
     const laid = await expectLaidInPlace(page, after.snapshot, 2);
 
-    const [crateId, , crateZ, crateMs] = before.snapshot?.crates[0] ?? [];
+    const riding = new Set(before.serverCrates);
+    const [crateId, , crateZ, crateMs] =
+      before.snapshot?.crates.find((tuple) => riding.has(tuple[0])) ?? [];
     if (crateId === undefined || crateZ === undefined || crateMs === undefined) {
       throw new Error('The upload the re-boot laid from had no crate riding.');
     }
@@ -501,6 +634,10 @@ test.describe('the table survives a re-boot', () => {
     expect(rebootMs, 're-boot until the table takes drops (T-1.17)').toBeLessThan(
       BOOT_TO_FIRST_DROP_MS,
     );
+    expect(
+      longestFrameMs,
+      'longest frame while the table re-booted (SwiftShader p95)',
+    ).toBeLessThan(SWIFTSHADER_FRAMES.maxP95FrameMs);
 
     let ride = 'not read yet';
     await expect
@@ -530,8 +667,7 @@ test.describe('the table survives a re-boot', () => {
     await watchLaidTables(page);
     await bootGame(page);
     const fromAccepted = await dropCoins(page, 8);
-    await holdTable(page);
-    const before = await waitUntilWhole(page, fromAccepted, false);
+    const before = await holdWhole(page, fromAccepted, false);
 
     await page.evaluate(async () => {
       const demo = window.__coinposh?.demo;
@@ -556,10 +692,7 @@ test.describe('the table survives a re-boot', () => {
     expect(await tableProbe(page)).toMatchObject({ superseded: false });
     const after = await readTable(page);
     expect(after.refunds, 'refund.table entries in the Demo ledger').toBe(0);
-    expect(
-      after.wallet,
-      `the wallet the Demo server holds (moved by ${after.ledger.slice(before.ledger.length).join('; ') || 'nothing'})`,
-    ).toEqual(before.wallet);
+    await expectBootBookedNothing(page, before);
     await expectLaidInPlace(page, after.snapshot, 2);
 
     const firstDropMs = await timeFirstDrop(page);
