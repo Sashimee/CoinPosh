@@ -96,19 +96,23 @@ export function posterHeapTarget(restored: BootProbe['restored']): number {
 }
 
 /**
- * Returns a per-frame check that turns true on the second lit frame drawing enough of the laid
- * table to match the poster: the first such frame also links the coins' shaders, and the stall
- * that follows it stays under the poster instead of freezing the table mid-fade. It waits for
- * nothing more: taps drop coins from playable on, and the sim would run on under the poster.
+ * Returns a per-frame check that turns true once the live table drawn under the poster holds
+ * enough of the laid table to match it. main.ts holds the sim at its laid tick, the poster's
+ * tick, until the table's shaders are linked and drawn, and turns playable as it lets go, so the
+ * poster leaves on playable, before the pusher has moved. A boot that never turns playable
+ * still runs its sim, so the poster then leaves on the second lit frame of the heap instead:
+ * the first links the coins' shaders, and that stall stays under the poster.
  */
 export function createPosterGate(probe: BootProbe): () => boolean {
   let heapTick: number | null = null;
   return () => {
     const { sim } = probe;
-    if (!sim || sim.renderTick <= 0 || sim.coins < posterHeapTarget(probe.restored)) {
+    if (!sim || sim.coins < posterHeapTarget(probe.restored)) {
       heapTick = null;
       return false;
     }
+    if (probe.playable) return true;
+    if (sim.renderTick <= 0) return false;
     heapTick ??= sim.renderTick;
     return sim.renderTick > heapTick;
   };

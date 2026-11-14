@@ -6,9 +6,9 @@
  * the browser's own encoder, so no image dependency is needed.
  *
  * It boots the high tier, the table a phone that holds the frame rate shows: a software GPU
- * would otherwise boot the low tier, whose coins lose their reeding. The fade starts on the frame
- * after the heap is drawn, before the sim runs on, so the same frame also matches the default
- * boot; e2e/poster.spec.ts checks both.
+ * would otherwise boot the low tier, whose coins lose their reeding. main.ts holds the sim at its
+ * laid tick until the table is drawn and the fade starts as it lets go, so the frame is the same
+ * on every device and also matches the default boot; e2e/poster.spec.ts checks both.
  *
  *   pnpm --filter @coinposh/web poster:capture [--port 4419] [--quality high]
  */
