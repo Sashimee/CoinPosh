@@ -12,9 +12,10 @@ export function aimToMm(aim: number): number {
 }
 
 /**
- * Which server coin each sim body is. The sim numbers bodies in drop order and each drop makes
- * one body, so the n-th new body is the n-th coin handed to the sim. Coins the server later
- * rejects stay mapped but are never claimed.
+ * Which server coin each sim body is. The sim numbers coins in the order it makes them: the boot
+ * layout first, then one body per drop or fusion. With fused bodies reserved, the n-th other new
+ * body is the n-th coin handed to the sim. Coins the server later rejects stay mapped but are
+ * never claimed.
  */
 export class CoinLedger {
   readonly #expected: MintedCoin[] = [];
@@ -22,6 +23,8 @@ export class CoinLedger {
   readonly #simOf = new Map<CoinId, number>();
   readonly #voided = new Set<CoinId>();
   readonly #reserved = new Set<number>();
+  /** Every sim id below this one has been paired with its coin, or found to have none. */
+  #reached = 0;
 
   /** Records a coin just handed to `SimBridge.drop`. */
   expect(coin: MintedCoin): void {
@@ -43,17 +46,29 @@ export class CoinLedger {
   }
 
   /**
-   * Pairs a new sim body with its bound coin, or else with the oldest coin still waiting for one.
+   * The sim made `simId` and every body before it: pairs each one not paired yet, other than a
+   * reserved fused body, with the oldest coin still waiting for one. A body the frame never drew,
+   * because it fused or fell between two drawn frames, so still takes its own coin and not the
+   * next body's.
    */
+  reach(simId: number): void {
+    for (; this.#reached <= simId; this.#reached += 1) {
+      const id = this.#reached;
+      if (this.#bySim.has(id) || this.#reserved.has(id)) continue;
+      const coin = this.#expected.shift();
+      if (!coin) continue;
+      this.#bySim.set(id, coin);
+      this.#simOf.set(coin.id, id);
+    }
+  }
+
+  /** Pairs a body the frame just drew, and the ones before it, as `reach` does. */
   assign(simId: number): MintedCoin | null {
+    this.reach(simId);
     const bound = this.#bySim.get(simId);
     if (bound) return bound;
-    if (this.#reserved.delete(simId)) return null;
-    const coin = this.#expected.shift();
-    if (!coin) return null;
-    this.#bySim.set(simId, coin);
-    this.#simOf.set(coin.id, simId);
-    return coin;
+    this.#reserved.delete(simId);
+    return null;
   }
 
   /** The coin a sim body is, or null when it is not one the server can be asked to pay for. */
