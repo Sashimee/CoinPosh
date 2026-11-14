@@ -110,7 +110,10 @@ export class CrateRide {
     return pose;
   }
 
-  /** `stroke` is the pusher's extension, 0 retracted to 1 at full reach. */
+  /**
+   * `dt` is sim seconds (ticks run / TICK_RATE_HZ), never frame time: the server caps a pose's
+   * elapsedMs by sim ticks. `stroke` is the pusher's extension, 0 retracted to 1 at full reach.
+   */
   update(dt: number, stroke: number): CrateRidePhase {
     if (this.stage === 'fell') return this.stage;
     const step = Number.isFinite(dt) ? Math.max(0, dt) : 0;
