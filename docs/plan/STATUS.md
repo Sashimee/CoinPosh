@@ -254,7 +254,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-16.13 | todo | | Waits on T-16.07, T-16.08, T-16.09, T-16.10, T-16.11, T-15.06. Table mechanics wiring |
 | T-16.14 | todo | | Waits on T-16.13. E2E: table mechanics |
 | T-17.01 | todo | | Waits on T-16.06. Director camera |
-| T-17.02 | todo | | Ready: deps done. Adaptive music |
+| T-17.02 | done | task/T-17.02 (merge 0714e82) | Adaptive music: stem scheduler, tempo, jackpot sting and player under apps/web/src/audio/music/adaptive (a3b196a); pnpm check green after merge; engine.ts wiring queued as P-670 |
 | T-17.03 | todo | | Waits on T-7.02. Haptic pattern library |
 | T-17.04 | todo | | Waits on T-17.01, T-17.02, T-17.03. Game feel wiring |
 | T-18.01 | todo | | Waits on T-11.01. Comfort contracts |
