@@ -3,7 +3,7 @@ import { CURRENCIES, ENTITY_ID_PREFIXES, PlayerIdSchema } from '@coinposh/shared
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import { newSession } from '../test/client.ts';
+import { newIdempotencyKey, newSession } from '../test/client.ts';
 import { claims, dropAsClient, expectConserved, playerStub, reload, state } from '../test/game.ts';
 import { mintedValue } from './entities.ts';
 import { PlayerDO, PREMINT_BUFFER_TARGET } from './PlayerDO.ts';
@@ -377,5 +377,77 @@ describe('a player stored before crate opens', () => {
       expect(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n).toBe(0);
     });
     await expectConserved(session);
+  });
+});
+
+describe('a player stored before Soirée Nights', () => {
+  it('gets the soiree_runs and soiree_crates tables on construction, holding no runs', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_live: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      const objects = () =>
+        sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger', 'index') AND (name LIKE 'soiree\\_%' ESCAPE '\\' OR name = 'coins_settled') ORDER BY name",
+          )
+          .toArray()
+          .map((row) => row.name);
+      const migrated = objects();
+      expect(migrated).toEqual([
+        'coins_settled',
+        'soiree_crates',
+        'soiree_crates_no_delete',
+        'soiree_crates_no_update',
+        'soiree_crates_run',
+        'soiree_runs',
+        'soiree_runs_commitment_fixed',
+        'soiree_runs_no_delete',
+        'soiree_runs_one_open',
+        'soiree_runs_started',
+      ]);
+      sql.exec('DROP TABLE soiree_crates');
+      sql.exec('DROP TABLE soiree_runs');
+      sql.exec('DROP INDEX coins_settled');
+      const before = migrationIndex('CREATE TABLE IF NOT EXISTS soiree_runs');
+      expect(before).toBe(migrationIndex('CREATE TABLE IF NOT EXISTS crate_opens') + 1);
+      sql.exec('UPDATE schema_version SET version = ?', before);
+      expect(objects()).toEqual([]);
+
+      new PlayerDO(ctx, env);
+      expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
+        version: MIGRATIONS.length,
+      });
+      expect(objects()).toEqual(migrated);
+      expect(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM soiree_runs').one().n).toBe(0);
+    });
+    await expectConserved(session);
+  });
+
+  it('keeps a run committed once it starts and final once it finishes', async () => {
+    const session = await newSession();
+    const started = await session.call('/v1/soiree/start', {
+      body: {},
+      idempotencyKey: newIdempotencyKey(),
+    });
+    expect(started.status).toBe(200);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_live: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      for (const change of [
+        'UPDATE soiree_runs SET seed = seed + 1',
+        "UPDATE soiree_runs SET guests = '[]'",
+        "UPDATE soiree_runs SET offers = '[]'",
+        'UPDATE soiree_runs SET started_at = started_at + 1',
+        'UPDATE soiree_runs SET rewarded = 1 - rewarded',
+        'DELETE FROM soiree_runs',
+      ]) {
+        expect(() => sql.exec(change)).toThrow();
+      }
+      expect(() =>
+        sql.exec(
+          "INSERT INTO soiree_runs (id, seed, started_at, ends_at, interlude_ms, rewarded, guests, offers, proof) VALUES ('soiree_x', 1, 1, 2, 0, 0, '[]', '[]', '{}')",
+        ),
+      ).toThrow(/UNIQUE/);
+    });
   });
 });

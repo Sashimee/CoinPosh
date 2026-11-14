@@ -34,6 +34,7 @@ export const TX_KINDS = [
   'streak.milestone',
   'season.tier',
   'season.rollover',
+  'soiree.reward',
 ] as const;
 export type TxKind = (typeof TX_KINDS)[number];
 

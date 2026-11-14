@@ -45,6 +45,12 @@ import {
   type SafeOpenResponse,
   type ScratchRevealRequest,
   type ScratchRevealResponse,
+  type SoireeDraftRequest,
+  type SoireeDraftResponse,
+  type SoireeFinishRequest,
+  type SoireeFinishResponse,
+  type SoireeStartRequest,
+  type SoireeStartResponse,
   TableSessionIdSchema,
   VenueIdSchema,
   CURRENCIES,
@@ -126,6 +132,13 @@ import {
   revealScratchCard,
   type ScratchHost,
 } from '../routes/scratch.ts';
+import {
+  draftSoireeFavor,
+  finishSoireeRun,
+  soireeCrateRarity,
+  startSoireeRun,
+  type SoireeHost,
+} from '../routes/soiree.ts';
 import { migrate } from './schema.ts';
 import {
   CHUTE_POSE,
@@ -249,7 +262,7 @@ function settleLegs(
 
 export class PlayerDO
   extends DurableObject<Env>
-  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost
+  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost, SoireeHost
 {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
@@ -469,6 +482,12 @@ export class PlayerDO
   async openCrate(command: Command<CrateOpenRequest>): Promise<DoResult<CrateOpenResponse>> {
     return this.mutate(command, (now) => {
       const context = { at: now, idempotencyKey: command.idempotencyKey };
+      if (soireeCrateRarity(this.sql, command.body.crateId) !== null) {
+        throw new ApiFailure(
+          'not_ready',
+          'Soirée crates open at the rarity they were paid at, which this build cannot do yet. Keep the crate; it stays in the inventory.',
+        );
+      }
       this.adoptFairSeed(now);
       const scripted = this.meta('ftue_crate') === command.body.crateId;
       const opened = openCrate(this.sql, this.fair, command.body, context, scripted);
@@ -506,6 +525,40 @@ export class PlayerDO
       const revealed = revealScratchCard(this.sql, this.fair, command.body, context);
       this.reserveBuffer(context);
       return { ...revealed, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /**
+   * Starts a Soirée Night (T-3.06) on a fresh, provably fair table seed and seat plan, timed by
+   * the server clock. One run is open per player.
+   */
+  async startSoiree(command: Command<SoireeStartRequest>): Promise<DoResult<SoireeStartResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      return startSoireeRun(this.sql, this.fair, context);
+    });
+  }
+
+  /** Takes or passes the draft between two guests, paid from the Favors the server counted. */
+  async draftSoiree(command: Command<SoireeDraftRequest>): Promise<DoResult<SoireeDraftResponse>> {
+    return this.mutate(command, (now) =>
+      draftSoireeFavor(this.sql, command.body, { at: now, idempotencyKey: command.idempotencyKey }),
+    );
+  }
+
+  /**
+   * Judges every guest from the front falls the server accepted and pays the run's crates and
+   * keys once; a repeat answers with the same payout.
+   */
+  async finishSoiree(
+    command: Command<SoireeFinishRequest>,
+  ): Promise<DoResult<SoireeFinishResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const finished = finishSoireeRun(this.sql, this.fair, command.body, context);
+      return { ...finished, wallet: readWallet(this.sql) };
     });
   }
 
