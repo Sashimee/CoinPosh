@@ -159,15 +159,6 @@ export class CharmBurst {
       this.strength.value = (1 - t) * (1 - t) * 1.1;
     }
   }
-
-  dispose(): void {
-    this.particles.geometry.dispose();
-    this.particles.material.dispose();
-    if (this.ring) {
-      this.ring.geometry.dispose();
-      this.ring.material.dispose();
-    }
-  }
 }
 
 const CORNERS = [

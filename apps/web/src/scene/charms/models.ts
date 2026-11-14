@@ -357,6 +357,24 @@ function cufflink(kit: Kit, side: number) {
   return link;
 }
 
+function poseLink(
+  link: Group,
+  side: number,
+  phase: number,
+  t: number,
+  motion: number,
+  drift: number,
+  snap: number,
+): void {
+  const bob = 0.0007 * Math.sin(t * 1.7 + phase);
+  link.position.set(
+    side * (LINK_X - motion * drift - snap * LINK_SNAP),
+    LINK_Y + motion * bob,
+    LINK_Z,
+  );
+  link.rotation.y = -side * (LINK_YAW + motion * 0.07 * Math.sin(t * 0.9 + phase) - snap * 0.25);
+}
+
 function magnetCufflinks(ctx: ModelContext): CharmModel {
   const u = ctx.uniforms;
   const kit = new Kit(ctx.quality, u);
@@ -432,19 +450,8 @@ function magnetCufflinks(ctx: ModelContext): CharmModel {
       }
       snap *= motion;
       const drift = 0.00045 * Math.sin(t * 0.8);
-      for (const [link, side, phase] of [
-        [left, -1, 0],
-        [right, 1, 1.9],
-      ] as const) {
-        const bob = 0.0007 * Math.sin(t * 1.7 + phase);
-        link.position.set(
-          side * (LINK_X - motion * drift - snap * LINK_SNAP),
-          LINK_Y + motion * bob,
-          LINK_Z,
-        );
-        link.rotation.y =
-          -side * (LINK_YAW + motion * 0.07 * Math.sin(t * 0.9 + phase) - snap * 0.25);
-      }
+      poseLink(left, -1, 0, t, motion, drift, snap);
+      poseLink(right, 1, 1.9, t, motion, drift, snap);
     },
   };
 }
