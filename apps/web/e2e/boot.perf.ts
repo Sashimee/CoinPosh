@@ -3,6 +3,7 @@ import { economyConfig } from '@coinposh/economy';
 import {
   BOOT_RUNS,
   BOOT_TO_FIRST_DROP_MS,
+  COINS_DRAWN_TO_PLAYABLE_MS,
   THROTTLED_BOOT,
   VENUE_TO_PLAYABLE_MS,
 } from './budgets.ts';
@@ -137,6 +138,22 @@ function armFirstDrop(page: Page): Promise<number> {
   );
 }
 
+/**
+ * The marks main.ts sets between `venue` and `playable`, in the order it sets them; `sim-ready`
+ * may land anywhere before `coins-drawn`, which waits on the sim's first frame.
+ */
+const VENUE_STEPS = [
+  'sim-ready',
+  'venue-frame',
+  'effects',
+  'systems',
+  'table',
+  'coins-drawn',
+  'playable',
+] as const;
+
+type VenueStep = (typeof VENUE_STEPS)[number];
+
 interface BootRun {
   /** The app's own `coinposh:boot:playable` mark. */
   readonly playableMs: number;
@@ -144,6 +161,8 @@ interface BootRun {
   readonly stageMs: number;
   /** From the `coinposh:boot:venue` mark, the venue built, to the playable mark. */
   readonly venueToPlayableMs: number;
+  /** Each of VENUE_STEPS, in ms after the venue mark. */
+  readonly afterVenueMs: Readonly<Record<VenueStep, number>>;
   /**
    * From the playable mark to the test's tap. The tap waits for the first sync after playable,
    * so this is mostly the first venue frame, during which a player's tap would queue as well.
@@ -164,6 +183,13 @@ async function bootMark(page: Page, step: string): Promise<number> {
   );
   if (at === null) throw new Error(`The page never marked ${name}; update boot.perf.ts`);
   return at;
+}
+
+async function afterVenue(page: Page): Promise<Record<VenueStep, number>> {
+  const venueMs = await bootMark(page, 'venue');
+  const steps: Partial<Record<VenueStep, number>> = {};
+  for (const step of VENUE_STEPS) steps[step] = (await bootMark(page, step)) - venueMs;
+  return steps as Record<VenueStep, number>;
 }
 
 /** One cold boot to the first coin on `page`, timed inside the page. */
@@ -195,10 +221,12 @@ async function bootToFirstDrop(page: Page, shot: string | null): Promise<BootRun
     throw new Error(`The first drop was not fully timed: ${JSON.stringify(times)}`);
   }
   const playableMs = await bootMark(page, 'playable');
+  const afterVenueMs = await afterVenue(page);
   return {
     playableMs,
     stageMs: await bootMark(page, 'stage'),
-    venueToPlayableMs: playableMs - (await bootMark(page, 'venue')),
+    venueToPlayableMs: afterVenueMs.playable,
+    afterVenueMs,
     tapLagMs: tapMs - playableMs,
     tapMs,
     firstDropMs: dropMs,
@@ -228,18 +256,28 @@ test.describe('boot budget', () => {
       }
     }
 
-    const pick = (metric: keyof BootRun): number => median(runs.map((run) => run[metric]));
+    const pick = (metric: Exclude<keyof BootRun, 'afterVenueMs'>): number =>
+      median(runs.map((run) => run[metric]));
+    const afterVenueMs = Object.fromEntries(
+      VENUE_STEPS.map((step) => [step, median(runs.map((run) => run.afterVenueMs[step]))]),
+    );
+    const coinsDrawnToPlayable = runs.map(
+      (run) => run.afterVenueMs.playable - run.afterVenueMs['coins-drawn'],
+    );
     const headline = {
       statistic: `median of ${String(runs.length)}`,
       playableMs: pick('playableMs'),
       stageMs: pick('stageMs'),
       venueToPlayableMs: pick('venueToPlayableMs'),
+      afterVenueMs,
+      coinsDrawnToPlayableMs: median(coinsDrawnToPlayable),
       tapLagMs: pick('tapLagMs'),
       firstDropMs: pick('firstDropMs'),
       tapToDropMs: pick('tapToDropMs'),
       longestFrameAfterTapMs: pick('longestFrameAfterTapMs'),
       budgetMs: BOOT_TO_FIRST_DROP_MS,
       venueToPlayableBudgetMs: VENUE_TO_PLAYABLE_MS,
+      coinsDrawnToPlayableBudgetMs: COINS_DRAWN_TO_PLAYABLE_MS,
     };
     await writePerfReport('boot.json', headline, runs, testInfo);
 
@@ -251,6 +289,40 @@ test.describe('boot budget', () => {
       headline.venueToPlayableMs,
       `median ms from the venue mark to playable, runs: ${runs.map((run) => run.venueToPlayableMs.toFixed(0)).join(', ')}`,
     ).toBeLessThan(VENUE_TO_PLAYABLE_MS);
+    expect(
+      Math.max(...coinsDrawnToPlayable),
+      `the longest ms from the first frame with coins to playable, runs: ${coinsDrawnToPlayable.map((ms) => ms.toFixed(0)).join(', ')}`,
+    ).toBeLessThan(COINS_DRAWN_TO_PLAYABLE_MS);
+  });
+
+  test('a warm second boot, with Rapier already in the HTTP cache, still gives the sim its head start before the stage', async ({
+    page,
+  }) => {
+    // On a software GPU the stage's first frames starve the worker, which is why main.ts waits
+    // for the sim before building the stage unless the wasm preload is still downloading. That
+    // check reads the preload's resource timing entry, which a cached response gets too.
+    await page.goto(gameUrl('?quality=low'), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
+      timeout: 45_000,
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
+      timeout: 45_000,
+    });
+    const warm = await page.evaluate((selector) => {
+      const link = document.querySelector<HTMLLinkElement>(selector);
+      const entry = link ? performance.getEntriesByName(link.href, 'resource')[0] : undefined;
+      const marked = (step: string): boolean =>
+        performance.getEntriesByName(`coinposh:boot:${step}`, 'mark').length > 0;
+      return {
+        wasmEntry: entry !== undefined,
+        headStart: marked('sim-head-start'),
+      };
+    }, WASM_PRELOAD);
+    expect(warm.wasmEntry, 'the warm boot has a resource timing entry for the wasm preload').toBe(
+      true,
+    );
+    expect(warm.headStart, 'the warm boot waited on the sim before building the stage').toBe(true);
   });
 
   test(`over throttled 4G, Rapier's wasm is requested at navigation and downloaded once, and the median of ${String(THROTTLED_BOOT.runs)} cold boots is playable under ${String(THROTTLED_BOOT.playableMs)} ms`, async ({
@@ -262,12 +334,13 @@ test.describe('boot budget', () => {
       runs.push(stampRun(await throttledBoot(browser, testInfo, i + 1)));
     }
 
-    const pick = (metric: 'playableMs' | 'venueMs' | 'wasmRequestStartMs'): number =>
+    const pick = (metric: 'playableMs' | 'venueMs' | 'simReadyMs' | 'wasmRequestStartMs'): number =>
       median(runs.map((run) => run[metric]));
     const headline = {
       statistic: `median of ${String(runs.length)}`,
       playableMs: pick('playableMs'),
       venueMs: pick('venueMs'),
+      simReadyMs: pick('simReadyMs'),
       wasmRequestStartMs: pick('wasmRequestStartMs'),
       budgetMs: THROTTLED_BOOT.playableMs,
       network: {
@@ -310,6 +383,7 @@ interface WasmRequest {
 interface ThrottledRun {
   readonly playableMs: number;
   readonly venueMs: number;
+  readonly simReadyMs: number;
   /** When index.html's wasm preload started, from its resource timing entry. */
   readonly wasmRequestStartMs: number;
   readonly preloadUrl: string;
@@ -377,6 +451,7 @@ async function throttledBoot(
     return {
       playableMs: await bootMark(page, 'playable'),
       venueMs: await bootMark(page, 'venue'),
+      simReadyMs: await bootMark(page, 'sim-ready'),
       wasmRequestStartMs: preload.startMs,
       preloadUrl: preload.url,
       wasmRequests: await Promise.all(wasm),

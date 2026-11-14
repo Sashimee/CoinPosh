@@ -239,6 +239,8 @@ if (!canvas) {
   throw new Error('CoinPosh boot failed: <canvas id="stage"> is missing from index.html');
 }
 
+const rapierWasmInFlight = watchRapierWasmPreload();
+
 const uiRoot = document.createElement('div');
 document.body.append(uiRoot);
 const ui = mountUi(uiRoot);
@@ -776,6 +778,7 @@ async function bootScene(
     // While its wasm is still on the wire a head start buys nothing, and the GPU work overlaps
     // the download instead of following it.
     if (!rapierWasmInFlight()) {
+      markBoot('sim-head-start');
       await Promise.race([
         simReady,
         new Promise((resolve) => setTimeout(resolve, SIM_HEAD_START_MS)),
@@ -828,8 +831,10 @@ async function bootScene(
   // The renderer checks its clock against the first frame's timestamp, so the effects' first,
   // slowest update must not run inside that frame.
   await frameDrawn(stage);
+  markBoot('venue-frame');
   const effects = attachVfx(stage, vfxModule);
   const vfx = effects?.vfx ?? null;
+  markBoot('effects');
   const boot = await hydrated;
   if (!boot || !layout || bridge.failure) {
     revealVenue();
@@ -936,15 +941,18 @@ async function bootScene(
 
   const elsewhere = mountElsewhere(sessionModule, retake);
   const systems = play(sim, boot.state, layout);
+  markBoot('systems');
   // Shown only now that crates have added the unbox light: a light added later changes every lit
   // shader, so a venue drawn before it would have every program linked twice.
   revealVenue();
   const view = attachTable(stage, venue, bridge);
   view.use(systems, bridge);
+  markBoot('table');
   // The venue's and the coins' first frames link their shaders, seconds on a software GPU. The
   // sim waits them out at the tick it was laid at, so the table under the poster is the one
   // scripts/capture-poster.ts drew on every device, and play starts once the table is on screen.
   await coinsDrawn(stage, bridge);
+  markBoot('coins-drawn');
   releaseHeldSim(bridge);
   if (!probe.superseded) probe.playable = true;
   markBoot('playable');
@@ -2145,13 +2153,24 @@ function watchReducedMotion(apply: (reduced: boolean) => void): void {
 }
 
 /**
- * Whether the Rapier wasm that index.html preloads at navigation is still downloading: a
- * preload gets its resource timing entry once its response is complete.
+ * Returns whether the Rapier wasm that index.html preloads at navigation is still downloading:
+ * a preload gets its resource timing entry once its response is complete, also when it comes
+ * from the HTTP cache. An observer sees that entry even once the resource timing buffer is full,
+ * which `performance.getEntriesByName` would not. boot.perf.ts checks a warm boot still takes
+ * the head start that waits on this.
  */
-function rapierWasmInFlight(): boolean {
+function watchRapierWasmPreload(): () => boolean {
   const preload = document.querySelector<HTMLLinkElement>(RAPIER_WASM_PRELOAD);
-  if (!preload) return false;
-  return performance.getEntriesByName(preload.href, 'resource').length === 0;
+  if (!preload) return () => false;
+  let inFlight = performance.getEntriesByName(preload.href, 'resource').length === 0;
+  if (!inFlight) return () => false;
+  const observer = new PerformanceObserver((list) => {
+    if (list.getEntriesByName(preload.href).length === 0) return;
+    inFlight = false;
+    observer.disconnect();
+  });
+  observer.observe({ type: 'resource', buffered: true });
+  return () => inFlight;
 }
 
 function markBoot(step: string): void {

@@ -24,12 +24,21 @@ export const BOOT_RUNS = 5;
 
 /**
  * P-628: the median of the BOOT_RUNS spans from the `venue` mark to `playable`. The device target
- * is 300 ms on an idle machine; on SwiftShader that span is the frame that reveals the venue and
- * links its programs (P-294, P-295), 1.0 to 2.1 s with a 1.2 s median over 5 runs on 2026-11-14
- * at load 9 on 10 cores. This is a regression floor with headroom for a 4-vCPU runner: the
- * effects' warm frame, which used to sit in this span, would push it past.
+ * is 300 ms on an idle machine and is not met yet: on SwiftShader nearly all of the span is the
+ * frame that reveals the venue and links its programs (P-294, P-295), between the `table` and
+ * `coins-drawn` marks. Medians on 2026-11-14 on 10 cores: 935 ms at load 9, 979 and 1618 ms at
+ * load 14 to 16. With the effects' warm frame awaited before release they read 1584 and 1703 ms
+ * at load 16 to 18, so this load-sensitive span only floors regressions in the venue frame;
+ * COINS_DRAWN_TO_PLAYABLE_MS is what catches the warm frame coming back.
  */
-export const VENUE_TO_PLAYABLE_MS = 2_000;
+export const VENUE_TO_PLAYABLE_MS = 1_800;
+
+/**
+ * P-628: the slowest of the BOOT_RUNS spans from the `coins-drawn` mark to `playable`, which only
+ * releases the held sim: 0 to 1 ms on 2026-11-14 at load 14 to 16 on 10 cores. Awaiting the
+ * effects' warm frame there again read 68 to 146 ms per run.
+ */
+export const COINS_DRAWN_TO_PLAYABLE_MS = 50;
 
 /**
  * P-627: a cold boot over throttled 4G, emulated through CDP. Before P-627 the median playable
