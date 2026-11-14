@@ -9,6 +9,7 @@ import {
   type TableCrate,
   type Tick,
 } from '@coinposh/shared';
+import { TICK_RATE_HZ } from '@coinposh/sim/layout';
 import type { Bus } from '../../app/bus.ts';
 import type { ApiClient, TableEvent, TableSync } from '../../net/index.ts';
 import type { CrateEvents } from './events.ts';
@@ -37,6 +38,8 @@ export interface CrateControllerOptions {
 export class CrateController {
   private readonly options: CrateControllerOptions;
   private readonly rides = new Map<CrateId, CrateRide>();
+  /** The sim tick each ride has been carried to. */
+  private readonly rodeTo = new Map<CrateId, number>();
   private readonly awaitingClaim = new Set<CrateId>();
   private readonly opening = new Map<CrateId, Promise<void>>();
   private queue: Promise<void> = Promise.resolve();
@@ -101,12 +104,23 @@ export class CrateController {
     return tuples;
   }
 
-  update(dt: number): void {
+  /**
+   * Carries every ride forward by the sim ticks run since it last moved, never by frame time:
+   * the server bounds a pose's elapsedMs by the sim ticks between two snapshots, so a sim held
+   * by an overlay, paused or falling behind on a slow device holds its crates too. A tick that
+   * steps back (a restarted sim) moves nothing and becomes the new base. `_frameSeconds` is
+   * ignored; it only matches the stage's frame callback.
+   */
+  update(_frameSeconds?: number): void {
     if (this.disposed) return;
-    const stroke = this.options.sim.stats.pusherStroke;
+    const { pusherStroke } = this.options.sim.stats;
+    const tick = this.simTick();
     for (const ride of this.rides.values()) {
+      const id = ride.crate.id;
+      const ticks = Math.max(0, tick - (this.rodeTo.get(id) ?? tick));
+      this.rodeTo.set(id, tick);
       const before = ride.phase;
-      const after = ride.update(dt, stroke);
+      const after = ride.update(ticks / TICK_RATE_HZ, pusherStroke);
       this.onPhase(ride, before, after);
     }
   }
@@ -126,6 +140,7 @@ export class CrateController {
     this.disposed = true;
     this.unsubscribe();
     this.rides.clear();
+    this.rodeTo.clear();
   }
 
   private handle(event: TableEvent): void {
@@ -193,6 +208,7 @@ export class CrateController {
 
   private place(ride: CrateRide, resumed: boolean): void {
     this.rides.set(ride.crate.id, ride);
+    this.rodeTo.set(ride.crate.id, this.simTick());
     this.options.events.emit('crate:spawned', {
       crateId: ride.crate.id,
       kind: ride.crate.kind,
@@ -213,10 +229,15 @@ export class CrateController {
       this.options.events.emit('crate:teeter', { crateId, position: ride.position });
     }
     this.rides.delete(crateId);
+    this.rodeTo.delete(crateId);
     this.awaitingClaim.add(crateId);
-    const tick: Tick = Math.max(0, Math.floor(this.options.sim.stats.tick));
+    const tick: Tick = this.simTick();
     this.options.events.emit('crate:fell', { crateId, tick, position: ride.position });
     this.options.table.claimCrate(crateId, tick, 'front');
+  }
+
+  private simTick(): Tick {
+    return Math.max(0, Math.floor(this.options.sim.stats.tick));
   }
 
   /**
