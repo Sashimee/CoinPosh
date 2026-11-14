@@ -54,6 +54,7 @@ export const ENTITY_ID_PREFIXES = {
   season: 'season',
   event: 'event',
   tableSession: 'session',
+  soireeRun: 'soiree',
 } as const;
 
 export const PlayerIdSchema = z.uuid().brand<'PlayerId'>();
@@ -88,6 +89,10 @@ export type EventId = z.infer<typeof EventIdSchema>;
 export const TableSessionIdSchema = entityId(ENTITY_ID_PREFIXES.tableSession, 'TableSessionId');
 export type TableSessionId = z.infer<typeof TableSessionIdSchema>;
 
+/** One Soirée Night run, minted by `POST /v1/soiree/start`. */
+export const SoireeRunIdSchema = entityId(ENTITY_ID_PREFIXES.soireeRun, 'SoireeRunId');
+export type SoireeRunId = z.infer<typeof SoireeRunIdSchema>;
+
 export const VenueIdSchema = z.enum(VENUE_IDS);
 export type VenueId = z.infer<typeof VenueIdSchema>;
 
@@ -112,3 +117,10 @@ export type QuestTemplateId = z.infer<typeof QuestTemplateIdSchema>;
 
 export const BoardIdSchema = catalogKey('BoardId');
 export type BoardId = z.infer<typeof BoardIdSchema>;
+
+export const SoireeGuestIdSchema = catalogKey('SoireeGuestId');
+export type SoireeGuestId = z.infer<typeof SoireeGuestIdSchema>;
+
+/** A Soirée perk from the Favor catalogue in `packages/economy`. */
+export const SoireeFavorIdSchema = catalogKey('SoireeFavorId');
+export type SoireeFavorId = z.infer<typeof SoireeFavorIdSchema>;
