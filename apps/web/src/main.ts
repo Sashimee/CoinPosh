@@ -788,7 +788,8 @@ async function bootScene(
   // The renderer checks its clock against the first frame's timestamp, so the effects' first,
   // slowest update must not run inside that frame.
   await frameDrawn(stage);
-  const vfx = attachVfx(stage, vfxModule);
+  const effects = attachVfx(stage, vfxModule);
+  const vfx = effects?.vfx ?? null;
   const boot = await hydrated;
   if (!boot || !layout || bridge.failure) {
     revealVenue();
@@ -905,7 +906,7 @@ async function bootScene(
   // scripts/capture-poster.ts drew on every device, and play starts once the table is on screen.
   await coinsDrawn(stage, bridge);
   // A software GPU can finish that link only as the next frame waits on it.
-  await frameDrawn(stage);
+  await drawWarmFrame(stage, effects);
   releaseHeldSim(bridge);
   if (!probe.superseded) probe.playable = true;
   markBoot('playable');
@@ -1313,6 +1314,25 @@ function coinsDrawn(stage: Stage, bridge: SimBridge): Promise<void> {
   });
 }
 
+/**
+ * Draws the last frame before play with the effects' programs linked in it, so the first taps'
+ * fusions do not stall on them. It runs once every light is in place: a light added after it
+ * would rebuild their pipelines, and the programs would link a second time on first use.
+ */
+async function drawWarmFrame(stage: Stage, effects: AttachedVfx | null): Promise<void> {
+  if (effects) {
+    try {
+      if (await effects.warmup()) return;
+    } catch (error) {
+      console.error(
+        'CoinPosh effects could not pre-link their shaders; the first effects may stutter.',
+        error,
+      );
+    }
+  }
+  await frameDrawn(stage);
+}
+
 /** Resolves once the next frame has been drawn: promise callbacks run after the frame callback. */
 function frameDrawn(stage: Stage): Promise<void> {
   return new Promise((resolve) => {
@@ -1324,11 +1344,25 @@ function frameDrawn(stage: Stage): Promise<void> {
   });
 }
 
+/** Recorded after each warmup frame, for e2e/shader-warmup.spec.ts and the playtest console. */
+const VFX_WARMED_MARK = 'coinposh:vfx:warmed';
+
+interface AttachedVfx {
+  readonly vfx: Vfx;
+  /**
+   * Links the effects' programs (flash, ring, sparks, foil) with one post-pass frame, so the
+   * first fusion or OBSCENE does not stall on them. Settles after the frame that runs it, true
+   * when it drew one: a renderer swap still waiting to be adopted skips the frame.
+   */
+  warmup(): Promise<boolean>;
+}
+
 /**
  * Follows the stage's renderer through device-loss rebuilds, its quality tier and the motion
- * setting. Without effects the game still plays, so a failure here is logged, not fatal.
+ * setting, re-linking the effects' programs after each. Without effects the game still plays,
+ * so a failure here is logged, not fatal.
  */
-function attachVfx(stage: Stage, vfxModule: typeof VfxModule): Vfx | null {
+function attachVfx(stage: Stage, vfxModule: typeof VfxModule): AttachedVfx | null {
   let vfx: Vfx;
   try {
     vfx = vfxModule.createVfx({
@@ -1346,26 +1380,55 @@ function attachVfx(stage: Stage, vfxModule: typeof VfxModule): Vfx | null {
     return null;
   }
   let renderer = stage.renderer;
+  let live = true;
+  let queued: Promise<boolean> | null = null;
+  let previous: Promise<unknown> = Promise.resolve();
+  // One warmup frame at a time; the requests made before it starts share it.
+  const warmup = (): Promise<boolean> => {
+    if (queued) return queued;
+    const run = previous.then(async () => {
+      queued = null;
+      // A swap still waiting for the next frame warms the new renderer once it is adopted.
+      if (!live || stage.renderer !== renderer) return false;
+      await vfx.warmup(() => stage.drawFrame());
+      performance.mark(VFX_WARMED_MARK);
+      return true;
+    });
+    queued = run;
+    previous = run.catch(() => undefined);
+    return run;
+  };
+  const rewarm = (): void => {
+    warmup().catch((error: unknown) => {
+      console.error(
+        'CoinPosh effects could not pre-link their shaders after a renderer change; the next effects may stutter.',
+        error,
+      );
+    });
+  };
   const stopFrame = stage.onFrame((deltaSeconds) => {
     if (stage.renderer !== renderer) {
       renderer = stage.renderer;
       vfx.setRenderer(renderer, stage.backend);
+      rewarm();
     }
     vfx.update(deltaSeconds);
   });
   const stopTier = stage.onTierChange((profile) => {
     vfx.setQuality(profile.tier);
+    rewarm();
   });
   const stopMotion = onReducedMotionChange((reduced) => {
     vfx.setReducedMotion(reduced);
   });
   teardown.push(() => {
+    live = false;
     stopFrame();
     stopTier();
     stopMotion();
     vfx.dispose();
   });
-  return vfx;
+  return { vfx, warmup };
 }
 
 /**
