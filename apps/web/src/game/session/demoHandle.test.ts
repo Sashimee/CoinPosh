@@ -17,7 +17,13 @@ import {
   type Player,
 } from '../../net/test/harness.ts';
 import type { SimBridgeSnapshot } from '../simWorker/index.ts';
-import { createDemoHandle, type DemoHandle, type DemoHandleDeps } from './demoHandle.ts';
+import {
+  createDemoHandle,
+  installDemoHandle,
+  type DemoHandle,
+  type DemoHandleDeps,
+  type DemoHandleTarget,
+} from './demoHandle.ts';
 
 let time: FakeTime;
 let server: MockServer;
@@ -334,5 +340,63 @@ describe('demo handle against createNet', () => {
     expect(net.table.superseded).toBe(true);
     expect(events).toContain('sessionSuperseded');
     net.table.close();
+  });
+});
+
+describe('installDemoHandle', () => {
+  const deps: Omit<DemoHandleDeps, 'mock'> = {
+    player: () => null,
+    retake: () => Promise.reject(new Error('No retake in this test.')),
+    superseded: () => false,
+    sample: () => Promise.reject(new Error('No sim in this test.')),
+    coinOf: () => null,
+  };
+
+  function probeOf(target: DemoHandleTarget): { readonly demo?: DemoHandle | undefined } {
+    return {
+      get demo() {
+        return target.demo;
+      },
+    };
+  }
+
+  it('installs nothing against a live API, leaving window.__coinposh.demo undefined', async () => {
+    const live = await createNet({
+      mode: { kind: 'live', apiUrl: 'https://api.coinposh.test' },
+      locale: () => 'en',
+      turnstileToken: () => Promise.reject(new Error('No Turnstile in this test.')),
+      onError: () => undefined,
+      store: memoryStore(),
+    });
+    expect(live.mock).toBeNull();
+    const target: DemoHandleTarget = {};
+    expect(installDemoHandle(target, live.mock, deps)).toBeNull();
+    expect('demo' in target).toBe(false);
+    expect(probeOf(target).demo).toBeUndefined();
+    live.table.close();
+  });
+
+  it('installs a handle on the Demo server and takes it off again', () => {
+    const target: DemoHandleTarget = {};
+    const uninstall = installDemoHandle(target, server, {
+      ...deps,
+      player: () => page.session.playerId,
+    });
+    if (uninstall === null) throw new Error('Demo Mode installed no handle.');
+    expect(probeOf(target).demo?.snapshots().last?.seq).toBe(0);
+    uninstall();
+    expect('demo' in target).toBe(false);
+  });
+
+  it('leaves a newer handle in place when an older one is taken off', () => {
+    const target: DemoHandleTarget = {};
+    const first = installDemoHandle(target, server, deps);
+    const second = installDemoHandle(target, server, deps);
+    if (first === null || second === null) throw new Error('Demo Mode installed no handle.');
+    const newer = target.demo;
+    first();
+    expect(target.demo).toBe(newer);
+    second();
+    expect(target.demo).toBeUndefined();
   });
 });

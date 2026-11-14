@@ -140,3 +140,26 @@ export function createDemoHandle(deps: DemoHandleDeps): DemoHandle {
     },
   };
 }
+
+/** Where a page keeps its Demo handle: `window.__coinposh.demo` reads it back. */
+export interface DemoHandleTarget {
+  demo?: DemoHandle | undefined;
+}
+
+/**
+ * Puts a Demo handle on `target` when the page runs against the in-browser server, and returns
+ * the way to take it off again. With a live API there is no mock, so nothing is installed and
+ * the page exposes no way to act on the table.
+ */
+export function installDemoHandle(
+  target: DemoHandleTarget,
+  mock: DemoHandleDeps['mock'] | null,
+  deps: Omit<DemoHandleDeps, 'mock'>,
+): (() => void) | null {
+  if (mock === null) return null;
+  const handle = createDemoHandle({ ...deps, mock });
+  target.demo = handle;
+  return () => {
+    if (target.demo === handle) delete target.demo;
+  };
+}

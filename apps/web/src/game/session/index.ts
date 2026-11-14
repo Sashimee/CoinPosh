@@ -32,8 +32,10 @@ export {
 export { createRetake, type RetakeSteps } from './retake.ts';
 export {
   createDemoHandle,
+  installDemoHandle,
   type DemoHandle,
   type DemoHandleDeps,
+  type DemoHandleTarget,
   type DemoPose,
   type DemoSnapshots,
   type DemoStoredSnapshot,

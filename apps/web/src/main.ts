@@ -180,13 +180,12 @@ const probe: {
   counts: ProbeCounts;
   restored: RestoreCounts | null;
   superseded: boolean;
-  demo: DemoHandle | null;
+  demo?: DemoHandle | undefined;
 } = {
   bridge: null,
   playable: false,
   restored: null,
   superseded: false,
-  demo: null,
   counts: {
     simFalls: 0,
     simFusions: 0,
@@ -218,7 +217,7 @@ window.__coinposh = {
     return probe.superseded;
   },
   get demo() {
-    return probe.demo ?? undefined;
+    return probe.demo;
   },
 };
 
@@ -849,20 +848,14 @@ async function bootScene(
   releaseHeldSim(bridge);
   if (!probe.superseded) probe.playable = true;
   markBoot('playable');
-  const { mock } = boot.net;
-  if (mock !== null) {
-    probe.demo = sessionModule.createDemoHandle({
-      mock,
-      player: () => boot.net.session.playerId,
-      retake,
-      superseded: () => probe.superseded,
-      sample: () => playing.sim.bridge.snapshot(),
-      coinOf: (simId) => playingSystems.coinOf(simId),
-    });
-    teardown.push(() => {
-      probe.demo = null;
-    });
-  }
+  const uninstallDemo = sessionModule.installDemoHandle(probe, boot.net.mock, {
+    player: () => boot.net.session.playerId,
+    retake,
+    superseded: () => probe.superseded,
+    sample: () => playing.sim.bridge.snapshot(),
+    coinOf: (simId) => playingSystems.coinOf(simId),
+  });
+  if (uninstallDemo !== null) teardown.push(uninstallDemo);
 
   const relay = createTableRelay<Laid>({
     state: boot.state,
