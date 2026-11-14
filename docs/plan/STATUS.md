@@ -364,6 +364,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-645 | done | task/P-645 (merge 391dd67) | Server POST /v1/crates/open with crate.open ledger kind, collectible unit for the album card and append-only crate_opens table (folds P-646, P-433, P-533; P-647 decision: card ledgered inside crate.open) (dbe4a06); pnpm check green after merge; follow-ups P-664..P-666 |
 | P-639 | done | task/P-639 (merge 01bddb2) | Honest front-edge falls are no longer refused as over_envelope by the Demo mock (world.ts), with core.test, mock server.test and apps/web/e2e/honest-falls.spec.ts cases (35616ad); folds P-657 (refused fusion claim removes the fused body from the sim); pnpm check green after merge; follow-ups P-667, P-668 |
 | P-655 | done | task/P-655 (merge 59974b0) | Crate ride advances on sim ticks, so a held sim holds its crates and their poses are no longer refused as teleports (controller.ts, ride.ts, crates.test.ts; 9031c25); pnpm check green after merge; follow-up P-669 |
+| P-660 | done | task/P-660 (merge e3baefd) | Table crate shader pipelines warmed before the first crate spawns: hidden crate (body, band, glow, ring, spark) compiled in the post-boot warm-up (crates/warmup.ts, view.ts, mount.ts and tests; c6234a3); pnpm check green after merge; follow-up P-673 |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
