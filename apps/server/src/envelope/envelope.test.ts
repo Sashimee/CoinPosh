@@ -1,4 +1,5 @@
 import {
+  album,
   RATE_ENVELOPE_METRIC_IDS,
   rateEnvelope,
   rateEnvelopeFor,
@@ -571,6 +572,35 @@ describe('RateEnvelope limits from the economy config', () => {
       return count;
     });
     expect(admitted).toBe(expected);
+  });
+
+  it('stretches only the coin value envelope by a completed album set, to the unit', async () => {
+    const set = album[0];
+    const collector: RateEnvelopeTable = { ...BASE_TABLE, albumBonus: set.globalBonus };
+    const expected = rateEnvelopeFor(collector);
+    expect(expected.fallValue.max).toBe(
+      Math.ceil(rateEnvelope.fallValue.max * (1 + set.globalBonus) - 1e-9),
+    );
+    expect({ ...expected, fallValue: null }).toEqual({
+      ...rateEnvelopeFor(BASE_TABLE),
+      fallValue: null,
+    });
+    const result = await inFreshDo((sql) => {
+      const envelope = RateEnvelope.forTable(sql, collector);
+      const admitted = envelope.admit(one('fallValue', expected.fallValue.max), T0, null);
+      const over = envelope.admit(one('fallValue'), T0, 'coin_over');
+      return { admitted: admitted.admitted, over: over.admitted, flags: envelope.flags() };
+    });
+    expect(result).toMatchObject({ admitted: true, over: false });
+    expect(result.flags).toMatchObject([{ metric: 'fallValue', max: expected.fallValue.max }]);
+  });
+
+  it('refuses a forged album bonus instead of stretching the envelope', async () => {
+    await inFreshDo((sql) => {
+      for (const albumBonus of [-0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() => RateEnvelope.forTable(sql, { ...BASE_TABLE, albumBonus })).toThrow(RangeError);
+      }
+    });
   });
 
   it('refuses a table the economy config does not know instead of guessing limits', async () => {

@@ -16,12 +16,14 @@ import {
   repriceReserved,
   upgradeLines,
   type CascadeChain,
+  type RateEnvelopeTable,
   type UpgradeLevelMap,
 } from '@coinposh/economy';
 import {
   DEFAULT_FEATURE_FLAGS,
   nextCoinTier,
   StateResponseSchema,
+  type AlbumResponse,
   type ApiError,
   type AscendRequest,
   type AscendResponse,
@@ -106,6 +108,7 @@ import {
   type AscendHost,
   type AscensionCommit,
 } from '../routes/ascend.ts';
+import { albumBonus, readAlbum, type AlbumHost } from '../routes/album.ts';
 import {
   quoteUpgrade,
   readUpgradeLevels,
@@ -249,7 +252,7 @@ function settleLegs(
 
 export class PlayerDO
   extends DurableObject<Env>
-  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost
+  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost, AlbumHost
 {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
@@ -463,15 +466,18 @@ export class PlayerDO
   /**
    * Opens a crate the player pushed off the front edge into the inventory, once. The contents
    * are a provably fair roll on the player's seed chain; the scripted first-session crate is
-   * the one the scripted drop spawned. The coins it pays top the reserved buffer up so the
-   * returned wallet is final.
+   * the one the scripted drop spawned. A card that completes an album set raises the coin value
+   * from the next mint, so the reserved buffer is re-minted at it, as an upgrade does. The coins
+   * it pays top the reserved buffer up so the returned wallet is final.
    */
   async openCrate(command: Command<CrateOpenRequest>): Promise<DoResult<CrateOpenResponse>> {
     return this.mutate(command, (now) => {
       const context = { at: now, idempotencyKey: command.idempotencyKey };
       this.adoptFairSeed(now);
       const scripted = this.meta('ftue_crate') === command.body.crateId;
+      const bonusBefore = albumBonus(this.sql);
       const opened = openCrate(this.sql, this.fair, command.body, context, scripted);
+      if (albumBonus(this.sql) !== bonusBefore) this.repriceBuffer();
       this.reserveBuffer(context);
       return { ...opened, wallet: readWallet(this.sql) };
     });
@@ -507,6 +513,26 @@ export class PlayerDO
       this.reserveBuffer(context);
       return { ...revealed, wallet: readWallet(this.sql) };
     });
+  }
+
+  /** The album as the server's crate opens granted it (T-3.03); the client sends nothing. */
+  album(): Promise<DoResult<AlbumResponse>> {
+    if (this.meta('player_id') === null) return Promise.resolve(this.uninitialized());
+    return Promise.resolve({ ok: true, replayed: false, body: readAlbum(this.sql) });
+  }
+
+  /**
+   * The table configuration the rate envelope is keyed on, all from server state: the levels
+   * the player bought, the venue they are at, the charms the server holds for them (none until
+   * it keeps a charm inventory) and the bonus of the album sets their crate opens completed.
+   */
+  envelopeTable(): RateEnvelopeTable {
+    return {
+      levels: this.levels(),
+      venue: this.venueId(),
+      charms: 0,
+      albumBonus: albumBonus(this.sql),
+    };
   }
 
   /** Double-entry totals next to the entity tables they must agree with. */
@@ -1375,9 +1401,15 @@ export class PlayerDO
     };
   }
 
-  /** A coin of `tier` minted now at the current venue, in millionths. */
+  /**
+   * A coin of `tier` minted now at the current venue, in millionths. Completed album sets add
+   * their bonus to the global coin multiplier (02-ECONOMY), folded into the venue's so the
+   * economy's mint rounds the whole product once.
+   */
   private mintedMicros(tier: CoinTier, levels: UpgradeLevelMap): number {
-    return mintedCoinMicros(tierDef(tier), currentVenue(this.sql), levels);
+    const venue = currentVenue(this.sql);
+    const coinValueMultiplier = venue.coinValueMultiplier * (1 + albumBonus(this.sql));
+    return mintedCoinMicros(tierDef(tier), { ...venue, coinValueMultiplier }, levels);
   }
 
   private startingCoins(): number {
