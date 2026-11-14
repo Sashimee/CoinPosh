@@ -373,6 +373,8 @@ const TAPS_AFTER_SPAWN = SWEEP_LANES.length;
 /** The table's state on one sample of the watch. */
 interface TableSample {
   readonly vault: number;
+  /** `counts.frontFalls`: coins the table has shoved over the lip so far. */
+  readonly frontFalls: number;
   /**
    * Whether play is paused (`.cp-sys.is-suspended`), which pauseDuringCinematics keeps up for
    * exactly as long as the crate's HUD hold. A dropped hold shows here first.
@@ -413,7 +415,11 @@ async function watchTableFromOpenToReveal(page: Page): Promise<void> {
       const text = plaque.querySelector('.cp-sr-only')?.textContent;
       const digits = text?.replace(/\D/g, '') ?? '';
       if (digits === '') throw new Error(`The Vault plaque announced no balance: "${text ?? ''}"`);
-      return { vault: Number(digits), paused: systems.classList.contains('is-suspended') };
+      return {
+        vault: Number(digits),
+        frontFalls: window.__coinposh?.counts.frontFalls ?? 0,
+        paused: systems.classList.contains('is-suspended'),
+      };
     };
     let atOpen: TableSample | null = null;
     const vaultChanges: number[] = [];
@@ -449,6 +455,38 @@ async function tableBehindSheet(page: Page): Promise<TableBehindSheet> {
   const seen = await page.evaluate(() => window.__tableBehindSheet);
   if (!seen) throw new Error('The table watch was never installed on this page');
   return seen;
+}
+
+/** The keyboard shove's spacing: brisk, but well short of a Decorum freeze. */
+const NUDGE_EVERY_MS = 400;
+/** How long the table may be shoved behind the sheet before a coin must have gone over. */
+const FALL_BEHIND_SHEET_WITHIN_MS = 20_000;
+
+/**
+ * Shoves the table from the keyboard behind the sheet until a coin goes over the lip after the
+ * crate opened: that credit is what a dropped hold would pay into the Vault before the reveal.
+ * Nudges still land while play is paused, and the key goes to the canvas directly because focus
+ * belongs to the sheet, as it does for a player.
+ */
+async function shoveUntilACoinFallsAfterOpen(page: Page): Promise<number> {
+  const deadline = Date.now() + FALL_BEHIND_SHEET_WITHIN_MS;
+  for (;;) {
+    const { atOpen } = await tableBehindSheet(page);
+    if (!atOpen) throw new Error('The table watch has not seen the crate open yet');
+    const since = (await probe(page)).counts.frontFalls - atOpen.frontFalls;
+    if (since > 0) return since;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `No coin went over the lip in ${String(FALL_BEHIND_SHEET_WITHIN_MS)} ms behind the sheet, so the Vault check proves nothing: ${JSON.stringify((await probe(page)).counts)}`,
+      );
+    }
+    await page.evaluate(() => {
+      const stage = document.getElementById('stage');
+      if (!stage) throw new Error('The #stage canvas is missing, so the table cannot be nudged');
+      stage.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true }));
+    });
+    await page.waitForTimeout(NUDGE_EVERY_MS);
+  }
 }
 
 /** Taps `taps` drops across the lanes in turn. */
@@ -491,6 +529,7 @@ test.describe('crate behind a sheet (P-510)', () => {
       .toBe(1);
     const reveal = page.getByTestId('crate-reveal');
     await page.waitForTimeout(SHEET_OVER_CRATE_MS);
+    await shoveUntilACoinFallsAfterOpen(page);
     await expect(reveal, 'no unbox plays behind a sheet').toHaveCount(0);
     expect.soft(dropped, 'the crate keeps its HUD hold while the sheet is up').toEqual([]);
 
@@ -504,6 +543,10 @@ test.describe('crate behind a sheet (P-510)', () => {
       .not.toBeNull();
     const { atOpen, vaultChanges, unpausedSamples, atReveal } = await tableBehindSheet(page);
     if (!atOpen || !atReveal) throw new Error('The table watch never saw the crate open');
+    expect(
+      atReveal.frontFalls - atOpen.frontFalls,
+      'a coin goes over the lip between the open and the reveal, so a dropped hold would pay it',
+    ).toBeGreaterThanOrEqual(1);
     expect.soft(unpausedSamples, 'play stays paused from the open until the reveal mounts').toBe(0);
     expect
       .soft(
