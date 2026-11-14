@@ -29,6 +29,10 @@ export const TX_KINDS = [
   'safe.open',
   'scratch.grant',
   'scratch.reveal',
+  'quest.claim',
+  'streak.milestone',
+  'season.tier',
+  'season.rollover',
 ] as const;
 export type TxKind = (typeof TX_KINDS)[number];
 
