@@ -4,6 +4,7 @@ import {
   cascadeTierFor,
   cascadeWindowTicks,
   coinTiers,
+  crateSpawn,
   creditMintMicros,
   dropBufferTarget,
   dropSpawnsCrate,
@@ -30,6 +31,8 @@ import {
   type ClaimsResponse,
   type CoinId,
   type CoinTier,
+  type CrateOpenRequest,
+  type CrateOpenResponse,
   type DropRequest,
   type DropResponse,
   type EpochMs,
@@ -110,6 +113,12 @@ import {
   UPGRADE_TX_KIND,
   type UpgradeHost,
 } from '../routes/upgrades.ts';
+import {
+  countCollectiblesGranted,
+  countHeldCrates,
+  openCrate,
+  type CrateHost,
+} from '../routes/crates.ts';
 import { countLockedSafes, openSafe, readSafes, type SafeHost } from '../routes/safes.ts';
 import {
   countHeldScratchCards,
@@ -180,6 +189,11 @@ export interface ConservationReport {
   readonly tableValue: number;
   readonly tableCrates: number;
   readonly ledgerCratesOnTable: number;
+  readonly cratesHeld: number;
+  readonly ledgerCratesHeld: number;
+  /** Album cards crate opens granted, against the `collectible` units the mint put in the inventory. */
+  readonly collectiblesHeld: number;
+  readonly ledgerCollectiblesHeld: number;
   readonly safesHeld: number;
   readonly ledgerSafesHeld: number;
   readonly scratchCardsHeld: number;
@@ -196,6 +210,7 @@ type MetaKey =
   | 'created_at'
   | 'drop_count'
   | 'drop_high_water'
+  | 'ftue_crate'
   | 'flushed_seq'
   | 'fair_server_seed'
   | 'fair_server_seed_hash'
@@ -234,7 +249,7 @@ function settleLegs(
 
 export class PlayerDO
   extends DurableObject<Env>
-  implements UpgradeHost, AscendHost, SafeHost, ScratchHost
+  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost
 {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
@@ -446,6 +461,23 @@ export class PlayerDO
   }
 
   /**
+   * Opens a crate the player pushed off the front edge into the inventory, once. The contents
+   * are a provably fair roll on the player's seed chain; the scripted first-session crate is
+   * the one the scripted drop spawned. The coins it pays top the reserved buffer up so the
+   * returned wallet is final.
+   */
+  async openCrate(command: Command<CrateOpenRequest>): Promise<DoResult<CrateOpenResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const scripted = this.meta('ftue_crate') === command.body.crateId;
+      const opened = openCrate(this.sql, this.fair, command.body, context, scripted);
+      this.reserveBuffer(context);
+      return { ...opened, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /**
    * Opens a safe the player holds (T-2.01): by Key at any time, by timer once the server clock
    * reaches its `unlocksAt`. The contents are a provably fair roll on the player's seed chain;
    * the coins they pay top the reserved buffer up so the returned wallet is final.
@@ -501,6 +533,12 @@ export class PlayerDO
       .reduce((total, coin) => total + coin.value, 0);
     const tableCrates = this.entities.cratesOnTable().length;
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
+    const cratesHeld = countHeldCrates(this.sql);
+    const ledgerCratesHeld = ledgerBalance(this.sql, 'inventory', 'crate');
+    const collectiblesHeld = countCollectiblesGranted(this.sql);
+    const ledgerCollectiblesHeld = ledgerBalance(this.sql, 'inventory', 'collectible');
+    const unitSettled = (unit: Leg['unit']) =>
+      ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, unit), 0) === 0;
     const safesHeld = countLockedSafes(this.sql);
     const ledgerSafesHeld = ledgerBalance(this.sql, 'inventory', 'safe');
     const scratchCardsHeld = countHeldScratchCards(this.sql);
@@ -510,6 +548,10 @@ export class PlayerDO
       ledger.buffer === bufferPaid &&
       ledger.table === tableValue &&
       ledgerCratesOnTable === tableCrates &&
+      ledgerCratesHeld === cratesHeld &&
+      unitSettled('crate') &&
+      ledgerCollectiblesHeld === collectiblesHeld &&
+      unitSettled('collectible') &&
       ledgerSafesHeld === safesHeld &&
       ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, 'safe'), 0) === 0 &&
       ledgerScratchCardsHeld === scratchCardsHeld &&
@@ -527,6 +569,10 @@ export class PlayerDO
       tableValue,
       tableCrates,
       ledgerCratesOnTable,
+      cratesHeld,
+      ledgerCratesHeld,
+      collectiblesHeld,
+      ledgerCollectiblesHeld,
       safesHeld,
       ledgerSafesHeld,
       scratchCardsHeld,
@@ -697,6 +743,9 @@ export class PlayerDO
     const spawnedCrates: TableCrate[] = [];
     if (this.countDrop(levels)) {
       const crate = this.entities.spawnCrate('vault', body.tick, now);
+      if (Number(this.requireMeta('drop_count')) === crateSpawn.ftueScriptedDrop) {
+        this.setMeta('ftue_crate', crate.id);
+      }
       commit(this.sql, new LedgerTx('crate.spawn').move('mint', 'table', 'crate', 1, crate.id), {
         at: now,
         idempotencyKey,

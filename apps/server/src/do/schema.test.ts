@@ -342,3 +342,40 @@ describe('a player stored before scratch cards', () => {
     await expectConserved(session);
   });
 });
+
+describe('a player stored before crate opens', () => {
+  it('gets the append-only crate_opens table on construction, recording no opens', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_live: PlayerDO, ctx) => {
+      const sql = ctx.storage.sql;
+      const objects = () =>
+        sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger', 'index') AND name LIKE 'crate\\_opens%' ESCAPE '\\' ORDER BY name",
+          )
+          .toArray()
+          .map((row) => row.name);
+      const migrated = objects();
+      expect(migrated).toEqual([
+        'crate_opens',
+        'crate_opens_collectible',
+        'crate_opens_no_delete',
+        'crate_opens_no_update',
+      ]);
+      sql.exec('DROP TABLE crate_opens');
+      const before = migrationIndex('CREATE TABLE IF NOT EXISTS crate_opens');
+      expect(before).toBe(migrationIndex('CREATE TABLE IF NOT EXISTS scratch_cards') + 1);
+      sql.exec('UPDATE schema_version SET version = ?', before);
+      expect(objects()).toEqual([]);
+
+      new PlayerDO(ctx, env);
+      expect(sql.exec<{ version: number }>('SELECT version FROM schema_version').one()).toEqual({
+        version: MIGRATIONS.length,
+      });
+      expect(objects()).toEqual(migrated);
+      expect(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n).toBe(0);
+    });
+    await expectConserved(session);
+  });
+});

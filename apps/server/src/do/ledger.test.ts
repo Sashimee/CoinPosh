@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { newSession, type Session } from '../test/client.ts';
 import { claims, drop, dropAsClient, expectConserved, playerStub, state } from '../test/game.ts';
 import { ASCEND_TX_KIND } from '../routes/ascend.ts';
+import { CRATE_OPEN_TX_KIND } from '../routes/crates.ts';
 import { SCRATCH_GRANT_TX_KIND, SCRATCH_REVEAL_TX_KIND } from '../routes/scratch.ts';
 import { commit, ConservationError, LedgerTx, TX_KINDS } from './ledger.ts';
 import type { PlayerDO } from './PlayerDO.ts';
@@ -112,6 +113,43 @@ describe('LedgerTx', () => {
           { at: Date.now(), idempotencyKey: null },
         );
       }).toThrow(/wallet only holds currencies, not scratchCard/);
+    });
+  });
+
+  it('lists crate opens as their own kind: the crate leaves the inventory, the mint pays each currency and card', () => {
+    expect(TX_KINDS).toContain(CRATE_OPEN_TX_KIND);
+    const opened = new LedgerTx(CRATE_OPEN_TX_KIND)
+      .move('inventory', 'house', 'crate', 1, 'crate_x')
+      .move('mint', 'wallet', 'pearls', 4, 'crate_x')
+      .move('mint', 'inventory', 'collectible', 1, 'anchorCoin');
+    expect(() => {
+      opened.assertBalanced();
+    }).not.toThrow();
+    const conjuredCard = new LedgerTx(CRATE_OPEN_TX_KIND)
+      .move('inventory', 'house', 'crate', 1, 'crate_x')
+      .post('inventory', 'collectible', 1, 'anchorCoin');
+    expect(() => {
+      conjuredCard.assertBalanced();
+    }).toThrow(/crate.open is unbalanced: collectible legs sum to 1/);
+    const paidWithTheCrate = new LedgerTx(CRATE_OPEN_TX_KIND)
+      .post('inventory', 'crate', -1, 'crate_x')
+      .post('wallet', 'pearls', 1, 'crate_x');
+    expect(() => {
+      paidWithTheCrate.assertBalanced();
+    }).toThrow(/crate legs sum to -1/);
+  });
+
+  it('keeps album cards out of the wallet', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) => {
+      expect(() => {
+        commit(
+          ctx.storage.sql,
+          new LedgerTx(CRATE_OPEN_TX_KIND).move('mint', 'wallet', 'collectible', 1, 'anchorCoin'),
+          { at: Date.now(), idempotencyKey: null },
+        );
+      }).toThrow(/wallet only holds currencies, not collectible/);
     });
   });
 

@@ -1,4 +1,5 @@
 import { ASCENSION_SQL } from '../routes/ascend.ts';
+import { CRATES_SQL } from '../routes/crates.ts';
 import { SAFES_SQL } from '../routes/safes.ts';
 import { SCRATCH_SQL } from '../routes/scratch.ts';
 import { UPGRADE_LEVELS_SQL } from '../routes/upgrades.ts';
@@ -168,6 +169,7 @@ export const MIGRATIONS: readonly string[] = [
   ASCENSION_SQL,
   SAFES_SQL,
   SCRATCH_SQL,
+  CRATES_SQL,
 ];
 
 export function migrate(sql: SqlStorage, transactionSync: <T>(run: () => T) => T): void {
