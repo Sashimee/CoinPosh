@@ -1,10 +1,17 @@
-import type { CoinId, DropResponse, StateResponse, TableSessionId } from '@coinposh/shared';
+import type {
+  CoinId,
+  DropResponse,
+  PoseTuple,
+  StateResponse,
+  TableSessionId,
+} from '@coinposh/shared';
 import { POSITION_UNIT, SIM_SNAPSHOT_VERSION } from '@coinposh/sim/snapshot';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { contractGrid } from '../../net/contract/tableSnapshot.contract.ts';
 import { ApiRequestError } from '../../net/errors.ts';
 import { createNet } from '../../net/index.ts';
 import type { MockServer } from '../../net/mock/server.ts';
+import { Outbox } from '../../net/outbox.ts';
 import { newIdempotencyKey } from '../../net/request.ts';
 import { memoryStore } from '../../net/store.ts';
 import {
@@ -16,7 +23,9 @@ import {
   serverWallet,
   type Player,
 } from '../../net/test/harness.ts';
+import { TableSync } from '../../net/tableSync.ts';
 import type { SimBridgeSnapshot } from '../simWorker/index.ts';
+import { createTableCapture } from './capture.ts';
 import {
   createDemoHandle,
   installDemoHandle,
@@ -24,6 +33,8 @@ import {
   type DemoHandleDeps,
   type DemoHandleTarget,
 } from './demoHandle.ts';
+import { holdTable, type TableHold } from './hold.ts';
+import { createRetake } from './retake.ts';
 
 let time: FakeTime;
 let server: MockServer;
@@ -272,6 +283,204 @@ describe('demo handle: bootElsewhere()', () => {
     if (first === undefined) throw new Error('No drop.');
     await expect(upload(1, [first.coin.id])).resolves.toBeUndefined();
     expect(demo.snapshots().accepted).toBe(1);
+  });
+});
+
+const GRID = contractGrid(Array.from({ length: 22 }, (_, slot) => String(slot)));
+
+function poseAt(slot: number): PoseTuple {
+  const pose = GRID[slot];
+  if (pose === undefined) throw new Error(`The test grid has no slot ${String(slot)}.`);
+  return pose;
+}
+
+interface Body {
+  slot: number;
+  /** Table runs left before this coin lands; until then it lies on the coin in slot 0. */
+  airborne: number;
+}
+
+/**
+ * The table in play as this page holds it: a real TableSync and capture over a fake sim whose
+ * reports, like the worker's, reach the page before the sample asked for after them.
+ */
+async function tableInPlay() {
+  const outbox = await Outbox.open(page.store, (error) => {
+    throw error;
+  });
+  const sync = new TableSync({
+    client: page.client,
+    outbox,
+    connectivity: { onOnline: () => () => undefined },
+    scheduler: { setTimeout: () => ({}), clearTimeout: () => undefined },
+    jitter: () => 0,
+    onError: (error) => {
+      throw error;
+    },
+  });
+  sync.hydrate(state);
+  const bodies = new Map<number, Body>();
+  const names = new Map<number, CoinId>();
+  const reports: (() => void)[] = [];
+  let nextSimId = 1;
+  let fusedSimId: number | null = null;
+  sync.subscribe((event) => {
+    if (event.type !== 'claimSettled' || event.claim.kind !== 'fusion' || fusedSimId === null) {
+      return;
+    }
+    if (event.result.status !== 'accepted' || event.result.minted === null) {
+      throw new Error(`The mock refused the fusion: ${JSON.stringify(event.result)}`);
+    }
+    names.set(fusedSimId, event.result.minted.id);
+  });
+
+  const report = (): void => {
+    for (const reported of reports.splice(0)) reported();
+  };
+  const sample = (): Promise<SimBridgeSnapshot> => {
+    report();
+    const coins = [...bodies].map(([id, body]) => {
+      const [, x, y, z, qx, qy, qz, qw, rest] = poseAt(body.airborne > 0 ? 0 : body.slot);
+      return { id, p: [x, y, z] as const, q: [qx, qy, qz, qw] as const, rest };
+    });
+    return Promise.resolve({
+      tick: simTick(),
+      table: { version: SIM_SNAPSHOT_VERSION, pusherTickInCycle: 0, coins },
+    });
+  };
+  const capture = createTableCapture({
+    sample,
+    coinOf: (simId) => names.get(simId) ?? null,
+    crates: () => [],
+  });
+
+  return {
+    sync,
+    report,
+    /** The server coins the sim holds, as this page names them. */
+    coins: (): CoinId[] => [...names.values()],
+    async drop(count: number, airborne = 0): Promise<void> {
+      for (let i = 0; i < count; i++) {
+        time.advance(100);
+        const coin = sync.drop(0, simTick())?.coin;
+        if (coin === undefined || coin === null) throw new Error('The buffer ran dry.');
+        const simId = nextSimId++;
+        bodies.set(simId, { slot: simId - 1, airborne });
+        names.set(simId, coin.id);
+      }
+      await sync.flush();
+    },
+    async upload(): Promise<void> {
+      time.advance(1_000);
+      await capture.refresh();
+      const taken = capture.capture();
+      if (taken === null || !sync.snapshot(taken)) throw new Error('The table queued no upload.');
+      await sync.flush();
+    },
+    /** Fuses the first three coins in the sim, which reports it with its next sample. */
+    fuse(): void {
+      const inputs = [1, 2, 3].map((simId) => names.get(simId));
+      const [a, b, c] = inputs;
+      if (a === undefined || b === undefined || c === undefined)
+        throw new Error('No coins to fuse.');
+      reports.push(() => {
+        for (const simId of [1, 2, 3]) {
+          bodies.delete(simId);
+          names.delete(simId);
+        }
+        fusedSimId = nextSimId++;
+        bodies.set(fusedSimId, { slot: 0, airborne: 0 });
+        sync.claimFusion([a, b, c], simTick());
+      });
+    },
+    hold(): TableHold {
+      return holdTable({
+        sim: {
+          pause: () => undefined,
+          resume: () => {
+            for (const body of bodies.values()) body.airborne = Math.max(0, body.airborne - 1);
+          },
+        },
+        capture,
+        table: sync,
+        wait: (ms) => {
+          time.advance(ms);
+          return Promise.resolve();
+        },
+      });
+    },
+    async boot(hold: () => TableHold): Promise<void> {
+      await createRetake({
+        hold,
+        simReady: () => Promise.resolve(),
+        boot: async () => {
+          await sync.drainBeforeBoot();
+          await pageBoot();
+        },
+        lay: () => Promise.resolve(),
+        play: () => undefined,
+        discard: () => undefined,
+      })();
+      sync.close();
+    },
+  };
+}
+
+function laid(ids: readonly CoinId[]): boolean {
+  const onTable = new Set(state.table.coins.map((coin) => coin.id));
+  return ids.every((id) => onTable.has(id));
+}
+
+const unheld = (): TableHold => ({ posed: Promise.resolve(), release: () => undefined });
+
+describe('demo handle: a reboot while coins move during the drain', () => {
+  it('refunds nothing when a fusion the last upload missed lands while the boot drains', async () => {
+    const demo = handle();
+    const table = await tableInPlay();
+    await table.drop(3);
+    await table.upload();
+    time.advance(500);
+    table.fuse();
+    await table.boot(() => table.hold());
+    expect(demo.refunds()).toBe(0);
+    expect(table.coins()).toHaveLength(1);
+    expect(laid(table.coins())).toBe(true);
+    const id = requirePlayerId(page);
+    expect(ledgerWallet(server, id)).toEqual(serverWallet(server, id));
+  });
+
+  it('refunds that fused coin when the table is left running through the boot', async () => {
+    const demo = handle();
+    const table = await tableInPlay();
+    await table.drop(3);
+    await table.upload();
+    time.advance(500);
+    table.fuse();
+    table.report();
+    await table.boot(unheld);
+    expect(demo.refunds()).toBe(1);
+  });
+
+  it('refunds nothing for a coin still in the air at the last upload once it lands', async () => {
+    const demo = handle();
+    const table = await tableInPlay();
+    await table.drop(3);
+    await table.drop(1, 2);
+    await table.upload();
+    await table.boot(() => table.hold());
+    expect(demo.refunds()).toBe(0);
+    expect(table.coins()).toHaveLength(4);
+    expect(laid(table.coins())).toBe(true);
+  });
+
+  it('refunds that coin when the boot does not wait for it to land', async () => {
+    const demo = handle();
+    const table = await tableInPlay();
+    await table.drop(3);
+    await table.drop(1, 2);
+    await table.upload();
+    await table.boot(unheld);
+    expect(demo.refunds()).toBe(1);
   });
 });
 

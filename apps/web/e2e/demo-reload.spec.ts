@@ -159,8 +159,9 @@ function unposed(player: StoredPlayer): StoredCoin[] {
 }
 
 /**
- * Waits until any crate the taps won has been revealed and collected, and two snapshots of the
- * resting table have reached the tab's storage since the last tap.
+ * Waits until any crate the taps won has been revealed and collected, two snapshots of the
+ * resting table have reached the tab's storage since the last tap, and they pose every table
+ * coin the opening heap does not hold a slot for.
  */
 async function settle(page: Page): Promise<StoredPlayer> {
   const reveal = page.getByTestId('crate-reveal');
@@ -172,6 +173,7 @@ async function settle(page: Page): Promise<StoredPlayer> {
       fromSeq,
       snapshotSeq: player?.tableSnapshot?.seq ?? null,
       crates: player?.crates.map((record) => record.state) ?? null,
+      unposed: player === undefined ? null : unposed(player).map((record) => record.coin.id),
       reveals,
       counts: (await probe(page)).counts,
     });
@@ -188,7 +190,8 @@ async function settle(page: Page): Promise<StoredPlayer> {
           return (
             player !== undefined &&
             (player.tableSnapshot?.seq ?? 0) >= fromSeq + 2 &&
-            player.crates.every((record) => record.state !== 'openable')
+            player.crates.every((record) => record.state !== 'openable') &&
+            unposed(player).length === 0
           );
         },
         { timeout: 90_000, intervals: [1_000] },
@@ -236,13 +239,12 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
   }
   const fromSeq = world.nextSeq;
   const vault = storedVault(left);
-  const unposedCoins = unposed(left);
-  const refundCap = new Map(
-    unposedCoins.map((record) => [record.coin.id, Math.min(record.paid, record.coin.value)]),
-  );
-  // The Vault comes back as it was, moved only by what the boot rules and the restored table
-  // do: a coin no snapshot posed (the client leaves some fused coins out of its snapshots) is
-  // refunded at most what it cost, and coins on the lip fall as play resumes.
+  expect(
+    unposed(left).map((record) => record.coin.id),
+    'the page left a snapshot posing every table coin',
+  ).toEqual([]);
+  // The Vault comes back as it was, moved only by the restored table: coins on the lip fall as
+  // play resumes, and each drop refills the buffer.
   let moves: StoredEntry[] = [];
   await expect
     .poll(async () => {
@@ -254,24 +256,19 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
   const refunds = moves.filter((entry) => entry.reason === 'refund.table');
   const falls = moves.filter((entry) => entry.reason === 'claim.fall');
   const prepays = moves.filter((entry) => entry.reason === 'drop.prepay');
-  expect(moves.length).toBe(refunds.length + falls.length + prepays.length);
-  expect(refunds.length).toBeLessThanOrEqual(unposedCoins.length);
-  expect(new Set(refunds.map((entry) => entry.ref)).size).toBe(refunds.length);
-  for (const entry of refunds) {
-    expect(refundCap.has(entry.ref ?? ''), `refund of ${String(entry.ref)}`).toBe(true);
-    expect(entry.delta.coins).toBeLessThanOrEqual(refundCap.get(entry.ref ?? '') ?? 0);
-  }
+  expect(refunds, 'the boot refunded a table coin the page had posed').toEqual([]);
+  expect(moves.length).toBe(falls.length + prepays.length);
   expect(falls.length).toBeLessThanOrEqual(FALLS_WHILE_BOOTING);
   testInfo.annotations.push({
     type: 'vault moves after the reload',
-    description: `${String(refunds.length)} of ${String(unposedCoins.length)} unposed coins refunded, ${String(falls.length)} falls`,
+    description: `${String(falls.length)} falls`,
   });
   const restored = await restoredCoins(page);
-  expect(restored, 'the server lays every table coin it kept, less the refunded unposed ones').toBe(
-    left.coins.filter((record) => record.place === 'table').length - refunds.length,
+  expect(restored, 'the server lays every table coin it kept').toBe(
+    left.coins.filter((record) => record.place === 'table').length,
   );
   expect(
-    Math.abs(restored - (coins - refunds.length)),
+    Math.abs(restored - coins),
     'the reloaded table holds the coins the player last saw, within the snapshot tolerance',
   ).toBeLessThanOrEqual(COIN_TOLERANCE);
 
