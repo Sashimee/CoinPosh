@@ -173,7 +173,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | H-10.01 | todo | | Human step: Google Cloud OAuth web client (origins `https://sashimee.github.io`, `https://devcoinposh.bas.lu`, localhost) → Worker secret `GOOGLE_CLIENT_ID`, repo variable `VITE_GOOGLE_CLIENT_ID` |
 | H-10.02 | todo | | Human step: Apple Developer membership (same account as H-7.01, pulled forward), Services ID and Sign in with Apple key → Worker secrets `APPLE_SERVICES_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, repo variable `VITE_APPLE_SERVICES_ID` |
 | T-11.01 | todo | | Waits on T-92.07, T-92.08, T-10.02, T-10.03. Feature-module seams |
-| T-11.02 | todo | | Waits on T-92.02. Sim prop seam |
+| T-11.02 | done | task/T-11.02 (merge 83cde70) | Sim prop seam: packages/sim/src/props (kinds, params, shape, world), sim and snapshot wiring (462f248); follow-ups P-605..P-608; pnpm check green after merge |
 | T-11.03 | todo | | Waits on T-11.01. Collecting contracts |
 | T-11.04 | todo | | Waits on T-11.03, T-3.07. Collecting numbers |
 | T-11.05 | todo | | Waits on T-11.02, T-11.03. Sim: prize bodies |
