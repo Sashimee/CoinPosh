@@ -1,7 +1,14 @@
 import { openingHeap, upgradeCost, upgradeLines } from '@coinposh/economy';
 import { describe, expect, it } from 'vitest';
 import { upgradeRow } from '../app/model.ts';
-import { createPosterGate, dockAffordableCount, posterHeapTarget } from './hud.ts';
+import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../i18n/index.ts';
+import {
+  createPosterGate,
+  dockAffordableCount,
+  posterHeapTarget,
+  safesTriggerBeckons,
+  safesTriggerState,
+} from './hud.ts';
 
 const RICH = 1e15;
 const familyOffice = upgradeLines.filter((line) => line.scope === 'global');
@@ -162,5 +169,42 @@ describe('createPosterGate', () => {
     expect(mayLeave()).toBe(false);
     boot.sim = frame(2, 0);
     expect(mayLeave()).toBe(true);
+  });
+});
+
+describe('safesTriggerState', () => {
+  it('is empty with no safes, locked while every timer runs, ready once one opens free', () => {
+    expect(safesTriggerState({ count: 0, ready: 0 })).toBe('empty');
+    expect(safesTriggerState({ count: 3, ready: 0 })).toBe('locked');
+    expect(safesTriggerState({ count: 3, ready: 1 })).toBe('ready');
+  });
+});
+
+describe('safesTriggerBeckons', () => {
+  it('flares when a safe comes off its timer', () => {
+    expect(safesTriggerBeckons({ count: 2, ready: 0 }, { count: 2, ready: 1 })).toBe(true);
+    expect(safesTriggerBeckons({ count: 2, ready: 1 }, { count: 3, ready: 2 })).toBe(true);
+  });
+
+  it('stays calm on the first tally, an open, or a new locked safe', () => {
+    expect(safesTriggerBeckons(null, { count: 4, ready: 4 })).toBe(false);
+    expect(safesTriggerBeckons({ count: 2, ready: 2 }, { count: 1, ready: 1 })).toBe(false);
+    expect(safesTriggerBeckons({ count: 1, ready: 0 }, { count: 2, ready: 0 })).toBe(false);
+  });
+});
+
+describe('dock.safesReady', () => {
+  it.each(LANGUAGES)('names the button and pluralises the ready count in %s', (language) => {
+    const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
+    const one = i18n.t('dock.safesReady', { label: 'SAFES', count: 1 });
+    const many = i18n.t('dock.safesReady', { label: 'SAFES', count: 3 });
+    for (const text of [one, many]) {
+      expect(text.startsWith('SAFES')).toBe(true);
+      expect(text).not.toContain('dock.');
+      expect(text).not.toContain('{{');
+    }
+    expect(one).toContain('1');
+    expect(many).toContain('3');
+    expect(many, 'the plural form differs from the singular').not.toBe(one.replace('1', '3'));
   });
 });

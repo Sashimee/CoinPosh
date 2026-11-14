@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { economyConfig } from '@coinposh/economy';
-import { bootGame, expect, probe, reviewShot, tapDrop, test } from './fixtures.ts';
+import { bootGame, expect, probe, reviewShot, tapDrop, test, vaultBalance } from './fixtures.ts';
 
 const FTUE_DROP = economyConfig.crateSpawn.ftueScriptedDrop;
 /** Card fly (520 ms in revealCard.ts) plus the cinematic's wrap-up and a frame or two of slack. */
@@ -330,5 +330,239 @@ test.describe('crate unbox (P-183)', () => {
     await startFreshDemoSession(page);
     const full = await unbox(page, 'full', 'escape');
     expect(full, 'same Demo seed, same crate roll and fairness commitment').toEqual(reduced);
+  });
+});
+
+/** Where a thumb sweeping the table drops, as fractions of the stage width. */
+const SWEEP_LANES = [0.5, 0.3, 0.7, 0.4, 0.6] as const;
+
+/**
+ * A brisk sweep, still well over the drop spacing (4 ticks, 67 ms), so the crate spawns and
+ * reaches the lip in good time on a loaded runner.
+ */
+const SWEEP_TAP_EVERY_MS = 250;
+
+/** Taps across the lanes in turn until the scripted crate spawns, then stops. */
+async function sweepUntilCrateSpawns(page: Page): Promise<void> {
+  const box = await page.locator('#stage').boundingBox();
+  if (!box) throw new Error('The #stage canvas has no layout box, so there is nowhere to tap');
+  for (let tap = 0; (await crateCounts(page)).spawned < 1; tap += 1) {
+    if (tap >= FTUE_DROP * 3) {
+      throw new Error(
+        `No crate spawned after ${String(tap)} taps: ${JSON.stringify(await crateCounts(page))}`,
+      );
+    }
+    const lane = SWEEP_LANES[tap % SWEEP_LANES.length] ?? 0.5;
+    await page.mouse.click(box.x + box.width * lane, box.y + box.height / 2);
+    await page.waitForTimeout(SWEEP_TAP_EVERY_MS);
+  }
+}
+
+/** The warnings cinematicHold.ts logs when it gives a crate's HUD hold up early. */
+const HOLD_DROPPED = /opened but its unbox never played|ended without a collect/;
+
+/** How long the sheet stays up once the crate behind it has opened. */
+const SHEET_OVER_CRATE_MS = 1_000;
+
+/**
+ * One more sweep once the crate spawns, so coins reach the lip with it or after it: their
+ * credits, held for the crate, are what a dropped hold would pay into the Vault behind the sheet.
+ */
+const TAPS_AFTER_SPAWN = SWEEP_LANES.length;
+
+/** The table's state on one sample of the watch. */
+interface TableSample {
+  readonly vault: number;
+  /** `counts.frontFalls`: coins the table has shoved over the lip so far. */
+  readonly frontFalls: number;
+  /**
+   * Whether play is paused (`.cp-sys.is-suspended`), which pauseDuringCinematics keeps up for
+   * exactly as long as the crate's HUD hold. A dropped hold shows here first.
+   */
+  readonly paused: boolean;
+}
+
+interface TableBehindSheet {
+  /** The first sample after the crate opened. */
+  readonly atOpen: TableSample | null;
+  /** Every other Vault it showed before the reveal mounted. */
+  readonly vaultChanges: readonly number[];
+  /** Samples between the open and the reveal on which play was not paused; 0 when held. */
+  readonly unpausedSamples: number;
+  /** The first sample with the reveal mounted. */
+  readonly atReveal: TableSample | null;
+}
+
+declare global {
+  interface Window {
+    __tableBehindSheet?: TableBehindSheet;
+  }
+}
+
+/**
+ * Samples the Vault and the table's pause in the page from the crate's open until its reveal
+ * mounts: on every change to either, and every 16 ms for the open itself. A loaded runner can
+ * starve the timer for seconds, so the changes are what catch an unpause or a credit that lands
+ * and settles between two samples.
+ */
+async function watchTableFromOpenToReveal(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const plaque = document.querySelector('[data-testid=hud-balance]');
+    const systems = document.querySelector('.cp-sys');
+    if (!plaque) throw new Error('The Vault plaque is not mounted, so there is no Vault to watch');
+    if (!systems) throw new Error('The .cp-sys overlay is not mounted, so play has no pause');
+    const sample = (): TableSample => {
+      const text = plaque.querySelector('.cp-sr-only')?.textContent;
+      const digits = text?.replace(/\D/g, '') ?? '';
+      if (digits === '') throw new Error(`The Vault plaque announced no balance: "${text ?? ''}"`);
+      return {
+        vault: Number(digits),
+        frontFalls: window.__coinposh?.counts.frontFalls ?? 0,
+        paused: systems.classList.contains('is-suspended'),
+      };
+    };
+    let atOpen: TableSample | null = null;
+    const vaultChanges: number[] = [];
+    let unpausedSamples = 0;
+    const publish = (atReveal: TableSample | null): void => {
+      window.__tableBehindSheet = { atOpen, vaultChanges, unpausedSamples, atReveal };
+    };
+    const observer = new MutationObserver(() => {
+      check();
+    });
+    const check = (): void => {
+      if ((window.__coinposh?.counts.cratesOpened ?? 0) < 1) return;
+      const now = sample();
+      if (document.querySelector('[data-testid="crate-reveal"]')) {
+        clearInterval(timer);
+        observer.disconnect();
+        publish(now);
+        return;
+      }
+      if (!now.paused) unpausedSamples += 1;
+      if (atOpen === null) atOpen = now;
+      else if (now.vault !== (vaultChanges.at(-1) ?? atOpen.vault)) vaultChanges.push(now.vault);
+      publish(null);
+    };
+    publish(null);
+    observer.observe(systems, { attributes: true, attributeFilter: ['class'] });
+    observer.observe(plaque, { subtree: true, childList: true, characterData: true });
+    const timer = setInterval(check, 16);
+  });
+}
+
+async function tableBehindSheet(page: Page): Promise<TableBehindSheet> {
+  const seen = await page.evaluate(() => window.__tableBehindSheet);
+  if (!seen) throw new Error('The table watch was never installed on this page');
+  return seen;
+}
+
+/** The keyboard shove's spacing: brisk, but well short of a Decorum freeze. */
+const NUDGE_EVERY_MS = 400;
+/** How long the table may be shoved behind the sheet before a coin must have gone over. */
+const FALL_BEHIND_SHEET_WITHIN_MS = 20_000;
+
+/**
+ * Shoves the table from the keyboard behind the sheet until a coin goes over the lip after the
+ * crate opened: that credit is what a dropped hold would pay into the Vault before the reveal.
+ * Nudges still land while play is paused, and the key goes to the canvas directly because focus
+ * belongs to the sheet, as it does for a player.
+ */
+async function shoveUntilACoinFallsAfterOpen(page: Page): Promise<number> {
+  const deadline = Date.now() + FALL_BEHIND_SHEET_WITHIN_MS;
+  for (;;) {
+    const { atOpen } = await tableBehindSheet(page);
+    if (!atOpen) throw new Error('The table watch has not seen the crate open yet');
+    const since = (await probe(page)).counts.frontFalls - atOpen.frontFalls;
+    if (since > 0) return since;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `No coin went over the lip in ${String(FALL_BEHIND_SHEET_WITHIN_MS)} ms behind the sheet, so the Vault check proves nothing: ${JSON.stringify((await probe(page)).counts)}`,
+      );
+    }
+    await page.evaluate(() => {
+      const stage = document.getElementById('stage');
+      if (!stage) throw new Error('The #stage canvas is missing, so the table cannot be nudged');
+      stage.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true }));
+    });
+    await page.waitForTimeout(NUDGE_EVERY_MS);
+  }
+}
+
+/** Taps `taps` drops across the lanes in turn. */
+async function sweep(page: Page, taps: number): Promise<void> {
+  const box = await page.locator('#stage').boundingBox();
+  if (!box) throw new Error('The #stage canvas has no layout box, so there is nowhere to tap');
+  for (let tap = 0; tap < taps; tap += 1) {
+    const lane = SWEEP_LANES[tap % SWEEP_LANES.length] ?? 0.5;
+    await page.mouse.click(box.x + box.width * lane, box.y + box.height / 2);
+    await page.waitForTimeout(SWEEP_TAP_EVERY_MS);
+  }
+}
+
+test.describe('crate behind a sheet (P-510)', () => {
+  test('a crate that opens under the Settings sheet keeps its hold, the pause and the Vault until its reveal', async ({
+    page,
+  }) => {
+    // P-511 asks for a run under 60 s; the rest is headroom for a loaded runner.
+    test.setTimeout(90_000);
+    const dropped: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'warning' && HOLD_DROPPED.test(message.text())) {
+        dropped.push(message.text());
+      }
+    });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await bootGame(page);
+    await sweepUntilCrateSpawns(page);
+    await sweep(page, TAPS_AFTER_SPAWN);
+    await watchTableFromOpenToReveal(page);
+
+    await page.getByTestId('dock-settings').click();
+    const sheet = page.getByTestId('sheet-settings');
+    await expect(sheet).toBeVisible();
+    await expect
+      .poll(async () => (await crateCounts(page)).opened, {
+        message: 'the pusher shoves the crate over the lip behind the sheet',
+        timeout: 30_000,
+      })
+      .toBe(1);
+    const reveal = page.getByTestId('crate-reveal');
+    await page.waitForTimeout(SHEET_OVER_CRATE_MS);
+    await shoveUntilACoinFallsAfterOpen(page);
+    await expect(reveal, 'no unbox plays behind a sheet').toHaveCount(0);
+    expect.soft(dropped, 'the crate keeps its HUD hold while the sheet is up').toEqual([]);
+
+    await page.keyboard.press('Escape');
+    await expect(sheet).toBeHidden();
+    await reveal.waitFor({ state: 'attached', timeout: 15_000 });
+    await expect
+      .poll(async () => (await tableBehindSheet(page)).atReveal, {
+        message: 'the table watch sees the reveal mount',
+      })
+      .not.toBeNull();
+    const { atOpen, vaultChanges, unpausedSamples, atReveal } = await tableBehindSheet(page);
+    if (!atOpen || !atReveal) throw new Error('The table watch never saw the crate open');
+    expect(
+      atReveal.frontFalls - atOpen.frontFalls,
+      'a coin goes over the lip between the open and the reveal, so a dropped hold would pay it',
+    ).toBeGreaterThanOrEqual(1);
+    expect.soft(unpausedSamples, 'play stays paused from the open until the reveal mounts').toBe(0);
+    expect
+      .soft(
+        { vaultChanges, atReveal: atReveal.vault },
+        `the Vault holds at ${String(atOpen.vault)} from the open until the reveal mounts`,
+      )
+      .toEqual({ vaultChanges: [], atReveal: atOpen.vault });
+
+    const collect = page.getByTestId('crate-collect');
+    await expect(collect).toBeVisible({ timeout: 20_000 });
+    await collect.click();
+    await expect(reveal).toHaveCount(0, { timeout: COLLECT_SETTLES_MS });
+    expect((await probe(page)).counts.cratesCollected).toBe(1);
+    await expect
+      .poll(() => vaultBalance(page), { message: 'the collect pays into the Vault' })
+      .toBeGreaterThan(atOpen.vault);
+    expect(dropped, 'no hold was given up on the way to the collect').toEqual([]);
   });
 });

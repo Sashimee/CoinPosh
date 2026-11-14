@@ -67,7 +67,10 @@
     "settings": "Réglages",
     "affordable_one": "{{count}} amélioration prête",
     "affordable_many": "{{count}} améliorations prêtes",
-    "affordable_other": "{{count}} améliorations prêtes"
+    "affordable_other": "{{count}} améliorations prêtes",
+    "safesReady_one": "{{label}} : {{count}} coffre prêt à ouvrir",
+    "safesReady_many": "{{label}} : {{count}} coffres prêts à ouvrir",
+    "safesReady_other": "{{label}} : {{count}} coffres prêts à ouvrir"
   },
   "upgrades": {
     "title": "Améliorations",

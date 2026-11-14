@@ -102,6 +102,62 @@ describe('CreditHold keeps an opened crate off the Vault until it is let go', ()
     expect(hold.shown).toBe(20);
   });
 
+  it('keeps the readout flat when a held fall is refused after its estimate rose the balance', () => {
+    const hold = new CreditHold();
+    hold.observe(0);
+    hold.hold('crate', 12);
+    hold.hold('falls', 5);
+    hold.observe(5);
+    expect(hold.shown).toBe(0);
+    hold.retract('falls', 5);
+    expect(hold.shown).toBe(0);
+    hold.observe(0);
+    expect(hold.shown).toBe(0);
+    hold.observe(12);
+    expect(hold.shown).toBe(0);
+    expect(hold.release('crate')).toBe(12);
+    expect(hold.shown).toBe(12);
+    expect(hold.release('falls')).toBe(0);
+    expect(hold.shown).toBe(12);
+  });
+
+  it('takes a refusal out of the same answer that pays the other held falls', () => {
+    const hold = new CreditHold();
+    hold.observe(40);
+    hold.hold('crate', 12);
+    hold.observe(52);
+    hold.hold('falls', 5);
+    hold.observe(57);
+    hold.hold('falls', 6);
+    hold.observe(63);
+    expect(hold.shown).toBe(40);
+    hold.retract('falls', 5);
+    hold.hold('falls', 2);
+    hold.observe(60);
+    expect(hold.shown).toBe(40);
+    expect(hold.release('crate')).toBe(12);
+    expect(hold.shown).toBe(52);
+    expect(hold.release('falls')).toBe(8);
+    expect(hold.shown).toBe(60);
+  });
+
+  it('retracts no more than the hold kept or expects, and ignores an unknown id', () => {
+    const hold = new CreditHold();
+    hold.observe(10);
+    hold.retract('missing', 5);
+    expect(hold.shown).toBe(10);
+    hold.hold('falls', 3);
+    hold.observe(13);
+    hold.retract('falls', 9);
+    expect(hold.shown).toBe(10);
+    hold.observe(4);
+    expect(hold.shown).toBe(4);
+    expect(hold.release('falls')).toBe(0);
+    expect(() => {
+      hold.retract('falls', -1);
+    }).toThrow(RangeError);
+  });
+
   it('ignores a zero credit and refuses a negative or non-finite one', () => {
     const hold = new CreditHold();
     hold.observe(3);
@@ -366,6 +422,7 @@ describe('walletPayoutFor', () => {
     const calls: string[] = [];
     const view: WalletPayout = {
       hold: (id) => calls.push(`hold ${id}`),
+      retract: (id) => calls.push(`retract ${id}`),
       arm: (id) => calls.push(`arm ${id}`),
       disarm: (id) => calls.push(`disarm ${id}`),
       collect: (id) => calls.push(`collect ${id}`),
@@ -374,13 +431,14 @@ describe('walletPayoutFor', () => {
     channel.hold('early', { coins: 1 });
     const detach = channel.attach(view);
     channel.hold('a', { coins: 1 });
+    channel.retract('a', { coins: 1 });
     channel.arm('a');
     channel.disarm('a');
     channel.collect('a', { wallet: wallet({}), lines: [] });
     channel.release('b');
     detach();
     channel.release('late');
-    expect(calls).toEqual(['hold a', 'arm a', 'disarm a', 'collect a', 'release b']);
+    expect(calls).toEqual(['hold a', 'retract a', 'arm a', 'disarm a', 'collect a', 'release b']);
   });
 });
 
@@ -587,6 +645,27 @@ describe('createBalancePlaque pays a collected crate out on its readouts', () =>
     expect(plaque.vault()).toBe('Vault balance: 80 coins');
     plaque.store.setState({ coins: 95 });
     expect(plaque.vault()).toBe('Vault balance: 83 coins');
+    plaque.dispose();
+  });
+
+  it('under reduced motion rolls the Vault by the coin line alone when a held fall is refused', () => {
+    setMotionPreference('reduced');
+    const plaque = mountPlaque();
+    const seen: (string | undefined)[] = [];
+    open(plaque);
+    plaque.payout.hold('falls', { coins: 5 });
+    plaque.store.setState({ coins: 97 });
+    seen.push(plaque.vault());
+    plaque.payout.retract('falls', { coins: 5 });
+    plaque.store.setState({ coins: 92 });
+    seen.push(plaque.vault());
+    collect(plaque, null);
+    seen.push(plaque.vault());
+    expect(seen).toEqual([
+      'Vault balance: 80 coins',
+      'Vault balance: 80 coins',
+      'Vault balance: 92 coins',
+    ]);
     plaque.dispose();
   });
 

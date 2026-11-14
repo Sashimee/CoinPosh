@@ -63,7 +63,9 @@
     "upgrades": "Upgrades",
     "settings": "Einstellungen",
     "affordable_one": "{{count}} Upgrade bereit",
-    "affordable_other": "{{count}} Upgrades bereit"
+    "affordable_other": "{{count}} Upgrades bereit",
+    "safesReady_one": "{{label}}: {{count}} Tresor bereit zum Öffnen",
+    "safesReady_other": "{{label}}: {{count}} Tresore bereit zum Öffnen"
   },
   "upgrades": {
     "title": "Upgrades",

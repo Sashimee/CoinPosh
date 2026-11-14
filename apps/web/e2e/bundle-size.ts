@@ -24,6 +24,8 @@ const STATIC_REEXPORT = /\bexport\s*(?:\*|\{[^}]*\})\s*from\s*["']\.\/([\w.-]+\.
  */
 const ACCOUNT_ON_TAP_BUDGET = 7.5 * 1024;
 const ACCOUNT_CHUNK = /^account-[\w-]+\.js$/;
+const SAFES_DOCK_CHUNK = /^safes-[\w-]+\.js$/;
+const SAFES_SHEET_CHUNK = /^safesSheet-[\w-]+\.js$/;
 
 type BudgetKey = keyof typeof BUNDLE_BUDGETS | 'accountOnTap';
 
@@ -43,6 +45,7 @@ interface Measured {
   readonly rows: Row[];
   readonly lazyThree: boolean;
   readonly eagerAccount: readonly string[];
+  readonly eagerSafes: readonly string[];
   readonly initial: readonly string[];
 }
 
@@ -104,6 +107,10 @@ function measure(): Measured {
   if (workers.length === 0) fail('no *.worker-*.js chunk in dist/assets; update the gate');
   const account = js.filter((file) => ACCOUNT_CHUNK.test(file));
   if (account.length === 0) fail('no account-*.js chunk in dist/assets; update the gate');
+  const safesDock = js.filter((file) => SAFES_DOCK_CHUNK.test(file));
+  if (safesDock.length === 0) fail('no safes-*.js chunk in dist/assets; update the gate');
+  const safesSheet = js.filter((file) => SAFES_SHEET_CHUNK.test(file));
+  if (safesSheet.length === 0) fail('no safesSheet-*.js chunk in dist/assets; update the gate');
 
   let wasmBytes = 0;
   const wasmFiles: string[] = readdirSync(ASSETS).filter((file) => file.endsWith('.wasm'));
@@ -127,7 +134,14 @@ function measure(): Measured {
   if (wasmFiles.length === 0) fail('found no Rapier wasm, inlined or as a .wasm asset');
 
   const gz = (file: string): number => gzipBytes(read(file));
-  const accounted = new Set([...initial, ...three, ...workers, ...account]);
+  const accounted = new Set([
+    ...initial,
+    ...three,
+    ...workers,
+    ...account,
+    ...safesDock,
+    ...safesSheet,
+  ]);
   const otherLazy = js.filter((file) => !accounted.has(file));
   const rows: Row[] = [
     { key: 'initialJs', label: 'Initial JS', files: initial, bytes: sum(initial, gz) },
@@ -136,11 +150,24 @@ function measure(): Measured {
     { key: 'wasm', label: 'Rapier wasm', files: wasmFiles, bytes: wasmBytes },
     { key: 'otherLazyJs', label: 'Other lazy JS', files: otherLazy, bytes: sum(otherLazy, gz) },
     { key: 'accountOnTap', label: 'Account (on tap)', files: account, bytes: sum(account, gz) },
+    {
+      key: 'safesDock',
+      label: 'Safes dock (after boot)',
+      files: safesDock,
+      bytes: sum(safesDock, gz),
+    },
+    {
+      key: 'safesSheet',
+      label: 'Safes sheet (on tap)',
+      files: safesSheet,
+      bytes: sum(safesSheet, gz),
+    },
   ];
   return {
     rows,
     lazyThree: !three.some((file) => initial.includes(file)),
     eagerAccount: account.filter((file) => initial.includes(file)),
+    eagerSafes: [...safesDock, ...safesSheet].filter((file) => initial.includes(file)),
     initial,
   };
 }
@@ -149,7 +176,7 @@ function kb(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} kB`;
 }
 
-const { rows, lazyThree, eagerAccount, initial } = measure();
+const { rows, lazyThree, eagerAccount, eagerSafes, initial } = measure();
 const lines = [
   '### Bundle budgets (gzip)',
   '',
@@ -182,6 +209,12 @@ lines.push(
     : `FAIL: account code is in the initial load (${eagerAccount.join(', ')}).`,
 );
 if (eagerAccount.length > 0) failures.push('account code is statically reachable from index.html');
+lines.push(
+  eagerSafes.length === 0
+    ? 'The safes chunks are lazy: the dock loads after the table, the sheet on the first press.'
+    : `FAIL: safes code is in the initial load (${eagerSafes.join(', ')}).`,
+);
+if (eagerSafes.length > 0) failures.push('safes code is statically reachable from index.html');
 
 const report = `${lines.join('\n')}\n`;
 const summary = process.env.GITHUB_STEP_SUMMARY;

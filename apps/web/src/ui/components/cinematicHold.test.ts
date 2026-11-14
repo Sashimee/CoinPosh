@@ -9,7 +9,7 @@ const CAP_MS = 1000;
 
 interface Rig {
   readonly hold: AnnouncementHold;
-  readonly director: { active: string | null };
+  readonly director: { active: string | null; held: boolean };
   readonly warnings: string[];
   emit(type: Name, crateId: string): void;
   frame(): void;
@@ -24,7 +24,7 @@ function rig(options: { revealUp?: boolean } = {}): Rig {
   const frames = new Set<() => void>();
   const exits = new Set<() => void>();
   const hold = createAnnouncementHold();
-  const director = { active: null as string | null };
+  const director = { active: null as string | null, held: false };
   const warnings: string[] = [];
   const stop = holdForCrateCinematics({
     events: {
@@ -74,8 +74,14 @@ function rig(options: { revealUp?: boolean } = {}): Rig {
 
 /** The director takes the opened crate on the same tick when it is idle, as `enqueue` does. */
 function openAndPlay(r: Rig, crateId: string): void {
-  r.director.active ??= crateId;
+  if (!r.director.held) r.director.active ??= crateId;
   r.emit('crate:opened', crateId);
+}
+
+/** A sheet closing lets the director go, and an idle one starts the next crate at once. */
+function closeSheet(r: Rig, next: string | null): void {
+  r.director.held = false;
+  r.director.active ??= next;
 }
 
 beforeEach(() => {
@@ -216,6 +222,86 @@ describe('holdForCrateCinematics', () => {
     r.emit('crate:collected', 'c');
     r.exitReveal();
     expect(r.hold.held).toBe(false);
+  });
+
+  it('keeps a crate that opens behind a sheet held, without a warning, until its unbox plays', () => {
+    const r = rig();
+    r.emit('crate:fell', 'a');
+    r.director.held = true;
+    openAndPlay(r, 'a');
+    expect(r.director.active).toBeNull();
+    for (let i = 0; i < 120; i += 1) r.frame();
+    vi.advanceTimersByTime(CAP_MS * 5);
+    expect(r.hold.held).toBe(true);
+    expect(r.warnings).toEqual([]);
+    closeSheet(r, 'a');
+    r.frame();
+    expect(r.hold.held).toBe(true);
+    r.emit('crate:collected', 'a');
+    r.director.active = null;
+    r.frame();
+    expect(r.hold.held).toBe(true);
+    r.exitReveal();
+    expect(r.hold.held).toBe(false);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('holds a crate that opens without a fall while a sheet is up', () => {
+    const r = rig();
+    r.director.held = true;
+    openAndPlay(r, 'a');
+    r.frame();
+    expect(r.hold.held).toBe(true);
+    closeSheet(r, 'a');
+    r.frame();
+    r.emit('crate:collected', 'a');
+    r.exitReveal();
+    expect(r.hold.held).toBe(false);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('keeps every crate held while a sheet freezes one unbox with more queued behind it', () => {
+    const r = rig();
+    r.emit('crate:fell', 'a');
+    openAndPlay(r, 'a');
+    r.frame();
+    r.director.held = true;
+    r.emit('crate:fell', 'b');
+    openAndPlay(r, 'b');
+    r.emit('crate:fell', 'c');
+    openAndPlay(r, 'c');
+    for (let i = 0; i < 30; i += 1) r.frame();
+    expect(r.director.active).toBe('a');
+    expect(r.warnings).toEqual([]);
+    closeSheet(r, null);
+    r.emit('crate:collected', 'a');
+    r.exitReveal();
+    r.director.active = 'b';
+    r.frame();
+    r.emit('crate:collected', 'b');
+    r.exitReveal();
+    r.director.active = 'c';
+    r.frame();
+    expect(r.hold.held).toBe(true);
+    r.emit('crate:collected', 'c');
+    r.exitReveal();
+    expect(r.hold.held).toBe(false);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('still lets go when the sheet closes and the queued unbox cannot start', () => {
+    const r = rig();
+    r.emit('crate:fell', 'a');
+    r.director.held = true;
+    openAndPlay(r, 'a');
+    r.frame();
+    expect(r.hold.held).toBe(true);
+    closeSheet(r, null);
+    r.frame();
+    expect(r.hold.held).toBe(false);
+    expect(r.warnings).toEqual([
+      'CoinPosh crates: crate a opened but its unbox never played; HUD announcements resume.',
+    ]);
   });
 
   it('lets go when an unbox ends without a collect', () => {

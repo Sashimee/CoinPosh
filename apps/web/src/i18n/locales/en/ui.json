@@ -63,7 +63,9 @@
     "upgrades": "Upgrades",
     "settings": "Settings",
     "affordable_one": "{{count}} upgrade ready",
-    "affordable_other": "{{count}} upgrades ready"
+    "affordable_other": "{{count}} upgrades ready",
+    "safesReady_one": "{{label}}: {{count}} safe ready to open",
+    "safesReady_other": "{{label}}: {{count}} safes ready to open"
   },
   "upgrades": {
     "title": "Upgrades",

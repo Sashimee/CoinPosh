@@ -97,13 +97,24 @@ export function createSheet(ctx: UiContext, options: SheetOptions): Sheet {
       requestClose();
     }),
   );
-  const focus = sharedSheetFocus().register(layer, () => {
-    feedback(ctx, 'close');
-    requestClose();
-  });
+  const focus = sharedSheetFocus().register(
+    layer,
+    () => {
+      feedback(ctx, 'close');
+      requestClose();
+    },
+    content,
+  );
   ctx.own(() => {
     focus.dispose();
   });
+  // The shrinking panel still swallows taps, so they never fall through to the table as drops,
+  // but it must not take focus back from the trigger while it closes.
+  ctx.own(
+    listen(panel, 'mousedown', (event) => {
+      if (!open) event.preventDefault();
+    }),
+  );
   ctx.own(
     listen(layer, 'keydown', (event) => {
       if (event.key !== 'Tab') return;
