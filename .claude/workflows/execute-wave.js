@@ -17,6 +17,7 @@ const MAX = A.maxTasks || 5
 const BACKLOG = A.backlog || MAX * 2
 const PLAYTEST_EVERY = A.playtestEvery || 3
 const FIX_ROUNDS = 1
+const REFILLS = A.refills ?? 2
 const GIT_NAME = 'Claude'
 const GIT_EMAIL = 'noreply@anthropic.com'
 const GIT_IDENTITY = `Before any git merge, commit or other git step that writes history, give this worktree the fixed workflow identity.
@@ -28,6 +29,11 @@ Then verify both: git config user.name must print ${GIT_NAME} and git config use
 
 const SERVERS = `Any dev, preview or static server you start (vite, pnpm dev, pnpm preview, serve, http-server) must be stopped before you return:
 start it in the background, record its PID, and kill that PID when done. Never leave a server running; leftovers from earlier waves exhausted the machine's memory.`
+
+// One slow agent repeating a spec 10x serially (P-626) held a whole wave for 40 min; CI already reruns everything per PR.
+const TESTS = `Run each unit test and e2e spec your change affects once, then pnpm check once before you return.
+No --repeat-each, no serial N-times loops, no soak runs to prove a flake is gone: CI runs the full e2e and perf suites on every PR and is the flake judge.
+If a spec fails only on timing you cannot reproduce, say so in your summary instead of rerunning it.`
 
 const AGENTS = ['audio-engineer', 'backend-engineer', 'economy-designer', 'gameplay-engineer', 'lead-architect', 'mobile-engineer', 'physics-engineer', 'qa-perf', 'render-artist', 'ui-engineer', 'vfx-juice']
 
@@ -106,11 +112,10 @@ phase('Plan')
 const only = A.onlyTasks
   ? `The lead has chosen this wave: schedule ONLY these IDs, in this priority order: ${A.onlyTasks.join(', ')}. A blocked task whose blocker is a review rejection is schedulable (its brief must include the review issues to fix). Do not substitute other tasks; if one cannot run, leave it out and say why in humanBlocked.`
   : ''
-const plan = await agent(
-  `You are planning the next execution wave for CoinPosh.
+const planPrompt = (size, exclude) => `You are planning the next execution wave for CoinPosh.
 Read docs/plan/04-ROADMAP.md, docs/plan/STATUS.md, docs/plan/POLISH.md (if present) and \`git log --oneline -30\`.
 Determine the current branch with \`git rev-parse --abbrev-ref HEAD\` and return it as "base".
-Return a priority-ordered backlog of up to ${BACKLOG} tasks (never H-* human tasks) whose deps are all "done" in STATUS.md, whose state is todo
+Return a priority-ordered backlog of up to ${size} tasks (never H-* human tasks) whose deps are all "done" in STATUS.md, whose state is todo
 (or blocked with a reason that is now resolved). Owns paths MAY overlap: the scheduler runs ${MAX} at once and holds back a task whose owns clash with a running one, so order matters more than disjointness.
 A task whose owns is "any" runs alone; avoid scheduling it unless it is the top priority.
 Split big tasks so they build in parallel: when a task spans several areas (e.g. server route + client flow + cinematic, or sim + client)
@@ -128,9 +133,9 @@ POLISH.md items marked "ready" can be scheduled as tasks with id "P-<n>" using t
 For each task put the COMPLETE task block (and relevant notes) into "brief", and set "simple" honestly.
 List human tasks that currently block progress in humanBlocked. Set allDone=true only if every T-* task is done.
 Do not modify any files.
-${only}`,
-  { label: 'planner', phase: 'Plan', schema: PLAN_SCHEMA, agentType: 'lead-architect', effort: 'medium' },
-)
+${exclude.length ? `This run already holds these tasks (built, building or rejected): ${exclude.join(', ')}. Return none of them, none of their parts, and nothing whose owns clash with one still building unless it is clearly worth the wait.` : ''}
+${only}`
+const plan = await agent(planPrompt(BACKLOG, []), { label: 'planner', phase: 'Plan', schema: PLAN_SCHEMA, agentType: 'lead-architect', effort: 'medium' })
 
 if (!plan || plan.allDone) return { status: 'ALL_DONE', humanBlocked: plan ? plan.humanBlocked : [] }
 if (!plan.wave.length) return { status: 'NOTHING_UNBLOCKED', humanBlocked: plan.humanBlocked }
@@ -157,7 +162,8 @@ run git switch --detach task/${t.id} && git merge --no-edit ${plan.base}; otherw
 Never switch to or create a task/* branch: other worktrees may hold it. Install deps if needed (pnpm i).
 Write ONLY within the owns paths: ${t.owns.join(', ')}.
 Meet every acceptance criterion at the highest polish level — this game must feel premium and addictive.
-Run pnpm check (or filtered equivalents) until green. Commit with message "${t.id}: <summary>".
+${TESTS}
+Commit with message "${t.id}: <summary>".
 If you find the task cannot be finished inside those owns paths, or it needs a design decision, stop early: commit nothing, return delivered false,
 and put the exact cross-owner edits needed in outOfScopeRequests. Don't spend time on a partial version a reviewer must reject.
 Do NOT push and do NOT merge. Return branch "task/${t.id}", the full sha from git rev-parse HEAD as commit, whether checks passed, delivered, and a summary that matches the commit.`
@@ -168,6 +174,7 @@ ${t.brief}
 
 Implementer summary: ${impl.summary}
 You are in an isolated worktree: run git switch --detach ${tip}, pnpm i, pnpm check. Review exactly ${tip}; ignore any task/${t.id}* branch refs. Diff with git diff ${plan.base}...${tip}.
+${TESTS}
 Verify each acceptance criterion with evidence. Reject on any ownership violation, client-trusted value,
 sim nondeterminism, disabled/skipped tests, missing i18n, perf budget risk, or anything that feels cheap.
 ${SERVERS}
@@ -179,7 +186,8 @@ ${SERVERS}
 In your isolated worktree: git switch --detach ${tip}. Never switch to or create a task/* branch. Stay within owns paths: ${t.owns.join(', ')}.
 Findings:
 - ${issues.join('\n- ')}
-Fix all of them, run pnpm check until green, commit "${t.id}: address review" on the detached HEAD. Do not push.
+${TESTS}
+Fix all of them, commit "${t.id}: address review" on the detached HEAD. Do not push.
 Return the full sha from git rev-parse HEAD as commit, whether checks passed, and a summary.`
 
 // Approved tasks merge one at a time as soon as they pass review, so the slowest task no longer holds the others back.
@@ -303,7 +311,18 @@ const running = new Map()
 const results = []
 const mergedIds = new Set()
 const failedIds = new Set()
-while (queue.length || running.size) {
+// When a slot idles because the backlog ran dry, plan more tasks in the background instead of waiting on the stragglers.
+let refilling = null
+let refills = 0
+const refill = () => {
+  refills++
+  const exclude = [...new Set(wave.flatMap(t => [t.id, t.parent]).filter(Boolean))]
+  log(`Slot idle with ${running.size} still building: planning more tasks (refill ${refills}/${REFILLS})`)
+  return agent(planPrompt(MAX, exclude), { label: `planner:refill${refills}`, phase: 'Plan', schema: PLAN_SCHEMA, agentType: 'lead-architect', effort: 'medium' })
+    .catch(e => { log(`Refill ${refills} failed: ${e}`); return null })
+    .then(p => ({ refill: p }))
+}
+while (queue.length || running.size || refilling) {
   for (let i = 0; i < queue.length && running.size < MAX;) {
     const t = queue[i]
     const after = t.after || []
@@ -321,12 +340,24 @@ while (queue.length || running.size) {
     log(`${t.id}: started (${running.size + 1}/${MAX} slots)`)
     running.set(t.id, { owns: t.owns, done: runTask(t).catch(e => ({ id: t.id, approved: false, issues: [`task crashed: ${e}`], requests: [] })).then(r => ({ id: t.id, r })) })
   }
-  if (!running.size) {
+  if (!refilling && !A.onlyTasks && refills < REFILLS && running.size && running.size < MAX) refilling = refill()
+  if (!running.size && !refilling) {
     log(`Nothing can start: ${queue.map(t => t.id).join(', ')} wait on parts that never merged`)
     queue.forEach(t => results.push({ id: t.id, title: t.title, parent: t.parent, branch: `task/${t.id}`, approved: false, issues: ['not started: its "after" parts never merged'], requests: [] }))
     break
   }
-  const { id, r } = await Promise.race([...running.values()].map(x => x.done))
+  const next = await Promise.race([...running.values()].map(x => x.done).concat(refilling ? [refilling] : []))
+  if ('refill' in next) {
+    refilling = null
+    const known = new Set(wave.map(t => t.id))
+    const more = ((next.refill && next.refill.wave) || []).filter(t => !known.has(t.id) && !running.has(t.id))
+    if (!more.length) { log('Refill found nothing new to start'); refills = REFILLS; continue }
+    wave.push(...more)
+    queue.push(...more)
+    log(`Refill added: ${more.map(t => t.id).join(', ')}`)
+    continue
+  }
+  const { id, r } = next
   running.delete(id)
   results.push(r)
   if (r && r.approved) mergedIds.add(id)
