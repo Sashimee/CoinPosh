@@ -148,6 +148,11 @@ function chunkFileName(chunk: { readonly moduleIds: readonly string[] }): string
  * cache. P-641 measured Other lazy JS at 120.3 kB gzip without them, 117.8 kB with them.
  * The vfx group names its modules: one the entry chunk imports (vfx/haptics) would pull the
  * whole group, three.webgpu with it, into the initial load.
+ * `includeDependenciesRecursively: false` lets a group hold a module without its imports, which
+ * can run modules in a different order across chunks. That is safe for these two groups: their
+ * modules only declare classes, functions and constants at top level, and the one side effect,
+ * crates.css, styles only its own `.cp-crate-*` and `.cp-odds-*` selectors, so no rule competes
+ * with another sheet's. A grouped module that runs code on import would need this revisited.
  */
 const TABLE_CHUNKS = [
   {

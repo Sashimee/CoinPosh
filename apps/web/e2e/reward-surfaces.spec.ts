@@ -7,6 +7,12 @@ const TAP_EVERY_MS = 400;
 const CRATE_OPENS_WITHIN_MS = 90_000;
 /** Card fly (520 ms in revealCard.ts) plus the cinematic's wrap-up and a frame or two of slack. */
 const COLLECT_SETTLES_MS = 3_000;
+/** The unskipped cinematic runs on frame time, which SwiftShader stretches several-fold. */
+const CINEMATIC_WITHIN_MS = 30_000;
+
+const DEMO_STORAGE_KEY = 'coinposh.demo.world';
+const PLANT_MARKER = 'e2e.reward-surfaces.plant-scratch';
+const PLANTED_CARD = 'scratch_e2ecard0001';
 
 /** The chunk each reward surface ships in, as bundle-size.ts names them. */
 const SURFACE_CHUNKS = {
@@ -33,6 +39,28 @@ function watchSurfaceChunks(page: Page): Set<Surface> {
     }
   });
   return requested;
+}
+
+/**
+ * No Demo roll grants a scratch card yet, so the next document's world gets one. The old page
+ * saves the world on pagehide, before this script runs, so the card lands in what the mock
+ * server loads.
+ */
+async function plantScratchCardOnNextLoad(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ key, marker, cardId }: { key: string; marker: string; cardId: string }) => {
+      if (sessionStorage.getItem(marker) === null) return;
+      sessionStorage.removeItem(marker);
+      const raw = sessionStorage.getItem(key);
+      if (raw === null) throw new Error('e2e: no Demo world was saved to plant a scratch card in');
+      const blob = JSON.parse(raw) as { world: { players: { scratchCards: string[] }[] } };
+      const [player] = blob.world.players;
+      if (!player) throw new Error('e2e: the saved Demo world has no player to give a card');
+      player.scratchCards.push(cardId);
+      sessionStorage.setItem(key, JSON.stringify(blob));
+    },
+    { key: DEMO_STORAGE_KEY, marker: PLANT_MARKER, cardId: PLANTED_CARD },
+  );
 }
 
 /** Taps until the pusher shoves a crate over the lip and its reveal mounts. */
@@ -84,8 +112,9 @@ test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
 
     await test.step('one crate unboxes and its card is collected', async () => {
       await playUntilReveal(page, reveal);
-      await page.keyboard.press('Escape');
-      await expect(reveal).toHaveClass(/is-revealed/, { timeout: 30_000 });
+      // No Escape skip: once the card is up Escape collects it (bindEscapeCollect), and on a slow
+      // frame the key can land after the card, taking the Collect this step means to tap.
+      await expect(reveal).toHaveClass(/is-revealed/, { timeout: CINEMATIC_WITHIN_MS });
       const collect = page.getByTestId('crate-collect');
       await expect(collect).toBeVisible();
       items = await revealedItems(reveal);
@@ -155,6 +184,48 @@ test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
       await reviewShot(page, 'reward-surfaces-03-fair');
       await page.keyboard.press('Escape');
       await expect(fair).toBeHidden();
+    });
+  });
+
+  test('an owned scratch card shows on the Collection and its sheet loads on the first tap', async ({
+    page,
+  }) => {
+    test.setTimeout(150_000);
+    const requested = watchSurfaceChunks(page);
+    await plantScratchCardOnNextLoad(page);
+    await bootGame(page);
+
+    await test.step('the card arrives with the saved world', async () => {
+      await page.evaluate((marker) => {
+        sessionStorage.setItem(marker, '1');
+      }, PLANT_MARKER);
+      await page.reload();
+      await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
+        timeout: 60_000,
+        polling: 16,
+      });
+      requested.clear();
+      await expect(page.getByTestId('inventory-trigger')).toBeVisible();
+      expect([...requested], 'no reward sheet chunk loads with the table').toEqual([]);
+    });
+
+    const scratchChip = page.getByTestId('scratch-trigger');
+    await test.step('the Collection counts it without loading the scratch code', async () => {
+      await page.getByTestId('inventory-trigger').click();
+      await expect(page.getByTestId('inventory')).toBeVisible();
+      await expect(scratchChip).toBeVisible();
+      await expect(scratchChip).toHaveAttribute('aria-label', /1 card to reveal$/);
+      expect(requested.has('scratch'), 'opening the Collection loads no scratch code').toBe(false);
+    });
+
+    await test.step('a tap loads the scratch chunk and puts the card up', async () => {
+      await scratchChip.click();
+      const card = page.getByTestId('scratch-card');
+      await expect(card).toBeVisible();
+      expect(requested.has('scratch'), 'the Scratch Cards chunk loads on its first tap').toBe(true);
+      await expect(card).toHaveAttribute('data-phase', 'sealed');
+      await expect(page.getByTestId('inventory')).toBeHidden();
+      await reviewShot(page, 'reward-surfaces-04-scratch');
     });
   });
 });

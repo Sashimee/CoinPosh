@@ -270,8 +270,15 @@ let ascensionHud: AscensionHud | null = null;
 let safesSheet: SafesSheet | null = null;
 /** Mounted once the player's table has loaded; each sheet's code loads on its first tap. */
 let collection: Collection | null = null;
-/** The stage renderer the Collection's cards borrow; null until the venue is drawn. */
-let cardArt: CardArtSource | null = null;
+let settleCardArt: (art: CardArtSource | null) => void = () => undefined;
+/**
+ * The stage renderer the Collection's cards borrow, once the venue is drawn. The inventory sheet
+ * waits for it, so a tap before then still gets rendered art; it settles null if the venue never
+ * draws, and the cards keep their painted art.
+ */
+const cardArt = new Promise<CardArtSource | null>((resolve) => {
+  settleCardArt = resolve;
+});
 /** The server's latest pity counters per drop source, for the Certified Fair's guarantees. */
 const pityLog = createPityLog();
 /** Mounted once the player's table has loaded; its code loads after the table. */
@@ -309,7 +316,9 @@ const hydrated = netReady
     return null;
   });
 
-void bootScene(canvas, hydrated);
+void bootScene(canvas, hydrated).finally(() => {
+  settleCardArt(null);
+});
 
 void hydrated
   .then((boot) => (boot ? mountSafesSheet(boot) : undefined))
@@ -851,7 +860,7 @@ async function bootScene(
     return;
   }
   markBoot('venue');
-  cardArt = {
+  settleCardArt({
     get renderer() {
       return stage.renderer;
     },
@@ -859,7 +868,7 @@ async function bootScene(
       return stage.backend;
     },
     environment: () => stage.scene.environment,
-  };
+  });
   const revealVenue = holdBackVenue(venue.root);
   attachVenue(stage, venue, riviera.applyCameraPreset);
   stage.castCoinShadowsFrom(venue.lighting.key);
@@ -1381,14 +1390,14 @@ function mountCollection(boot: NetBoot): void {
   });
 
   const loadInventory = loadOnce(async () => {
-    const module = await import('./ui/inventory/index.ts');
+    const [module, art] = await Promise.all([import('./ui/inventory/index.ts'), cardArt]);
     const panel = module.mountInventory({
       ui,
       host: uiRoot,
       data: module.stateInventoryData(client),
       audio: () => audio,
       haptics,
-      art: cardArt,
+      art,
       onClose: () => undefined,
     });
     const body = panel.el.querySelector<HTMLElement>('.cp-sheet-body');

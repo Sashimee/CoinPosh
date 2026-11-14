@@ -1,13 +1,15 @@
 import { openingHeap, upgradeCost, upgradeLines } from '@coinposh/economy';
 import { RewardSchema } from '@coinposh/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createBus } from '../app/bus.ts';
 import { upgradeRow } from '../app/model.ts';
 import { defaultSettings } from '../app/settings.ts';
-import { initialUiState } from '../app/state.ts';
+import { initialUiState, type FeedbackKind, type UiEvents } from '../app/state.ts';
 import { createStore } from '../app/store.ts';
 import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../i18n/index.ts';
 import {
   collectionNews,
+  createCollectionLinks,
   createPosterGate,
   dockAffordableCount,
   HANDOVER_DWELL_MS,
@@ -16,12 +18,14 @@ import {
   InHandHandover,
   type InHandView,
   inHandCopy,
+  mountCollectionTrigger,
   posterHeapTarget,
   safesTriggerBeckons,
   safesTriggerState,
   setInHand,
   vaultIsEmpty,
 } from './hud.ts';
+import { setMotionPreference } from './motion/reduced.ts';
 
 const RICH = 1e15;
 const CHARM_TYPE = 'golden-peg';
@@ -297,6 +301,299 @@ describe.each(LANGUAGES)('collection strings in %s', (language) => {
     'collection.fairOpen',
   ])('translates %s', (key) => {
     resolved(i18n.t(key));
+  });
+});
+
+type FakeListener = (event: { button: number }) => void;
+
+/** Just enough DOM for the dock buttons hud.ts builds: the suite runs in node. */
+class FakeElement {
+  parent: FakeElement | null = null;
+  readonly children: FakeElement[] = [];
+  readonly attrs = new Map<string, string>();
+  readonly listeners = new Map<string, Set<FakeListener>>();
+  readonly animations: unknown[][] = [];
+  readonly style: Record<string, string> = {};
+  className = '';
+  hidden = false;
+  title = '';
+  private text = '';
+
+  constructor(readonly tagName: string) {}
+
+  readonly classList = {
+    add: (name: string): void => {
+      this.className = `${this.className} ${name}`.trim();
+    },
+    remove: (name: string): void => {
+      this.className = this.className
+        .split(/\s+/)
+        .filter((part) => part !== name)
+        .join(' ');
+    },
+  };
+
+  get textContent(): string {
+    return this.text + this.children.map((child) => child.textContent).join('');
+  }
+  set textContent(value: string) {
+    this.children.splice(0);
+    this.text = value;
+  }
+  setAttribute(name: string, value: string): void {
+    if (name === 'hidden') this.hidden = true;
+    else this.attrs.set(name, value);
+  }
+  getAttribute(name: string): string | null {
+    return this.attrs.get(name) ?? null;
+  }
+  hasAttribute(name: string): boolean {
+    return this.attrs.has(name);
+  }
+  toggleAttribute(name: string, force: boolean): void {
+    if (force) this.attrs.set(name, '');
+    else this.attrs.delete(name);
+  }
+  append(...nodes: FakeElement[]): void {
+    for (const node of nodes) {
+      node.remove();
+      node.parent = this;
+      this.children.push(node);
+    }
+  }
+  after(node: FakeElement): void {
+    const parent = this.parent;
+    if (!parent) throw new Error('FakeElement.after: this element has no parent');
+    node.remove();
+    node.parent = parent;
+    parent.children.splice(parent.children.indexOf(this) + 1, 0, node);
+  }
+  remove(): void {
+    const siblings = this.parent?.children;
+    siblings?.splice(siblings.indexOf(this), 1);
+    this.parent = null;
+  }
+  addEventListener(type: string, listener: FakeListener): void {
+    const set = this.listeners.get(type) ?? new Set();
+    set.add(listener);
+    this.listeners.set(type, set);
+  }
+  removeEventListener(type: string, listener: FakeListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+  click(): void {
+    for (const listener of [...(this.listeners.get('click') ?? [])]) listener({ button: 0 });
+  }
+  listenerCount(): number {
+    return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0);
+  }
+  animate(...args: unknown[]): void {
+    this.animations.push(args);
+  }
+  getBoundingClientRect(): DOMRect {
+    return { left: 0, top: 0, width: 56, height: 56 } as DOMRect;
+  }
+  set innerHTML(_markup: string) {
+    this.children.splice(0);
+    this.append(new FakeElement('svg'));
+  }
+  get content(): { firstElementChild: FakeElement | null } {
+    return { firstElementChild: this.children[0] ?? null };
+  }
+  find(testId: string): FakeElement {
+    const found = this.all().find((node) => node.getAttribute('data-testid') === testId);
+    if (!found) throw new Error(`no [data-testid="${testId}"] under <${this.tagName}>`);
+    return found;
+  }
+  all(): FakeElement[] {
+    return this.children.flatMap((child) => [child, ...child.all()]);
+  }
+}
+
+function fakeUi() {
+  vi.stubGlobal('document', { createElement: (tag: string) => new FakeElement(tag) });
+  vi.stubGlobal('requestAnimationFrame', () => 0);
+  vi.stubGlobal('cancelAnimationFrame', () => undefined);
+  const i18n = createI18n({ language: 'en', resources: BUNDLED_RESOURCES });
+  const store = createStore(initialUiState(defaultSettings('en')));
+  const bus = createBus<UiEvents>();
+  const feedback: FeedbackKind[] = [];
+  bus.on('ui:feedback', ({ kind }) => feedback.push(kind));
+  return { ui: { i18n, store, bus }, feedback };
+}
+
+function dockWithUpgrades(): { dock: FakeElement; upgrades: FakeElement } {
+  const dock = new FakeElement('nav');
+  const settings = new FakeElement('button');
+  settings.setAttribute('data-testid', 'dock-settings');
+  const upgrades = new FakeElement('button');
+  upgrades.setAttribute('data-testid', 'dock-upgrades');
+  const safes = new FakeElement('button');
+  safes.setAttribute('data-testid', 'dock-safes');
+  dock.append(settings, upgrades, safes);
+  return { dock, upgrades };
+}
+
+const testIds = (parent: FakeElement): (string | null)[] =>
+  parent.children.map((child) => child.getAttribute('data-testid'));
+
+describe('mountCollectionTrigger', () => {
+  beforeEach(() => {
+    setMotionPreference('full');
+  });
+  afterEach(() => {
+    setMotionPreference('system');
+    vi.unstubAllGlobals();
+  });
+
+  function mount(after: 'upgrades' | 'none' = 'upgrades') {
+    const { ui, feedback } = fakeUi();
+    const { dock, upgrades } = dockWithUpgrades();
+    const presses: number[] = [];
+    const trigger = mountCollectionTrigger({
+      ui,
+      dock: dock as unknown as HTMLElement,
+      after: after === 'upgrades' ? (upgrades as unknown as Element) : null,
+      onPress: () => presses.push(presses.length),
+    });
+    const el = trigger.el as unknown as FakeElement;
+    return { trigger, dock, el, badge: el.find('inventory-trigger-badge'), presses, feedback };
+  }
+
+  it('sits right after the Upgrades door, or at the end of the dock without one', () => {
+    expect(testIds(mount().dock)).toEqual([
+      'dock-settings',
+      'dock-upgrades',
+      'inventory-trigger',
+      'dock-safes',
+    ]);
+    expect(testIds(mount('none').dock).at(-1)).toBe('inventory-trigger');
+  });
+
+  it('opens a dialog on press with the open cue, and starts with no badge', () => {
+    const { el, badge, presses, feedback } = mount();
+    expect(el.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(el.getAttribute('aria-label')).toBe('Collection');
+    expect(el.title).toBe('Collection');
+    expect(badge.hidden).toBe(true);
+    el.click();
+    expect(presses).toHaveLength(1);
+    expect(feedback).toEqual(['open']);
+  });
+
+  it('ignores a gain of nothing: no badge, no beckon', () => {
+    const { trigger, el, badge } = mount();
+    trigger.gained(0);
+    trigger.gained(-2);
+    expect(badge.hidden).toBe(true);
+    expect(el.animations).toHaveLength(0);
+    expect(el.getAttribute('aria-label')).toBe('Collection');
+  });
+
+  it('adds every gain to the badge and beckons with the glow and the gem tip', () => {
+    const { trigger, el, badge } = mount();
+    const gem = el.children[0];
+    trigger.gained(1);
+    trigger.gained(2);
+    expect(badge.hidden).toBe(false);
+    expect(badge.textContent).toBe('3');
+    expect(el.getAttribute('aria-label')).toBe('Collection: 3 new items');
+    expect(el.animations).toHaveLength(2);
+    expect(gem?.animations).toHaveLength(2);
+  });
+
+  it('clears the badge once the sheet is seen, and counts afresh after', () => {
+    const { trigger, el, badge } = mount();
+    trigger.gained(4);
+    trigger.seen();
+    expect(badge.hidden).toBe(true);
+    expect(el.getAttribute('aria-label')).toBe('Collection');
+    trigger.gained(1);
+    expect(badge.textContent).toBe('1');
+    expect(el.getAttribute('aria-label')).toBe('Collection: 1 new item');
+  });
+
+  it('still counts under reduced motion but skips the glow and the gem tip', () => {
+    setMotionPreference('reduced');
+    const { trigger, el, badge } = mount();
+    trigger.gained(2);
+    expect(badge.hidden).toBe(false);
+    expect(badge.textContent).toBe('2');
+    expect(el.animations).toHaveLength(0);
+    expect(el.children[0]?.animations).toHaveLength(0);
+  });
+
+  it('marks itself busy while the sheet loads, and clears it after', () => {
+    const { trigger, el } = mount();
+    trigger.setBusy(true);
+    expect(el.hasAttribute('aria-busy')).toBe(true);
+    trigger.setBusy(false);
+    expect(el.hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it('leaves the dock and stops answering presses once disposed', () => {
+    const { trigger, dock, el, presses } = mount();
+    trigger.dispose();
+    expect(testIds(dock)).not.toContain('inventory-trigger');
+    expect(el.listenerCount()).toBe(0);
+    el.click();
+    expect(presses).toHaveLength(0);
+  });
+});
+
+describe('createCollectionLinks', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function links() {
+    const { ui } = fakeUi();
+    const album: HTMLElement[] = [];
+    const scratch: HTMLElement[] = [];
+    const mounted = createCollectionLinks({
+      ui,
+      onAlbum: (chip) => album.push(chip),
+      onScratch: (chip) => scratch.push(chip),
+    });
+    const el = mounted.el as unknown as FakeElement;
+    return { mounted, el, album, scratch, scratchChip: el.find('scratch-trigger') };
+  }
+
+  it('leads on to the Album and hides the Scratch Cards chip until a card is owned', () => {
+    const { el, album, scratchChip } = links();
+    expect(testIds(el)).toEqual(['album-trigger', 'scratch-trigger']);
+    expect(el.getAttribute('aria-label')).toBe('More of your collection');
+    expect(scratchChip.hidden).toBe(true);
+    const albumChip = el.find('album-trigger');
+    albumChip.click();
+    expect(album).toEqual([albumChip]);
+  });
+
+  it('hides the Scratch Cards chip at 0 cards and shows the count from 1', () => {
+    const { mounted, scratchChip, scratch } = links();
+    const badge = scratchChip.children.at(-1);
+    mounted.setScratchCards(0);
+    expect(scratchChip.hidden).toBe(true);
+    mounted.setScratchCards(1);
+    expect(scratchChip.hidden).toBe(false);
+    expect(badge?.textContent).toBe('1');
+    expect(scratchChip.getAttribute('aria-label')).toBe('Scratch Cards: 1 card to reveal');
+    mounted.setScratchCards(3);
+    expect(badge?.textContent).toBe('3');
+    expect(scratchChip.getAttribute('aria-label')).toBe('Scratch Cards: 3 cards to reveal');
+    scratchChip.click();
+    expect(scratch).toEqual([scratchChip]);
+    mounted.setScratchCards(0);
+    expect(scratchChip.hidden).toBe(true);
+  });
+
+  it('drops its chips and their listeners once disposed', () => {
+    const { mounted, el, scratchChip } = links();
+    const host = new FakeElement('div');
+    host.append(el);
+    mounted.dispose();
+    expect(host.children).toHaveLength(0);
+    expect(scratchChip.listenerCount()).toBe(0);
   });
 });
 
