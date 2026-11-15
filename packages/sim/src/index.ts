@@ -19,8 +19,11 @@ export {
   type CrateState,
   type EngineInfo,
   type OpeningHeap,
+  MAX_UNFUSE_COINS,
   type SimEvents,
   type SimOptions,
+  type UnfuseCoin,
+  type UnfuseRequest,
 } from './sim.ts';
 export {
   type ContactEvent,

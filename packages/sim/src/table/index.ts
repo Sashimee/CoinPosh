@@ -51,4 +51,5 @@ export {
   NUDGE,
   TABLE_MATERIAL,
   TABLE_SOLVER,
+  UNFUSE_SPREAD,
 } from './tuning.ts';
