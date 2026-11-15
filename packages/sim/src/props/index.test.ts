@@ -6,6 +6,8 @@ import {
   type AnyPropSpec,
   bindProps,
   distanceAt,
+  massShares,
+  MAX_COMPOUND_PARTS,
   MAX_PROP_EXTENT,
   MAX_PROPS,
   PROP_KIND_NAMES,
@@ -96,6 +98,34 @@ function weight(id: number): AnyPropSpec {
   };
 }
 
+const HALF = Math.sqrt(0.5);
+
+/** A dumbbell: two balls on a bar along x. */
+const DUMBBELL = {
+  kind: 'compound',
+  parts: [
+    {
+      shape: { kind: 'ball', radius: 0.01 },
+      translation: { x: -0.03, y: 0, z: 0 },
+      rotation: UPRIGHT,
+    },
+    {
+      shape: { kind: 'capsule', halfHeight: 0.02, radius: 0.004 },
+      translation: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: HALF, w: HALF },
+    },
+    {
+      shape: { kind: 'ball', radius: 0.01 },
+      translation: { x: 0.03, y: 0, z: 0 },
+      rotation: UPRIGHT,
+    },
+  ],
+} as const;
+
+function dumbbell(id: number): AnyPropSpec {
+  return { ...weight(id), shape: DUMBBELL };
+}
+
 /** `spec` with `path` replaced by `value`, for configs that must fail. */
 function broken(spec: AnyPropSpec, path: readonly string[], value: unknown): unknown {
   const copy = structuredClone(spec) as unknown as Record<string, unknown>;
@@ -184,6 +214,45 @@ describe('prop kind registry', () => {
         /stroke\.x must be a number in/,
       ],
       [Array.from({ length: MAX_PROPS + 1 }, (_, i) => post(i)), /at most 32/],
+      [[broken(dumbbell(1), ['shape', 'parts'], [])], /shape\.parts must be a non-empty array/],
+      [
+        [
+          broken(
+            dumbbell(1),
+            ['shape', 'parts'],
+            Array(MAX_COMPOUND_PARTS + 1).fill(DUMBBELL.parts[0]),
+          ),
+        ],
+        /shape\.parts holds 9 parts; a compound takes at most 8/,
+      ],
+      [
+        [broken(dumbbell(1), ['shape', 'parts', '0', 'shape'], DUMBBELL)],
+        /shape\.parts\[0\]\.shape\.kind must be one of box, cylinder, ball, capsule/,
+      ],
+      [
+        [broken(dumbbell(1), ['shape', 'parts', '1', 'translation', 'y'], 0.2)],
+        /shape\.parts\[1\]\.translation\.y must be a number in/,
+      ],
+      [
+        [broken(dumbbell(1), ['shape', 'parts', '1', 'rotation', 'w'], 0.5)],
+        /shape\.parts\[1\]\.rotation must be a unit quaternion/,
+      ],
+      [
+        [broken(dumbbell(1), ['shape', 'parts', '2', 'shape', 'radius'], 0.0001)],
+        /shape\.parts\[2\]\.shape\.radius must be at least/,
+      ],
+      [
+        [
+          broken(dumbbell(1), ['shape', 'parts', '2'], {
+            shape: { kind: 'box', halfExtents: { x: 0.1, y: 0.1, z: 0.1 } },
+            translation: { x: 0.05, y: 0, z: 0 },
+            rotation: UPRIGHT,
+          }),
+        ],
+        /reaches .* m from its centre; a compound may reach at most/,
+      ],
+      [[broken(dumbbell(1), ['shape', 'radius'], 0.01)], /shape has unknown fields radius/],
+      [[broken(post(1), ['shape', 'parts'], [])], /shape has unknown fields parts/],
     ];
     for (const [config, message] of cases) {
       expect(() => bindProps(config), String(message)).toThrow(message);
@@ -315,6 +384,31 @@ describe('prop shapes', () => {
     const capsule = { kind: 'capsule', halfHeight: 0.02, radius: 0.005 } as const;
     expect(signedDistance(capsule, { x: 0.01, y: 0.01, z: 0 })).toBeCloseTo(0.005, 12);
     expect(signedDistance(capsule, { x: 0, y: 0.03, z: 0 })).toBeCloseTo(0.005, 12);
+  });
+
+  it('binds a compound and measures it as the union of its placed parts', () => {
+    const [bound] = bindProps([dumbbell(4)]);
+    expect(bound?.shape).toEqual(DUMBBELL);
+    expect(bound && sweepRadius(bound)).toBeCloseTo(0.04, 12);
+    expect(signedDistance(DUMBBELL, { x: 0.05, y: 0, z: 0 })).toBeCloseTo(0.01, 12);
+    expect(signedDistance(DUMBBELL, { x: 0.03, y: 0, z: 0 })).toBeCloseTo(-0.01, 12);
+    expect(signedDistance(DUMBBELL, { x: 0, y: 0.01, z: 0 })).toBeCloseTo(0.006, 12);
+    expect(signedDistance(DUMBBELL, { x: 0, y: 0, z: 0 })).toBeCloseTo(-0.004, 12);
+    const upright = { x: 0, y: 0, z: 0, w: 1 };
+    expect(
+      distanceAt(DUMBBELL, { x: 0.1, y: 0.01, z: 0 }, upright, { x: 0.1, y: 0.01, z: 0.03 }),
+    ).toBeCloseTo(0.026, 12);
+  });
+
+  it('shares a compound mass among its parts by volume, and gives a primitive all of it', () => {
+    const ball = (4 / 3) * Math.PI * 1e-6;
+    const bar = 2 * Math.PI * 0.004 * 0.004 * 0.02 + (4 / 3) * Math.PI * 0.004 * 0.004 * 0.004;
+    const shares = massShares(DUMBBELL);
+    expect(shares[0]).toBeCloseTo(ball / (2 * ball + bar), 12);
+    expect(shares[1]).toBeCloseTo(bar / (2 * ball + bar), 12);
+    expect(shares[0]).toBe(shares[2]);
+    expect(shares.reduce((sum, share) => sum + share, 0)).toBeCloseTo(1, 14);
+    expect(massShares({ kind: 'box', halfExtents: { x: 0.01, y: 0.01, z: 0.01 } })).toEqual([1]);
   });
 
   it('measures in the prop frame, after its rotation', () => {
