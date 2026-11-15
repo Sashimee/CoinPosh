@@ -82,7 +82,10 @@ export const playStyles: Readonly<Record<PlayStyleId, PlayStyle>> = {
  * `busiestFallValue` rounded up. P-375 reran every style on SIM_VERSION 9: the rebuild
  * reproduced the version 8 fixture exactly on its own sim (franticPinpoint 1 and 2,
  * aimed 1, franticPour 1, rapidScatter 3), and the jittered heap pile of P-223, which
- * landed without a version bump, had already moved every style a little.
+ * landed without a version bump, had already moved every style a little. SIM_VERSION 10
+ * (P-738) retimed only the kinematic crate ride (CRATE_RIDE); these runs drop no crate
+ * and every crate-free pin in packages/sim kept its version 9 value, so the fixture
+ * stands as measured.
  *
  * The generator is not committed yet (economy cannot import @coinposh/sim, which depends
  * on economy): it belongs in packages/sim. Until it is, ladder.test.ts reads the
@@ -91,7 +94,7 @@ export const playStyles: Readonly<Record<PlayStyleId, PlayStyle>> = {
  */
 export const ladderMeasurement = {
   simCommit: 'da6084a',
-  simVersion: 9,
+  simVersion: 10,
   fusionTuning: {
     touchGap: 0.001,
     graceTicks: 3,

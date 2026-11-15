@@ -1,12 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { rateEnvelopeDerivation } from '@coinposh/economy';
 import { describe, expect, it } from 'vitest';
 import packageJson from '../../package.json' with { type: 'json' };
 import { COIN } from '../coin.ts';
+import { SIM_VERSION, TICK_RATE_HZ } from '../constants.ts';
+import { StateHasher } from '../hash.ts';
 import { Xoshiro128ss } from '../prng.ts';
 import { BACKBOARD, PLAYFIELD, PUSHER } from '../table/layout.ts';
-import { DEFAULT_PUSHER_MOTION, type PusherMotion } from '../table/pusher.ts';
+import { DEFAULT_PUSHER_MOTION, type PusherMotion, pusherExtension } from '../table/pusher.ts';
 import * as entry from './index.ts';
 import {
   type CoinPose,
@@ -490,5 +493,77 @@ describe('checkCratePose', () => {
     for (const max of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => checkCratePose(crate(), max)).toThrow(RangeError);
     }
+  });
+});
+
+describe('CRATE_RIDE pacing (P-738)', () => {
+  const MIN_TICKS = rateEnvelopeDerivation.crateFallSeconds.min * TICK_RATE_HZ;
+  /** The Demo's tap cadences in ticks: every 280 ms and every 560 ms. */
+  const CADENCES = [17, 34] as const;
+
+  /**
+   * Ticks from a spawn `spawnTick` into the cycle until the crate's centre passes tipZ, as
+   * CrateRide carries it: CRATE_RIDE.carry of each forward step of the face, the pile's
+   * creep every tick, and no tip before crateFallSeconds.min. No nudges.
+   */
+  function rideTicks(spawnTick: number, motion: PusherMotion = DEFAULT_PUSHER_MOTION): number {
+    const at = (tick: number) =>
+      pusherExtension((tick % motion.periodTicks) / motion.periodTicks, motion.pushFraction);
+    let z = CRATE_RIDE.spawnZ;
+    let last = at(spawnTick);
+    for (let tick = 1; tick <= rateEnvelopeDerivation.crateFallSeconds.max * TICK_RATE_HZ; tick++) {
+      const next = at(spawnTick + tick);
+      z += Math.max(0, next - last) * PUSHER.stroke * CRATE_RIDE.carry;
+      z += CRATE_RIDE.creepPerSecond / TICK_RATE_HZ;
+      last = next;
+      if (tick < MIN_TICKS) z = Math.min(z, CRATE_RIDE.teeterZ);
+      if (z >= CRATE_RIDE.tipZ) return tick;
+    }
+    throw new Error(`A crate spawned at tick ${spawnTick} of the cycle never reached the edge`);
+  }
+
+  const cycle = Array.from({ length: PUSHER.periodTicks }, (_, tick) => rideTicks(tick));
+  const sorted = [...cycle].sort((a, b) => a - b);
+
+  it('puts every crate over the edge inside two strokes, wherever in the cycle it spawns', () => {
+    expect((sorted[0] ?? 0) / TICK_RATE_HZ).toBeGreaterThan(5);
+    expect((sorted[sorted.length >> 1] ?? 0) / TICK_RATE_HZ).toBeLessThanOrEqual(7);
+    expect((sorted.at(-1) ?? Infinity) / TICK_RATE_HZ).toBeLessThanOrEqual(7.5);
+    expect(PUSHER.periodTicks * 2).toBeGreaterThanOrEqual(sorted.at(-1) ?? Infinity);
+  });
+
+  it('moves no faster than 5 cm/s, the travel the server allows a restored crate', () => {
+    const { stroke, pushFraction, periodTicks } = DEFAULT_PUSHER_MOTION;
+    const peakFaceSpeed = (1.5 * stroke) / ((pushFraction * periodTicks) / TICK_RATE_HZ);
+    expect(CRATE_RIDE.carry * peakFaceSpeed + CRATE_RIDE.creepPerSecond).toBeLessThan(0.05);
+  });
+
+  it('falls within 8 s of a spawn on any tap at the Demo cadences, over a minute of taps', () => {
+    for (const every of CADENCES) {
+      for (let tap = every; tap <= 60 * TICK_RATE_HZ; tap += every) {
+        expect(rideTicks(tap) / TICK_RATE_HZ).toBeLessThan(8);
+      }
+    }
+  });
+
+  it('never tips before the economy minimum on the fastest Pusher Tempo', () => {
+    const fastest: PusherMotion = { ...DEFAULT_PUSHER_MOTION, periodTicks: 60 };
+    for (let tick = 0; tick < fastest.periodTicks; tick++) {
+      expect(rideTicks(tick, fastest)).toBeGreaterThanOrEqual(MIN_TICKS);
+    }
+  });
+
+  it('pins the ride time of every spawn tick in the cycle, so a retune is deliberate', () => {
+    const digest = new StateHasher();
+    for (const ticks of cycle) digest.int(ticks);
+    expect(SIM_VERSION).toBe(10);
+    expect(digest.digest()).toMatchInlineSnapshot(`"83ff2b821c0539c8"`);
+    expect([sorted[0], sorted[sorted.length >> 1], sorted.at(-1)]).toMatchInlineSnapshot(`
+      [
+        354,
+        398,
+        431,
+      ]
+    `);
   });
 });
