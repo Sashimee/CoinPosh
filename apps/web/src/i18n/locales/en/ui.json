@@ -84,6 +84,20 @@
     "pending": "Confirming…",
     "buyAria": "Buy {{name}} level {{level}} for {{cost}}",
     "cannotAfford": "Not enough funds",
+    "shortfall_one": "{{value}} more",
+    "shortfall_other": "{{value}} more",
+    "shortfallAria": {
+      "coins_one": "{{value}} more coin needed",
+      "coins_other": "{{value}} more coins needed",
+      "goldBars_one": "{{value}} more gold bar needed",
+      "goldBars_other": "{{value}} more gold bars needed"
+    },
+    "balance": {
+      "label": "Spendable",
+      "aria_one": "{{value}} coin to spend",
+      "aria_other": "{{value}} coins to spend",
+      "spent": "−{{value}}"
+    },
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",
