@@ -28,6 +28,10 @@ export interface AudioEngineOptions {
 }
 
 export interface AudioEngine {
+  /** Built eagerly and suspended until the first gesture, so feature voices can wire up before unlock. */
+  readonly context: BaseAudioContext;
+  /** The mixer's buses: whatever plays into them follows the master, mute and duck settings. */
+  readonly buses: { readonly sfx: AudioNode; readonly music: AudioNode };
   /** True once a gesture has started the audio context. */
   readonly unlocked: boolean;
   /** Resolves on the first successful unlock. */
@@ -102,6 +106,8 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
   };
 
   const engine: AudioEngine = {
+    context: ctx,
+    buses: { sfx: mixer.sfx, music: mixer.music },
     get unlocked() {
       return running();
     },
