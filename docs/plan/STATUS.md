@@ -190,7 +190,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-11.11 | todo | | Waits on T-11.10. Lounge UI and share |
 | T-11.12 | todo | | Waits on T-11.04. Server: wine cellar |
 | T-11.13 | todo | | Waits on T-11.12. Wine cellar UI |
-| T-11.14 | todo | | Waits on T-11.03. Collecting audio |
+| T-11.14 | done | task/T-11.14 (merge ceaafe5) | Collecting audio: procedural prize impacts, variant shimmers and cellar ambience in apps/web/src/audio/collecting/ (3b623df); pnpm check green after merge; follow-up P-735 |
 | T-11.15 | todo | | Waits on T-11.08, T-11.09, T-11.11, T-11.13, T-11.14. Collecting wiring |
 | T-11.16 | todo | | Waits on T-11.15, T-1.17. E2E: collecting |
 | T-12.01 | todo | | Waits on T-11.01. Standing contracts |
