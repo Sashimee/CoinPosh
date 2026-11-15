@@ -3,11 +3,15 @@ import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { JwksCache, type JwksFetcher } from './auth/link/jwks.ts';
 import { linkedDeviceRefresh } from './auth/link/refresh.ts';
+import { SERVER_FEATURES } from './features/registry.ts';
+import { mountServerFeatures } from './features/routes.ts';
+import type { ServerFeature } from './features/types.ts';
 import type { AppEnv } from './http/context.ts';
 import { corsMiddleware } from './http/cors.ts';
 import { ApiFailure } from './http/errors.ts';
 import { originGuardMiddleware, requestIdMiddleware } from './http/signed.ts';
 import { createAccountRoutes } from './routes/account.ts';
+import { createAlbumRoutes } from './routes/album.ts';
 import { createAscendRoutes } from './routes/ascend.ts';
 import { authRoutes } from './routes/auth.ts';
 import { createCrateRoutes } from './routes/crates.ts';
@@ -22,6 +26,8 @@ export { PlayerDO } from './do/PlayerDO.ts';
 export interface AppDeps {
   /** Where provider signing keys come from; tests serve a local key set. */
   readonly fetchJwks: JwksFetcher;
+  /** Server features to mount after the core routes; the deployed worker mounts SERVER_FEATURES. */
+  readonly features?: readonly ServerFeature[];
 }
 
 const fetchProviderJwks: JwksFetcher = (url) =>
@@ -41,8 +47,10 @@ export function createApp(deps: AppDeps) {
   app.route('/', createUpgradeRoutes(playerStub));
   app.route('/', createAscendRoutes(playerStub));
   app.route('/', createCrateRoutes(playerStub));
+  app.route('/', createAlbumRoutes(playerStub));
   app.route('/', createSafeRoutes(playerStub));
   app.route('/', createScratchRoutes(playerStub));
+  mountServerFeatures(app, deps.features ?? SERVER_FEATURES);
 
   app.notFound((c) => c.json(errorEnvelope('not_found', 'No such route.'), 404));
 

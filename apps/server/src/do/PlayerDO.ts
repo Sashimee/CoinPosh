@@ -16,12 +16,14 @@ import {
   repriceReserved,
   upgradeLines,
   type CascadeChain,
+  type RateEnvelopeTable,
   type UpgradeLevelMap,
 } from '@coinposh/economy';
 import {
   DEFAULT_FEATURE_FLAGS,
   nextCoinTier,
   StateResponseSchema,
+  type AlbumResponse,
   type ApiError,
   type AscendRequest,
   type AscendResponse,
@@ -41,6 +43,7 @@ import {
   type NudgeRequest,
   type NudgeResponse,
   type PlayerId,
+  PlayerIdSchema,
   type SafeOpenRequest,
   type SafeOpenResponse,
   type ScratchRevealRequest,
@@ -106,6 +109,7 @@ import {
   type AscendHost,
   type AscensionCommit,
 } from '../routes/ascend.ts';
+import { albumBonusOf, completedAlbumSets, readAlbum, type AlbumHost } from '../routes/album.ts';
 import {
   quoteUpgrade,
   readUpgradeLevels,
@@ -126,6 +130,15 @@ import {
   revealScratchCard,
   type ScratchHost,
 } from '../routes/scratch.ts';
+import type { FeatureCall } from '../features/types.ts';
+import {
+  applyFeatureTables,
+  registeredServerFeatures,
+  resolveFeatureHandler,
+  runFeatureHandler,
+  type EntityFingerprint,
+  type FeatureHost,
+} from './features.ts';
 import { migrate } from './schema.ts';
 import {
   CHUTE_POSE,
@@ -226,7 +239,8 @@ type MetaKey =
   | 'table_session_max_tick'
   | 'table_session_origin'
   | 'snapshot_tokens'
-  | 'snapshot_tokens_at';
+  | 'snapshot_tokens_at'
+  | 'album_sets';
 
 const CASCADE_WINDOW_TICKS = cascadeWindowTicks(SIM_TICKS_PER_SECOND);
 
@@ -249,17 +263,23 @@ function settleLegs(
 
 export class PlayerDO
   extends DurableObject<Env>
-  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost
+  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost, AlbumHost
 {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
   private readonly fair: FairSeeds;
+  /** Features whose tables this instance has brought up to date. */
+  private readonly featuresReady = new Set<string>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.entities = new Entities(this.sql);
     migrate(this.sql, (run) => ctx.storage.transactionSync(run));
+    for (const feature of registeredServerFeatures()) {
+      applyFeatureTables(this.sql, feature, (run) => ctx.storage.transactionSync(run));
+      this.featuresReady.add(feature.id);
+    }
     this.fair = new FairSeeds(this.sql);
   }
 
@@ -463,15 +483,22 @@ export class PlayerDO
   /**
    * Opens a crate the player pushed off the front edge into the inventory, once. The contents
    * are a provably fair roll on the player's seed chain; the scripted first-session crate is
-   * the one the scripted drop spawned. The coins it pays top the reserved buffer up so the
-   * returned wallet is final.
+   * the one the scripted drop spawned. A card that completes an album set raises the coin value
+   * from the next mint, so the reserved buffer is re-minted at it, as an upgrade does. The coins
+   * it pays top the reserved buffer up so the returned wallet is final.
    */
   async openCrate(command: Command<CrateOpenRequest>): Promise<DoResult<CrateOpenResponse>> {
     return this.mutate(command, (now) => {
       const context = { at: now, idempotencyKey: command.idempotencyKey };
       this.adoptFairSeed(now);
       const scripted = this.meta('ftue_crate') === command.body.crateId;
+      const setsBefore = this.completedAlbumSets();
       const opened = openCrate(this.sql, this.fair, command.body, context, scripted);
+      const setsAfter = completedAlbumSets(this.sql);
+      if (setsAfter.join() !== setsBefore.join()) {
+        this.setMeta('album_sets', JSON.stringify(setsAfter));
+        this.repriceBuffer();
+      }
       this.reserveBuffer(context);
       return { ...opened, wallet: readWallet(this.sql) };
     });
@@ -509,6 +536,53 @@ export class PlayerDO
     });
   }
 
+  /** The album as the server's crate opens granted it (T-3.03); the client sends nothing. */
+  album(): Promise<DoResult<AlbumResponse>> {
+    if (this.meta('player_id') === null) return Promise.resolve(this.uninitialized());
+    return Promise.resolve({ ok: true, replayed: false, body: readAlbum(this.sql) });
+  }
+
+  /**
+   * The table configuration the rate envelope is keyed on, all from server state: the levels
+   * the player bought, the venue they are at, the charms the server holds for them (none until
+   * it keeps a charm inventory) and the bonus of the album sets their crate opens completed.
+   */
+  envelopeTable(): RateEnvelopeTable {
+    return {
+      levels: this.levels(),
+      venue: this.venueId(),
+      charms: 0,
+      albumBonus: this.albumBonus(),
+    };
+  }
+
+  /**
+   * The one entry point for server features (T-11.01): runs `handler` of `featureId` inside
+   * the storage transaction, as an idempotent write when the call carries an Idempotency-Key
+   * and as a read otherwise, and re-checks conservation over everything it wrote.
+   */
+  async feature(featureId: string, handler: string, call: FeatureCall): Promise<DoResult<unknown>> {
+    const { feature, run } = resolveFeatureHandler(featureId, handler);
+    if (this.meta('player_id') === null) return this.uninitialized();
+    if (!this.featuresReady.has(feature.id)) {
+      applyFeatureTables(this.sql, feature, (inner) => this.ctx.storage.transactionSync(inner));
+      this.featuresReady.add(feature.id);
+    }
+    const host = this.featureHost();
+    if (call.idempotencyKey === null) {
+      return this.readFeature((now) =>
+        runFeatureHandler(host, feature, run, now, null, call.input),
+      );
+    }
+    if (call.fingerprint === null) {
+      throw new Error(`Feature "${featureId}" write "${handler}" has no request fingerprint.`);
+    }
+    const idempotencyKey = call.idempotencyKey;
+    return this.mutate({ idempotencyKey, fingerprint: call.fingerprint, body: call.input }, (now) =>
+      runFeatureHandler(host, feature, run, now, idempotencyKey, call.input),
+    );
+  }
+
   /** Double-entry totals next to the entity tables they must agree with. */
   conservation(): ConservationReport {
     const wallet = readWallet(this.sql);
@@ -526,22 +600,21 @@ export class PlayerDO
       mint: ledgerBalance(this.sql, 'mint', 'coins'),
     };
     const walletCoins = wallet.coins;
-    const buffer = this.entities.coinsIn('buffer');
-    const bufferPaid = buffer.reduce((total, coin) => total + coin.paid, 0);
-    const tableValue = this.entities
-      .coinsIn('table')
-      .reduce((total, coin) => total + coin.value, 0);
-    const tableCrates = this.entities.cratesOnTable().length;
+    const {
+      bufferPaid,
+      tableValue,
+      tableCrates,
+      cratesHeld,
+      collectiblesHeld,
+      safesHeld,
+      scratchCardsHeld,
+    } = this.entityFingerprint();
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
-    const cratesHeld = countHeldCrates(this.sql);
     const ledgerCratesHeld = ledgerBalance(this.sql, 'inventory', 'crate');
-    const collectiblesHeld = countCollectiblesGranted(this.sql);
     const ledgerCollectiblesHeld = ledgerBalance(this.sql, 'inventory', 'collectible');
     const unitSettled = (unit: Leg['unit']) =>
       ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, unit), 0) === 0;
-    const safesHeld = countLockedSafes(this.sql);
     const ledgerSafesHeld = ledgerBalance(this.sql, 'inventory', 'safe');
-    const scratchCardsHeld = countHeldScratchCards(this.sql);
     const ledgerScratchCardsHeld = ledgerBalance(this.sql, 'inventory', 'scratchCard');
     const conserved =
       ledger.wallet === walletCoins &&
@@ -564,7 +637,7 @@ export class PlayerDO
     return {
       walletCoins,
       ledger,
-      bufferCoins: buffer.length,
+      bufferCoins: this.entities.countCoinsIn('buffer'),
       bufferPaid,
       tableValue,
       tableCrates,
@@ -662,6 +735,56 @@ export class PlayerDO
     await this.env.DB.batch(statements);
     this.setMeta('flushed_seq', String(last.seq));
     return !caughtUp;
+  }
+
+  private featureHost(): FeatureHost {
+    return {
+      sql: this.sql,
+      playerId: PlayerIdSchema.parse(this.requireMeta('player_id')),
+      transactionSync: (run) => this.ctx.storage.transactionSync(run),
+      roll: (purpose, ref, now) => {
+        this.adoptFairSeed(now);
+        return this.fair.roll(purpose, ref, now);
+      },
+      requireLease: (session) => {
+        this.requireLease(session);
+      },
+      entityFingerprint: () => this.entityFingerprint(),
+    };
+  }
+
+  private entityFingerprint(): EntityFingerprint {
+    const coins = this.sql
+      .exec<{ paid: number | null; value: number | null }>(
+        `SELECT SUM(CASE state WHEN 'buffer' THEN paid END) AS paid,
+                SUM(CASE state WHEN 'table' THEN value END) AS value
+         FROM coins WHERE state IN ('buffer', 'table')`,
+      )
+      .one();
+    return {
+      bufferPaid: coins.paid ?? 0,
+      tableValue: coins.value ?? 0,
+      tableCrates: this.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM crates WHERE state = 'table'")
+        .one().n,
+      cratesHeld: countHeldCrates(this.sql),
+      collectiblesHeld: countCollectiblesGranted(this.sql),
+      safesHeld: countLockedSafes(this.sql),
+      scratchCardsHeld: countHeldScratchCards(this.sql),
+    };
+  }
+
+  private readFeature<T>(run: (now: EpochMs) => T): DoResult<T> {
+    const now = Date.now();
+    try {
+      const body = this.ctx.storage.transactionSync(() => run(now));
+      return { ok: true, replayed: false, body };
+    } catch (error) {
+      if (error instanceof ApiFailure) {
+        return { ok: false, error: { code: error.code, message: error.message, ...error.extra } };
+      }
+      throw error;
+    }
   }
 
   private async mutate<T>(
@@ -1375,9 +1498,39 @@ export class PlayerDO
     };
   }
 
-  /** A coin of `tier` minted now at the current venue, in millionths. */
+  /**
+   * A coin of `tier` minted now at the current venue, in millionths. Completed album sets add
+   * their bonus to the global coin multiplier (02-ECONOMY), folded into the venue's so the
+   * economy's mint rounds the whole product once.
+   */
   private mintedMicros(tier: CoinTier, levels: UpgradeLevelMap): number {
-    return mintedCoinMicros(tierDef(tier), currentVenue(this.sql), levels);
+    const venue = currentVenue(this.sql);
+    const coinValueMultiplier = venue.coinValueMultiplier * (1 + this.albumBonus());
+    return mintedCoinMicros(tierDef(tier), { ...venue, coinValueMultiplier }, levels);
+  }
+
+  /** The completed album sets' bonus, priced from the economy config on every read. */
+  private albumBonus(): number {
+    return albumBonusOf(this.completedAlbumSets());
+  }
+
+  /**
+   * The album sets the player completed, kept in meta because every mint reads them and only a
+   * crate open can change them. Only the ids are kept, never their bonus, so a retune of the
+   * economy reaches the player. A player whose crate opens predate the key derives them once.
+   */
+  private completedAlbumSets(): string[] {
+    const stored = this.meta('album_sets');
+    if (stored === null) {
+      const derived = completedAlbumSets(this.sql);
+      this.setMeta('album_sets', JSON.stringify(derived));
+      return derived;
+    }
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed) || !parsed.every((id): id is string => typeof id === 'string')) {
+      throw new Error(`PlayerDO meta "album_sets" is ${stored}, not a list of album set ids.`);
+    }
+    return parsed;
   }
 
   private startingCoins(): number {
