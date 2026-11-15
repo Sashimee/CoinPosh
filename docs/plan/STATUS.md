@@ -378,7 +378,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-640 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
 | P-684 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
 | T-3.05-p4 | blocked(design: Demo world lacks lifetime fusions, activeDays and coinsBanked counters for quest metrics; waits on P-498) | | |
-| P-707 | blocked(review: bundle-size.ts ACCOUNT_CHUNK claims account-<hash> locale chunks before localeChunks, so account i18n lands in Account (on tap)) | | |
+| P-707 | done | task/P-707 (merge 71f8e34) | bundle:check red since T-11.01-p3: i18n namespace row, one-locale loader, split boot-lazy group (48208cc, retry; folds P-702, P-682); pnpm check green after merge |
 | P-657 | todo | | Founder decision 2026-11-15: refused fusion lays the missing inputs back on the table via a new sim restore API (POLISH.md); owns widened to packages/sim/** and session bridge |
 | P-670 | done | task/P-670 (merge f49bf57) | Lead salvage: one AdaptiveMusic bed in createAudioEngine, setDropRate/setCascadeTier/playJackpotSting/setMusicEnabled/setReducedMotion forwarded (engine.test.ts); features.test.ts stub widened; pnpm check green |
 | P-642 | blocked(review: streamTicks 45 passes fusion and front-fall criteria, but the Vault hits 0 before the first upgrade on 9/10 seeds; needs an economy retune) | | Lead decision 2026-11-14 in POLISH.md; trial edits reverted |
