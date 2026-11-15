@@ -57,6 +57,8 @@ const ESCAPED_IN_OUTPUT = /[`\\]|\$\{|[^\S ]|[\p{Cc}\p{Cf}]/u;
  * feature's code chunk; the row named here is the only one allowed to hold them.
  */
 const STATIC_LOCALE_EMBEDS: Readonly<Record<string, BudgetKey>> = { 'en/account': 'accountUi' };
+const GACHA_DOCK_CHUNK = /^gacha-[\w-]+\.js$/;
+const GACHA_SHEET_CHUNK = /^gacha(?:Sheet|Odds)-[\w-]+\.js$/;
 
 export type BudgetKey = keyof typeof BUNDLE_BUDGETS | 'accountOnTap';
 
@@ -87,6 +89,7 @@ interface Measured {
   readonly eagerAccount: readonly string[];
   readonly eagerAccountUi: readonly string[];
   readonly eagerSafes: readonly string[];
+  readonly eagerGacha: readonly string[];
   readonly initial: readonly string[];
   readonly locales: ReadonlyMap<string, LocaleChunk>;
 }
@@ -300,6 +303,12 @@ function measure(): Measured {
   if (safesDock.length === 0) fail('no safes-*.js chunk in dist/assets; update the gate');
   const safesSheet = js.filter((file) => SAFES_SHEET_CHUNK.test(file));
   if (safesSheet.length === 0) fail('no safesSheet-*.js chunk in dist/assets; update the gate');
+  const gachaDock = js.filter((file) => GACHA_DOCK_CHUNK.test(file));
+  if (gachaDock.length === 0) fail('no gacha-*.js chunk in dist/assets; update the gate');
+  const gachaSheet = js.filter((file) => GACHA_SHEET_CHUNK.test(file));
+  if (gachaSheet.length < 2) {
+    fail('no gachaSheet-*.js and gachaOdds-*.js chunks in dist/assets; update the gate');
+  }
 
   let wasmBytes = 0;
   const wasmFiles: string[] = readdirSync(ASSETS).filter((file) => file.endsWith('.wasm'));
@@ -337,6 +346,8 @@ function measure(): Measured {
     ...accountUi,
     ...safesDock,
     ...safesSheet,
+    ...gachaDock,
+    ...gachaSheet,
   ]);
   const stageLazy = lazyClosure(js, STAGE_ENTRIES, accounted);
   for (const file of stageLazy) accounted.add(file);
@@ -390,6 +401,18 @@ function measure(): Measured {
       bytes: sum(safesSheet, gz),
     },
     {
+      key: 'gachaDock',
+      label: 'Capsules dock (after boot)',
+      files: gachaDock,
+      bytes: sum(gachaDock, gz),
+    },
+    {
+      key: 'gachaSheet',
+      label: 'Capsules sheet and odds (on tap)',
+      files: gachaSheet,
+      bytes: sum(gachaSheet, gz),
+    },
+    {
       key: 'fonts',
       label: 'Webfonts (woff2 as served)',
       files: fonts,
@@ -402,6 +425,7 @@ function measure(): Measured {
     eagerAccount: account.filter((file) => initial.includes(file)),
     eagerAccountUi: accountUi.filter((file) => initial.includes(file)),
     eagerSafes: [...safesDock, ...safesSheet].filter((file) => initial.includes(file)),
+    eagerGacha: [...gachaDock, ...gachaSheet].filter((file) => initial.includes(file)),
     initial,
     locales,
   };
@@ -412,7 +436,16 @@ function kb(bytes: number): string {
 }
 
 function main(): void {
-  const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, initial, locales } = measure();
+  const {
+    rows,
+    lazyThree,
+    eagerAccount,
+    eagerAccountUi,
+    eagerSafes,
+    eagerGacha,
+    initial,
+    locales,
+  } = measure();
   const lines = [
     '### Bundle budgets (gzip)',
     '',
@@ -460,6 +493,12 @@ function main(): void {
       : `FAIL: safes code is in the initial load (${eagerSafes.join(', ')}).`,
   );
   if (eagerSafes.length > 0) failures.push('safes code is statically reachable from index.html');
+  lines.push(
+    eagerGacha.length === 0
+      ? 'The capsule chunks are lazy: the dock loads after the table, the sheet on the first press.'
+      : `FAIL: capsule code is in the initial load (${eagerGacha.join(', ')}).`,
+  );
+  if (eagerGacha.length > 0) failures.push('capsule code is statically reachable from index.html');
   const misfiled = misfiledLocales(rows, read, localeSources());
   lines.push(
     misfiled.length === 0

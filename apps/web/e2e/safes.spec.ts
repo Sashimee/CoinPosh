@@ -128,6 +128,7 @@ test.describe('Safes sheet (P-544)', () => {
       await page.setViewportSize({ width, height });
       await bootGame(page);
       await expect(page.getByTestId('dock-safes')).toBeVisible();
+      await expect(page.getByTestId('dock-gacha')).toBeVisible();
       await expect(page.getByTestId('hud-ascension')).toBeVisible();
 
       const fit = await dockFit(page);
@@ -135,6 +136,7 @@ test.describe('Safes sheet (P-544)', () => {
         'dock-settings',
         'dock-upgrades',
         'dock-safes',
+        'dock-gacha',
         'hud-ascension',
       ]);
       expect(fit.gutter, 'the HUD keeps a side gutter').toBeGreaterThanOrEqual(

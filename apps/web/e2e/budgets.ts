@@ -117,6 +117,16 @@ export const BUNDLE_BUDGETS = {
    */
   safesSheet: 7 * 1024,
   /**
+   * The capsule machine dock (T-2.03-p2b): controller, strings and the Capsules door, imported
+   * once the table is up. 5.3 kB gzip on 2026-11-15.
+   */
+  gachaDock: 6 * 1024,
+  /**
+   * The capsule machine sheet with its 3D stage, and the odds panel it links to, each imported on
+   * first press. 25.4 kB gzip on 2026-11-15.
+   */
+  gachaSheet: 26.5 * 1024,
+  /**
    * P-425 / P-102: the self-hosted woff2 subsets in public/fonts, counted as served (woff2 is
    * already Brotli inside, so gzip would only hide the bytes). Cormorant Garamond 600, 700 and
    * 700 italic plus Manrope 500 and 700: 85.3 kB on 2026-11-14. P-102 caps the payload at 120 kB;
