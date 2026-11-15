@@ -323,7 +323,7 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     expect(book.coins.shown).toBe(46);
   });
 
-  it('lets a card left up uncollected go after the cap, with a warning', () => {
+  it('lets a crate whose card never mounted go after the cap, with a warning', () => {
     const { ledger: book, warnings } = ledger();
     book.coins.observe(40);
     book.hold('a', { coins: 6 });
@@ -364,7 +364,7 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     expect(warnings).toHaveLength(1);
   });
 
-  it('keeps a crate that waits its turn for longer than the cap until it is collected', () => {
+  it('runs no cap until it is armed, however long the crate waits, and pays on collect', () => {
     const { ledger: book, warnings } = ledger();
     book.coins.observe(40);
     book.hold('a', { coins: 6 });
@@ -381,7 +381,7 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     expect(warnings).toEqual([]);
   });
 
-  it('pauses the cap while the card is out of sight and restarts it when it is back', () => {
+  it('stops the cap on disarm, as when the card mounts, and restarts it in full on a re-arm', () => {
     const { ledger: book, warnings } = ledger();
     book.coins.observe(0);
     book.hold('a', { coins: 6 });
@@ -415,7 +415,7 @@ describe('PayoutLedger pays a crate out on collect and never keeps it for good',
     book.hold('b', { coins: 3 });
     book.arm('b');
     vi.advanceTimersByTime(100);
-    expect(book.busy, 'the cap let an uncollected card go').toBe(false);
+    expect(book.busy, 'the cap let a crate with no card go').toBe(false);
     book.hold('c', {});
     book.releaseAll();
     expect(book.busy).toBe(false);

@@ -279,19 +279,21 @@ describe('a crate holds its credit from open to collect', () => {
   it('releases a crate whose card goes without a collect, exactly once', () => {
     const { calls, tracker } = recorded();
     tracker.opened(A, coinRoll);
+    tracker.mounted(A);
     tracker.gone(A);
     tracker.gone(A);
     tracker.dispose();
-    expect(calls).toEqual([`hold ${A}`, `release ${A}`]);
+    expect(calls).toEqual([`hold ${A}`, `arm ${A}`, `disarm ${A}`, `release ${A}`]);
   });
 
   it('does not release a collected crate when its card goes', () => {
     const { calls, tracker } = recorded();
     tracker.opened(A, coinRoll);
+    tracker.mounted(A);
     tracker.collected(A, coinRoll, coinWallet, null);
     tracker.gone(A);
     tracker.dispose();
-    expect(calls).toEqual([`hold ${A}`, `collect ${A}`]);
+    expect(calls).toEqual([`hold ${A}`, `arm ${A}`, `disarm ${A}`, `collect ${A}`]);
   });
 
   it('releases every crate still unpaid on teardown, once each', () => {
@@ -309,16 +311,46 @@ describe('a crate holds its credit from open to collect', () => {
     ]);
   });
 
-  it('arms the cap only while an unpaid card is on screen', () => {
+  it('caps a crate only until its card mounts, never while the card is up', () => {
     const { calls, tracker } = recorded();
-    tracker.shown(A);
     tracker.opened(A, coinRoll);
-    tracker.shown(A);
-    tracker.hidden(A);
+    tracker.mounted(A);
+    tracker.covered(true);
+    tracker.covered(false);
     tracker.collected(A, coinRoll, coinWallet, null);
-    tracker.shown(A);
-    tracker.hidden(A);
+    tracker.mounted(A);
+    tracker.gone(A);
     expect(calls).toEqual([`hold ${A}`, `arm ${A}`, `disarm ${A}`, `collect ${A}`]);
+  });
+
+  it('pauses the cap of a queued crate while another card is up or a sheet covers the table', () => {
+    const { calls, tracker } = recorded();
+    tracker.opened(A, coinRoll);
+    tracker.mounted(A);
+    tracker.opened(B, coinRoll);
+    expect(calls, 'B waits its turn behind the open card').toEqual([
+      `hold ${A}`,
+      `arm ${A}`,
+      `disarm ${A}`,
+      `hold ${B}`,
+    ]);
+    calls.length = 0;
+    tracker.collected(A, coinRoll, coinWallet, null);
+    expect(calls).toEqual([`collect ${A}`, `arm ${B}`]);
+    calls.length = 0;
+    tracker.covered(true);
+    tracker.covered(true);
+    tracker.covered(false);
+    tracker.mounted(B);
+    expect(calls).toEqual([`disarm ${B}`, `arm ${B}`, `disarm ${B}`]);
+  });
+
+  it('lets a replayed card, which holds nothing, still pause the cap of a crate behind it', () => {
+    const { calls, tracker } = recorded();
+    tracker.mounted(A);
+    tracker.opened(B, coinRoll);
+    tracker.collected(A, coinRoll, coinWallet, null);
+    expect(calls).toEqual([`hold ${B}`, `collect ${A}`, `arm ${B}`]);
   });
 
   describe('against the HUD ledger', () => {
@@ -329,27 +361,62 @@ describe('a crate holds its credit from open to collect', () => {
       vi.useRealTimers();
     });
 
-    it('still pays a crate out on collect after it waited or was held past the cap', () => {
+    function booked() {
       const warnings: string[] = [];
       const ledger = new PayoutLedger(() => undefined, {
         warn: (message) => warnings.push(message),
       });
       const tracker = trackCratePayout(ledger);
       ledger.coins.observe(40);
+      return { warnings, ledger, tracker };
+    }
+
+    it('keeps a card left up for minutes off the Vault, then pays exactly its coin line', () => {
+      const { warnings, ledger, tracker } = booked();
       tracker.opened(A, coinRoll);
       ledger.coins.observe(52);
-      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 2);
+      tracker.mounted(A);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 4);
       expect(ledger.coins.shown).toBe(40);
 
-      tracker.shown(A);
-      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS / 2);
-      tracker.hidden(A);
+      tracker.covered(true);
       vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 2);
-      tracker.shown(A);
-      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS / 2);
+      tracker.covered(false);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 2);
       tracker.collected(A, coinRoll, coinWallet, null);
       expect(ledger.coins.shown).toBe(40);
       ledger.land(A, 'coins');
+      expect(ledger.coins.shown).toBe(52);
+      expect(warnings).toEqual([]);
+    });
+
+    it('still releases a crate whose card never mounts after the cap, with a warning', () => {
+      const { warnings, ledger, tracker } = booked();
+      tracker.opened(A, coinRoll);
+      ledger.coins.observe(52);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS - 1);
+      expect(ledger.coins.shown).toBe(40);
+      expect(warnings).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(ledger.coins.shown).toBe(52);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(A);
+    });
+
+    it('keeps a queued crate held while the card ahead of it is left up', () => {
+      const { warnings, ledger, tracker } = booked();
+      tracker.opened(A, coinRoll);
+      ledger.coins.observe(52);
+      tracker.mounted(A);
+      tracker.opened(B, coinRoll);
+      ledger.coins.observe(64);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 3);
+      expect(ledger.coins.shown).toBe(40);
+      tracker.collected(A, coinRoll, coinWallet, null);
+      ledger.land(A, 'coins');
+      expect(ledger.coins.shown).toBe(52);
+      tracker.mounted(B);
+      vi.advanceTimersByTime(PAYOUT_HOLD_CAP_MS * 3);
       expect(ledger.coins.shown).toBe(52);
       expect(warnings).toEqual([]);
     });
@@ -631,6 +698,35 @@ describe('the crate warm-up in the mounted module', () => {
     expect(unseen.list()).toEqual([]);
     crates.dispose();
     detach();
+  });
+
+  it('holds nothing on the payout it is given for a replayed open, so no falls wait behind it', () => {
+    const calls: string[] = [];
+    const payout: WalletPayout = {
+      hold: (id) => calls.push(`hold ${id}`),
+      retract: (id) => calls.push(`retract ${id}`),
+      arm: (id) => calls.push(`arm ${id}`),
+      disarm: (id) => calls.push(`disarm ${id}`),
+      collect: (id) => calls.push(`collect ${id}`),
+      release: (id) => calls.push(`release ${id}`),
+    };
+    const { crates } = mounted({ payout });
+    const enqueue = vi.spyOn(crates.director, 'enqueue').mockImplementation(() => undefined);
+    const replay = opened(A);
+    crates.events.emit('crate:opened', {
+      crateId: A,
+      roll: replay.roll,
+      wallet: replay.wallet,
+      replayed: true,
+    });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(calls, 'the replayed credit is already on the plaque the page booted with').toEqual([]);
+
+    const live = opened(B);
+    crates.events.emit('crate:opened', { crateId: B, roll: live.roll, wallet: live.wallet });
+    expect(calls).toEqual([`hold ${B}`, `arm ${B}`]);
+    crates.dispose();
+    expect(calls).toEqual([`hold ${B}`, `arm ${B}`, `release ${B}`]);
   });
 
   it('stops the warm-up on dispose, mid-way, and never primes the unbox', async () => {

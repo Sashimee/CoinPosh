@@ -61,6 +61,8 @@ export interface CratesMountOptions {
   readonly unseen?: UnseenCrates | null;
   /** Whether the table is on screen and takes drops; defaults to the boot's playable mark. */
   readonly playable?: () => boolean;
+  /** Where crate credit is held until collect; defaults to the HUD plaque's payout for `ui.store`. */
+  readonly payout?: WalletPayout;
 }
 
 const PLAYABLE_MARK = 'coinposh:boot:playable';
@@ -124,10 +126,10 @@ type CardLines = Pick<ParentNode, 'querySelectorAll'>;
 
 export interface CratePayout {
   opened(crateId: CrateId, roll: Roll): void;
-  /** The crate's card is up in front of the player, or back after a sheet closed over it. */
-  shown(crateId: CrateId): void;
-  /** A sheet covers the card: an uncollected card is not left up while it is out of sight. */
-  hidden(crateId: CrateId): void;
+  /** The crate's reward card mounted: it is the player's to collect, however long it stays up. */
+  mounted(crateId: CrateId): void;
+  /** A sheet covers the table, or uncovers it: a crate still waiting for its card waits on. */
+  covered(covered: boolean): void;
   collected(crateId: CrateId, roll: Roll, wallet: Wallet, card: CardLines | null): void;
   /** The card went away (dismissed, skipped, dropped): release the crate if it was not collected. */
   gone(crateId: CrateId): void;
@@ -135,32 +137,66 @@ export interface CratePayout {
 }
 
 /**
- * A crate's credit from its open to its collect. The hold starts at the open, its cap only once
- * the card is on screen, and a crate that leaves without a collect shows its credit at once.
+ * A crate's credit from its open to its collect. The hold starts at the open and ends at the
+ * collect, or at once when the crate leaves without one. A card on screen is never timed out:
+ * the player may put the phone down on it and still come back to the payoff. The cap only
+ * guards a crate whose card never mounts, and runs only while no other card is up and no sheet
+ * covers the table, so a crate waiting its turn keeps its credit for its own card.
  */
 export function trackCratePayout(payout: WalletPayout): CratePayout {
   const unpaid = new Set<CrateId>();
+  const up = new Set<CrateId>();
+  const armed = new Set<CrateId>();
+  let covered = false;
+  const sync = (): void => {
+    const run = up.size === 0 && !covered;
+    for (const crateId of unpaid) {
+      const wants = run && !up.has(crateId);
+      if (wants === armed.has(crateId)) continue;
+      if (wants) {
+        armed.add(crateId);
+        payout.arm(crateId);
+      } else {
+        armed.delete(crateId);
+        payout.disarm(crateId);
+      }
+    }
+  };
+  const settle = (crateId: CrateId): boolean => {
+    up.delete(crateId);
+    armed.delete(crateId);
+    return unpaid.delete(crateId);
+  };
   const gone = (crateId: CrateId): void => {
-    if (unpaid.delete(crateId)) payout.release(crateId);
+    if (settle(crateId)) payout.release(crateId);
+    sync();
   };
   return {
     opened(crateId, roll) {
       unpaid.add(crateId);
       payout.hold(crateId, rollCredit(roll));
+      sync();
     },
-    shown(crateId) {
-      if (unpaid.has(crateId)) payout.arm(crateId);
+    mounted(crateId) {
+      up.add(crateId);
+      sync();
     },
-    hidden(crateId) {
-      if (unpaid.has(crateId)) payout.disarm(crateId);
+    covered(next) {
+      covered = next;
+      sync();
     },
     collected(crateId, roll, wallet, card) {
-      unpaid.delete(crateId);
+      settle(crateId);
       payout.collect(crateId, { wallet, lines: payoutLines(roll, card) });
+      sync();
     },
     gone,
     dispose() {
-      for (const crateId of [...unpaid]) gone(crateId);
+      for (const crateId of [...unpaid]) {
+        settle(crateId);
+        payout.release(crateId);
+      }
+      up.clear();
     },
   };
 }
@@ -236,7 +272,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   const table = new TableCrateView(options.stage.scene);
   const albums = new Map<CrateId, AlbumProgressMap>();
   const reveals = new Map<CrateId, CrateReveal>();
-  const payout = trackCratePayout(walletPayoutFor(options.ui.store));
+  const payout = trackCratePayout(options.payout ?? walletPayoutFor(options.ui.store));
   const warn = (message: string, cause?: unknown): void => {
     if (cause === undefined) console.warn(message);
     else console.warn(message, cause);
@@ -281,6 +317,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
         throw error;
       }
       reveals.set(opened.crateId, reveal);
+      payout.mounted(opened.crateId);
       const unbindEscape = bindEscapeCollect(reveal.el.ownerDocument, {
         ready: () => reveal.shown && !director.held && reveals.get(opened.crateId) === reveal,
         collect: () => {
@@ -293,12 +330,9 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
         },
         show: () => {
           reveal.show();
-          if (!director.held) payout.shown(opened.crateId);
         },
         hold: (held) => {
           holdReveal(reveal, held);
-          if (held) payout.hidden(opened.crateId);
-          else if (reveal.shown) payout.shown(opened.crateId);
         },
         dispose: () => {
           unbindEscape();
@@ -312,7 +346,16 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
     },
   });
 
-  disposers.push(holdWhileSheetOpen(options.ui.store, director));
+  disposers.push(
+    holdWhileSheetOpen(options.ui.store, director),
+    watch(
+      options.ui.store,
+      (state) => state.panel !== null,
+      (open) => {
+        payout.covered(open);
+      },
+    ),
+  );
 
   const warmup = bindCrateWarmup(options.stage, director);
   disposers.push(
