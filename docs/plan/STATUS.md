@@ -391,6 +391,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-708 | done | task/P-708 (merge 3839822) | lining-nums for Safes serif counts in safes.css plus the display-serif digit guard in apps/web/e2e/fonts.spec.ts (folds P-709) (cc93a4b); pnpm check green after merge |
 | P-703 | done | task/P-703 (merge 831c64e) | A reload mid Vault Crate unbox replays the stored roll after boot (unseen.ts sessionStorage list, Demo world keeps opened rolls, mount skips the plaque hold for replays) (b6159ec); pnpm check green after merge; follow-ups P-732, P-733, P-734 |
 | P-732 | done | task/P-732 (merge 732f7c0) | demo-reload.spec.ts collects the replayed crate card (Escape until gone) after the reload's playable wait, before the fresh-tab boot; no timeout raised (da6028a); pnpm check green after merge; follow-up P-740 |
+| P-721 | done | task/P-721 (merge a22377e) | Scene scale held through boot and sheet closes (scaleHold.ts, dynamic-resolution pin), coin emboss fades at low pixel radius, coin-look.spec.ts e2e (53572b4); pnpm check green after merge; follow-ups P-750, P-751 |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
