@@ -48,7 +48,7 @@ class FakeSim {
   readonly nudges: NudgeDirection[] = [];
   readonly bodies = new Map<number, [number, number, number]>();
   readonly listeners = new Set<(batch: SimEventBatch) => void>();
-  readonly unfuses: { fusedId: number; tiers: string[] }[] = [];
+  readonly unfuses: { fusedId: number; tiers: string[]; slots: number[] }[] = [];
   drawing = true;
   #nextId = 0;
   #queuedUnfuses: { fusedId: number; count: number }[] = [];
@@ -77,7 +77,11 @@ class FakeSim {
   }
 
   unfuse(fusedId: number, inputs: readonly UnfuseInput[]): void {
-    this.unfuses.push({ fusedId, tiers: inputs.map(({ tier }) => tier) });
+    this.unfuses.push({
+      fusedId,
+      tiers: inputs.map(({ tier }) => tier),
+      slots: inputs.map(({ slot }) => slot),
+    });
     this.#queuedUnfuses.push({ fusedId, count: inputs.length });
   }
 
@@ -948,7 +952,7 @@ describe('systems core: the sim event stream', () => {
       { coinId: coin(77, 'silver').id, tick: 140, edge: 'front' },
     ]);
     expect(core.coinOf(kept)).toBeNull();
-    expect(sim.unfuses).toEqual([{ fusedId: refused, tiers: ['copper', 'copper'] }]);
+    expect(sim.unfuses).toEqual([{ fusedId: refused, tiers: ['copper', 'copper'], slots: [1, 2] }]);
     const [laid = []] = sim.stepUnfuses();
     sync();
     expect(laid.map((id) => core.coinOf(id))).toEqual([coin(105).id, coin(106).id]);
@@ -959,7 +963,6 @@ describe('systems core: the sim event stream', () => {
     const heap = [101, 102, 103, 104].map((n, i) => ({ ...coin(n), value: 10 * (i + 1) }));
     const serverTable = [...heap];
     const { core, sim, table, sync, leave } = setup({ heap });
-    const unfused = record(core, 'coin:unfused');
     const spawned = record(core, 'coin:spawned');
     const fell = record(core, 'coin:fell');
     sim.layHeap(heap.length);
@@ -989,7 +992,9 @@ describe('systems core: the sim event stream', () => {
       claim: { kind: 'fusion', coinIds: ids, tick: 100 },
       result: { status: 'rejected', reason: 'over_envelope' },
     });
-    expect(sim.unfuses).toEqual([{ fusedId, tiers: ['copper', 'copper', 'copper'] }]);
+    expect(sim.unfuses).toEqual([
+      { fusedId, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+    ]);
     expect(core.coinOf(fusedId)).toBeNull();
 
     const spawnedBefore = spawned.length;
@@ -1005,9 +1010,6 @@ describe('systems core: the sim event stream', () => {
     expect(bound.reduce((sum, id) => sum + value(id), 0)).toBe(
       serverTable.reduce((sum, c) => sum + c.value, 0),
     );
-    expect(unfused).toEqual([
-      { coins: heap.slice(0, 3), position: expect.any(Object) as unknown, tick: 101 },
-    ]);
     expect(spawned).toHaveLength(spawnedBefore);
     expect(fell).toEqual([]);
     expect(table.falls).toEqual([]);
@@ -1045,7 +1047,9 @@ describe('systems core: the sim event stream', () => {
       claims: [{ kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 0 }],
       error: new Error('offline'),
     });
-    expect(sim.unfuses).toEqual([{ fusedId, tiers: ['copper', 'copper', 'copper'] }]);
+    expect(sim.unfuses).toEqual([
+      { fusedId, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+    ]);
     const [laid = []] = sim.stepUnfuses();
     sync();
     expect(core.coinOf(fusedId)).toBeNull();
@@ -1100,8 +1104,8 @@ describe('systems core: the sim event stream', () => {
     });
     expect(table.fusions).toEqual([[coin(101).id, coin(102).id, coin(103).id]]);
     expect(sim.unfuses).toEqual([
-      { fusedId: silver, tiers: ['copper', 'copper', 'copper'] },
-      { fusedId: gold, tiers: ['silver', 'silver'] },
+      { fusedId: silver, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+      { fusedId: gold, tiers: ['silver', 'silver'], slots: [1, 2] },
     ]);
     for (const id of [0, 1, 2, 3, 4, silver]) sim.bodies.delete(id);
     sync();
@@ -1164,8 +1168,8 @@ describe('systems core: the sim event stream', () => {
     for (const id of [0, 1, 2, 3, 4, silver, gold]) sim.bodies.delete(id);
     sync();
     expect(sim.unfuses).toEqual([
-      { fusedId: silver, tiers: ['copper', 'copper', 'copper'] },
-      { fusedId: gold, tiers: ['silver', 'silver'] },
+      { fusedId: silver, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+      { fusedId: gold, tiers: ['silver', 'silver'], slots: [1, 2] },
     ]);
     const laid = sim.stepUnfuses().flat();
     sync();

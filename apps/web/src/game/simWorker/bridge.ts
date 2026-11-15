@@ -308,7 +308,7 @@ export class SimBridge {
     this.#post({
       type: 'unfuse',
       fusedId,
-      inputs: inputs.map(({ tier }) => ({ tier })),
+      inputs: inputs.map(({ tier, slot }) => ({ tier, slot })),
     });
   }
 

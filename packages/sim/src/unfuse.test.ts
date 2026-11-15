@@ -129,6 +129,28 @@ describe('Sim.unfuse', () => {
     });
   });
 
+  it('lays each coin at its own slot of the record when an input before it is not laid back', async () => {
+    const { sim, fusion, before } = await untilFusion();
+    const inputPoses = new Map(before.map((coin) => [coin.id, coin.translation]));
+    const slots = [1, 2];
+    sim.unfuse({
+      fusedId: fusion.fusedId,
+      inputs: slots.map((slot) => ({ tier: fusion.tier, slot })),
+    });
+    const [unfused] = unfusedOf(sim.step());
+    const coinIds = unfused?.coinIds ?? [];
+    expect(coinIds).toHaveLength(slots.length);
+    const byId = new Map(sim.coins().map((coin) => [coin.id, coin]));
+    coinIds.forEach((id, i) => {
+      const coin = byId.get(id);
+      const was = inputPoses.get(fusion.ids[slots[i] ?? -1] ?? -1);
+      if (!coin || !was) {
+        throw new Error(`unfused coin ${id} or input slot ${slots[i]} is missing`);
+      }
+      expect(horizontal(coin.translation, was), `coin ${id}`).toBeLessThan(0.01);
+    });
+  });
+
   it('keeps the laid coins from fusing again among themselves', async () => {
     const { sim, fusion } = await untilFusion();
     sim.unfuse({ fusedId: fusion.fusedId, inputs: fusion.ids.map(() => ({ tier: fusion.tier })) });
@@ -287,6 +309,10 @@ describe('Sim.unfuse', () => {
         inputs: Array.from({ length: MAX_UNFUSE_COINS + 1 }, () => ({ tier: 'copper' })),
       },
       { fusedId: 0, inputs: [{ tier: 'copper' }, { tier: 'bronze' }] },
+      { fusedId: 0, inputs: [{ tier: 'copper', slot: -1 }] },
+      { fusedId: 0, inputs: [{ tier: 'copper', slot: 0.5 }] },
+      { fusedId: 0, inputs: [{ tier: 'copper', slot: MAX_UNFUSE_COINS }] },
+      { fusedId: 0, inputs: [{ tier: 'copper', slot: 1 }, { tier: 'copper' }] },
       {
         fusedId: 0,
         inputs: [

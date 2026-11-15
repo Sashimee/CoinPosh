@@ -468,13 +468,20 @@ function assertUnfuse(message: Extract<MainToWorker, { type: 'unfuse' }>): void 
   if (!Array.isArray(inputs) || inputs.length === 0) {
     throw new RangeError(`unfuse.inputs must be a non-empty array, got ${JSON.stringify(inputs)}`);
   }
+  const slots = new Set<number>();
   for (const input of inputs as unknown[]) {
-    const tier = (input as Partial<Record<string, unknown>> | null)?.tier;
+    const { tier, slot } = (input as Partial<Record<string, unknown>> | null) ?? {};
     if (typeof tier !== 'string' || !isCoinTier(tier)) {
       throw new RangeError(
         `unfuse.inputs must each name a tier from ${COIN_TIERS.join(', ')}; got ${JSON.stringify(input)}`,
       );
     }
+    if (typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0 || slots.has(slot)) {
+      throw new RangeError(
+        `unfuse.inputs must each name a distinct non-negative slot; got ${JSON.stringify(input)}`,
+      );
+    }
+    slots.add(slot);
   }
 }
 

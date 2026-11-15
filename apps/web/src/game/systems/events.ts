@@ -83,15 +83,6 @@ export interface GameEvents {
     readonly tier: CoinTier;
     readonly claimed: boolean;
   };
-  /**
-   * The server refused a fusion (or never heard it), kept its coins, and the sim laid them back
-   * where the fused coin stood (`position`, null when it was never drawn).
-   */
-  'coin:unfused': {
-    readonly coins: readonly MintedCoin[];
-    readonly position: TablePoint | null;
-    readonly tick: Tick;
-  };
   /** `coin` is null for a coin the server never minted for this table (nothing is claimed). */
   'coin:fell': {
     readonly coin: MintedCoin | null;

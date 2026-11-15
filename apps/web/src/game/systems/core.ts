@@ -559,10 +559,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const abandon = (held: HeldFusion): void => {
     for (const simId of held.simIds) departedCoins.delete(simId);
     if (held.fusedId === null) return;
-    layBack(
-      held.fusedId,
-      held.coins.filter((candidate) => candidate !== null),
-    );
+    layBack(held.fusedId, held.coins);
   };
 
   /**
@@ -570,26 +567,28 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
    * fused body off and lays one body per coin back, bound to it once the sim reports them. A
    * fused body that already fell is claimed as the first coin's fall and the rest are laid back;
    * one that left as a chained fusion's input is gone from the sim already, so all are laid back
-   * and the chained fusion, now without a coin for that input, is abandoned in turn.
+   * and the chained fusion, now without a coin for that input, is abandoned in turn. `coins` is
+   * in input order, null for an input never bound, and each coin keeps its input's slot.
    */
-  function layBack(fusedId: number, coins: readonly MintedCoin[]): void {
+  function layBack(fusedId: number, coins: readonly (MintedCoin | null)[]): void {
     unsettledFused.delete(fusedId);
     const departed = departedFused.delete(fusedId);
     const parked = parkedFalls.get(fusedId);
-    let laid = coins;
+    const laid = coins.flatMap((coin, slot) => (coin === null ? [] : [{ coin, slot }]));
     if (parked) {
       parkedFalls.delete(fusedId);
-      const [first, ...rest] = coins;
-      heldFalls.push({ ...parked, coin: first ?? null });
+      heldFalls.push({ ...parked, coin: laid.shift()?.coin ?? null });
       flushFalls();
-      laid = rest;
     }
     if (laid.length === 0) return;
     if (!parked && !departed) fusedAway.add(fusedId);
-    unfusing.set(fusedId, laid);
+    unfusing.set(
+      fusedId,
+      laid.map(({ coin }) => coin),
+    );
     sim.unfuse(
       fusedId,
-      laid.map(({ tier }) => ({ tier })),
+      laid.map(({ coin, slot }) => ({ tier: coin.tier, slot })),
     );
   }
 
@@ -611,11 +610,6 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       if (!coin) return;
       ledger.bind(simId, coin);
       laidBack.add(simId);
-    });
-    events.emit('coin:unfused', {
-      coins,
-      position: watcher.lastPosition(event.fusedId) ?? null,
-      tick: Math.max(0, Math.floor(event.tick)),
     });
   };
 

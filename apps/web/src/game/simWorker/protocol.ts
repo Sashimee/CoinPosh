@@ -35,6 +35,11 @@ export interface SimEventBatch {
 /** One coin a refused fusion consumed, laid back with the tier it had before it fused. */
 export interface UnfuseInput {
   readonly tier: CoinTier;
+  /**
+   * The coin's index in FusionEvent.ids, so it is laid where the fusion recorded that input
+   * even when inputs before it are not laid back (one already fell, or was never bound).
+   */
+  readonly slot: number;
 }
 
 export type MainToWorker =
