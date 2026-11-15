@@ -11,8 +11,8 @@
     "label": "Bereiche der Saison",
     "quests": "Aufgaben",
     "season": "Saisonpfad",
-    "ready_one": "{{count}} Aufgabe bereit zum Einlösen",
-    "ready_other": "{{count}} Aufgaben bereit zum Einlösen"
+    "questsWithReady_one": "Aufgaben, {{count}} Aufgabe bereit zum Einlösen",
+    "questsWithReady_other": "Aufgaben, {{count}} Aufgaben bereit zum Einlösen"
   },
   "streak": {
     "title": "Tagesserie",
@@ -27,6 +27,8 @@
     "freezeHint": "Ein Serienschutz rettet Ihre Serie über einen verpassten Tag.",
     "next": "Tag {{day}}",
     "nextLabel": "Nächster Meilenstein",
+    "nextSummary": "Nächster Meilenstein: Tag {{day}}, {{inDays}}, {{rewards}}",
+    "srSummary": "{{streak}}. {{freezes}}. {{next}}",
     "nextIn_one": "Noch {{count}} Tag",
     "nextIn_other": "Noch {{count}} Tage",
     "bonusFreeze_one": "+{{count}} Serienschutz",

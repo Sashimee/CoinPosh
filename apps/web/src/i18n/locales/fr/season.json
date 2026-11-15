@@ -11,9 +11,9 @@
     "label": "Sections de la saison",
     "quests": "Quêtes",
     "season": "Parcours de saison",
-    "ready_one": "{{count}} quête à réclamer",
-    "ready_many": "{{count}} quêtes à réclamer",
-    "ready_other": "{{count}} quêtes à réclamer"
+    "questsWithReady_one": "Quêtes, {{count}} quête à réclamer",
+    "questsWithReady_many": "Quêtes, {{count}} quêtes à réclamer",
+    "questsWithReady_other": "Quêtes, {{count}} quêtes à réclamer"
   },
   "streak": {
     "title": "Série quotidienne",
@@ -31,6 +31,8 @@
     "freezeHint": "Un gel préserve votre série lors d’un jour manqué.",
     "next": "Jour {{day}}",
     "nextLabel": "Prochain palier",
+    "nextSummary": "Prochain palier : jour {{day}}, {{inDays}}, {{rewards}}",
+    "srSummary": "{{streak}}. {{freezes}}. {{next}}",
     "nextIn_one": "Encore {{count}} jour",
     "nextIn_many": "Encore {{count}} jours",
     "nextIn_other": "Encore {{count}} jours",

@@ -109,7 +109,9 @@
   box-shadow: 0 0 0 2px rgb(var(--cp-navy-lacquer-rgb) / 0.9);
 }
 
-.cp-season-badge.is-popping {
+.cp-season-badge.is-popping,
+.cp-season-streak-count .cp-odo.is-popping,
+.cp-season-stars-figure .cp-odo.is-popping {
   animation: cp-season-pop 520ms cubic-bezier(0.3, 1.8, 0.4, 1) both;
 }
 
@@ -195,6 +197,7 @@
 }
 
 .is-glowing > .cp-season-quest-card,
+.cp-season-streak.is-glowing,
 .cp-season-track-head.is-glowing,
 .cp-season-stamp.is-glowing {
   animation: cp-season-glow 900ms ease both;
@@ -1216,7 +1219,8 @@ button.cp-season-action:focus-visible {
   animation: cp-season-fade 240ms ease both;
 }
 
-.cp-season-root.is-reduced .cp-season-badge.is-popping {
+.cp-season-root.is-reduced .cp-season-badge.is-popping,
+.cp-season-root.is-reduced .cp-odo.is-popping {
   animation: cp-season-fade 240ms ease both;
 }
 

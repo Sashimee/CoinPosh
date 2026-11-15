@@ -12,6 +12,19 @@ describe('seasonCuePlan', () => {
     }
   });
 
+  it.each([...PRESS_CUES, 'failed'] as const)(
+    '%s claims light and number pop only when it carries the cue that plays them',
+    (cue) => {
+      for (const reduced of [false, true]) {
+        const plan = seasonCuePlan(cue, reduced);
+        expect(plan.channels.includes('light'), `${cue} light`).toBe(plan.light !== null);
+        expect(plan.channels.includes('numberPop'), `${cue} pop`).toBe(plan.pop !== null);
+        expect(plan.channels.includes('particles'), `${cue} sparks`).toBe(plan.sparks > 0);
+        expect(plan.channels.includes('timeManipulation'), `${cue} hold`).toBe(plan.hold > 0);
+      }
+    },
+  );
+
   it('gives the claim the full treatment at full motion', () => {
     const plan = seasonCuePlan('claim', false);
     expect(plan.channels).toEqual(

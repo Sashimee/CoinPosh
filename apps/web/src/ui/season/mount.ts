@@ -11,19 +11,19 @@ import {
 } from '@coinposh/shared';
 import type { UiApp } from '../../app/index.ts';
 import type { AudioEngine } from '../../audio/index.ts';
-import { formatInteger } from '../../i18n/index.ts';
+import { formatInteger, formatPercent } from '../../i18n/index.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
 import { makePressable } from '../components/pressable.ts';
 import { Odometer } from '../components/odometer.ts';
-import { feedback, type UiContext } from '../context.ts';
-import { h, listen, restartAnimation } from '../dom.ts';
+import type { UiContext } from '../context.ts';
+import { h, restartAnimation } from '../dom.ts';
 import { Localizer } from '../localize.ts';
 import { isReducedMotion, onReducedMotionChange } from '../motion/reduced.ts';
 import { createSheet } from '../panels/sheet.ts';
 import { QuestClaims } from './claim.ts';
 import { loadSeasonStrings, seasonT } from './i18n.ts';
 import { seasonIcon } from './icons.ts';
-import { seasonCuePlan, type SeasonCue, type SeasonCuePlan } from './juice.ts';
+import { playSeasonCue, seasonCuePlan, type SeasonCue, type SeasonCuePlan } from './juice.ts';
 import {
   questsView,
   seasonView,
@@ -49,6 +49,7 @@ import {
   timeText,
   type TrackSide,
 } from './present.ts';
+import { wireSeasonTabs } from './tabs.ts';
 
 export type SeasonAudioPort = Pick<AudioEngine, 'playImpact'>;
 
@@ -178,8 +179,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     class: 'cp-season-badge',
     attrs: { 'aria-hidden': 'true', 'data-testid': 'season-ready-badge', hidden: '' },
   });
-  const readySr = h('span', { class: 'cp-sr-only' });
-  tabButtons.quests.append(questsTabLabel, readyBadge, readySr);
+  tabButtons.quests.append(questsTabLabel, readyBadge);
   const seasonTabLabel = h('span', { class: 'cp-season-tab-label' });
   tabButtons.season.append(seasonTabLabel);
   const tabInk = h('span', { class: 'cp-season-tab-ink', attrs: { 'aria-hidden': 'true' } });
@@ -193,6 +193,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
 
   const streakDays = new Odometer();
   const streakUnit = h('span', { class: 'cp-season-streak-unit' });
+  const streakCount = h('p', { class: 'cp-season-streak-count' }, streakDays.el, streakUnit);
   const streakTitle = h('p', { class: 'cp-season-eyebrow' });
   const streakNone = h('p', { class: 'cp-season-streak-none' });
   const freezePips = h('span', {
@@ -216,12 +217,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       'div',
       { class: 'cp-season-streak-head', attrs: { 'aria-hidden': 'true' } },
       h('span', { class: 'cp-season-flame' }, seasonIcon('flame')),
-      h(
-        'div',
-        { class: 'cp-season-streak-figure' },
-        streakTitle,
-        h('p', { class: 'cp-season-streak-count' }, streakDays.el, streakUnit),
-      ),
+      h('div', { class: 'cp-season-streak-figure' }, streakTitle, streakCount),
       h(
         'div',
         { class: 'cp-season-freezes', attrs: { 'data-testid': 'season-freezes' } },
@@ -311,6 +307,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
 
   const stars = new Odometer();
   const starsLabel = h('span', { class: 'cp-season-stars-label' });
+  const starsFigure = h('p', { class: 'cp-season-stars-figure' }, stars.el, starsLabel);
   const tierOf = h('p', { class: 'cp-season-tier-of' });
   const tierFill = h('span', { class: 'cp-season-bar-fill' });
   const tierBar = h('span', { class: 'cp-season-bar', attrs: { 'aria-hidden': 'true' } }, tierFill);
@@ -324,7 +321,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       'div',
       { class: 'cp-season-stars', attrs: { 'aria-hidden': 'true' } },
       h('span', { class: 'cp-season-star' }, seasonIcon('star')),
-      h('p', { class: 'cp-season-stars-figure' }, stars.el, starsLabel),
+      starsFigure,
       tierOf,
     ),
     tierBar,
@@ -433,16 +430,20 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
   loc.text(ribbon, () => t('season.comingSoon'));
   loc.text(premiumNote, () => t('season.premiumLocked'));
 
-  function play(plan: SeasonCuePlan): void {
-    feedback(ctx, plan.feedback);
-    if (plan.haptic) options.haptics?.pulse(plan.haptic);
-    const audio = options.audio?.() ?? null;
-    if (!audio) return;
-    for (const step of plan.chime) {
-      later(step.at, () => {
-        audio.playImpact(step.impact);
-      });
+  function play(cuePlan: SeasonCuePlan, withBus: boolean): void {
+    playSeasonCue(ctx, cuePlan, withBus, {
+      haptics: options.haptics ?? null,
+      audio: options.audio?.() ?? null,
+      later,
+    });
+  }
+
+  /** The glow on the shown tab's head card and the pop of its headline figure. */
+  function lightUp(cuePlan: SeasonCuePlan, shown: SeasonTab): void {
+    if (cuePlan.light === 'glow') {
+      restartAnimation(shown === 'quests' ? streakCard : trackHead, 'is-glowing');
     }
+    if (cuePlan.pop) restartAnimation(shown === 'quests' ? streakDays.el : stars.el, 'is-popping');
   }
 
   function plan(cue: SeasonCue): SeasonCuePlan {
@@ -461,7 +462,8 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     );
   }
 
-  function selectTab(next: SeasonTab, cue: boolean): void {
+  /** `cue` is null for a silent switch, or whether the tab cue also sends the bus cue. */
+  function selectTab(next: SeasonTab, cue: { readonly withBus: boolean } | null): void {
     const changed = next !== tab;
     tab = next;
     for (const [name, button] of Object.entries(tabButtons) as [SeasonTab, HTMLButtonElement][]) {
@@ -473,8 +475,10 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     questsPanel.hidden = tab !== 'quests';
     seasonPanel.hidden = tab !== 'season';
     if (cue && changed) {
-      play(plan('tab'));
+      const cuePlan = plan('tab');
+      play(cuePlan, cue.withBus);
       restartAnimation(tab === 'quests' ? questsPanel : seasonPanel, 'is-entering');
+      lightUp(cuePlan, tab);
     }
     if (tab === 'season') later(0, centreCurrentTier);
   }
@@ -492,7 +496,11 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     const count = quests?.claimable ?? 0;
     readyBadge.hidden = count === 0;
     readyBadge.textContent = n(count);
-    readySr.textContent = count > 0 ? `, ${t('tabs.ready', { count })}` : '';
+    if (count > 0) {
+      tabButtons.quests.setAttribute('aria-label', t('tabs.questsWithReady', { count }));
+    } else {
+      tabButtons.quests.removeAttribute('aria-label');
+    }
   }
 
   function paintStreak(roll: boolean): void {
@@ -530,11 +538,15 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
           ]
         : [];
     nextRewards.replaceChildren(...rewardChips(streak.next.rewards), ...bonus);
-    streakSr.textContent = [
-      t('streak.summary', { count: streak.days }),
-      t('streak.freezes', { count: streak.freezes, max: n(streak.maxFreezes) }),
-      `${t('streak.nextLabel')}: ${t('streak.next', { day: n(streak.next.day) })}, ${t('streak.nextIn', { count: streak.next.remaining })}, ${rewardsText(t, streak.next.rewards, i18n.language)}`,
-    ].join('. ');
+    streakSr.textContent = t('streak.srSummary', {
+      streak: t('streak.summary', { count: streak.days }),
+      freezes: t('streak.freezes', { count: streak.freezes, max: n(streak.maxFreezes) }),
+      next: t('streak.nextSummary', {
+        day: n(streak.next.day),
+        inDays: t('streak.nextIn', { count: streak.next.remaining }),
+        rewards: rewardsText(t, streak.next.rewards, i18n.language),
+      }),
+    });
   }
 
   function cardEl(card: QuestCardView): CardRefs {
@@ -594,7 +606,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       actionEl = h('div', {
         class: 'cp-season-action is-progress',
         attrs: { 'aria-hidden': 'true' },
-        text: `${String(Math.floor(card.fraction * 100))}%`,
+        text: formatPercent(Math.floor(card.fraction * 100) / 100, i18n.language),
       });
     }
     const sparks = h('span', { class: 'cp-season-sparks', attrs: { 'aria-hidden': 'true' } });
@@ -910,7 +922,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
           burst(next, cue.sparks);
           popRewards(next, rewardPreviews(response.rewards), cue.pop ?? 'pulse');
         }
-        play(cue);
+        play(cue, true);
         paintBadge();
         restartAnimation(readyBadge, 'is-popping');
         status.textContent = t('quest.claimedStatus', {
@@ -925,8 +937,9 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       const next = repaintCard(id);
       const cue = plan('already');
       if (next?.stamp) restartAnimation(next.stamp, 'is-glowing');
-      play(cue);
+      play(cue, true);
       paintBadge();
+      if (cue.pop) restartAnimation(readyBadge.hidden ? streakDays.el : readyBadge, 'is-popping');
       status.textContent = t('quest.alreadyStatus', { title });
       void loadQuests(false);
       void loadSeason(true);
@@ -934,7 +947,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     }
     console.warn('[CoinPosh] a quest claim did not go through', outcome.error);
     const next = repaintCard(id);
-    play(plan('failed'));
+    play(plan('failed'), true);
     if (next) restartAnimation(next.el, 'is-denied');
     status.textContent = t('quest.failedStatus', { title });
   }
@@ -1013,38 +1026,15 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     tick = null;
   }
 
-  for (const [name, button] of Object.entries(tabButtons) as [SeasonTab, HTMLButtonElement][]) {
-    makePressable(button, ctx, {
-      feedback: 'toggle',
-      enabled: () => true,
-      onPress: () => {
-        selectTab(name, true);
-      },
-    });
-  }
-  ctx.own(
-    listen(tabList, 'keydown', (event) => {
-      if (
-        event.key !== 'ArrowLeft' &&
-        event.key !== 'ArrowRight' &&
-        event.key !== 'Home' &&
-        event.key !== 'End'
-      )
-        return;
-      event.preventDefault();
-      const order: readonly SeasonTab[] = ['quests', 'season'];
-      const index = order.indexOf(tab);
-      const next =
-        event.key === 'Home'
-          ? order[0]
-          : event.key === 'End'
-            ? order[order.length - 1]
-            : order[(index + (event.key === 'ArrowRight' ? 1 : order.length - 1)) % order.length];
-      if (next === undefined) return;
-      selectTab(next, true);
-      tabButtons[next].focus();
-    }),
-  );
+  wireSeasonTabs(ctx, {
+    buttons: tabButtons,
+    list: tabList,
+    order: ['quests', 'season'],
+    current: () => tab,
+    select: (next, withBus) => {
+      selectTab(next, { withBus });
+    },
+  });
   makePressable(questsState.retry, ctx, {
     feedback: 'tap',
     onPress: () => {
@@ -1070,10 +1060,11 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     open(trigger, openTab) {
       if (sheet.isOpen) return;
       const cue = plan('open');
-      play(cue);
-      selectTab(openTab ?? tab, false);
+      play(cue, true);
+      selectTab(openTab ?? tab, null);
       sheet.open(trigger);
-      restartAnimation(root, 'is-opening');
+      if (cue.light === 'sweep') restartAnimation(root, 'is-opening');
+      lightUp(cue, tab);
       startTick();
       if (!quests) {
         questsPhase = 'loading';
@@ -1104,7 +1095,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       root.remove();
     },
   };
-  selectTab('quests', false);
+  selectTab('quests', null);
   renderQuests();
   renderSeason(false);
   return panel;

@@ -11,8 +11,8 @@
     "label": "Season sections",
     "quests": "Quests",
     "season": "Season Track",
-    "ready_one": "{{count}} quest ready to claim",
-    "ready_other": "{{count}} quests ready to claim"
+    "questsWithReady_one": "Quests, {{count}} quest ready to claim",
+    "questsWithReady_other": "Quests, {{count}} quests ready to claim"
   },
   "streak": {
     "title": "Daily streak",
@@ -27,6 +27,8 @@
     "freezeHint": "A freeze keeps the streak alive through a missed day.",
     "next": "Day {{day}}",
     "nextLabel": "Next milestone",
+    "nextSummary": "Next milestone: day {{day}}, {{inDays}}, {{rewards}}",
+    "srSummary": "{{streak}}. {{freezes}}. {{next}}",
     "nextIn_one": "{{count}} more day",
     "nextIn_other": "{{count}} more days",
     "bonusFreeze_one": "+{{count}} freeze",

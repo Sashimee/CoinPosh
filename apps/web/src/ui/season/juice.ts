@@ -1,5 +1,7 @@
 import type { FeedbackKind } from '../../app/state.ts';
+import type { AudioEngine } from '../../audio/index.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
+import { feedback, type UiContext } from '../context.ts';
 import type { ChimeStep, JuiceChannel } from '../inventory/juice.ts';
 
 export type SeasonCue = 'open' | 'tab' | 'claim' | 'already' | 'failed';
@@ -15,7 +17,7 @@ export interface SeasonCuePlan {
   readonly hold: number;
   /** `sweep` runs the gold sheen across the card; `glow` fades it in place. */
   readonly light: 'sweep' | 'glow' | null;
-  /** Reward amounts float up off the card, or simply pop in place. */
+  /** Reward amounts float up off the card, or the panel's figure pops in place. */
   readonly pop: 'float' | 'pulse' | null;
   readonly channels: readonly JuiceChannel[];
 }
@@ -55,7 +57,7 @@ export function seasonCuePlan(cue: SeasonCue, reduced: boolean): SeasonCuePlan {
         sparks: 0,
         hold: 0,
         light: reduced ? 'glow' : 'sweep',
-        pop: reduced ? 'pulse' : 'float',
+        pop: 'pulse',
         channels: reduced ? calm : ['sound', 'haptic', 'squash', 'light', 'numberPop'],
       };
     case 'tab':
@@ -104,5 +106,33 @@ export function seasonCuePlan(cue: SeasonCue, reduced: boolean): SeasonCuePlan {
         pop: null,
         channels: reduced ? ['sound', 'haptic', 'light'] : ['sound', 'haptic', 'squash', 'light'],
       };
+  }
+}
+
+export interface SeasonCuePorts {
+  readonly haptics?: { pulse(pattern: HapticPattern): boolean } | null;
+  readonly audio?: Pick<AudioEngine, 'playImpact'> | null;
+  /** Schedules each chime strike; the panel passes one that is cancelled on close. */
+  readonly later: (ms: number, run: () => void) => void;
+}
+
+/**
+ * Plays a plan's sound and haptics. `withBus` is false when a pressable already sent the bus
+ * cue on touch-down, so the press sound and haptic never play twice for one press.
+ */
+export function playSeasonCue(
+  ctx: UiContext,
+  plan: SeasonCuePlan,
+  withBus: boolean,
+  ports: SeasonCuePorts,
+): void {
+  if (withBus) feedback(ctx, plan.feedback);
+  if (plan.haptic) ports.haptics?.pulse(plan.haptic);
+  const audio = ports.audio ?? null;
+  if (!audio) return;
+  for (const step of plan.chime) {
+    ports.later(step.at, () => {
+      audio.playImpact(step.impact);
+    });
   }
 }
