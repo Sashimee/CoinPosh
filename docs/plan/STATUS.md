@@ -388,6 +388,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-641 | blocked(review: safes.spec.ts dock-fit list lacks inventory-trigger, 3 e2e failures; Fair-from-crate-chip not met; vite.config.ts chunk comment is false) | task/P-641 (bc99682, not merged) | Add 'inventory-trigger' after 'dock-upgrades' in safes.spec.ts:134 (fold in or request) and recheck the 5-door gutter at 360x740; crates owner openFair hook P-701; correct the vite.config.ts:143-155 comment; Other lazy JS headroom 0.2 kB (P-682); branch kept |
 | T-11.01-p2 | done | task/T-11.01-p2 (merge 59d4859) | Feature-module seams, part 2: server registry, DO RPC, tx kinds and harness; review fix: conservation cost (a23eda8); pnpm check green after merge |
 | P-708 | done | task/P-708 (merge 3839822) | lining-nums for Safes serif counts in safes.css plus the display-serif digit guard in apps/web/e2e/fonts.spec.ts (folds P-709) (cc93a4b); pnpm check green after merge |
+| P-703 | done | task/P-703 (merge 831c64e) | A reload mid Vault Crate unbox replays the stored roll after boot (unseen.ts sessionStorage list, Demo world keeps opened rolls, mount skips the plaque hold for replays) (b6159ec); pnpm check green after merge; follow-ups P-732, P-733, P-734 |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
