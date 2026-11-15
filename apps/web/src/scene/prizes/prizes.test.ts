@@ -9,6 +9,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   Color,
+  Group,
   Mesh,
   type MeshPhysicalNodeMaterial,
 } from 'three/webgpu';
@@ -24,12 +25,13 @@ import {
   buildPrizeGeometry,
   createPrizeKit,
   createPrizeMaterials,
-  createPrizeUniforms,
   isPrizeFamily,
   isPrizeRarity,
   prizeGlintAt,
   type PrizeLook,
+  type PrizeView,
 } from './index.ts';
+import { prizeStateOf } from './materials.ts';
 import { merge, paint, withTangents } from './shapes.ts';
 
 /** Distance between two sRGB hex colours in display space, 0..sqrt(3). */
@@ -52,6 +54,12 @@ function meshes(root: { traverse(fn: (o: unknown) => void): void }): Mesh[] {
     if (o instanceof Mesh) found.push(o as Mesh);
   });
   return found;
+}
+
+function metalOf(view: PrizeView): Mesh {
+  const mesh = meshes(view.object3d).find((m) => m.name.endsWith('metal'));
+  if (!mesh) throw new Error(`${view.object3d.name} has no metal mesh`);
+  return mesh;
 }
 
 describe('prize looks', () => {
@@ -80,6 +88,32 @@ describe('prize looks', () => {
     expect(Math.abs(steel.r - steel.b)).toBeLessThan(0.1);
     expect(PRIZE_LOOKS.fine.accent).toBe(RARITY_COLORS.fine);
     expect(PRIZE_LOOKS.legendary.accent).toBe(RARITY_COLORS.legendary);
+  });
+
+  it('makes the cufflinks gold at every rarity, warming up to the legendary tone', () => {
+    for (const rarity of PRIZE_RARITIES) {
+      const gold = new Color(PRIZE_LOOKS[rarity].gold);
+      expect(gold.r - gold.b, rarity).toBeGreaterThan(0.25);
+    }
+    const yellow = (rarity: 'common' | 'fine' | 'rare') => {
+      const c = new Color(PRIZE_LOOKS[rarity].gold);
+      return c.r - c.b;
+    };
+    expect(yellow('fine')).toBeGreaterThan(yellow('common'));
+    expect(yellow('rare')).toBeGreaterThan(yellow('fine'));
+    expect(PRIZE_LOOKS.exquisite.gold).toBe(PRIZE_LOOKS.exquisite.metal);
+    expect(PRIZE_LOOKS.legendary.gold).toBe(PRIZE_LOOKS.legendary.metal);
+    const cufflinks = buildPrizeGeometry('cufflinks', PRIZE_LOOKS.common, MODEL_DETAIL.low);
+    const colours = cufflinks.metal.getAttribute('color');
+    const finish = cufflinks.metal.getAttribute('finish');
+    const gold = new Color(PRIZE_LOOKS.common.gold);
+    let metallic = 0;
+    for (let i = 0; i < colours.count; i += 1) {
+      if (finish.getX(i) < 0.5) continue;
+      metallic += 1;
+      expect(colours.getX(i) - colours.getZ(i)).toBeCloseTo(gold.r - gold.b, 4);
+    }
+    expect(metallic).toBeGreaterThan(0);
   });
 
   it('polishes the precious metals smoother than steel', () => {
@@ -155,8 +189,7 @@ describe('prize geometry', () => {
 });
 
 describe('prize materials', () => {
-  const material = (quality: (typeof QUALITY_TIERS)[number]) =>
-    createPrizeMaterials(quality, createPrizeUniforms('#ffffff', 0.04));
+  const material = (quality: (typeof QUALITY_TIERS)[number]) => createPrizeMaterials(quality);
 
   it('drops clearcoat, sheen, anisotropy and transmission on the low tier', () => {
     const low = material('low');
@@ -208,36 +241,76 @@ describe('prize kit', () => {
     },
   );
 
-  it('shares geometry across views of one family and rarity but gives each its own materials', () => {
+  it('shares geometry within a family and rarity, and one material set across every view', () => {
     const kit = createPrizeKit({ quality: 'high' });
     const a = kit.create('watch', { rarity: 'rare' });
     const b = kit.create('watch', { rarity: 'rare' });
+    const c = kit.create('perfume', { rarity: 'legendary' });
     const metal = (v: typeof a) => meshes(v.object3d).find((m) => m.name.endsWith('metal'));
     expect(metal(a)?.geometry).toBe(metal(b)?.geometry);
-    expect(metal(a)?.material).not.toBe(metal(b)?.material);
-    expect(a.uniforms).not.toBe(b.uniforms);
+    expect(metal(a)?.material).toBe(metal(b)?.material);
+    expect(metal(c)?.material).toBe(kit.materials.metal);
+    const used = new Set([a, b, c].flatMap((v) => meshes(v.object3d).map((m) => m.material)));
+    const kitSet = new Set<unknown>(Object.values(kit.materials));
+    for (const material of used) {
+      if ((material as MeshPhysicalNodeMaterial).name === 'prize/contact') continue;
+      expect(kitSet.has(material)).toBe(true);
+    }
+    expect(a.state).not.toBe(b.state);
     kit.dispose();
+  });
+
+  it('feeds each view its own state through the shared uniforms', () => {
+    const kit = createPrizeKit({ quality: 'medium' });
+    const a = kit.create('watch', { rarity: 'common' });
+    const b = kit.create('watch', { rarity: 'legendary' });
+    a.glint();
+    a.update(PRIZE_GLINT_SECONDS / 2);
+    for (const mesh of meshes(a.object3d)) {
+      if (mesh.name.endsWith('contact')) continue;
+      expect(prizeStateOf(mesh)).toBe(a.state);
+    }
+    expect(prizeStateOf(metalOf(b))).toBe(b.state);
+    expect(a.state.glint).not.toBe(GLINT_PARKED);
+    expect(b.state.glint).toBe(GLINT_PARKED);
+    expect(b.state.accent.equals(new Color(PRIZE_LOOKS.legendary.accent))).toBe(true);
+    expect(() => prizeStateOf(new Mesh())).toThrow(/no prize state/);
+    kit.dispose();
+  });
+
+  it('leaves the kit materials alive when views are disposed, and frees them with the kit', () => {
+    const kit = createPrizeKit({ quality: 'medium' });
+    const disposed: string[] = [];
+    for (const material of Object.values(kit.materials)) {
+      material.addEventListener('dispose', () => disposed.push(material.name));
+    }
+    const view = kit.create('cufflinks', { rarity: 'fine' });
+    view.dispose();
+    expect(view.object3d.parent).toBeNull();
+    expect(disposed).toEqual([]);
+    kit.dispose();
+    expect(disposed.sort()).toEqual(['prize/glass', 'prize/leather', 'prize/metal', 'prize/scent']);
   });
 
   it('sweeps the glint across and parks it, or flashes the accent under reduced motion', () => {
     const kit = createPrizeKit({ quality: 'low' });
     const view = kit.create('perfume', { rarity: 'legendary' });
-    expect(view.uniforms.glint.value).toBe(GLINT_PARKED);
+    expect(view.state.glint).toBe(GLINT_PARKED);
     view.glint();
-    const start = view.uniforms.glint.value;
+    const start = view.state.glint;
     view.update(PRIZE_GLINT_SECONDS / 2);
-    expect(view.uniforms.glint.value).toBeGreaterThan(start);
+    expect(view.state.glint).toBeGreaterThan(start);
     view.update(PRIZE_GLINT_SECONDS);
-    expect(view.uniforms.glint.value).toBe(GLINT_PARKED);
-    expect(view.uniforms.flash.value).toBe(0);
+    expect(view.state.glint).toBe(GLINT_PARKED);
+    expect(view.state.flash).toBe(0);
 
     view.setReducedMotion(true);
     view.glint();
     view.update(PRIZE_REDUCED_GLINT_SECONDS / 2);
-    expect(view.uniforms.glint.value).toBe(GLINT_PARKED);
-    expect(view.uniforms.flash.value).toBeCloseTo(1, 5);
+    expect(view.state.glint).toBe(GLINT_PARKED);
+    expect(view.state.flash).toBeCloseTo(1, 5);
     view.update(PRIZE_REDUCED_GLINT_SECONDS);
-    expect(view.uniforms.flash.value).toBe(0);
+    expect(view.state.flash).toBe(0);
     kit.dispose();
   });
 
@@ -289,9 +362,32 @@ describe('prize kit', () => {
       expect(names.sort()).toEqual(
         ['prize/contact', 'prize/glass', 'prize/leather', 'prize/metal', 'prize/scent'].sort(),
       );
-      batch.release();
       kit.dispose();
     }
+  });
+
+  it('warms with the kit materials and releases without disposing any of them', () => {
+    const kit = createPrizeKit({ quality: 'high' });
+    const batch = kit.warmParts();
+    const parent = new Group();
+    parent.add(...batch.parts);
+    const disposed: string[] = [];
+    const kitMaterials = new Set<unknown>(Object.values(kit.materials));
+    for (const part of batch.parts) {
+      if (!(part instanceof Mesh)) throw new Error('warm part is not a mesh');
+      const material = part.material as MeshPhysicalNodeMaterial;
+      if (material.name !== 'prize/contact') expect(kitMaterials.has(material)).toBe(true);
+      material.addEventListener('dispose', () => disposed.push(material.name));
+      part.geometry.addEventListener('dispose', () => disposed.push(part.geometry.name));
+      expect(() => prizeStateOf(part)).not.toThrow();
+    }
+    batch.release();
+    expect(parent.children).toEqual([]);
+    expect(disposed).toEqual([]);
+    const view = kit.create('watch', { rarity: 'rare' });
+    expect(metalOf(view).material).toBe(kit.materials.metal);
+    kit.dispose();
+    expect(disposed.length).toBeGreaterThan(0);
   });
 });
 

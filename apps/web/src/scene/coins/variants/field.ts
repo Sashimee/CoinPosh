@@ -25,6 +25,7 @@ import {
   DEFAULT_LOD_SETTINGS,
   partitionByLod,
   pixelsPerUnit,
+  type LodInput,
   type LodOutput,
   type LodSettings,
   type LodView,
@@ -84,7 +85,11 @@ interface Batch {
   readonly quaternions: Float32Array;
   readonly ids: Float64Array;
   readonly lodState: Uint8Array;
+  readonly lodInput: { -readonly [K in keyof LodInput]: LodInput[K] };
   readonly lists: LodOutput;
+  readonly glyph: number;
+  /** The variant's badge rim, linear RGB. */
+  readonly accent: readonly [number, number, number];
   readonly near: InstancedMesh;
   readonly far: InstancedMesh;
   readonly material: VariantCoinMaterial;
@@ -100,6 +105,7 @@ const right = new Vector3();
 const up = new Vector3();
 const toward = new Vector3();
 const scratch = new Vector3();
+const glintSample: [number, number] = [GLINT_PARKED, 0];
 
 function key(tier: CoinTier, variant: CollectibleCoinVariant): string {
   return `${tier}:${variant}`;
@@ -197,17 +203,36 @@ function createContact(capacity: number): InstancedMesh {
  * full motion, y flashes the coin in place under reduced motion. Null once it has played.
  */
 export function glintAt(age: number, reduced: boolean): readonly [number, number] | null {
-  if (!(age >= 0)) return null;
+  const out: [number, number] = [GLINT_PARKED, 0];
+  return sampleGlint(age, reduced, out) ? out : null;
+}
+
+/** `glintAt` into `out`, for the per-frame path; false (out untouched) once it has played. */
+function sampleGlint(age: number, reduced: boolean, out: [number, number]): boolean {
+  if (!(age >= 0)) return false;
   if (reduced) {
-    if (age >= REDUCED_GLINT_SECONDS) return null;
+    if (age >= REDUCED_GLINT_SECONDS) return false;
     const t = age / REDUCED_GLINT_SECONDS;
-    return [GLINT_PARKED, Math.sin(Math.PI * t) ** 2 * 0.7];
+    out[0] = GLINT_PARKED;
+    out[1] = Math.sin(Math.PI * t) ** 2 * 0.7;
+    return true;
   }
-  if (age >= GLINT_SECONDS) return null;
+  if (age >= GLINT_SECONDS) return false;
   const t = age / GLINT_SECONDS;
   const eased = 1 - (1 - t) ** 3;
-  return [eased * 2 - 1, Math.max(0, 1 - t * 3) * 0.35];
+  out[0] = eased * 2 - 1;
+  out[1] = Math.max(0, 1 - t * 3) * 0.35;
+  return true;
 }
+
+function markUploaded(attr: InstancedBufferAttribute, count: number): void {
+  attr.clearUpdateRanges();
+  attr.addUpdateRange(0, count * attr.itemSize);
+  attr.needsUpdate = true;
+}
+
+/** Seconds after its start a glint entry is dropped, whichever motion setting played it. */
+const GLINT_EXPIRY = Math.max(GLINT_SECONDS, REDUCED_GLINT_SECONDS) + 1;
 
 /**
  * The coins the server minted as a variant (foil, proof, first strike, misprint), drawn apart
@@ -221,6 +246,7 @@ export class VariantCoinField {
   readonly radius: number;
   readonly capacity: number;
   private readonly batches = new Map<string, Batch>();
+  private readonly batchList: Batch[] = [];
   private readonly lod: LodSettings;
   private readonly faces: ((tier: CoinTier) => Texture | null) | undefined;
   private readonly motion = uniform(1);
@@ -241,7 +267,17 @@ export class VariantCoinField {
   private reduced = false;
   private badgesShown = true;
   private clock = 0;
-  private lastStats: VariantCoinFieldStats = { coins: 0, badges: 0, drawCalls: 0 };
+  private readonly lastStats: { -readonly [K in keyof VariantCoinFieldStats]: number } = {
+    coins: 0,
+    badges: 0,
+    drawCalls: 0,
+  };
+  private warm: InstancedMesh[] | null = null;
+  private readonly warmGeometries: BufferGeometry[] = [];
+  private expiring: Batch | null = null;
+  private readonly expireGlint = (start: number, id: number): void => {
+    if (this.expiring && this.clock - start >= GLINT_EXPIRY) this.expiring.glints.delete(id);
+  };
 
   constructor(options: VariantCoinFieldOptions) {
     this.radius = options.radius ?? 1;
@@ -261,6 +297,7 @@ export class VariantCoinField {
     this.farBase = createCoinGeometry(FAR_COIN_GEOMETRY);
     const slots = this.capacity;
     for (const variant of COLLECTIBLE_COIN_VARIANTS) {
+      const accent = linearRgb(VARIANT_LOOKS[variant].accent);
       for (const tier of COIN_TIERS) {
         const material = createVariantCoinMaterial(variant, this.motion);
         material.setLook(COIN_LOOKS[tier]);
@@ -286,13 +323,18 @@ export class VariantCoinField {
           mesh.receiveShadow = options.receiveShadow ?? true;
           this.object.add(mesh);
         }
-        this.batches.set(key(tier, variant), {
+        const positions = new Float32Array(slots * 3);
+        const lodState = new Uint8Array(slots).fill(CoinLod.unset);
+        const batch: Batch = {
           tier,
           variant,
-          positions: new Float32Array(slots * 3),
+          positions,
           quaternions: new Float32Array(slots * 4).map((_, i) => (i % 4 === 3 ? 1 : 0)),
           ids: new Float64Array(slots),
-          lodState: new Uint8Array(slots).fill(CoinLod.unset),
+          lodState,
+          lodInput: { positions, count: 0, radius: this.radius * 1.01, state: lodState },
+          glyph: VARIANT_GLYPH_INDEX[variant],
+          accent,
           lists: {
             near: new Uint32Array(slots),
             far: new Uint32Array(slots),
@@ -305,7 +347,9 @@ export class VariantCoinField {
           glints: new Map(),
           emboss: null,
           count: 0,
-        });
+        };
+        this.batches.set(key(tier, variant), batch);
+        this.batchList.push(batch);
       }
     }
     const total = slots * this.batches.size;
@@ -419,67 +463,61 @@ export class VariantCoinField {
     right.setFromMatrixColumn(camera.matrixWorld, 0).transformDirection(worldToLocal);
     up.setFromMatrixColumn(camera.matrixWorld, 1).transformDirection(worldToLocal);
 
-    let coins = 0;
     let drawCalls = 0;
-    let contacts = 0;
-    let badges = 0;
-    const contactMatrices = this.contact.instanceMatrix.array as Float32Array;
-    for (const batch of this.batches.values()) {
+    let coins = 0;
+    const batches = this.batchList;
+    for (let b = 0; b < batches.length; b += 1) {
+      const batch = batches[b];
+      if (!batch) continue;
       this.syncEmboss(batch);
-      partitionByLod(
-        {
-          positions: batch.positions,
-          count: batch.count,
-          radius: this.radius * 1.01,
-          state: batch.lodState,
-        },
-        view,
-        this.lod,
-        batch.lists,
-      );
-      this.upload(batch.near, batch, batch.lists.near, batch.lists.nearCount);
-      this.upload(batch.far, batch, batch.lists.far, batch.lists.farCount);
-      drawCalls += (batch.lists.nearCount > 0 ? 1 : 0) + (batch.lists.farCount > 0 ? 1 : 0);
-      for (const [slots, n] of [
-        [batch.lists.near, batch.lists.nearCount],
-        [batch.lists.far, batch.lists.farCount],
-      ] as const) {
-        for (let k = 0; k < n; k += 1) {
-          const index = slots[k] ?? 0;
-          coins += 1;
-          this.writeContact(contactMatrices, contacts, batch, index);
-          contacts += 1;
-          if (this.badgesShown) {
-            this.writeBadge(badges, batch, index, ppu);
-            badges += 1;
-          }
-        }
-      }
-      for (const [id, start] of batch.glints) {
-        if (this.clock - start >= Math.max(GLINT_SECONDS, REDUCED_GLINT_SECONDS) + 1) {
-          batch.glints.delete(id);
-        }
+      batch.lodInput.count = batch.count;
+      partitionByLod(batch.lodInput, view, this.lod, batch.lists);
+      const { near, far, nearCount, farCount } = batch.lists;
+      this.upload(batch.near, batch, near, nearCount);
+      this.upload(batch.far, batch, far, farCount);
+      drawCalls += (nearCount > 0 ? 1 : 0) + (farCount > 0 ? 1 : 0);
+      coins = this.writeLabels(batch, near, nearCount, coins, ppu);
+      coins = this.writeLabels(batch, far, farCount, coins, ppu);
+      if (batch.glints.size > 0) {
+        this.expiring = batch;
+        batch.glints.forEach(this.expireGlint);
+        this.expiring = null;
       }
     }
-    this.finish(this.contact, contacts);
+    const badges = this.badgesShown ? coins : 0;
+    this.finish(this.contact, coins);
     const badgeMesh = this.badges.mesh;
     badgeMesh.count = badges;
     badgeMesh.visible = badges > 0;
     if (badges > 0) {
-      for (const attr of [
-        this.badges.centres,
-        this.badges.sizes,
-        this.badges.glyphs,
-        this.badges.accents,
-      ]) {
-        attr.clearUpdateRanges();
-        attr.addUpdateRange(0, badges * attr.itemSize);
-        attr.needsUpdate = true;
-      }
+      markUploaded(this.badges.centres, badges);
+      markUploaded(this.badges.sizes, badges);
+      markUploaded(this.badges.glyphs, badges);
+      markUploaded(this.badges.accents, badges);
     }
-    drawCalls += (contacts > 0 ? 1 : 0) + (badges > 0 ? 1 : 0);
-    this.lastStats = { coins, badges, drawCalls };
-    return this.lastStats;
+    drawCalls += (coins > 0 ? 1 : 0) + (badges > 0 ? 1 : 0);
+    const stats = this.lastStats;
+    stats.coins = coins;
+    stats.badges = badges;
+    stats.drawCalls = drawCalls;
+    return stats;
+  }
+
+  /** Writes the contact disc and badge of each listed coin from `start`; returns the next slot. */
+  private writeLabels(
+    batch: Batch,
+    slots: Uint32Array,
+    count: number,
+    start: number,
+    ppu: number,
+  ): number {
+    const contactMatrices = this.contact.instanceMatrix.array as Float32Array;
+    for (let k = 0; k < count; k += 1) {
+      const index = slots[k] ?? 0;
+      this.writeContact(contactMatrices, start + k, batch, index);
+      if (this.badgesShown) this.writeBadge(start + k, batch, index, ppu);
+    }
+    return start + count;
   }
 
   get stats(): VariantCoinFieldStats {
@@ -502,12 +540,25 @@ export class VariantCoinField {
    * One mesh per shader program the field can draw (one coin per variant, its badge and its
    * contact disc), each a single instance at the origin, for a warm-up to draw out of sight
    * after the table turns playable. A variant can first appear on any mint, so linking its
-   * program then would stall that mint's frame. `release` frees what the parts hold; the
-   * shared materials stay with the field.
+   * program then would stall that mint's frame. `release` only takes the parts out of the
+   * scene: three frees a program once nothing that drew with it is left, and before the first
+   * mint the warm parts are all that hold the variant programs. The field keeps the parts, hands
+   * the same ones to every call and frees them in `dispose`.
    */
   warmParts(): VariantWarmBatch {
+    const parts = this.warm ?? this.createWarmParts();
+    this.warm = parts;
+    return {
+      parts,
+      release() {
+        for (const part of parts) part.removeFromParent();
+      },
+    };
+  }
+
+  private createWarmParts(): InstancedMesh[] {
     const parts: InstancedMesh[] = [];
-    const owned: BufferGeometry[] = [];
+    const owned = this.warmGeometries;
     for (const variant of COLLECTIBLE_COIN_VARIANTS) {
       const batch = this.batch('gold', variant);
       this.syncEmboss(batch);
@@ -531,19 +582,17 @@ export class VariantCoinField {
     const contact = new InstancedMesh(this.contact.geometry, this.contact.material, 1);
     contact.name = 'coin-variant-warm-contact';
     parts.push(badges, contact);
-    return {
-      parts,
-      release() {
-        for (const part of parts) {
-          part.removeFromParent();
-          part.dispose();
-        }
-        for (const geometry of owned) geometry.dispose();
-      },
-    };
+    return parts;
   }
 
   dispose(): void {
+    for (const part of this.warm ?? []) {
+      part.removeFromParent();
+      part.dispose();
+    }
+    this.warm = null;
+    for (const geometry of this.warmGeometries) geometry.dispose();
+    this.warmGeometries.length = 0;
     for (const batch of this.batches.values()) {
       batch.material.material.dispose();
       batch.near.geometry.dispose();
@@ -584,15 +633,14 @@ export class VariantCoinField {
       writeInstance(matrices, k, batch.positions, batch.quaternions, index, this.radius);
       seedArray[k] = seedOffset + (((id % SEED_RANGE) + SEED_RANGE) % SEED_RANGE);
       const start = batch.glints.get(id);
-      const glint = start === undefined ? null : glintAt(this.clock - start, this.reduced);
-      glintArray[k * 2] = glint ? glint[0] : GLINT_PARKED;
-      glintArray[k * 2 + 1] = glint ? glint[1] : 0;
+      const playing =
+        start !== undefined && sampleGlint(this.clock - start, this.reduced, glintSample);
+      glintArray[k * 2] = playing ? glintSample[0] : GLINT_PARKED;
+      glintArray[k * 2 + 1] = playing ? glintSample[1] : 0;
     }
-    for (const attr of [mesh.instanceMatrix, seeds, glints]) {
-      attr.clearUpdateRanges();
-      attr.addUpdateRange(0, count * attr.itemSize);
-      attr.needsUpdate = true;
-    }
+    markUploaded(mesh.instanceMatrix, count);
+    markUploaded(seeds, count);
+    markUploaded(glints, count);
   }
 
   private writeContact(target: Float32Array, slot: number, batch: Batch, index: number): void {
@@ -636,8 +684,8 @@ export class VariantCoinField {
     centres[slot * 3 + 1] = scratch.y;
     centres[slot * 3 + 2] = scratch.z;
     (this.badges.sizes.array as Float32Array)[slot] = size;
-    (this.badges.glyphs.array as Float32Array)[slot] = VARIANT_GLYPH_INDEX[batch.variant];
-    const accent = linearRgb(VARIANT_LOOKS[batch.variant].accent);
+    (this.badges.glyphs.array as Float32Array)[slot] = batch.glyph;
+    const accent = batch.accent;
     const accents = this.badges.accents.array as Float32Array;
     accents[slot * 3] = accent[0];
     accents[slot * 3 + 1] = accent[1];

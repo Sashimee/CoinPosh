@@ -21,9 +21,10 @@ import { PRIZE_DIMENSIONS, PRIZE_LOOKS, isPrizeFamily, isPrizeRarity } from './l
 import {
   GLINT_PARKED,
   type PrizeMaterials,
-  type PrizeUniforms,
+  type PrizeState,
+  bindPrizeState,
   createPrizeMaterials,
-  createPrizeUniforms,
+  createPrizeState,
   disposePrizeMaterials,
 } from './materials.ts';
 import {
@@ -35,8 +36,8 @@ import {
 
 export { PRIZE_DIMENSIONS, PRIZE_LOOKS, isPrizeFamily, isPrizeRarity };
 export type { PrizeLook } from './looks.ts';
-export { GLINT_PARKED, createPrizeMaterials, createPrizeUniforms } from './materials.ts';
-export type { PrizeMaterials, PrizeUniforms } from './materials.ts';
+export { GLINT_PARKED, createPrizeMaterials } from './materials.ts';
+export type { PrizeMaterials, PrizeState } from './materials.ts';
 export { MODEL_DETAIL, buildPrizeGeometry } from './models.ts';
 export type { PrizeGeometry } from './models.ts';
 
@@ -71,8 +72,8 @@ export interface PrizeView {
   readonly object3d: Group;
   readonly halfExtents: Vector3;
   readonly drawCalls: number;
-  /** The view's own GPU knobs; `update` drives them, tests and tools may read them. */
-  readonly uniforms: PrizeUniforms;
+  /** What this prize feeds the kit's shared materials; `update` drives it, tools may read it. */
+  readonly state: Readonly<PrizeState>;
   /** Advances the seconds hand and any running glint. Allocation-free. */
   update(deltaSeconds: number): void;
   /** Sweeps the reveal highlight across the prize (a soft accent flash under reduced motion). */
@@ -84,17 +85,21 @@ export interface PrizeView {
 /** Out-of-sight meshes drawing every program the kit can use; see `PrizeKit.warmParts`. */
 export interface PrizeWarmBatch {
   readonly parts: readonly Object3D[];
+  /** Takes the parts out of the scene; their materials stay with the kit, linked. */
   release(): void;
 }
 
 export interface PrizeKit {
   readonly quality: QualityTier;
+  /** The one material set every view of this kit draws with. */
+  readonly materials: PrizeMaterials;
   create(family: PrizeFamily, options: PrizeViewOptions): PrizeView;
   /**
    * One mesh per shader program a prize can draw with, for a warm-up to draw out of sight
    * before the first prize drops: linking them on the drop frame would stall it.
    */
   warmParts(): PrizeWarmBatch;
+  /** Frees the kit's geometry and materials; the only place they are disposed. */
   dispose(): void;
 }
 
@@ -127,6 +132,7 @@ interface Cached {
 
 class Kit implements PrizeKit {
   readonly quality: QualityTier;
+  readonly materials: PrizeMaterials;
   private readonly cache = new Map<string, Cached>();
   private readonly contactGeometry = new PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
   private readonly contactMaterial = createContactMaterial();
@@ -136,6 +142,7 @@ class Kit implements PrizeKit {
 
   constructor(options: PrizeKitOptions) {
     this.quality = options.quality;
+    this.materials = createPrizeMaterials(options.quality);
     this.castShadow = options.castShadow ?? true;
     this.receiveShadow = options.receiveShadow ?? true;
   }
@@ -172,12 +179,11 @@ class Kit implements PrizeKit {
     const { geometry, bounds } = this.geometry(family, options.rarity);
     const centre = bounds.getCenter(new Vector3());
     const halfExtents = bounds.getSize(new Vector3()).multiplyScalar(0.5);
-    const uniforms = createPrizeUniforms(
+    const state = createPrizeState(
       PRIZE_LOOKS[options.rarity].accent,
       Math.max(halfExtents.x, halfExtents.y, halfExtents.z),
     );
-    const materials = createPrizeMaterials(this.quality, uniforms);
-    return new View(family, options.rarity, geometry, centre, halfExtents, uniforms, materials, {
+    return new View(family, options.rarity, geometry, centre, halfExtents, state, this.materials, {
       contactGeometry: this.contactGeometry,
       contactMaterial: this.contactMaterial,
       castShadow: this.castShadow,
@@ -189,8 +195,8 @@ class Kit implements PrizeKit {
   warmParts(): PrizeWarmBatch {
     const { geometry } = this.geometry('watch', 'common');
     const perfume = this.geometry('perfume', 'common').geometry;
-    const uniforms = createPrizeUniforms(PRIZE_LOOKS.common.accent, 0.05);
-    const materials = createPrizeMaterials(this.quality, uniforms);
+    const state = createPrizeState(PRIZE_LOOKS.common.accent, 0.05);
+    const materials = this.materials;
     const parts: Mesh[] = [
       new Mesh(geometry.metal, materials.metal),
       new Mesh(geometry.glass ?? geometry.metal, materials.glass),
@@ -202,18 +208,22 @@ class Kit implements PrizeKit {
       part.name = `prize-warm-${i}`;
       part.castShadow = i < 4 && this.castShadow;
       part.receiveShadow = i < 4 && this.receiveShadow;
+      bindPrizeState(part, state);
     }
     return {
       parts,
+      // Disposing anything here would drop the programs the warm-up just linked: three frees a
+      // program once nothing that drew with it is left, and no prize is on the table yet.
       release() {
         for (const part of parts) part.removeFromParent();
-        disposePrizeMaterials(materials);
       },
     };
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    disposePrizeMaterials(this.materials);
     for (const { geometry } of this.cache.values()) disposePrizeGeometry(geometry);
     this.cache.clear();
     this.contactGeometry.dispose();
@@ -243,8 +253,8 @@ class View implements PrizeView {
     geometry: PrizeGeometry,
     centre: Vector3,
     readonly halfExtents: Vector3,
-    readonly uniforms: PrizeUniforms,
-    private readonly materials: PrizeMaterials,
+    readonly state: PrizeState,
+    materials: PrizeMaterials,
     shared: ViewShared,
   ) {
     this.reduced = shared.reduced;
@@ -264,6 +274,7 @@ class View implements PrizeView {
       mesh.name = `prize-${family}-${name}`;
       mesh.castShadow = shared.castShadow && name !== 'glass';
       mesh.receiveShadow = shared.receiveShadow;
+      bindPrizeState(mesh, state);
       body.add(mesh);
       calls += 1;
     }
@@ -271,6 +282,7 @@ class View implements PrizeView {
       const hand = new Mesh(geometry.hand, materials.metal);
       hand.name = `prize-${family}-hand`;
       hand.position.set(...geometry.handPivot);
+      bindPrizeState(hand, state);
       body.add(hand);
       this.hand = hand;
       calls += 1;
@@ -299,15 +311,15 @@ class View implements PrizeView {
     const progress = prizeGlintAt(this.glintAge, this.reduced);
     if (progress === null) {
       this.glintAge = -1;
-      this.uniforms.glint.value = GLINT_PARKED;
-      this.uniforms.flash.value = 0;
+      this.state.glint = GLINT_PARKED;
+      this.state.flash = 0;
       return;
     }
     if (this.reduced) {
-      this.uniforms.flash.value = Math.sin(progress * Math.PI);
+      this.state.flash = Math.sin(progress * Math.PI);
     } else {
-      this.uniforms.glint.value = GLINT_FROM + (GLINT_TO - GLINT_FROM) * progress;
-      this.uniforms.flash.value = 0.35 * Math.max(0, 1 - progress * 3);
+      this.state.glint = GLINT_FROM + (GLINT_TO - GLINT_FROM) * progress;
+      this.state.flash = 0.35 * Math.max(0, 1 - progress * 3);
     }
   }
 
@@ -321,9 +333,9 @@ class View implements PrizeView {
     this.poseHand();
   }
 
+  /** Takes the prize off the table; its geometry and materials belong to the kit. */
   dispose(): void {
     this.object3d.removeFromParent();
-    disposePrizeMaterials(this.materials);
   }
 }
 

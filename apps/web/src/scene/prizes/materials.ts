@@ -28,6 +28,7 @@ import {
   FrontSide,
   MeshPhysicalNodeMaterial,
   type Node,
+  type Object3D,
   type UniformNode,
 } from 'three/webgpu';
 import type { QualityTier } from '../quality/tiers.ts';
@@ -37,28 +38,61 @@ type F = Node<'float'>;
 type V3 = Node<'vec3'>;
 
 /**
- * The numbers one prize animates on the GPU. Each view owns a set and its own material
- * instances; the node graphs are identical across views, so every prize of a quality tier
- * shares the same four shader programs whatever its family or rarity.
+ * The numbers one prize animates. A kit draws every prize with one material set, so these live
+ * on the prize rather than the material: each of a view's meshes carries its view's state in
+ * `userData`, and the shared uniforms read it per object as the mesh is drawn.
  */
-export interface PrizeUniforms {
+export interface PrizeState {
   /** Position of the highlight sweeping across the prize, -1..1 over its length; parked off. */
-  readonly glint: UniformNode<'float'>;
+  glint: number;
   /** One over the prize's longest half-extent, so the sweep crosses any family in step. */
-  readonly span: UniformNode<'float'>;
+  span: number;
   /** Whole-prize accent flash, 0 at rest: the reduced-motion glint. */
-  readonly flash: UniformNode<'float'>;
-  readonly accent: UniformNode<'color'>;
+  flash: number;
+  /** Linear-light accent the flash tints with. */
+  readonly accent: Color;
 }
 
 export const GLINT_PARKED = -4;
 
-export function createPrizeUniforms(accent: string, halfExtent: number): PrizeUniforms {
+export function createPrizeState(accent: string, halfExtent: number): PrizeState {
   return {
-    glint: uniform(GLINT_PARKED),
-    span: uniform(1 / Math.max(halfExtent, 1e-4)),
-    flash: uniform(0),
-    accent: uniform(new Color(accent)),
+    glint: GLINT_PARKED,
+    span: 1 / Math.max(halfExtent, 1e-4),
+    flash: 0,
+    accent: new Color(accent),
+  };
+}
+
+const STATE_KEY = 'prizeState';
+
+export function bindPrizeState(object: Object3D, state: PrizeState): void {
+  object.userData[STATE_KEY] = state;
+}
+
+export function prizeStateOf(object: Object3D | null): PrizeState {
+  const state: unknown = object?.userData[STATE_KEY];
+  if (!state) {
+    throw new Error(
+      `Prize material drawn on "${object?.name ?? 'no object'}", which has no prize state: bind one with bindPrizeState`,
+    );
+  }
+  return state as PrizeState;
+}
+
+interface PrizeUniforms {
+  readonly glint: UniformNode<'float'>;
+  readonly span: UniformNode<'float'>;
+  readonly flash: UniformNode<'float'>;
+  readonly accent: UniformNode<'color'>;
+}
+
+function createPrizeUniforms(): PrizeUniforms {
+  return {
+    glint: uniform(GLINT_PARKED).onObjectUpdate(({ object }) => prizeStateOf(object).glint),
+    span: uniform(1).onObjectUpdate(({ object }) => prizeStateOf(object).span),
+    flash: uniform(0).onObjectUpdate(({ object }) => prizeStateOf(object).flash),
+    accent: uniform(new Color()).onObjectUpdate(({ object }) => prizeStateOf(object).accent),
   };
 }
 
@@ -244,8 +278,12 @@ function createLeather(quality: QualityTier, u: PrizeUniforms): MeshPhysicalNode
   return material;
 }
 
-/** One prize's materials, in their own instances over the kit-wide shader programs. */
-export function createPrizeMaterials(quality: QualityTier, u: PrizeUniforms): PrizeMaterials {
+/**
+ * The four materials every prize of a quality tier draws with, whatever its family or rarity.
+ * Share one set across views: each new set costs a shader build on the frame it first draws.
+ */
+export function createPrizeMaterials(quality: QualityTier): PrizeMaterials {
+  const u = createPrizeUniforms();
   return {
     metal: createMetal(quality, u),
     glass: createGlass(quality, u),

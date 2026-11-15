@@ -346,11 +346,11 @@ function cufflinks(look: PrizeLook, detail: ModelDetail): PrizeGeometry {
   for (const side of [-1, 1]) {
     const x = side * 0.0128;
     metal.push(
-      paint(place(lathe(face, n), { at: [x, 0, 0] }), look.metal, { ...brushed(look), brush: 0 }),
+      paint(place(lathe(face, n), { at: [x, 0, 0] }), look.gold, { ...brushed(look), brush: 0 }),
       paint(place(disc(0.0071, 0.0115, n), { at: [x, 0, 0] }), look.enamel, ENAMEL, 'clous'),
       paint(
         place(new CylinderGeometry(0.0014, 0.0016, 0.0022, 16), { at: [x, padTop + 0.0008, 0] }),
-        look.trim,
+        look.gold,
         POLISHED,
       ),
     );

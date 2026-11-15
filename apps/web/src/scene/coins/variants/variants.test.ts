@@ -3,7 +3,15 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COIN_TIERS, COIN_VARIANTS, COLLECTIBLE_COIN_VARIANTS } from '@coinposh/shared';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Color, PerspectiveCamera, Vector3, type InstancedBufferAttribute } from 'three/webgpu';
+import {
+  Color,
+  Group,
+  InstancedMesh,
+  PerspectiveCamera,
+  Vector3,
+  type InstancedBufferAttribute,
+  type Material,
+} from 'three/webgpu';
 import { RARITY_COLORS } from '../../../vfx/palette.ts';
 import { rivieraTokens } from '../../venues/riviera/palette.ts';
 import { COIN_LOOKS } from '../tiers.ts';
@@ -371,7 +379,7 @@ describe('VariantCoinField', () => {
     expect(glints.getX(0)).toBeLessThan(-1);
   });
 
-  it('hands out warm-up parts for every program and frees only what they own', () => {
+  it('hands out warm-up parts for every program and releases them without disposing anything', () => {
     const f = field(1);
     const batch = f.warmParts();
     const materials = new Set(batch.parts.map((p) => ('material' in p ? p.material : null)));
@@ -380,8 +388,39 @@ describe('VariantCoinField', () => {
     }
     expect(materials.has(f.badgeMesh.material)).toBe(true);
     expect(materials.has(f.contactMesh.material)).toBe(true);
+    const scene = new Group();
+    scene.add(...batch.parts);
+    const disposed: string[] = [];
+    for (const part of batch.parts) {
+      if (!(part instanceof InstancedMesh))
+        throw new Error(`${part.name} is not an instanced mesh`);
+      part.addEventListener('dispose', () => disposed.push(part.name));
+      part.geometry.addEventListener('dispose', () => disposed.push(`${part.name} geometry`));
+      const material = part.material as Material;
+      material.addEventListener('dispose', () => disposed.push(`${part.name} material`));
+    }
     batch.release();
+    expect(scene.children).toEqual([]);
+    expect(disposed).toEqual([]);
     expect(f.badgeMesh.geometry.getAttribute('badgeSize')).toBeDefined();
+    expect(f.warmParts().parts).toEqual(batch.parts);
+    f.dispose();
+    expect(disposed.filter((name) => !name.includes(' '))).toEqual(
+      batch.parts.map((part) => part.name),
+    );
+  });
+
+  it('reuses its stats object and badge accents frame to frame', () => {
+    const f = field(2);
+    const { camera, height } = cameraAt(0.4);
+    f.setTransforms('gold', 'misprint', [0, 0, 0, 0.03, 0, 0], [...flat, ...flat], 2, [1, 2]);
+    const first = f.update(camera, height, 1 / 60);
+    const second = f.update(camera, height, 1 / 60);
+    expect(second).toBe(first);
+    expect(second).toMatchObject({ coins: 2, badges: 2 });
+    const accents = f.badgeMesh.geometry.getAttribute('badgeAccent') as InstancedBufferAttribute;
+    const accent = new Color(VARIANT_LOOKS.misprint.accent);
+    expect(accents.getY(1)).toBeCloseTo(accent.g, 5);
   });
 });
 

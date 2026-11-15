@@ -16,6 +16,11 @@ export interface PrizeLook {
   readonly metal: string;
   /** Polished trims: bezels, indices, hands, rims. */
   readonly trim: string;
+  /**
+   * Cufflink gold (03-ART: enamel and gold): a pale yellow gold at common that warms and
+   * deepens up the ladder, rose at exquisite, the legendary tone at the top.
+   */
+  readonly gold: string;
   /** Dial, enamel inlay, lacquered cap and fob badge. */
   readonly enamel: string;
   readonly leather: string;
@@ -36,6 +41,7 @@ export const PRIZE_LOOKS: Readonly<Record<PrizeRarity, PrizeLook>> = {
   common: {
     metal: STEEL,
     trim: STEEL_POLISHED,
+    gold: '#CDB27F',
     enamel: '#ECE6D6',
     leather: '#1C1915',
     thread: '#4A4237',
@@ -47,6 +53,7 @@ export const PRIZE_LOOKS: Readonly<Record<PrizeRarity, PrizeLook>> = {
   fine: {
     metal: STEEL,
     trim: STEEL_POLISHED,
+    gold: '#D6B46E',
     enamel: '#14563B',
     leather: '#3A2617',
     thread: '#D6C29A',
@@ -58,6 +65,7 @@ export const PRIZE_LOOKS: Readonly<Record<PrizeRarity, PrizeLook>> = {
   rare: {
     metal: STEEL,
     trim: STEEL_POLISHED,
+    gold: '#DDB862',
     enamel: '#14295A',
     leather: '#131C33',
     thread: '#C8D3E8',
@@ -69,6 +77,7 @@ export const PRIZE_LOOKS: Readonly<Record<PrizeRarity, PrizeLook>> = {
   exquisite: {
     metal: '#DFA98C',
     trim: '#F0C3A8',
+    gold: '#DFA98C',
     enamel: '#3E1650',
     leather: '#2A1330',
     thread: '#E8B48A',
@@ -80,6 +89,7 @@ export const PRIZE_LOOKS: Readonly<Record<PrizeRarity, PrizeLook>> = {
   legendary: {
     metal: '#E1BC55',
     trim: '#F2D17A',
+    gold: '#E1BC55',
     enamel: '#0C0C10',
     leather: '#0E0C0B',
     thread: '#E1BC55',
