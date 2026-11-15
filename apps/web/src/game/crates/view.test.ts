@@ -390,6 +390,8 @@ describe('UnboxDirector held by an open sheet', () => {
     const collected: CrateId[] = [];
     events.on('crate:waiting', ({ count }) => waiting.push(count));
     events.on('crate:collected', ({ crateId }) => collected.push(crateId));
+    const stingers: string[] = [];
+    events.on('crate:stinger', ({ cue }) => stingers.push(cue));
     const unbox = new UnboxDirector({
       parent: new Group(),
       camera: new PerspectiveCamera(40, 9 / 16),
@@ -426,7 +428,7 @@ describe('UnboxDirector held by an open sheet', () => {
       for (let i = 0; i < 600 && unbox.cinematic && !unbox.cinematic.done; i++) unbox.update(FRAME);
       unbox.update(FRAME);
     };
-    return { unbox, started, cards, waiting, collected, playOut };
+    return { unbox, started, cards, waiting, collected, stingers, playOut };
   }
 
   it('keeps a crate that opens behind a sheet in the queue, unplayed, and reports it ready', () => {
@@ -518,19 +520,43 @@ describe('UnboxDirector held by an open sheet', () => {
     unbox.dispose();
   });
 
-  it('freezes the 3D beats before the reveal too, and resumes them where they stopped', () => {
-    const { unbox, cards } = director();
+  it('freezes the 3D beats before the reveal too, and resumes at the reveal when the sheet closes', () => {
+    const { unbox, cards, collected, stingers } = director();
     unbox.enqueue(opened(A));
-    unbox.update(0.2);
+    unbox.update(0.3);
     const before = unbox.cinematic?.elapsed ?? 0;
     expect(before).toBeGreaterThan(0);
+    expect(unbox.cinematic?.revealed).toBe(false);
     unbox.hold(true);
     unbox.update(5);
     expect(unbox.cinematic?.elapsed).toBe(before);
     expect(cards[0]?.shown).toBe(false);
+    expect(cards[0]?.holds).toEqual([true]);
+    unbox.update(0);
+    expect(cards[0]?.shown, 'a press mid-cinematic is not a skip').toBe(false);
+    unbox.skip();
+    expect(unbox.cinematic?.revealed, 'a skip behind the sheet does nothing').toBe(false);
+
+    expect(stingers).not.toContain('burst');
     unbox.hold(false);
-    unbox.update(0.1);
-    expect(unbox.cinematic?.elapsed).toBeGreaterThan(before);
+    expect(cards[0]?.holds).toEqual([true, false]);
+    expect(unbox.cinematic?.revealed).toBe(true);
+    expect(cards[0]?.shown, 'the card is up the moment the sheet closes').toBe(true);
+    expect(stingers, 'the burst still sounds on the way to the card').toContain('burst');
+    expect(collected).toEqual([]);
+    expect(unbox.active).toBe(A);
+    unbox.collect();
+    expect(collected).toEqual([A]);
+    unbox.dispose();
+  });
+
+  it('lands a sheet that closes before the unbox has drawn a frame on the reveal as well', () => {
+    const { unbox, cards } = director();
+    unbox.enqueue(opened(A));
+    unbox.hold(true);
+    unbox.hold(false);
+    expect(unbox.cinematic?.revealed).toBe(true);
+    expect(cards[0]?.shown).toBe(true);
     unbox.dispose();
   });
 

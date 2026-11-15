@@ -9,6 +9,7 @@ import { BUNDLED_RESOURCES, createI18n, type Language } from '../../i18n/index.t
 import type { UiContext } from '../context.ts';
 import { Localizer } from '../localize.ts';
 import { setMotionPreference } from '../motion/reduced.ts';
+import { Spring, SPRINGS } from '../motion/spring.ts';
 import {
   createBalancePlaque,
   CreditHold,
@@ -16,7 +17,12 @@ import {
   PAYOUT_HOLD_CAP_MS,
   PAYOUT_STAGGER_MS,
   PayoutLedger,
+  PLAQUE_PULSE_MAX,
+  POP_VELOCITY,
+  pulseKick,
+  purseShift,
   PROVISIONAL_REVEAL_MS,
+  PURSE_CLEARANCE_PX,
   walletPayoutFor,
   type PayoutLine,
   type WalletPayout,
@@ -471,6 +477,7 @@ class FakeNode {
   readonly attrs = new Map<string, string>();
   readonly style: Record<string, string> = { opacity: '' };
   readonly dataset: Record<string, string> = {};
+  offsetWidth = 0;
   #text = '';
 
   constructor(readonly tagName: string) {}
@@ -588,7 +595,7 @@ class FakeNode {
 
 const COLLECT_WALLET = wallet({ coins: 92, pearls: 25 });
 
-function mountPlaque(language: Language = 'en') {
+function mountPlaque(language: Language = 'en', create = createBalancePlaque) {
   const body = new FakeNode('body');
   vi.stubGlobal('document', { createElement: (tag: string) => new FakeNode(tag), body });
   vi.stubGlobal('HTMLElement', FakeNode);
@@ -610,7 +617,7 @@ function mountPlaque(language: Language = 'en') {
   const host = new FakeNode('div');
   host.className = 'cp-ui-host';
   body.append(host);
-  host.append(createBalancePlaque(ctx) as unknown as FakeNode);
+  host.append(create(ctx) as unknown as FakeNode);
   const find = (selector: string): FakeNode => {
     const found = host.querySelector(selector);
     if (!found) throw new Error(`no ${selector} in the plaque`);
@@ -896,5 +903,126 @@ describe('createBalancePlaque waits for the house without moving the Vault', () 
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS);
     expect(plaque.plaque().classList.contains('is-provisional')).toBe(false);
+  });
+});
+
+function pulsePeak(gapsMs: readonly number[], frameMs = 1000 / 60): number {
+  const spring = new Spring(1, SPRINGS.pop);
+  const at = [0];
+  for (const gap of gapsMs) at.push((at.at(-1) ?? 0) + gap);
+  const end = (at.at(-1) ?? 0) + 1500;
+  let peak = 1;
+  let next = 0;
+  for (let now = 0; now < end; now += frameMs) {
+    while (next < at.length && (at[next] ?? Infinity) <= now) {
+      spring.impulse(pulseKick(spring.value, spring.velocity));
+      next += 1;
+    }
+    spring.step(frameMs / 1000);
+    peak = Math.max(peak, spring.value);
+  }
+  return peak;
+}
+
+describe('the Vault pulse keeps clear of the purse chips (P-684)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('gives a lone credit the full pop', () => {
+    expect(pulseKick(1, 0)).toBe(POP_VELOCITY);
+    expect(pulsePeak([])).toBeGreaterThan(1.02);
+  });
+
+  it('never swells past its ceiling, however fast or slow a burst of credits lands', () => {
+    for (const gap of [0, 16, 40, 70, 110, 160, 240]) {
+      for (const frameMs of [1000 / 120, 1000 / 60, 1000 / 15]) {
+        const peak = pulsePeak(
+          Array.from({ length: 8 }, () => gap),
+          frameMs,
+        );
+        expect(
+          peak,
+          `credits ${gap} ms apart, ${frameMs.toFixed(1)} ms frames`,
+        ).toBeLessThanOrEqual(PLAQUE_PULSE_MAX + 1e-3);
+      }
+    }
+  });
+
+  it('adds nothing to a swing already at the ceiling, and never brakes one', () => {
+    const omega = Math.sqrt(SPRINGS.pop.stiffness);
+    expect(pulseKick(PLAQUE_PULSE_MAX, 0)).toBe(0);
+    expect(pulseKick(1, (PLAQUE_PULSE_MAX - 1) * omega)).toBe(0);
+    expect(pulseKick(1, -0.5)).toBeCloseTo(POP_VELOCITY);
+    expect(pulseKick(1.03, 2)).toBe(0);
+  });
+
+  it('steps the readouts out by exactly what the plaque swells past each side', () => {
+    expect(purseShift(1, 196)).toBe(0);
+    expect(purseShift(0.97, 196)).toBe(0);
+    expect(purseShift(PLAQUE_PULSE_MAX, 196)).toBeCloseTo(((PLAQUE_PULSE_MAX - 1) * 196) / 2);
+  });
+
+  it('keeps the mounted plaque under its ceiling and steps the purse aside through a burst', async () => {
+    vi.resetModules();
+    const fresh = await import('./balancePlaque.ts');
+    const plaque = mountPlaque('en', fresh.createBalancePlaque);
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (frame: FrameRequestCallback) => frames.push(frame));
+    const width = 196;
+    plaque.plaque().offsetWidth = width;
+    const purse = plaque.host.querySelector('[data-testid="hud-wallet"]');
+    const bars = plaque.host.querySelector('.cp-chip-bars');
+    if (!purse || !bars) throw new Error('the plaque mounted without its purse or gold bars');
+    const shiftOf = (translate: string | undefined): number =>
+      translate ? Number.parseFloat(translate) : 0;
+    const [wallet] = rulesMatching((selector) => selector === '.cp-wallet');
+    const purseGap = /calc\(100% \+ (\d+)px\)/.exec(wallet?.right ?? '')?.[1];
+    const [row] = rulesMatching((selector) => selector === '.cp-plaque-wrap');
+    const barsGap = Number.parseFloat(row?.gap ?? '');
+    if (purseGap === undefined || !(barsGap > 0)) {
+      throw new Error('styles.css no longer sets the purse and gold bar gaps beside the plaque');
+    }
+
+    let now = 0;
+    let coins = 80;
+    let peak = 1;
+    for (let frame = 0; frame < 240; frame += 1) {
+      if (frame < 48 && frame % 4 === 0) {
+        coins += 1;
+        plaque.store.setState({ coins });
+      }
+      now += 1000 / 60;
+      for (const run of frames.splice(0)) run(now);
+      const scale = plaque.plaque().style.scale ? Number(plaque.plaque().style.scale) : 1;
+      peak = Math.max(peak, scale);
+      expect(scale, `plaque scale at frame ${frame}`).toBeLessThanOrEqual(PLAQUE_PULSE_MAX);
+      const shift = purseShift(scale, width);
+      expect(-shiftOf(purse.style.translate), `purse at frame ${frame}`).toBeCloseTo(shift, 2);
+      expect(shiftOf(bars.style.translate), `gold bars at frame ${frame}`).toBeCloseTo(shift, 2);
+      if (shift > 0) expect(purse.style.translate).toMatch(/px -50%$/);
+      const reach = ((scale - 1) * width) / 2;
+      const purseClear = Number(purseGap) - shiftOf(purse.style.translate) - reach;
+      const barsClear = barsGap + shiftOf(bars.style.translate) - reach;
+      expect(purseClear, `purse gap at frame ${frame}`).toBeGreaterThanOrEqual(PURSE_CLEARANCE_PX);
+      expect(barsClear, `gold bar gap at frame ${frame}`).toBeGreaterThanOrEqual(
+        PURSE_CLEARANCE_PX,
+      );
+    }
+    expect(plaque.vault()).toBe(`Vault balance: ${coins} coins`);
+    expect(peak).toBeGreaterThan(1.02);
+    expect(plaque.plaque().style.scale).toBe('');
+    expect(purse.style.translate).toBe('');
+    expect(bars.style.translate).toBe('');
+    plaque.dispose();
+  });
+
+  it('pops each purse chip from the edge away from the plaque', () => {
+    const [chip] = rulesMatching((selector) => selector === '.cp-wallet-chip').filter(
+      (rule) => 'transform-origin' in rule,
+    );
+    expect(chip?.['transform-origin']).toBe('right center');
+    const [bars] = rulesMatching((selector) => selector === '.cp-plaque-wrap > .cp-chip-bars');
+    expect(bars?.['transform-origin']).toBe('left center');
   });
 });

@@ -1,5 +1,6 @@
 export * from './account.ts';
 export * from './auth.ts';
+export * from './collecting/index.ts';
 export * from './endpoint.ts';
 export * from './endpoints.ts';
 export * from './fair.ts';

@@ -8,6 +8,7 @@ import { claims, drop, dropAsClient, expectConserved, playerStub, state } from '
 import { ASCEND_TX_KIND } from '../routes/ascend.ts';
 import { CRATE_OPEN_TX_KIND } from '../routes/crates.ts';
 import { SCRATCH_GRANT_TX_KIND, SCRATCH_REVEAL_TX_KIND } from '../routes/scratch.ts';
+import { SOIREE_REWARD_TX_KIND, SOIREE_TABLE_TX_KIND } from '../routes/soiree.ts';
 import {
   commit,
   ConservationError,
@@ -200,6 +201,52 @@ describe('LedgerTx', () => {
       }).toThrow(`${kind} is unbalanced: ${unit} legs sum to 3`);
     },
   );
+
+  it('lists Soirée payouts as their own kind: the mint pays crates into the inventory and keys into the wallet', () => {
+    expect(TX_KINDS).toContain(SOIREE_REWARD_TX_KIND);
+    const paid = new LedgerTx(SOIREE_REWARD_TX_KIND)
+      .move('mint', 'inventory', 'crate', 1, 'crate_x')
+      .move('mint', 'wallet', 'keys', 2, 'soiree_x');
+    expect(() => {
+      paid.assertBalanced();
+    }).not.toThrow();
+    const conjured = new LedgerTx(SOIREE_REWARD_TX_KIND).post('inventory', 'crate', 1, 'crate_x');
+    expect(() => {
+      conjured.assertBalanced();
+    }).toThrow(/soiree.reward is unbalanced: crate legs sum to 1/);
+    const paidInCrates = new LedgerTx(SOIREE_REWARD_TX_KIND)
+      .post('mint', 'crate', -1, 'crate_x')
+      .post('wallet', 'keys', 1, 'soiree_x');
+    expect(() => {
+      paidInCrates.assertBalanced();
+    }).toThrow(/crate legs sum to -1/);
+  });
+
+  it('lists the house stake on a Soirée table as its own kind, balanced in coins', () => {
+    expect(TX_KINDS).toContain(SOIREE_TABLE_TX_KIND);
+    const staked = new LedgerTx(SOIREE_TABLE_TX_KIND).move('house', 'table', 'coins', 5, 'coin_x');
+    expect(() => {
+      staked.assertBalanced();
+    }).not.toThrow();
+    const conjured = new LedgerTx(SOIREE_TABLE_TX_KIND).post('table', 'coins', 5, 'coin_x');
+    expect(() => {
+      conjured.assertBalanced();
+    }).toThrow(/soiree.table is unbalanced: coins legs sum to 5/);
+  });
+
+  it('keeps Soirée crates out of the wallet', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) => {
+      expect(() => {
+        commit(
+          ctx.storage.sql,
+          new LedgerTx(SOIREE_REWARD_TX_KIND).move('mint', 'wallet', 'crate', 1, 'crate_x'),
+          { at: Date.now(), idempotencyKey: null },
+        );
+      }).toThrow(/wallet only holds currencies, not crate/);
+    });
+  });
 
   it('refuses negative moves and fractional amounts', () => {
     expect(() => new LedgerTx('claim.fall').move('table', 'wallet', 'coins', -3, null)).toThrow(

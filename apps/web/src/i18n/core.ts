@@ -28,7 +28,11 @@ export interface I18n {
   t(key: string, values?: InterpolationValues): string;
   exists(key: string): boolean;
   changeLanguage(language: Language): void;
-  /** Lets another module (e.g. the net layer's `net` namespace) ship its own strings. */
+  /**
+   * Lets another module (e.g. the net layer's `net` namespace) ship its own strings. A bundle in
+   * the active language for a namespace that was missing it at the last language switch tells
+   * the language listeners again, so they redraw.
+   */
   addResourceBundle(language: Language, namespace: string, resources: ResourceTree): void;
   onLanguageChanged(listener: LanguageListener): () => void;
 }
@@ -82,10 +86,21 @@ export function createI18n(options: I18nOptions): I18n {
   }
 
   const listeners = new Set<LanguageListener>();
+  const notify = (next: Language): void => {
+    for (const listener of [...listeners]) listener(next);
+  };
+  // Namespaces loaded in some language but not yet in the active one: when one arrives, the
+  // listeners hear the language again so text drawn from the fallback redraws in the new one.
+  let arriving = new Set<string>();
   instance.on('languageChanged', (next: string) => {
     if (!isLanguage(next) || next === language) return;
     language = next;
-    for (const listener of [...listeners]) listener(next);
+    arriving = new Set(
+      Object.values(instance.store.data)
+        .flatMap((namespaces) => Object.keys(namespaces))
+        .filter((namespace) => !instance.hasResourceBundle(next, namespace)),
+    );
+    notify(next);
   });
 
   return {
@@ -108,6 +123,7 @@ export function createI18n(options: I18nOptions): I18n {
     },
     addResourceBundle(lng, namespace, resources) {
       instance.addResourceBundle(requireLanguage(lng), namespace, resources, true, true);
+      if (lng === language && arriving.delete(namespace)) notify(language);
     },
     onLanguageChanged(listener) {
       listeners.add(listener);
@@ -159,9 +175,12 @@ export type NamespaceLoaders = Readonly<Record<string, () => Promise<ResourceTre
 export type LoadNamespace = (namespace: string) => Promise<void>;
 
 /**
- * Loads a namespace's locale files into `i18n`, every language at once so a language switch
- * never shows a raw key. Each namespace loads once and a failed load is tried again by the next
- * call; one already registered in every language resolves without fetching anything.
+ * Loads a namespace's locale file in the active language and in FALLBACK_LANGUAGE, so a player
+ * downloads one translation per namespace (two when theirs is not the fallback), never all of
+ * them. A language switch fetches the new language for every namespace asked for so far; until
+ * it lands, lookups read the fallback, never a raw key. Each file loads once and a failed load is
+ * tried again by the next call. A namespace missing a language file is refused whatever the
+ * active language, so a gap shows in any locale.
  */
 export function createNamespaceLoader(i18n: I18n, loaders: NamespaceLoaders): LoadNamespace {
   const files = new Map<string, Map<Language, () => Promise<ResourceTree>>>();
@@ -171,9 +190,48 @@ export function createNamespaceLoader(i18n: I18n, loaders: NamespaceLoaders): Lo
     byLanguage.set(language, load);
     files.set(namespace, byLanguage);
   }
+  const requested = new Set<string>();
   const pending = new Map<string, Promise<void>>();
 
-  async function load(namespace: string): Promise<void> {
+  function loadFile(namespace: string, language: Language): Promise<void> {
+    if (i18n.instance.hasResourceBundle(language, namespace)) return Promise.resolve();
+    const id = `${language}/${namespace}`;
+    let loading = pending.get(id);
+    if (loading === undefined) {
+      const loadTree = files.get(namespace)?.get(language);
+      if (loadTree === undefined) {
+        return Promise.reject(
+          new Error(
+            `Namespace "${namespace}" has no ${language} strings; add locales/${language}/${namespace}.json`,
+          ),
+        );
+      }
+      loading = loadTree().then(
+        (tree) => {
+          i18n.addResourceBundle(language, namespace, tree);
+        },
+        (error: unknown) => {
+          pending.delete(id);
+          throw error;
+        },
+      );
+      pending.set(id, loading);
+    }
+    return loading;
+  }
+
+  i18n.onLanguageChanged((language) => {
+    for (const namespace of requested) {
+      loadFile(namespace, language).catch((error: unknown) => {
+        console.error(
+          `[i18n] The ${language} strings for "${namespace}" did not load after a language switch; lookups read ${FALLBACK_LANGUAGE} until the next loadNamespace("${namespace}") retries.`,
+          error,
+        );
+      });
+    }
+  });
+
+  return async (namespace) => {
     if (LANGUAGES.every((language) => i18n.instance.hasResourceBundle(language, namespace))) return;
     const byLanguage = files.get(namespace);
     if (byLanguage === undefined) {
@@ -181,29 +239,14 @@ export function createNamespaceLoader(i18n: I18n, loaders: NamespaceLoaders): Lo
         `No locale files for namespace "${namespace}"; add locales/<language>/${namespace}.json for ${LANGUAGES.join(', ')}`,
       );
     }
-    const trees = await Promise.all(
-      LANGUAGES.map(async (language) => {
-        const loadTree = byLanguage.get(language);
-        if (loadTree === undefined) {
-          throw new Error(
-            `Namespace "${namespace}" has no ${language} strings; add locales/${language}/${namespace}.json`,
-          );
-        }
-        return [language, await loadTree()] as const;
-      }),
-    );
-    for (const [language, tree] of trees) i18n.addResourceBundle(language, namespace, tree);
-  }
-
-  return (namespace) => {
-    let loading = pending.get(namespace);
-    if (loading === undefined) {
-      loading = load(namespace).catch((error: unknown) => {
-        pending.delete(namespace);
-        throw error;
-      });
-      pending.set(namespace, loading);
+    const missing = LANGUAGES.filter((language) => !byLanguage.has(language));
+    if (missing.length > 0) {
+      throw new Error(
+        `Namespace "${namespace}" has no ${missing.join(', ')} strings; add ${missing.map((language) => `locales/${language}/${namespace}.json`).join(', ')}`,
+      );
     }
-    return loading;
+    requested.add(namespace);
+    const language = i18n.language;
+    await Promise.all([language, FALLBACK_LANGUAGE].map((lng) => loadFile(namespace, lng)));
   };
 }
