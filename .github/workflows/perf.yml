@@ -144,6 +144,8 @@ jobs:
           path: apps/web/dist
 
       - name: Bundle budgets
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: pnpm --filter @coinposh/web bundle:check
 
       # A red bundle gate must not hide the perf results, so the steps after it still run.

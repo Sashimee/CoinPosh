@@ -17,6 +17,7 @@ import {
   PoseTupleSchema,
   RarityIdSchema,
   RevealedSeedSchema,
+  RollSchema,
   SafeSchema,
   ScratchCardIdSchema,
   Sha256HexSchema,
@@ -36,7 +37,7 @@ export const DEMO_STORAGE_KEY = 'coinposh.demo.world';
  * Bumped whenever the shape below changes. A blob of any other version is dropped for a fresh
  * session rather than migrated: Demo progress only lives as long as the tab.
  */
-export const DEMO_BLOB_SCHEMA_VERSION = 2;
+export const DEMO_BLOB_SCHEMA_VERSION = 3;
 
 /** The slice of the Web Storage API the mock needs, so tests can hand in a fake or a failing one. */
 export interface MockStorage {
@@ -118,6 +119,8 @@ const PersistedPlayerSchema = z.strictObject({
   gone: z.array(z.tuple([CoinIdSchema, EpochMsSchema])),
   crates: z.array(CrateRecordSchema),
   openedCrates: z.array(CrateIdSchema),
+  /** Rolls a page may be shown again after a reload; never value, which the ledger holds. */
+  openedRolls: z.array(z.strictObject({ crateId: CrateIdSchema, roll: RollSchema })),
   decorumPoints: z.number().nonnegative(),
   decorumAt: EpochMsSchema,
   frozenUntil: EpochMsSchema.nullable(),

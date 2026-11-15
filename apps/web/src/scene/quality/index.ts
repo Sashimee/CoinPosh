@@ -13,8 +13,14 @@ import {
 } from './adaptiveQuality.ts';
 import { runBenchmark } from './benchmark.ts';
 import { createGpuFrameTimer } from './gpuTimer.ts';
+import { createScaleHold, documentScaleHoldSources, type ScaleHoldSources } from './scaleHold.ts';
 import { browserStore, type KeyValueStore } from './storage.ts';
-import type { QualityProfile, QualityTier } from './tiers.ts';
+import {
+  sceneScalePinFrom,
+  type QualityProfile,
+  type QualityTier,
+  type SceneScalePin,
+} from './tiers.ts';
 import {
   documentVisibility,
   suspendOnVisibilityChange,
@@ -28,7 +34,13 @@ export {
   pixelRatioFor,
   qualityOverrideFrom,
 } from './tiers.ts';
-export type { EmbossResolution, QualityProfile, QualityTier, VenueDetail } from './tiers.ts';
+export type {
+  EmbossResolution,
+  QualityProfile,
+  QualityTier,
+  SceneScalePin,
+  VenueDetail,
+} from './tiers.ts';
 export { PAUSE_MS } from './dynamicResolution.ts';
 export type { VisibilitySource } from './visibility.ts';
 export { DEFAULT_RENDER_LOOK, type RenderLook } from '../post/look.ts';
@@ -45,6 +57,16 @@ export interface AdaptiveRenderingOptions extends PostPipelineOptions {
   readonly now?: () => number;
   /** Hidden/shown events that pause frame measurement; defaults to `document`. */
   readonly visibility?: VisibilitySource | null;
+  /**
+   * Holds the scene pass at one scale with dynamic resolution off; defaults to the
+   * `?scene-scale=min|max|<fraction>` pin in the page URL, `null` for none.
+   */
+  readonly sceneScale?: SceneScalePin | null;
+  /**
+   * The playable mark and open dialogs that hold the scene scale (see `createScaleHold`);
+   * defaults to `document`, `null` to never hold.
+   */
+  readonly scaleHold?: ScaleHoldSources | null;
 }
 
 export interface AdaptiveRendering {
@@ -98,12 +120,18 @@ export async function createAdaptiveRendering(
     ...(options.override === undefined ? {} : { override: options.override }),
   });
   const post = createPostPipeline(renderer, scene, camera, resolved.profile, options);
+  const sceneScale =
+    options.sceneScale === undefined ? sceneScalePinFrom(pageSearch()) : options.sceneScale;
   const governor = createQualityGovernor(post, {
     backend,
     store,
     source: resolved.source,
+    ...(sceneScale === null || sceneScale === undefined ? {} : { pinnedScale: sceneScale }),
     ...(options.onTierChange === undefined ? {} : { onTierChange: options.onTierChange }),
   });
+  const holdSources =
+    options.scaleHold === undefined ? documentScaleHoldSources() : options.scaleHold;
+  const hold = holdSources === null ? null : createScaleHold(holdSources);
   const gpuTimer = createGpuFrameTimer(renderer);
   const stopWatchingVisibility = suspendOnVisibilityChange(
     options.visibility === undefined ? documentVisibility() : options.visibility,
@@ -137,6 +165,7 @@ export async function createAdaptiveRendering(
         }
         clockChecked = true;
       }
+      if (hold !== null) governor.hold(hold.until(nowMs));
       governor.frame(nowMs, { cpuMs: lastCpuMs, gpuMs: gpuTimer?.latestMs ?? null });
       post.render(nowMs);
       gpuTimer?.afterRender();
@@ -151,4 +180,8 @@ export async function createAdaptiveRendering(
       post.dispose();
     },
   };
+}
+
+function pageSearch(): string {
+  return typeof location === 'undefined' ? '' : location.search;
 }

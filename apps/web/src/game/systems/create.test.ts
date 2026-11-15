@@ -33,6 +33,9 @@ class FakeSim {
   nudge(direction: NudgeDirection): void {
     this.nudges.push(direction);
   }
+  unfuse(fusedId: number): void {
+    throw new Error(`this sim never fuses, so nothing should unfuse coin ${fusedId}`);
+  }
   onEvents(_listener: (batch: SimEventBatch) => void): () => void {
     return () => undefined;
   }

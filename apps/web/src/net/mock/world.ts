@@ -242,6 +242,8 @@ export interface MockPlayer {
   gone: Map<CoinId, number>;
   crates: Map<CrateId, CrateRecord>;
   openedCrates: Set<CrateId>;
+  /** The newest opened crates' rolls, oldest first, as {@link MOCK_RULES.crateRollsRetained} keeps them. */
+  openedRolls: Map<CrateId, Roll>;
   decorumPoints: number;
   decorumAt: number;
   frozenUntil: number | null;
@@ -384,6 +386,10 @@ function persistPlayer(player: MockPlayer): PersistedPlayer {
       crate: { ...record.crate },
     })),
     openedCrates: [...player.openedCrates],
+    openedRolls: [...player.openedRolls].map(([crateId, roll]) => ({
+      crateId,
+      roll: structuredClone(roll),
+    })),
     decorumPoints: player.decorumPoints,
     decorumAt: player.decorumAt,
     frozenUntil: player.frozenUntil,
@@ -444,6 +450,19 @@ function restorePlayer(saved: PersistedPlayer): MockPlayer {
   for (const id of crates.keys()) {
     if (openedCrates.has(id)) throw new RestoreError(`crate ${id} is both pending and opened`);
   }
+  if (saved.openedRolls.length > MOCK_RULES.crateRollsRetained) {
+    throw new RestoreError(
+      `player ${saved.id} keeps ${saved.openedRolls.length} crate rolls, more than ${MOCK_RULES.crateRollsRetained}`,
+    );
+  }
+  const openedRolls = new Map<CrateId, Roll>();
+  for (const { crateId, roll } of saved.openedRolls) {
+    if (!openedCrates.has(crateId)) {
+      throw new RestoreError(`crate ${crateId} keeps a roll but was never opened`);
+    }
+    if (openedRolls.has(crateId)) throw new RestoreError(`crate ${crateId} keeps two rolls`);
+    openedRolls.set(crateId, structuredClone(roll));
+  }
   if (!saved.unlocked.includes(saved.venueId)) {
     throw new RestoreError(
       `player ${saved.id} stands at venue ${saved.venueId} without unlocking it`,
@@ -464,6 +483,7 @@ function restorePlayer(saved: PersistedPlayer): MockPlayer {
     gone: new Map(saved.gone),
     crates,
     openedCrates,
+    openedRolls,
     snapshotFlags: {
       'snapshot.foreign': saved.snapshotFlags['snapshot.foreign'],
       'snapshot.teleport': saved.snapshotFlags['snapshot.teleport'],
@@ -598,6 +618,12 @@ export class MockWorld {
    * Never stored: after a reload every open that was in flight died with the page.
    */
   readonly #claimedThisPage = new Set<CrateId>();
+  /**
+   * Opened crates whose roll a client of this page life already holds: the open itself, or the
+   * one replay a page booted after a reload gets. Never stored, so each new page life may ask for
+   * a kept roll once more, while a second open within one page life is still a conflict.
+   */
+  readonly #rollsServedThisPage = new Set<CrateId>();
   /** Table snapshots accepted per player in this page life; never stored, like the claims above. */
   readonly #acceptedSnapshots = new Map<PlayerId, number>();
   /** Every `over_envelope` claim refusal of this page life and the check behind it; never stored. */
@@ -813,6 +839,7 @@ export class MockWorld {
       gone: new Map(),
       crates: new Map(),
       openedCrates: new Set(),
+      openedRolls: new Map(),
       decorumPoints: 0,
       decorumAt: now,
       frozenUntil: null,
@@ -1739,6 +1766,15 @@ export class MockWorld {
 
     cratesOpen: async (player, body, _params, now) => {
       const record = player.crates.get(body.crateId);
+      const kept = player.openedRolls.get(body.crateId);
+      if (
+        record === undefined &&
+        kept !== undefined &&
+        !this.#rollsServedThisPage.has(body.crateId)
+      ) {
+        this.#rollsServedThisPage.add(body.crateId);
+        return { crateId: body.crateId, roll: structuredClone(kept), wallet: player.wallet };
+      }
       if (record === undefined) {
         throw new MockFailure(
           player.openedCrates.has(body.crateId) ? 'conflict' : 'not_found',
@@ -1747,10 +1783,15 @@ export class MockWorld {
       }
       if (record.state !== 'openable')
         throw new MockFailure('not_ready', 'Push the crate off the ledge first.');
+      // A crate won in an earlier page life is laid at the lip again and must be claimed in this
+      // one first; otherwise a replay sent before that re-lay would book a fresh roll.
+      if (!this.#claimedThisPage.has(body.crateId))
+        throw new MockFailure('not_ready', 'Claim the crate at the lip first.');
       player.crates.delete(body.crateId);
       player.openedCrates.add(body.crateId);
       this.#claimedThisPage.delete(body.crateId);
       const roll = await this.#roll(player, 'vaultCrate', now, body.crateId, record.ftue);
+      this.#keepRoll(player, body.crateId, roll);
       return { crateId: body.crateId, roll, wallet: player.wallet };
     },
 
@@ -2063,6 +2104,16 @@ export class MockWorld {
         }
         return { status: 'accepted', credited: 0, cascade: null, minted: null };
       }
+    }
+  }
+
+  #keepRoll(player: MockPlayer, crateId: CrateId, roll: Roll): void {
+    this.#rollsServedThisPage.add(crateId);
+    player.openedRolls.set(crateId, structuredClone(roll));
+    for (const oldest of player.openedRolls.keys()) {
+      if (player.openedRolls.size <= MOCK_RULES.crateRollsRetained) break;
+      player.openedRolls.delete(oldest);
+      this.#rollsServedThisPage.delete(oldest);
     }
   }
 

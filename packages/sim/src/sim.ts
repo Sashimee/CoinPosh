@@ -2,7 +2,13 @@ import type { Rotation, Vector, World } from '@dimforge/rapier3d-deterministic-c
 import { GRAVITY, SIM_VERSION } from './constants.ts';
 import { StateHasher } from './hash.ts';
 import { assertValidInput, type SimInput } from './inputs.ts';
-import { type MechanicEvent, type MechanicsConfig, TableMechanics } from './mechanics/mechanics.ts';
+import {
+  type FusionRecord,
+  type MechanicEvent,
+  type MechanicsConfig,
+  TableMechanics,
+  type UnfuseEvent,
+} from './mechanics/mechanics.ts';
 import { TOWER_TUNING } from './mechanics/tuning.ts';
 import { Xoshiro128ss } from './prng.ts';
 import { type AnyPropSpec, type BoundProp, bindProps, type PropCoin } from './props/index.ts';
@@ -22,12 +28,15 @@ import { validateSnapshot } from './snapshot/validate.ts';
 import {
   configureTableWorld,
   CRATE_BODY,
+  DROP_ZONE,
   type ContactEvent,
   type CrateFallEvent,
   type CrateImpactEvent,
   type FallEvent,
   type HeapKeepClear,
   type HeapLayout,
+  type HeapPose,
+  PUSHER,
   PusherTable,
   type PusherState,
   type RestoreCoin,
@@ -95,13 +104,52 @@ export interface SimRestore {
   readonly props?: readonly PropSnapshot[];
 }
 
+/** One coin a refused fusion consumed, for Sim.unfuse. */
+export interface UnfuseCoin {
+  /** From the Sim's tier ladder: the tier the coin had before it fused. */
+  readonly tier: string;
+  /**
+   * Where to lay it: a pose from Sim.snapshot() or the server's record of the coin. When
+   * omitted, the pose the fusion recorded for this input, else a spot around the fusion
+   * site.
+   */
+  readonly pose?: CoinPose;
+  /**
+   * Which of the fusion's inputs this coin is, as an index into FusionEvent.ids, so it
+   * takes that input's recorded pose when the inputs before it are not laid back.
+   * Defaults to its index in UnfuseRequest.inputs; each slot at most once per request.
+   */
+  readonly slot?: number;
+}
+
+/** A refused fusion to undo; see Sim.unfuse. */
+export interface UnfuseRequest {
+  /** FusionEvent.fusedId: the sim id of the coin the fusion made. */
+  readonly fusedId: number;
+  /** Every coin to lay back, in the order of FusionEvent.ids; one to MAX_UNFUSE_COINS. */
+  readonly inputs: readonly UnfuseCoin[];
+}
+
+/** The most coins one unfuse lays back, well above any fusion's inputCount. */
+export const MAX_UNFUSE_COINS = 16;
+
+/**
+ * Where an unfuse lays coins when the Sim has never seen a fusion, as after a restore:
+ * under the drop chute, on the pusher top (placeClear lifts them clear of it).
+ */
+const CHUTE_SITE = { x: 0, y: PUSHER.height, z: DROP_ZONE.z } as const;
+const FLAT = { x: 0, y: 0, z: 0, w: 1 } as const;
+
 /** What happened during one step, each event stamped with the tick after it. */
 export interface SimEvents {
   /** Coins that left the table, in ascending id order. */
   readonly falls: readonly FallEvent[];
   /** Coins that struck something, in ascending id order. */
   readonly contacts: readonly ContactEvent[];
-  /** Fusions, then tower captures and topples; always empty without mechanics. */
+  /**
+   * Unfuses (applied before the tick's physics), then fusions, then tower captures and
+   * topples; always empty without mechanics.
+   */
   readonly mechanics: readonly MechanicEvent<string>[];
   /** Crates that left the table, in ascending crate id order. */
   readonly crateFalls: readonly CrateFallEvent[];
@@ -163,6 +211,9 @@ export class Sim {
   readonly #mechanics: TableMechanics<string> | null;
   readonly #tiers: readonly string[] | null;
   readonly #props: TableProps | null;
+  readonly #keepClear: readonly HeapKeepClear[];
+  /** Unfuses queued by unfuse(), applied in call order at the start of the next step. */
+  readonly #unfuses: UnfuseRequest[] = [];
   #tick = 0;
   #disposed = false;
 
@@ -203,6 +254,7 @@ export class Sim {
       throw new RangeError('Sim: restore.props holds props, but options.props has none');
     }
     const layout = heapLayout(config, props);
+    this.#keepClear = layout.keepClear ?? [];
     const entries = restore
       ? this.#restoreEntries(restore, layout)
       : openingHeap
@@ -291,6 +343,15 @@ export class Sim {
       .map((coin) => ({ ...coin, tier: mechanics ? mechanics.tierOf(coin.id) : null }));
   }
 
+  /**
+   * Where fusion `fusedId` fired and the poses of the coins it consumed, which unfuse lays
+   * them back at; null once UNFUSE_TUNING no longer keeps them, or without mechanics.
+   */
+  fusionRecord(fusedId: number): FusionRecord | null {
+    this.#assertLive();
+    return this.#mechanics?.fusionRecord(fusedId) ?? null;
+  }
+
   /** Every prop, in ascending id order; empty on a Sim without props. */
   props(): PropState[] {
     this.#assertLive();
@@ -362,6 +423,10 @@ export class Sim {
     if (nudges > 1) {
       throw new RangeError(`Tick ${this.#tick}: at most one nudge per step, got ${nudges}`);
     }
+    const unfused: UnfuseEvent[] =
+      this.#unfuses.length === 0
+        ? []
+        : this.#unfuses.splice(0).map((request) => this.#applyUnfuse(request));
     for (const input of inputs) {
       switch (input.kind) {
         case 'dropCoin': {
@@ -390,7 +455,9 @@ export class Sim {
       : { events: [], consumed: [] };
     const removed = falls.map((fall) => fall.coinId);
     removed.push(...consumed);
-    const mechanics = this.#mechanics ? this.#mechanics.step(this.#tick, removed) : [];
+    const fired = this.#mechanics ? this.#mechanics.step(this.#tick, removed) : [];
+    const mechanics: MechanicEvent<string>[] =
+      unfused.length === 0 ? fired : [...unfused, ...fired];
     return { falls, contacts, mechanics, crateFalls, crateImpacts, props };
   }
 
@@ -399,8 +466,9 @@ export class Sim {
    * PRNG state, the whole table (pusher clock and pose, every coin's pose, velocity
    * and sleep state, and every crate's once one has been dropped) and, on a Sim with
    * mechanics, every coin's tier and the fusion and tower state, and on a Sim with
-   * props, every prop's clock, body state and the coins in it. A Sim without mechanics
-   * or props hashes only the first three.
+   * props, every prop's clock, body state and the coins in it, and any unfuse queued
+   * for the next step. A Sim without mechanics or props hashes only the first three. The
+   * poses a fusion keeps for unfuse are left out (TableMechanics' records).
    */
   hash(): string {
     this.#assertLive();
@@ -411,7 +479,79 @@ export class Sim {
     this.#table.hashInto(h);
     this.#mechanics?.hashInto(h);
     this.#props?.hashInto(h);
+    if (this.#unfuses.length > 0) {
+      this.#hashUnfuses(h);
+    }
     return h.digest();
+  }
+
+  /**
+   * Queues a refused fusion's undo for the start of the next step, ahead of that step's
+   * inputs: the fused coin `fusedId` is taken off the table with no fall, and one awake
+   * coin is laid for each input, in order, at `pose` when given, else where the fusion's
+   * matching input lay (kept for UNFUSE_TUNING.memoryTicks), else on a ring around the
+   * fusion site drawn from the Sim's PRNG. Each coin is lifted clear of the pusher and the
+   * coins on the table (PusherTable.placeClear) and starts idle, so the coins do not fuse
+   * again among themselves (TableMechanics.unfuse). The step reports an `unfused` event
+   * with the new ids in input order. A fusedId no longer on the table (fallen, fused
+   * again) or never seen still lays the coins, at the fusion's record, the latest fusion
+   * site, or under the chute, and the event says nothing was removed; the server keeps
+   * those coins either way. Throws, queuing nothing, for a Sim without mechanics or a
+   * malformed request; the step that applies it never throws on its account.
+   * Sim.snapshot() taken while an unfuse is queued does not hold it.
+   */
+  unfuse(request: UnfuseRequest): void {
+    this.#assertLive();
+    const tiers = this.#tiers;
+    if (!tiers || !this.#mechanics) {
+      throw new RangeError('Sim.unfuse needs a Sim created with mechanics');
+    }
+    const { fusedId, inputs } = request;
+    if (!Number.isInteger(fusedId) || fusedId < 0) {
+      throw new RangeError(`Sim.unfuse: fusedId must be a non-negative integer, got ${fusedId}`);
+    }
+    if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > MAX_UNFUSE_COINS) {
+      throw new RangeError(
+        `Sim.unfuse: inputs must be an array of 1 to ${MAX_UNFUSE_COINS} coins, got ${Array.isArray(inputs) ? inputs.length : typeof inputs}`,
+      );
+    }
+    const slots = new Set<number>();
+    const copied = inputs.map((input: UnfuseCoin, i): UnfuseCoin => {
+      if (!tiers.includes(input.tier)) {
+        throw new RangeError(
+          `Sim.unfuse: inputs[${i}].tier must be one of ${tiers.join(', ')}, got ${JSON.stringify(input.tier)}`,
+        );
+      }
+      const slot = input.slot ?? i;
+      if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_UNFUSE_COINS || slots.has(slot)) {
+        throw new RangeError(
+          `Sim.unfuse: inputs[${i}].slot must be a distinct integer from 0 to ${MAX_UNFUSE_COINS - 1}, got ${JSON.stringify(input.slot)}`,
+        );
+      }
+      slots.add(slot);
+      const { pose } = input;
+      if (pose === undefined) {
+        return { tier: input.tier, slot };
+      }
+      const { dropped } = validateSnapshot({
+        version: SIM_SNAPSHOT_VERSION,
+        pusherTickInCycle: this.#table.pusherTickInCycle,
+        coins: [pose],
+      });
+      // A pose the pusher has since moved over is fine: placeClear lifts the coin clear.
+      const bad = dropped.find(({ reason }) => reason !== 'in_pusher');
+      if (bad) {
+        throw new RangeError(
+          `Sim.unfuse: inputs[${i}].pose is not a pose on the table (${bad.reason}); omit it to lay the coin where the fusion recorded it`,
+        );
+      }
+      return {
+        tier: input.tier,
+        slot,
+        pose: { id: pose.id, p: [...pose.p], q: [...pose.q], rest: pose.rest },
+      };
+    });
+    this.#unfuses.push({ fusedId, inputs: copied });
   }
 
   /** Frees the WASM memory. The instance cannot be used afterwards. */
@@ -421,6 +561,86 @@ export class Sim {
     }
     this.#disposed = true;
     this.#world.free();
+  }
+
+  #applyUnfuse({ fusedId, inputs }: UnfuseRequest): UnfuseEvent {
+    const mechanics = this.#mechanics;
+    if (!mechanics) {
+      throw new Error('Sim: an unfuse was queued on a Sim without mechanics');
+    }
+    const record = mechanics.fusionRecord(fusedId);
+    const fused = this.#table.hasCoin(fusedId)
+      ? this.#table.coins().find((coin) => coin.id === fusedId)
+      : undefined;
+    if (fused) {
+      this.#table.removeCoin(fusedId);
+    }
+    const site = fused?.translation ?? record?.position ?? mechanics.lastFusionSite ?? CHUTE_SITE;
+    const rotation = fused?.rotation ?? record?.rotation ?? FLAT;
+    const recordedAt = (input: UnfuseCoin, i: number) => record?.inputs[input.slot ?? i];
+    const unplaced = inputs.filter((input, i) => !input.pose && !recordedAt(input, i)).length;
+    const spread =
+      unplaced > 0
+        ? this.#table.spreadPoses(site, unplaced, rotation, this.#rng, this.#keepClear)
+        : [];
+    let next = 0;
+    const poses = inputs.map((input, i): HeapPose => {
+      if (input.pose) {
+        return {
+          translation: dequantizePosition(input.pose.p),
+          rotation: dequantizeRotation(input.pose.q),
+        };
+      }
+      const recorded = recordedAt(input, i);
+      if (recorded) {
+        return recorded;
+      }
+      const pose = spread[next++];
+      if (!pose) {
+        throw new Error(`Sim: unfuse of coin ${fusedId} has no spot for input ${i}`);
+      }
+      return pose;
+    });
+    const coinIds = this.#table.placeClear(poses);
+    mechanics.unfuse(
+      fusedId,
+      fused !== undefined,
+      inputs.map(({ tier }, i) => {
+        const id = coinIds[i];
+        if (id === undefined) {
+          throw new Error(`Sim: unfuse of coin ${fusedId} laid no coin for input ${i}`);
+        }
+        return { id, tier };
+      }),
+    );
+    return {
+      kind: 'unfused',
+      tick: this.#tick + 1,
+      fusedId,
+      removed: fused !== undefined,
+      coinIds,
+    };
+  }
+
+  #hashUnfuses(h: StateHasher): void {
+    h.int(this.#unfuses.length);
+    for (const { fusedId, inputs } of this.#unfuses) {
+      h.int(fusedId).int(inputs.length);
+      for (const [i, { tier, pose, slot }] of inputs.entries()) {
+        h.int(this.#tiers?.indexOf(tier) ?? -1).int(slot ?? i);
+        if (!pose) {
+          h.int(0);
+          continue;
+        }
+        h.int(1);
+        for (const v of pose.p) {
+          h.int(v);
+        }
+        for (const v of pose.q) {
+          h.int(v);
+        }
+      }
+    }
   }
 
   #heapEntries(heap: OpeningHeap): RestoreEntry[] {

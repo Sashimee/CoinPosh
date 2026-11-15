@@ -13,9 +13,11 @@ import {
 import {
   lowerTier,
   isLowerTier,
+  pinnedSceneScale,
   QUALITY_PROFILES,
   type QualityProfile,
   type QualityTier,
+  type SceneScalePin,
 } from './tiers.ts';
 
 /** `provisional`: the benchmark stopped early; its pick is used this boot but not saved. */
@@ -135,6 +137,8 @@ export interface QualityGovernorOptions {
   readonly source: QualitySource;
   readonly onTierChange?: (profile: QualityProfile) => void;
   readonly logger?: QualityStorageLogger;
+  /** Holds the scene pass at this scale: no dynamic resolution and no tier steps. */
+  readonly pinnedScale?: SceneScalePin;
 }
 
 export interface QualityGovernor {
@@ -154,6 +158,12 @@ export interface QualityGovernor {
    * never read as a slow frame, however short it was.
    */
   suspend(): void;
+  /**
+   * Keeps the current scale until `untilMs` (rAF timebase): frames before it are not
+   * measured, and the first frame after it starts a fresh baseline. A later call can only
+   * extend the hold.
+   */
+  hold(untilMs: number): void;
 }
 
 /**
@@ -170,8 +180,12 @@ export function createQualityGovernor(
 ): QualityGovernor {
   const logger = options.logger ?? console;
   const persists = options.source !== 'override' && options.source !== 'provisional';
+  const pinned = options.pinnedScale;
+  if (pinned !== undefined) post.setDynamicScale(pinnedSceneScale(pinned, post.profile));
   let controller = controllerFor(post.profile, post.dynamicScale);
   let last: number | null = null;
+  let heldUntil = -Infinity;
+  let holding = false;
 
   const stepDown = (): void => {
     const next = lowerTier(post.profile.tier);
@@ -213,12 +227,24 @@ export function createQualityGovernor(
     frame(nowMs, measured = {}) {
       const delta = last === null ? null : nowMs - last;
       last = nowMs;
-      if (delta === null) return;
+      if (delta === null || pinned !== undefined) return;
+      if (nowMs < heldUntil) {
+        holding = true;
+        return;
+      }
+      if (holding) {
+        holding = false;
+        controller.interrupt();
+        return;
+      }
       handle(controller.sample({ ...measured, intervalMs: delta }));
     },
     suspend() {
       last = null;
       controller.interrupt();
+    },
+    hold(untilMs) {
+      heldUntil = Math.max(heldUntil, untilMs);
     },
   };
 

@@ -190,10 +190,10 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-11.11 | todo | | Waits on T-11.10. Lounge UI and share |
 | T-11.12 | todo | | Waits on T-11.04. Server: wine cellar |
 | T-11.13 | todo | | Waits on T-11.12. Wine cellar UI |
-| T-11.14 | todo | | Waits on T-11.03. Collecting audio |
+| T-11.14 | done | task/T-11.14 (merge ceaafe5) | Collecting audio: procedural prize impacts, variant shimmers and cellar ambience in apps/web/src/audio/collecting/ (3b623df); pnpm check green after merge; follow-up P-735 |
 | T-11.15 | todo | | Waits on T-11.08, T-11.09, T-11.11, T-11.13, T-11.14. Collecting wiring |
 | T-11.16 | todo | | Waits on T-11.15, T-1.17. E2E: collecting |
-| T-12.01 | todo | | Waits on T-11.01. Standing contracts |
+| T-12.01 | done | task/T-12.01 (merge a3b5919) | Standing contracts for Repute, ranks, perks, achievements, mastery and staff in packages/shared/src/api/standing (b1f89c0); pnpm check green after merge |
 | T-12.02 | todo | | Waits on T-12.01, T-3.07. Standing numbers |
 | T-12.03 | todo | | Waits on T-12.02. Server: Repute, ranks, titles, perks |
 | T-12.04 | todo | | Waits on T-12.02. Server: achievements |
@@ -226,7 +226,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-14.01 | todo | | Waits on T-11.01. World contracts |
 | T-14.02 | done | task/T-14.02 (merge a4db477) | Concierge brain: rule table from bus events to lines and tips under apps/web/src/game/concierge (5b45155); pnpm check green after merge; game-feature wiring queued as P-720 |
 | T-14.03 | todo | | Waits on T-14.02. Concierge character and lines |
-| T-14.04 | todo | | Waits on T-14.02. Concierge voice |
+| T-14.04 | done | task/T-14.04 (merge d5093a1) | Procedural Concierge voice barks ducked under stingers in apps/web/src/audio/concierge (ef07180); pnpm check green after merge; wiring queued as P-741/P-742 |
 | T-14.05 | todo | | Waits on T-14.01, T-3.07. World numbers |
 | T-14.06 | todo | | Waits on T-14.05. Server: guest stories and pets |
 | T-14.07 | todo | | Waits on T-14.06. Guest letters UI |
@@ -379,13 +379,20 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-684 | done | task/P-684 (merge 8a7fb4a) | HUD collisions during a cascade: empty widened rail card, Vault plaque pulse covering the pearl chip (569fafd); pnpm check green after merge (one rerun: unrelated persist.test.ts timer test flaked under parallel load, passes 3/3 isolated) |
 | T-3.05-p4 | blocked(design: Demo world lacks lifetime fusions, activeDays and coinsBanked counters for quest metrics; waits on P-498) | | |
 | P-707 | done | task/P-707 (merge 71f8e34) | bundle:check red since T-11.01-p3: i18n namespace row, one-locale loader, split boot-lazy group (48208cc, retry; folds P-702, P-682); pnpm check green after merge |
-| P-657 | todo | | Founder decision 2026-11-15: refused fusion lays the missing inputs back on the table via a new sim restore API (POLISH.md); owns widened to packages/sim/** and session bridge |
+| P-657 | done | parts P-657-p1 (merge 402c45a), P-657-p2 (merge 0d24c57) | Founder decision 2026-11-15: refused fusion lays the missing inputs back on the table via a new sim restore API (POLISH.md); owns widened to packages/sim/** and session bridge. Parts P-657-p1, P-657-p2 |
+| P-657-p1 | done | task/P-657-p1 (merge 402c45a) | Deterministic Sim.unfuse lays a refused fusion's inputs back on the table (packages/sim, unfuse.test.ts) (d4604dd); pnpm check green after merge; follow-ups P-730, P-731 |
+| P-657-p2 | done | task/P-657-p2 (merge 0d24c57) | A refused fusion claim unfuses through the sim worker and binds every input body to its server coin (simWorker bridge/runtime/protocol, systems/core, packages/sim) (dbe59f7); pnpm check green after merge |
+| P-730 | done | task/P-730 (merge 244b905) | Safes pacing-target simulation test gets an explicit 120 s budget (intermittent timeout under pnpm check load, no target loosened) (a537ecf); pnpm check green after merge |
 | P-670 | done | task/P-670 (merge f49bf57) | Lead salvage: one AdaptiveMusic bed in createAudioEngine, setDropRate/setCascadeTier/playJackpotSting/setMusicEnabled/setReducedMotion forwarded (engine.test.ts); features.test.ts stub widened; pnpm check green |
 | P-642 | blocked(review: streamTicks 45 passes fusion and front-fall criteria, but the Vault hits 0 before the first upgrade on 9/10 seeds; needs an economy retune) | | Lead decision 2026-11-14 in POLISH.md; trial edits reverted |
 | T-3.06-p2 | done | task/T-3.06-p2 (merge d48268d) | Soirée Nights server: runs, guest judging, drafts and ledger payouts (f9c6d5a, retry); pnpm check green after merge; follow-ups P-714, P-715 |
 | P-641 | blocked(review: safes.spec.ts dock-fit list lacks inventory-trigger, 3 e2e failures; Fair-from-crate-chip not met; vite.config.ts chunk comment is false) | task/P-641 (bc99682, not merged) | Add 'inventory-trigger' after 'dock-upgrades' in safes.spec.ts:134 (fold in or request) and recheck the 5-door gutter at 360x740; crates owner openFair hook P-701; correct the vite.config.ts:143-155 comment; Other lazy JS headroom 0.2 kB (P-682); branch kept |
 | T-11.01-p2 | done | task/T-11.01-p2 (merge 59d4859) | Feature-module seams, part 2: server registry, DO RPC, tx kinds and harness; review fix: conservation cost (a23eda8); pnpm check green after merge |
 | P-708 | done | task/P-708 (merge 3839822) | lining-nums for Safes serif counts in safes.css plus the display-serif digit guard in apps/web/e2e/fonts.spec.ts (folds P-709) (cc93a4b); pnpm check green after merge |
+| P-703 | done | task/P-703 (merge 831c64e) | A reload mid Vault Crate unbox replays the stored roll after boot (unseen.ts sessionStorage list, Demo world keeps opened rolls, mount skips the plaque hold for replays) (b6159ec); pnpm check green after merge; follow-ups P-732, P-733, P-734 |
+| P-732 | done | task/P-732 (merge 732f7c0) | demo-reload.spec.ts collects the replayed crate card (Escape until gone) after the reload's playable wait, before the fresh-tab boot; no timeout raised (da6028a); pnpm check green after merge; follow-up P-740 |
+| P-721 | done | task/P-721 (merge a22377e) | Scene scale held through boot and sheet closes (scaleHold.ts, dynamic-resolution pin), coin emboss fades at low pixel radius, coin-look.spec.ts e2e (53572b4); pnpm check green after merge; follow-ups P-750, P-751 |
+| P-728 | done | task/P-728 (merge dcd5e7a) | bundle:check prints a 'near' status at 90 % of budget and a per-row delta against the merge base (BASE_SHA in perf.yml), bundleGate.test.ts (ba07398); pnpm check green after merge; follow-up P-752 (gate still stops on P-736) |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 

@@ -81,6 +81,19 @@ export const BUNDLE_BUDGETS = {
    * systems 10.9 kB: imported beside the stage but first used once the table is up. 66.5 kB gzip.
    * The one cut found, three's ConvexHull in unbox/shot.ts (about 2.6 kB), is queued with
    * vfx-juice.
+   *
+   * Growth plan (P-728). The group read 69.3 kB on 35068b5 and 70.7 kB (94 %, 4.3 kB left) on
+   * d08b66c, so it has no room for a theme's client half. The wiring tasks that land beside it,
+   * T-14.12 (world: the Concierge) and T-11.15 (collecting), may add only the feature seam here:
+   * game/features.ts mountGameFeatures and the registry list, under 1 kB together. Each theme
+   * they mount is imported dynamically from that list, so it ships as its own lazy chunk, and
+   * gets a row of its own in bundle-size.ts sized at wiring time, as the safes and capsule docks
+   * did. Rolldown estimates on 2026-11-15 (minified, gzip, three and i18next external): the
+   * Concierge brain (game/concierge) 3.9 kB and its voice (audio/concierge) 2.7 kB, plus the
+   * T-14.03 portrait and speech card and their concierge.json strings; collecting audio
+   * (audio/collecting) 6.0 kB, plus the T-11.08 prize flow and vfx/prizes and the T-11.09
+   * collection book. Either theme pulled in statically through game/systems or vfx would tip
+   * this row past its tolerance. This budget does not grow for them.
    */
   postTableLazyJs: 75 * 1024,
   /**
@@ -137,3 +150,9 @@ export const BUNDLE_BUDGETS = {
 
 /** P-124: a budget fails once exceeded by more than this share. */
 export const BUNDLE_TOLERANCE = 0.05;
+
+/**
+ * P-728: a row at this share of its budget or more reads 'near' in bundle:check. It never fails
+ * the gate; it flags the rows the next feature can tip over, so the headroom is planned for.
+ */
+export const BUNDLE_NEAR = 0.9;

@@ -17,6 +17,7 @@ import { BUNDLED_RESOURCES, createI18n } from '../../i18n/index.ts';
 import {
   PAYOUT_HOLD_CAP_MS,
   PayoutLedger,
+  walletPayoutFor,
   type WalletPayout,
 } from '../../ui/components/balancePlaque.ts';
 import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
@@ -26,10 +27,13 @@ import {
   holdWhileSheetOpen,
   mountCrates,
   payoutLines,
+  replayWhenPlayable,
   rollCredit,
   trackCratePayout,
+  type CratesMountOptions,
   type KeyDocument,
 } from './mount.ts';
+import { unseenCrates } from './unseen.ts';
 import { UnboxDirector, type OpenedCrate } from './view.ts';
 
 const A = 'crate_AAAAAAAAAAAAAAAA' as CrateId;
@@ -377,6 +381,70 @@ class FakeElement {
   }
 }
 
+describe('replaying unseen crates once the table is playable', () => {
+  function stage() {
+    const listeners = new Set<(deltaSeconds: number) => void>();
+    return {
+      listeners,
+      onFrame(listener: (deltaSeconds: number) => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      frame() {
+        for (const listener of [...listeners]) listener(1 / 60);
+      },
+    };
+  }
+
+  it('waits for a frame after the table turned playable and for the warm-up, then replays once', () => {
+    const table = stage();
+    const warmup = { warming: false };
+    let playable = false;
+    let replays = 0;
+    replayWhenPlayable(
+      table,
+      warmup,
+      () => playable,
+      () => (replays += 1),
+    );
+    table.frame();
+    table.frame();
+    expect(replays).toBe(0);
+
+    playable = true;
+    warmup.warming = true;
+    table.frame();
+    expect(replays, 'never on the frame the poster lifts').toBe(0);
+    table.frame();
+    table.frame();
+    expect(replays, 'never beside the warm-up').toBe(0);
+
+    warmup.warming = false;
+    table.frame();
+    expect(replays).toBe(1);
+    expect(table.listeners.size).toBe(0);
+    table.frame();
+    expect(replays).toBe(1);
+  });
+
+  it('never replays once disposed', () => {
+    const table = stage();
+    let replays = 0;
+    const off = replayWhenPlayable(
+      table,
+      { warming: false },
+      () => true,
+      () => (replays += 1),
+    );
+    table.frame();
+    off();
+    table.frame();
+    off();
+    expect(replays).toBe(0);
+    expect(table.listeners.size).toBe(0);
+  });
+});
+
 describe('the crate warm-up in the mounted module', () => {
   const PLAYABLE = 'coinposh:boot:playable';
   let spawned = 0;
@@ -397,7 +465,7 @@ describe('the crate warm-up in the mounted module', () => {
     return scene.children.filter((part) => part.position.y === -1_000);
   }
 
-  function mounted() {
+  function mounted(overrides: Partial<CratesMountOptions> = {}) {
     const scene = new Group();
     const listeners = new Set<(deltaSeconds: number) => void>();
     const crates = mountCrates({
@@ -427,6 +495,7 @@ describe('the crate warm-up in the mounted module', () => {
       },
       host: new FakeElement() as unknown as HTMLElement,
       reducedMotion: () => true,
+      ...overrides,
     });
     const prime = vi.spyOn(crates.director, 'prime');
     /** One table frame: listeners, the out-of-sight props draw, then the frame's task and idle slot end. */
@@ -499,6 +568,69 @@ describe('the crate warm-up in the mounted module', () => {
     expect(unboxPriming()).toBe(false);
     expect(warmProps(scene)).toEqual([]);
     crates.dispose();
+  });
+
+  it('replays an unseen crate after the warm-up, with no payout hold, until it is collected', async () => {
+    const unseen = unseenCrates(null, (message) => {
+      throw new Error(message);
+    });
+    unseen.add(A);
+    const asked: string[] = [];
+    const served = opened(A);
+    const store = createStore(initialUiState(defaultSettings('en')));
+    const { crates, frame } = mounted({
+      unseen,
+      net: {
+        table: { subscribe: () => () => undefined, claimCrate: () => undefined },
+        client: {
+          call: ((endpoint: string) => {
+            asked.push(endpoint);
+            return endpoint === 'cratesOpen'
+              ? Promise.resolve({ crateId: A, roll: served.roll, wallet: served.wallet })
+              : Promise.reject(new Error(`No ${endpoint} in this test`));
+          }) as never,
+        },
+      },
+      ui: {
+        store,
+        bus: createBus<UiEvents>(),
+        i18n: createI18n({ language: 'en', resources: BUNDLED_RESOURCES }),
+      },
+    });
+    const payouts: string[] = [];
+    const detach = walletPayoutFor(store).attach({
+      hold: (id) => payouts.push(`hold ${id}`),
+      retract: (id) => payouts.push(`retract ${id}`),
+      arm: (id) => payouts.push(`arm ${id}`),
+      disarm: (id) => payouts.push(`disarm ${id}`),
+      collect: (id) => payouts.push(`collect ${id}`),
+      release: (id) => payouts.push(`release ${id}`),
+    });
+    const enqueue = vi.spyOn(crates.director, 'enqueue');
+    const replayed: CrateEvents['crate:opened'][] = [];
+    crates.events.on('crate:opened', (payload) => replayed.push(payload));
+
+    await frame();
+    await frame();
+    expect(asked).toEqual([]);
+    performance.mark(PLAYABLE);
+    for (let i = 0; i < 3; i++) await frame();
+    expect(asked, 'not while the warm-up links the unbox').toEqual([]);
+    for (let i = 0; i < 6; i++) await frame();
+    expect(asked).toEqual(['cratesOpen']);
+    expect(replayed).toEqual([
+      { crateId: A, roll: served.roll, wallet: served.wallet, replayed: true },
+    ]);
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ crateId: A, roll: served.roll }),
+    );
+    expect(payouts, 'the replayed credit is already on the plaque').toEqual([]);
+
+    crates.events.emit('crate:collected', { crateId: A, roll: served.roll, wallet: served.wallet });
+    expect(payouts).toEqual([`collect ${A}`]);
+    expect(unseen.list()).toEqual([]);
+    crates.dispose();
+    detach();
   });
 
   it('stops the warm-up on dispose, mid-way, and never primes the unbox', async () => {
