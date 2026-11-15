@@ -54,9 +54,9 @@ export const i18n = createI18n({
 });
 
 /**
- * Loads `locales/<language>/<namespace>.json` in every language into the app-wide instance, each
- * file its own chunk, so a feature's strings ship with the feature. Await it before the first
- * `t('<namespace>:…')`.
+ * Loads `locales/<language>/<namespace>.json` for the active language and the fallback into the
+ * app-wide instance, each file its own chunk, so a feature's strings ship with the feature and a
+ * player fetches only the translation they read. Await it before the first `t('<namespace>:…')`.
  */
 // Pure so a build that never calls it drops the glob, and with it a lazy chunk per locale file.
 export const loadNamespace: LoadNamespace = /* @__PURE__ */ createNamespaceLoader(

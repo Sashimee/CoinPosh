@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { localeFile, type LocaleFile } from '../src/i18n/core.ts';
 import { BUNDLE_BUDGETS, BUNDLE_TOLERANCE } from './budgets.ts';
 import { APP_DIR } from './env.ts';
 
@@ -11,6 +12,7 @@ import { APP_DIR } from './env.ts';
  */
 
 const DIST = join(APP_DIR, 'dist');
+const LOCALES = join(APP_DIR, 'src', 'i18n', 'locales');
 const ASSETS = join(DIST, 'assets');
 const FONTS = join(DIST, 'fonts');
 const BASE = '/';
@@ -27,12 +29,36 @@ const ACCOUNT_ON_TAP_BUDGET = 7.5 * 1024;
 const ACCOUNT_CHUNK = /^account-[\w-]+\.js$/;
 /** Named by vite.config.ts chunkFileName: every chunk built only from ui/account and its strings. */
 const ACCOUNT_UI_CHUNK = /^accountUi-[\w-]+\.js$/;
-/** One per non-English language; a player only ever loads the one they read. */
-const ACCOUNT_UI_STRINGS_CHUNK = /^accountUi-account-[\w-]+\.js$/;
 const SAFES_DOCK_CHUNK = /^safes-[\w-]+\.js$/;
 const SAFES_SHEET_CHUNK = /^safesSheet-[\w-]+\.js$/;
+/**
+ * The dynamic entries main.ts awaits before the stage draws: the renderer, the Riviera venue and
+ * the sim bridge, with every lazy chunk they statically pull in (coins, emboss, geometry, look).
+ */
+const STAGE_ENTRIES = ['stage', 'riviera', 'simWorker'] as const;
+/** Imported beside the stage but first used once the table is up: crates, vfx and game systems. */
+const POST_TABLE_ENTRIES = ['crates', 'vfx', 'systems'] as const;
+/**
+ * A locale file emitted as its own chunk: one minified object and its default export, wrapped in
+ * a namespace object when a file is both statically and dynamically imported (EN account). Named
+ * after the namespace (`fair-*`, `account-*`, `accountUi-account-*`), so the name alone cannot
+ * tell it from code; the gate matches the content against locales/<language>/<ns>.json instead.
+ */
+const DATA_MODULE =
+  /^(?:import\{[\w$]+ as [\w$]+\}from"\.\/rolldown-runtime-[\w-]+\.js";)?var [\w$]+=(?:[\w$]+\(\{default:\(\)=>[\w$]+\}\),[\w$]+=)?\{[\s\S]*\};export\{[^}]*\};?$/;
+/** Characters the minifier escapes in a string, including French no-break spaces before `:`. */
+const ESCAPED_IN_OUTPUT = /[`\\]|\$\{|[^\S ]|[\p{Cc}\p{Cf}]/u;
 
 type BudgetKey = keyof typeof BUNDLE_BUDGETS | 'accountOnTap';
+
+interface LocaleSource extends LocaleFile {
+  /** Leaf strings a minifier prints verbatim inside a template literal. */
+  readonly leaves: readonly string[];
+}
+
+interface LocaleChunk extends LocaleFile {
+  readonly file: string;
+}
 
 const BUDGETS: Record<BudgetKey, number> = {
   ...BUNDLE_BUDGETS,
@@ -53,6 +79,7 @@ interface Measured {
   readonly eagerAccountUi: readonly string[];
   readonly eagerSafes: readonly string[];
   readonly initial: readonly string[];
+  readonly locales: ReadonlyMap<string, LocaleChunk>;
 }
 
 function fail(message: string): never {
@@ -104,11 +131,86 @@ function sum(files: readonly string[], size: (file: string) => number): number {
   return files.reduce((total, file) => total + size(file), 0);
 }
 
-/** What one player downloads at most: every account UI chunk, and one translation of the strings. */
-function accountUiBytes(files: readonly string[], size: (file: string) => number): number {
-  const strings = files.filter((file) => ACCOUNT_UI_STRINGS_CHUNK.test(file));
-  const code = files.filter((file) => !ACCOUNT_UI_STRINGS_CHUNK.test(file));
-  return sum(code, size) + Math.max(0, ...strings.map(size));
+function leafStrings(tree: unknown): string[] {
+  if (typeof tree === 'string') return [tree];
+  if (tree === null || typeof tree !== 'object') return [];
+  return Object.values(tree).flatMap(leafStrings);
+}
+
+/** Every on-demand namespace file (all but the bundled ui.json), with its searchable strings. */
+function localeSources(): LocaleSource[] {
+  const sources: LocaleSource[] = [];
+  for (const language of readdirSync(LOCALES)) {
+    for (const file of readdirSync(join(LOCALES, language))) {
+      if (!file.endsWith('.json') || file === 'ui.json') continue;
+      const tree: unknown = JSON.parse(readFileSync(join(LOCALES, language, file), 'utf8'));
+      const leaves = leafStrings(tree).filter((leaf) => !ESCAPED_IN_OUTPUT.test(leaf));
+      if (leaves.length === 0) fail(`locales/${language}/${file} has no string the gate can match`);
+      sources.push({ ...localeFile(`locales/${language}/${file}`), leaves });
+    }
+  }
+  if (sources.length === 0) fail(`no namespace locale files under ${LOCALES}; update the gate`);
+  return sources;
+}
+
+/**
+ * The lazy chunks that hold exactly one namespace locale file. A data-only chunk named after a
+ * namespace that matches no file fails the gate, so a minifier change cannot silently move locale
+ * bytes back into a code row.
+ */
+function localeChunks(lazy: readonly string[]): Map<string, LocaleChunk> {
+  const sources = localeSources();
+  const namespaces = [...new Set(sources.map((source) => source.namespace))];
+  const chunks = new Map<string, LocaleChunk>();
+  for (const file of lazy) {
+    const source = read(file).trim();
+    if (!DATA_MODULE.test(source)) continue;
+    const matches = sources.filter(({ leaves }) => leaves.every((leaf) => source.includes(leaf)));
+    if (matches.length > 1) {
+      fail(
+        `${file} matches ${matches.map((match) => `${match.language}/${match.namespace}.json`).join(' and ')}; update the gate`,
+      );
+    }
+    const [match] = matches;
+    if (match === undefined) {
+      if (namespaces.some((namespace) => file.split('-').includes(namespace))) {
+        fail(`${file} looks like a locale chunk but matches no locales/<language>/<ns>.json`);
+      }
+      continue;
+    }
+    chunks.set(file, { file, language: match.language, namespace: match.namespace });
+  }
+  return chunks;
+}
+
+/** What one player downloads at most: one translation of every namespace, the largest. */
+function namespaceBytes(chunks: Iterable<LocaleChunk>, size: (file: string) => number): number {
+  const largest = new Map<string, number>();
+  for (const { file, namespace } of chunks) {
+    largest.set(namespace, Math.max(largest.get(namespace) ?? 0, size(file)));
+  }
+  return [...largest.values()].reduce((total, bytes) => total + bytes, 0);
+}
+
+function entryChunk(js: readonly string[], name: string): string {
+  const pattern = new RegExp(`^${name}-[\\w-]{8}\\.js$`);
+  const found = js.filter((file) => pattern.test(file));
+  if (found.length !== 1) {
+    fail(
+      `expected one ${name}-<hash>.js chunk in dist/assets, found ${String(found.length)}; update the gate`,
+    );
+  }
+  return found[0] ?? '';
+}
+
+/** The lazy chunks the named entries load, apart from ones a row already counts. */
+function lazyClosure(
+  js: readonly string[],
+  names: readonly string[],
+  accounted: ReadonlySet<string>,
+): string[] {
+  const closure = staticClosure(names.map((name) => entryChunk(js, name)));
+  return [...closure].filter((file) => !accounted.has(file)).sort();
 }
 
 function measure(): Measured {
@@ -118,9 +220,11 @@ function measure(): Measured {
   if (three.length === 0) fail('no three.webgpu-*.js chunk in dist/assets; update the gate');
   const workers = js.filter((file) => /\.worker-[\w-]+\.js$/.test(file));
   if (workers.length === 0) fail('no *.worker-*.js chunk in dist/assets; update the gate');
-  const account = js.filter((file) => ACCOUNT_CHUNK.test(file));
+  const locales = localeChunks(js.filter((file) => !initial.includes(file)));
+  const code = js.filter((file) => !locales.has(file));
+  const account = code.filter((file) => ACCOUNT_CHUNK.test(file));
   if (account.length === 0) fail('no account-*.js chunk in dist/assets; update the gate');
-  const accountUi = js.filter((file) => ACCOUNT_UI_CHUNK.test(file));
+  const accountUi = code.filter((file) => ACCOUNT_UI_CHUNK.test(file));
   if (accountUi.length === 0) fail('no accountUi-*.js chunk in dist/assets; update the gate');
   const safesDock = js.filter((file) => SAFES_DOCK_CHUNK.test(file));
   if (safesDock.length === 0) fail('no safes-*.js chunk in dist/assets; update the gate');
@@ -158,24 +262,50 @@ function measure(): Measured {
     ...initial,
     ...three,
     ...workers,
+    ...locales.keys(),
     ...account,
     ...accountUi,
     ...safesDock,
     ...safesSheet,
   ]);
+  const stageLazy = lazyClosure(js, STAGE_ENTRIES, accounted);
+  for (const file of stageLazy) accounted.add(file);
+  const postTableLazy = lazyClosure(js, POST_TABLE_ENTRIES, accounted);
+  for (const file of postTableLazy) accounted.add(file);
   const otherLazy = js.filter((file) => !accounted.has(file));
+  const localeFiles = [...locales.values()]
+    .sort((a, b) => `${a.namespace}/${a.language}`.localeCompare(`${b.namespace}/${b.language}`))
+    .map(({ file, language, namespace }) => `${file} (${language}/${namespace})`);
   const rows: Row[] = [
     { key: 'initialJs', label: 'Initial JS', files: initial, bytes: sum(initial, gz) },
     { key: 'threeChunk', label: 'three.webgpu (lazy)', files: three, bytes: sum(three, gz) },
     { key: 'workerJs', label: 'Sim worker JS', files: workers, bytes: workerBytes },
     { key: 'wasm', label: 'Rapier wasm', files: wasmFiles, bytes: wasmBytes },
+    {
+      key: 'stageLazyJs',
+      label: 'Boot lazy: stage, venue & sim',
+      files: stageLazy,
+      bytes: sum(stageLazy, gz),
+    },
+    {
+      key: 'postTableLazyJs',
+      label: 'Boot lazy: crates, vfx & systems (post-table)',
+      files: postTableLazy,
+      bytes: sum(postTableLazy, gz),
+    },
     { key: 'otherLazyJs', label: 'Other lazy JS', files: otherLazy, bytes: sum(otherLazy, gz) },
+    {
+      key: 'i18nNamespaces',
+      label: 'i18n namespaces (one locale, on demand)',
+      files: localeFiles,
+      bytes: namespaceBytes(locales.values(), gz),
+    },
     { key: 'accountOnTap', label: 'Account (on tap)', files: account, bytes: sum(account, gz) },
     {
       key: 'accountUi',
       label: 'Account UI (post-boot)',
       files: accountUi,
-      bytes: accountUiBytes(accountUi, gz),
+      bytes: sum(accountUi, gz),
     },
     {
       key: 'safesDock',
@@ -203,6 +333,7 @@ function measure(): Measured {
     eagerAccountUi: accountUi.filter((file) => initial.includes(file)),
     eagerSafes: [...safesDock, ...safesSheet].filter((file) => initial.includes(file)),
     initial,
+    locales,
   };
 }
 
@@ -210,7 +341,7 @@ function kb(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} kB`;
 }
 
-const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, initial } = measure();
+const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, initial, locales } = measure();
 const lines = [
   '### Bundle budgets (gzip)',
   '',
@@ -257,6 +388,19 @@ lines.push(
     : `FAIL: safes code is in the initial load (${eagerSafes.join(', ')}).`,
 );
 if (eagerSafes.length > 0) failures.push('safes code is statically reachable from index.html');
+const misfiled = rows.flatMap((row) =>
+  row.key === 'i18nNamespaces'
+    ? []
+    : row.files
+        .filter((file) => locales.has(file))
+        .map((file) => `${file} is a locale chunk counted under ${row.label}`),
+);
+lines.push(
+  misfiled.length === 0
+    ? `Locale chunks count once, in the i18n namespaces row (${String(locales.size)} found): none under Account (on tap) or a code row.`
+    : `FAIL: ${misfiled.join('; ')}.`,
+);
+failures.push(...misfiled);
 
 const report = `${lines.join('\n')}\n`;
 const summary = process.env.GITHUB_STEP_SUMMARY;
