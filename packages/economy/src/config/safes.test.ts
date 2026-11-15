@@ -371,5 +371,6 @@ describe('safes against the pacing targets', () => {
       const misses = result.targets.filter((t) => !t.pass).map((t) => `${t.target.id}=${t.value}`);
       expect(misses).toEqual([]);
     }
-  });
+    // Three seeded 24-player simulations take ~2.6 s alone; under the parallel pnpm check they overran vitest's 5 s default.
+  }, 120_000);
 });
