@@ -24,10 +24,7 @@
       "aria_one": "{{value}} pièce en main, déjà payée et prête à lancer",
       "aria_many": "{{value}} pièces en main, déjà payées et prêtes à lancer",
       "aria_other": "{{value}} pièces en main, déjà payées et prêtes à lancer",
-      "low": "Dernières pièces",
-      "lowAria_one": "Plus que {{value}} pièce en main",
-      "lowAria_many": "Plus que {{value}} pièces en main",
-      "lowAria_other": "Plus que {{value}} pièces en main"
+      "low": "Dernières pièces"
     },
     "vaultEmpty": {
       "title": "Coffre vide",

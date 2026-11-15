@@ -609,9 +609,56 @@ export function inHandCopy(
   return {
     label: t(low ? 'hud.inHand.low' : 'hud.inHand.label'),
     value,
-    spoken: t(low ? 'hud.inHand.lowAria' : 'hud.inHand.aria', { count: coins, value }),
+    spoken: t('hud.inHand.aria', { count: coins, value }),
     low,
   };
+}
+
+/**
+ * The count the in-hand chip shows beside the hand the table reports. A coin flying in from the
+ * Vault is already in the reported hand but not yet in the count, so a drop made while it flies
+ * still steps the count down, and the coin steps it back up as it lands: the count passes
+ * through every value and never shows a coin before it reaches the chip. The chip stays out of
+ * sight until the hand first holds coins, then keeps its place, dimmed, when the hand runs dry.
+ */
+export class InHandTally {
+  #reported = 0;
+  #flying = 0;
+  #visible = false;
+
+  get shown(): number {
+    return this.#reported - this.#flying;
+  }
+
+  get reported(): number {
+    return this.#reported;
+  }
+
+  get visible(): boolean {
+    return this.#visible;
+  }
+
+  /**
+   * The table reports `coins` in hand. A rise can `fly` in from the Vault once the chip is on
+   * show; the result is how many coins took off, which land() later adds to the count.
+   */
+  report(coins: number, fly: boolean): number {
+    const rise = coins - this.#reported;
+    const onShow = this.#visible;
+    this.#reported = coins;
+    if (coins > 0) this.#visible = true;
+    if (rise > 0 && fly && onShow) {
+      this.#flying += rise;
+      return rise;
+    }
+    this.#flying = Math.min(this.#flying, coins);
+    return 0;
+  }
+
+  /** `coins` that took off together have reached the chip. */
+  land(coins: number): void {
+    this.#flying = Math.max(0, this.#flying - coins);
+  }
 }
 
 /** A refill landing in hand springs the readout; a drop leaving it dips the coin. */
@@ -715,13 +762,16 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   const copyFor = (coins: number): InHandCopy =>
     inHandCopy((key, values) => tr(ctx, key, values), coins, ctx.i18n.language);
 
-  /** Digits wait for the glyph that carries them; any other change paints them at once. */
-  let digitsFor = 0;
-  const paintDigits = (coins: number, roll?: 'up' | 'down'): void => {
+  const tally = new InHandTally();
+  /** Screen readers hear the hand the table reports; the digits show what has reached the chip. */
+  const paint = (roll?: 'up' | 'down'): void => {
+    spoken.textContent = copyFor(tally.reported).spoken;
+    const coins = tally.shown;
     const copy = copyFor(coins);
     const changed = value.textContent !== copy.value;
     value.textContent = copy.value;
     label.textContent = copy.label;
+    readout.hidden = !tally.visible;
     readout.classList.toggle('is-low', copy.low);
     readout.style.opacity = coins > 0 ? '' : '0.45';
     if (roll && changed && !isReducedMotion()) {
@@ -729,13 +779,6 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
         duration: IN_HAND_ROLL_MS,
         easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)',
       });
-    }
-  };
-  const paint = (coins: number, digits: boolean, roll?: 'up' | 'down'): void => {
-    spoken.textContent = copyFor(coins).spoken;
-    if (digits) {
-      digitsFor += 1;
-      paintDigits(coins, roll);
     }
   };
 
@@ -796,13 +839,15 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
    * one step of a payout's handover, which lands with a bigger spring.
    */
   const receive = (coins: number, handover: boolean): void => {
+    const reduced = isReducedMotion();
+    const carried = tally.report(coins, !reduced);
     const velocity = handover ? IN_HAND_POP_VELOCITY : IN_HAND_REFILL_POP_VELOCITY;
     // The buffer fills before the first tap, and the browser refuses haptics until one.
     const tick = (): void => {
       if (handover || dropped) feedback(ctx, 'tick');
     };
-    if (isReducedMotion()) {
-      paint(coins, true);
+    if (reduced) {
+      paint();
       value.animate(HANDOVER_FADE, { duration: HANDOVER_FADE_MS, easing: 'ease-out' });
       if (handover) {
         plaque
@@ -813,23 +858,20 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
       tick();
       return;
     }
-    paint(coins, false);
+    paint();
     readout.classList.add('is-refilling');
-    const carried = digitsFor;
-    const flown = fly(handover ? HANDOVER_FLIGHT_MS : REFILL_FLIGHT_MS, () => {
-      if (carried === digitsFor) {
-        readout.classList.remove('is-refilling');
-        paintDigits(Math.min(coins, inHand.getState().coins), 'up');
-      }
+    const land = (): void => {
+      tally.land(carried);
+      if (flights.size === 0) readout.classList.remove('is-refilling');
+      paint('up');
       pop.kick(velocity);
+    };
+    const flown = fly(handover ? HANDOVER_FLIGHT_MS : REFILL_FLIGHT_MS, () => {
+      land();
       restartAnimation(readout, 'is-receiving');
       tick();
     });
-    if (!flown) {
-      readout.classList.remove('is-refilling');
-      paint(coins, true, 'up');
-      pop.kick(velocity);
-    }
+    if (!flown) land();
   };
 
   /**
@@ -839,8 +881,8 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
    */
   const drain = (coins: number): void => {
     dropped = true;
-    readout.classList.remove('is-refilling');
-    paint(coins, true, 'down');
+    tally.report(coins, false);
+    paint('down');
     restartAnimation(readout, 'is-draining');
     if (!isReducedMotion()) {
       coin.animate(IN_HAND_DIP, { duration: IN_HAND_DIP_MS, easing: 'ease-out' });
@@ -852,9 +894,9 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
       inHand,
       (s) => s.coins,
       (coins, previous) => {
-        if (coins > 0) readout.hidden = false;
-        if (previous === undefined || readout.hidden) {
-          paint(coins, true);
+        if (previous === undefined || !tally.visible) {
+          tally.report(coins, false);
+          paint();
           return;
         }
         if (coins > previous) receive(coins, inHand.getState().handover);
@@ -864,7 +906,7 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   );
   ctx.own(
     ctx.loc.bind(() => {
-      paint(inHand.getState().coins, true);
+      paint();
     }),
   );
   ctx.own(() => {

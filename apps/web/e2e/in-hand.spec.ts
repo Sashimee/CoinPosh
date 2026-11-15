@@ -214,12 +214,25 @@ function drains(log: ChipLog, field: 'digits' | 'reported'): number {
   return counts.filter((count, i) => i > 0 && count < (counts[i - 1] ?? 0)).length;
 }
 
-/** Counts the chip showed before the table had reported them: there must be none. */
+/**
+ * Counts the chip showed above the hand the table reported: there must be none. A drop made
+ * while a refill flies may show one below it, until the coin lands.
+ */
 function invented(log: ChipLog): string[] {
-  const reported = new Set<string>();
-  return log.changes.flatMap((change) => {
-    reported.add(change.reported.replace(/\D/g, ''));
-    return reported.has(change.digits) ? [] : [change.digits];
+  return log.changes.flatMap((change) =>
+    countOf(change.digits) > countOf(change.reported) ? [change.digits] : [],
+  );
+}
+
+/**
+ * Steps down of more than one coin: each drop takes one copper coin, so the shown count must
+ * pass through every value, a refill in flight or not. A payout's handover may rise faster.
+ */
+function leaps(log: ChipLog): number[][] {
+  const counts = log.changes.map((change) => countOf(change.digits));
+  return counts.flatMap((count, i) => {
+    const before = counts[i - 1] ?? count;
+    return before - count > 1 ? [[before, count]] : [];
   });
 }
 
@@ -262,6 +275,9 @@ test.describe('in-hand chip (P-749)', () => {
       invented(log),
       `the chip shows only counts the table reported: ${timeline(log)}`,
     ).toEqual([]);
+    expect(leaps(log), `the shown count steps down one coin at a time: ${timeline(log)}`).toEqual(
+      [],
+    );
     expect(
       drains(log, 'reported'),
       `the table reported coins leaving the hand: ${timeline(log)}`,
