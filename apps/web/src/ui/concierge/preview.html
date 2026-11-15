@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>CoinPosh Concierge Preview</title>
+    <link rel="icon" href="data:," />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: radial-gradient(120% 90% at 50% 0%, #3b3770 0%, #141c44 45%, #06182a 100%);
+      }
+      .preview-controls {
+        position: fixed;
+        top: calc(12px + env(safe-area-inset-top));
+        left: 50%;
+        z-index: 20;
+        translate: -50% 0;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px;
+        width: min(calc(100% - 32px), 448px);
+        font:
+          600 12px/1.2 system-ui,
+          sans-serif;
+      }
+      .preview-controls select,
+      .preview-controls button {
+        min-height: 36px;
+        padding: 0 10px;
+        border: 1px solid rgb(212 175 55 / 0.55);
+        border-radius: 999px;
+        color: #f7e7ce;
+        background: rgb(11 31 58 / 0.86);
+        font: inherit;
+      }
+      .preview-controls select {
+        flex: 1 1 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui"></div>
+    <script type="module" src="./preview.ts"></script>
+  </body>
+</html>
