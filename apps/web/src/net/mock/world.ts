@@ -18,6 +18,7 @@ import {
   dropSpawnsCrate,
   dropTables,
   extendCascade,
+  firstTicketBonus,
   fusion,
   fusionValue,
   initialPityState,
@@ -43,7 +44,9 @@ import {
   upgradeStatAt,
   venues,
   type CascadeChain,
+  type CrateOpenHistory,
   type CrateRewardDef,
+  type FirstTicketRule,
   type DropSourceId,
   type PityState,
   type PlayEntry,
@@ -344,6 +347,16 @@ function admitToWindow(recent: number[], tick: number, windowTicks: number, max:
 const ALBUM_ITEMS: readonly AlbumItem[] = album.flatMap((set): readonly AlbumItem[] => set.items);
 const CHARM_TYPES = ALBUM_ITEMS.filter((item) => item.id.endsWith('Charm'));
 const ALBUM_CARDS = ALBUM_ITEMS.filter((item) => !item.id.endsWith('Charm'));
+
+// The first-Ticket guarantee reads its history from the kept crate rolls, which hold every open
+// only while there are fewer than `crateRollsRetained` of them. Typed as the rule, not the
+// config's literal, so this holds for any tuning of it.
+const FIRST_TICKET: FirstTicketRule = crateSpawn.firstTicket;
+if (FIRST_TICKET.byCrate >= MOCK_RULES.crateRollsRetained) {
+  throw new Error(
+    `Mock: crateSpawn.firstTicket.byCrate (${FIRST_TICKET.byCrate}) must be below MOCK_RULES.crateRollsRetained (${MOCK_RULES.crateRollsRetained}); raise the retention to keep the guarantee exact.`,
+  );
+}
 
 interface AlbumItem {
   readonly id: string;
@@ -1790,7 +1803,8 @@ export class MockWorld {
       player.crates.delete(body.crateId);
       player.openedCrates.add(body.crateId);
       this.#claimedThisPage.delete(body.crateId);
-      const roll = await this.#roll(player, 'vaultCrate', now, body.crateId, record.ftue);
+      const history = this.#crateOpenHistory(player);
+      const roll = await this.#roll(player, 'vaultCrate', now, body.crateId, record.ftue, history);
       this.#keepRoll(player, body.crateId, roll);
       return { crateId: body.crateId, roll, wallet: player.wallet };
     },
@@ -1805,7 +1819,7 @@ export class MockWorld {
         this.#credit(player, now, 'safe.key', { keys: -MOCK_RULES.keysPerSafe }, safe.id);
       }
       player.safes = player.safes.filter((candidate) => candidate.id !== safe.id);
-      const roll = await this.#roll(player, 'goldSafe', now, safe.id, false);
+      const roll = await this.#roll(player, 'goldSafe', now, safe.id, false, null);
       return { safeId: body.safeId, roll, wallet: player.wallet };
     },
 
@@ -1815,7 +1829,7 @@ export class MockWorld {
       });
       const pulls: Roll[] = [];
       for (let i = 0; i < body.count; i++)
-        pulls.push(await this.#roll(player, 'gacha', now, `pull:${i}`, false));
+        pulls.push(await this.#roll(player, 'gacha', now, `pull:${i}`, false, null));
       return { pulls, wallet: player.wallet };
     },
 
@@ -1823,7 +1837,14 @@ export class MockWorld {
       if (!player.scratchCards.includes(body.cardId))
         throw new MockFailure('not_found', 'No such scratch card.');
       player.scratchCards = player.scratchCards.filter((card) => card !== body.cardId);
-      const { roll, rng } = await this.#rollWithRng(player, 'scratch', now, body.cardId, false);
+      const { roll, rng } = await this.#rollWithRng(
+        player,
+        'scratch',
+        now,
+        body.cardId,
+        false,
+        null,
+      );
       return {
         cardId: body.cardId,
         grid: scratchGrid(roll.rarity, rng),
@@ -2117,14 +2138,33 @@ export class MockWorld {
     }
   }
 
+  /**
+   * What earlier crate opens paid, as apps/server/src/routes/crates.ts crateOpenHistory reads it.
+   * Below `crateRollsRetained` opens the kept rolls are all of them, so the count and the Tickets
+   * are exact wherever `crateSpawn.firstTicket` can still fire.
+   */
+  #crateOpenHistory(player: MockPlayer): CrateOpenHistory {
+    let ticketsBefore = 0;
+    for (const roll of player.openedRolls.values()) {
+      for (const reward of roll.rewards) {
+        if (reward.kind === 'currency' && reward.currency === 'tickets') {
+          ticketsBefore += reward.amount;
+        }
+      }
+    }
+    return { opensBefore: player.openedRolls.size, ticketsBefore };
+  }
+
+  /** `crateHistory` is set only for a crate open, the one roll the first-Ticket guarantee tops up. */
   async #roll(
     player: MockPlayer,
     source: DropSourceId,
     now: number,
     ref: string,
     ftue: boolean,
+    crateHistory: CrateOpenHistory | null,
   ): Promise<Roll> {
-    return (await this.#rollWithRng(player, source, now, ref, ftue)).roll;
+    return (await this.#rollWithRng(player, source, now, ref, ftue, crateHistory)).roll;
   }
 
   async #rollWithRng(
@@ -2133,6 +2173,7 @@ export class MockWorld {
     now: number,
     ref: string,
     ftue: boolean,
+    crateHistory: CrateOpenHistory | null,
   ): Promise<{ roll: Roll; rng: Rng }> {
     const table = dropTables.find((candidate) => candidate.source === source);
     if (table === undefined)
@@ -2150,6 +2191,7 @@ export class MockWorld {
       now,
       `${source}:${ref}`,
       ftue && crateSpawn.ftueScriptedCharm,
+      crateHistory,
     );
     return {
       roll: {
@@ -2173,8 +2215,11 @@ export class MockWorld {
     now: number,
     ref: string,
     forceCharm: boolean,
+    crateHistory: CrateOpenHistory | null,
   ): Reward[] {
     const def: CrateRewardDef = crateRewards[rarity];
+    const firstTicket =
+      crateHistory === null ? 0 : firstTicketBonus(FIRST_TICKET, crateHistory, def.tickets);
     const rewards: Reward[] = [];
     const coins = crateIncomeCoins(
       def.incomeSeconds,
@@ -2185,7 +2230,7 @@ export class MockWorld {
       ['coins', coins],
       ['pearls', def.pearls],
       ['keys', def.keys],
-      ['tickets', def.tickets],
+      ['tickets', def.tickets + firstTicket],
     ];
     for (const [currency, amount] of currencyRewards) {
       if (amount <= 0) continue;

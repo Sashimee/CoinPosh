@@ -4,10 +4,12 @@ import {
   crateRewards,
   crateSpawn,
   dropTables,
+  firstTicketBonus,
   offlineRate,
   pity,
   rollDrop,
   safes,
+  type CrateOpenHistory,
   type CrateRewardDef,
   type DropTableDef,
   type PityState,
@@ -178,6 +180,22 @@ function pityCounters(state: PityState): PityCounters {
   };
 }
 
+/**
+ * What the player's earlier crate opens paid, for `crateSpawn.firstTicket`: read before this
+ * open's ledger legs and `crate_opens` row are written.
+ */
+export function crateOpenHistory(sql: SqlStorage): CrateOpenHistory {
+  const opensBefore = sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n;
+  const ticketsBefore = sql
+    .exec<{ n: number }>(
+      `SELECT COALESCE(SUM(delta), 0) AS n FROM ledger
+       WHERE kind = ? AND account = 'wallet' AND unit = 'tickets'`,
+      CRATE_OPEN_TX_KIND,
+    )
+    .one().n;
+  return { opensBefore, ticketsBefore };
+}
+
 interface CrateRow extends Record<string, SqlStorageValue> {
   readonly id: string;
   readonly kind: CrateKind;
@@ -232,7 +250,8 @@ function heldCrate(sql: SqlStorage, crateId: CrateId): CrateRow {
  * Opens one crate inside the caller's storage transaction. The client names only the crate:
  * the contents are a provably fair roll on the crate's drop table with its pity counters,
  * paid as that rarity's `crateRewards` currencies plus its album card, and a Gold Safe when
- * the roll's safe chance hits. `scripted` marks the first-session crate whose rarity and
+ * the roll's safe chance hits. The `crateSpawn.firstTicket` guarantee tops up the Tickets line
+ * from the player's own open history, without touching the roll's stream. `scripted` marks the first-session crate whose rarity and
  * charm `crateSpawn` fixes. Charms are drawn and recorded but not granted until the server
  * keeps a charm inventory.
  */
@@ -250,11 +269,16 @@ export function openCrate(
   writeCratePity(sql, source, drawn.pity);
 
   const reward = crateRewards[drawn.rarity];
+  const firstTicket = firstTicketBonus(
+    crateSpawn.firstTicket,
+    crateOpenHistory(sql),
+    reward.tickets,
+  );
   const payout: [Currency, number][] = [
     ['coins', crateIncomeCoins(reward.incomeSeconds, measuredActiveRate(sql), offlineRate)],
     ['pearls', reward.pearls],
     ['keys', reward.keys],
-    ['tickets', reward.tickets],
+    ['tickets', reward.tickets + firstTicket],
   ];
   const tx = new LedgerTx(CRATE_OPEN_TX_KIND).move('inventory', 'house', 'crate', 1, row.id);
   const rewards: Reward[] = [];
