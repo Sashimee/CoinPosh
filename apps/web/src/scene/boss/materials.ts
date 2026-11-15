@@ -38,6 +38,12 @@ import { BOSS_GOLD, BOSS_LENS_GLINT, BOSS_PAPER, BOSS_RIM, type BossLook } from 
 type F = Node<'float'>;
 type V3 = Node<'vec3'>;
 
+/**
+ * Most the lens streak takes of the glint, so a shock's flash reads as a sparkle on the glass
+ * and the bloom never swallows the face behind it; the gold rim still takes the full flash.
+ */
+const LENS_GLINT_CAP = 1.4;
+
 /** `low` drops the velvet sheen, the brushed anisotropy and the pinstripe a weak GPU feels. */
 export type BossQuality = 'low' | 'high';
 
@@ -140,7 +146,7 @@ export function createFigureMaterial(look: BossLook, quality: BossQuality): Figu
       .add(hair.mul(0.5))
       .add(lacquer.mul(0.26))
       .add(gold.mul(float(0.2).add(streak.mul(0.08))))
-      .add(lens.mul(0.05))
+      .add(lens.mul(0.3))
       .add(leather.mul(0.42))
       .add(paper.mul(0.75)),
     0.04,
@@ -171,7 +177,7 @@ export function createFigureMaterial(look: BossLook, quality: BossQuality): Figu
     .mul(float(1).sub(gold.mul(0.5)));
   const glow = linear(look.porcelain).mul(pow(facing, 2).mul(0.05)).mul(porcelain);
   const lensLight = linear(BOSS_LENS_GLINT)
-    .mul(lensSpot.mul(0.12).add(lensStreak.mul(glint).mul(1.2)))
+    .mul(lensSpot.mul(0.12).add(lensStreak.mul(min(glint, LENS_GLINT_CAP)).mul(1.2)))
     .mul(lens);
   const goldFlash = linear(BOSS_GOLD).mul(rim.mul(glint).mul(0.6)).mul(gold);
   material.emissiveNode = rimColor.mul(rim.mul(rimLevel)).add(glow).add(lensLight).add(goldFlash);

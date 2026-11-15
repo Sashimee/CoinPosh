@@ -6,7 +6,7 @@ export {
   type BossPresenceOptions,
 } from './presence.ts';
 export type { BossQuality } from './materials.ts';
-export { BOSS_STAND, bossStand } from './layout.ts';
+export { BOSS_STAND, bossStand, type BossStand } from './layout.ts';
 export { BOSS_LOOKS } from './palette.ts';
 export {
   MOOD_EASE,

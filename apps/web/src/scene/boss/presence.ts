@@ -2,17 +2,19 @@ import type { BossHit, BossKind, BossStatus } from '@coinposh/shared';
 import { Group, Mesh, Sprite, type BufferGeometry } from 'three/webgpu';
 import type { GameEvents } from '../../game/systems/events.ts';
 import { figureGeometry, FIGURE } from './geometry.ts';
-import { BOSS_STAND, bossStand } from './layout.ts';
+import { bossStand } from './layout.ts';
 import { createFigureMaterial, createHaloMaterial, type BossQuality } from './materials.ts';
 import { BOSS_LOOKS } from './palette.ts';
 import {
   cascadeRank,
+  copyPose,
   crossfade,
   MOOD_EASE,
   poseAt,
   react,
   REACTION_SECONDS,
   RESTING,
+  restingPose,
   settle,
   type BossInput,
   type BossPose,
@@ -35,6 +37,8 @@ export interface BossPresenceOptions {
   readonly events?: BossCascadeSource;
   /** Side of the cabinet the figure stands on, from the player: +1 right (the default), -1 left. */
   readonly side?: 1 | -1;
+  /** Width over height of the view, so the stand fits the figure in the Riviera camera's frame. */
+  readonly aspect: number;
   readonly status?: BossStatus;
   readonly reducedMotion?: boolean;
   readonly quality?: BossQuality;
@@ -53,6 +57,8 @@ export interface BossPresence {
   /** The week's fight is over (`defeated`, `escaped`) or back on (`active`). */
   setStatus(status: BossStatus): void;
   setReducedMotion(reduced: boolean): void;
+  /** The view was resized: refits the stand to the camera preset for the new aspect. */
+  setAspect(aspect: number): void;
   /** Unsubscribes from the cascade source and frees the GPU resources. */
   dispose(): void;
 }
@@ -92,10 +98,13 @@ export function createBossPresence(options: BossPresenceOptions): BossPresence {
   };
   const root = new Group();
   root.name = `boss/${kind}`;
-  const stand = bossStand(side);
-  root.position.copy(stand.position);
-  root.rotation.y = stand.yaw;
-  root.scale.set(side * BOSS_STAND.scale, BOSS_STAND.scale, BOSS_STAND.scale);
+  const standAt = (aspect: number): void => {
+    const stand = bossStand(side, aspect);
+    root.position.copy(stand.position);
+    root.rotation.y = stand.yaw;
+    root.scale.set(side * stand.scale, stand.scale, stand.scale);
+  };
+  standAt(options.aspect);
 
   const body = new Group();
   body.name = 'boss/body';
@@ -136,8 +145,9 @@ export function createBossPresence(options: BossPresenceOptions): BossPresence {
     options.status && options.status !== 'active'
       ? { ...RESTING, mood: options.status, since: -REACTION_SECONDS.exit }
       : RESTING;
-  let pose = poseAt(kind, reaction, now, reducedMotion);
-  let from = pose;
+  const pose = poseAt(kind, reaction, now, reducedMotion);
+  const from = copyPose(restingPose(), pose);
+  const target = restingPose();
   let lastMood = reaction.mood;
   let lastSince = reaction.since;
   let fadeAt = reaction.since;
@@ -209,14 +219,14 @@ export function createBossPresence(options: BossPresenceOptions): BossPresence {
     now += step;
     reaction = settle(reaction, now);
     if (reaction.mood !== lastMood || reaction.since !== lastSince) {
-      from = pose;
+      copyPose(from, pose);
       lastMood = reaction.mood;
       lastSince = reaction.since;
       fadeAt = reaction.since;
       fadeSeconds = MOOD_EASE[reaction.mood];
     }
-    const target = poseAt(kind, reaction, now, reducedMotion);
-    pose = crossfade(from, target, now - fadeAt, fadeSeconds, reducedMotion);
+    poseAt(kind, reaction, now, reducedMotion, target);
+    crossfade(from, target, now - fadeAt, fadeSeconds, reducedMotion, pose);
     apply(pose);
   };
   apply(pose);
@@ -242,10 +252,11 @@ export function createBossPresence(options: BossPresenceOptions): BossPresence {
     setStatus(status) {
       feed({ kind: 'status', status });
     },
+    setAspect: standAt,
     setReducedMotion(reduced) {
       if (reduced === reducedMotion) return;
       reducedMotion = reduced;
-      from = pose;
+      copyPose(from, pose);
       fadeAt = now;
       fadeSeconds = REDUCED_SWITCH_SECONDS;
     },

@@ -16,8 +16,8 @@ describe('boss presence perf', () => {
   it('updates both figures through a cascade within the frame budget', () => {
     const bus = createBus<GameEvents>();
     const figures = [
-      createBossPresence({ kind: 'taxInspector', events: bus, side: -1 }),
-      createBossPresence({ kind: 'rivalTycoon', events: bus }),
+      createBossPresence({ kind: 'taxInspector', events: bus, side: -1, aspect: 390 / 844 }),
+      createBossPresence({ kind: 'rivalTycoon', events: bus, aspect: 390 / 844 }),
     ];
     let best = Infinity;
     for (let round = 0; round < ROUNDS; round++) {

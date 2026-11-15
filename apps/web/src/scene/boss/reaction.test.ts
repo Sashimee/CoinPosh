@@ -266,6 +266,27 @@ describe('poseAt', () => {
     expect(peak.halo).toBeGreaterThan(rest.halo);
   });
 
+  it.each(BOSS_KINDS)('%s shock flashes no brighter than the reduced-motion flash', (kind) => {
+    const s = react(RESTING, tier(5), 0);
+    let moving = 0;
+    let still = 0;
+    for (let t = 0; t < 1.7; t += 1 / 120) {
+      moving = Math.max(moving, poseAt(kind, s, t, false).glint);
+      still = Math.max(still, poseAt(kind, s, t, true).glint);
+    }
+    expect(moving).toBeGreaterThan(1);
+    expect(moving).toBeLessThanOrEqual(still + 1e-9);
+  });
+
+  it('writes into the pose it is handed, and reuses no state between calls', () => {
+    const out = { ...REST_POSE };
+    const s = react(RESTING, tier(5), 0);
+    expect(poseAt('rivalTycoon', s, 0.15, false, out)).toBe(out);
+    expect(out).toEqual(poseAt('rivalTycoon', s, 0.15, false));
+    poseAt('taxInspector', react(RESTING, { kind: 'hit', share: 1 }, 0), 0.05, false);
+    expect(out).toEqual(poseAt('rivalTycoon', s, 0.15, false));
+  });
+
   it('a bigger tier shocks harder', () => {
     const soft = poseAt('taxInspector', react(RESTING, tier(3), 0), 0.15, false);
     const hard = poseAt('taxInspector', react(RESTING, tier(5), 0), 0.15, false);
@@ -311,8 +332,8 @@ describe('crossfade', () => {
 
   it('starts at the old pose and ends at the new one', () => {
     expect(crossfade(REST_POSE, to, 0, 0.5, false).rise).toBeCloseTo(0);
-    expect(crossfade(REST_POSE, to, 10, 0.5, false)).toBe(to);
-    expect(crossfade(REST_POSE, to, 0.1, 0, false)).toBe(to);
+    expect(crossfade(REST_POSE, to, 10, 0.5, false)).toEqual(to);
+    expect(crossfade(REST_POSE, to, 0.1, 0, false)).toEqual(to);
   });
 
   it('overshoots a touch with motion, never under reduced motion', () => {

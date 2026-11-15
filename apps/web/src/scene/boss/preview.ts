@@ -16,7 +16,7 @@ import {
   createRivieraVenue,
   rivieraCameraPreset,
 } from '../venues/riviera/index.ts';
-import { BOSS_STAND, createBossPresence, type BossPresence } from './index.ts';
+import { BOSS_STAND, bossStand, createBossPresence, type BossPresence } from './index.ts';
 
 /**
  * Dev-only capture bench for the boss figures, served by Vite at /src/scene/boss/preview.html.
@@ -82,15 +82,24 @@ async function boot(bench: BossBench): Promise<void> {
   camera.aspect = aspect;
 
   if (close) {
-    const target = new Vector3(only === null ? 0 : BOSS_STAND.x, BOSS_STAND.y + 0.13, BOSS_STAND.z);
-    if (only === 'taxInspector') target.x = -BOSS_STAND.x;
-    const fit = only === null ? { width: 0.48, height: 0.26 } : { width: 0.2, height: 0.24 };
+    const stand = bossStand(1, aspect);
+    const target = new Vector3(
+      only === null ? 0 : stand.position.x,
+      stand.position.y + 0.13 * stand.scale,
+      stand.position.z,
+    );
+    const size = stand.scale / BOSS_STAND.scale;
+    const fit =
+      only === null
+        ? { width: 2 * stand.position.x + 0.2 * size, height: 0.26 * size }
+        : { width: 0.2 * size, height: 0.24 * size };
     const halfFov = (camera.fov * Math.PI) / 360;
     const distance = Math.max(
       fit.height / 2 / Math.tan(halfFov),
       fit.width / 2 / (Math.tan(halfFov) * aspect),
     );
-    camera.position.copy(target).addScaledVector(new Vector3(0, 0.3, 1).normalize(), distance);
+    const view = rivieraCameraPreset(aspect).position.clone().sub(target).normalize();
+    camera.position.copy(target).addScaledVector(view, distance);
     camera.lookAt(target);
     camera.updateProjectionMatrix();
   } else {
@@ -105,6 +114,7 @@ async function boot(bench: BossBench): Promise<void> {
       kind,
       events,
       side: kinds.length > 1 && kind === 'taxInspector' ? -1 : 1,
+      aspect,
       reducedMotion: reduced,
       quality: quality.tier === 'low' ? 'low' : 'high',
     }),

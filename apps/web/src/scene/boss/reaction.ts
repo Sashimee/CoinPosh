@@ -231,59 +231,88 @@ function gesture(now: number, period: number, offset: number, length: number): n
   return Math.sin((t / length) * Math.PI) ** 2;
 }
 
-/** The figure's idle life: breathing, glances and its kind's habit. */
-function idle(kind: BossKind, now: number): BossPose {
-  const breathe = Math.sin(now * TAU * 0.24);
-  const habit = kind === 'taxInspector' ? gesture(now, 7.5, 2.2, 2.6) : gesture(now, 9.5, 5.4, 2.2);
-  const glance = Math.sin(now * 0.37) * 0.2 + Math.sin(now * 0.91 + 1.3) * 0.08;
-  return {
-    ...REST_POSE,
-    rise: breathe * 0.0012,
-    stretch: 1 + breathe * 0.008,
-    sway: Math.sin(now * 0.53) * 0.025,
-    headYaw: glance * (1 - habit),
-    headRoll: Math.sin(now * 0.29 + 0.6) * 0.05,
-    headPitch: habit * (kind === 'taxInspector' ? 0.42 : 0.3),
-    arm: habit,
-    armJitter:
-      kind === 'taxInspector' ? habit * Math.sin(now * TAU * 3.1) * Math.sin(now * TAU * 0.9) : 0,
-    glint: habit * 0.25,
-  };
+/** A pose the presence owns and rewrites every frame, so a running figure allocates nothing. */
+export type MutableBossPose = { -readonly [K in keyof BossPose]: number };
+
+const POSE_KEYS = Object.keys(REST_POSE) as readonly (keyof BossPose)[];
+
+/** A fresh pose to write into, at rest. */
+export function restingPose(): MutableBossPose {
+  return { ...REST_POSE };
 }
 
-function blend(a: BossPose, b: BossPose, t: number, clamped = true): BossPose {
-  const k = clamped ? clamp01(t) : t;
-  const out = { ...a } as Record<keyof BossPose, number>;
-  for (const key of Object.keys(a) as (keyof BossPose)[]) out[key] = a[key] + (b[key] - a[key]) * k;
+/** Copies `from` into `out` and returns `out`. */
+export function copyPose(out: MutableBossPose, from: BossPose): MutableBossPose {
+  for (const key of POSE_KEYS) out[key] = from[key];
   return out;
 }
 
-const WATCH: Partial<BossPose> = {
+function blendInto(
+  out: MutableBossPose,
+  a: BossPose,
+  b: BossPose,
+  t: number,
+  clamped = true,
+): MutableBossPose {
+  const k = clamped ? clamp01(t) : t;
+  for (const key of POSE_KEYS) out[key] = a[key] + (b[key] - a[key]) * k;
+  return out;
+}
+
+/** The figure's idle life: breathing, glances and its kind's habit. */
+function idle(kind: BossKind, now: number, out: MutableBossPose): MutableBossPose {
+  const breathe = Math.sin(now * TAU * 0.24);
+  const habit = kind === 'taxInspector' ? gesture(now, 7.5, 2.2, 2.6) : gesture(now, 9.5, 5.4, 2.2);
+  const glance = Math.sin(now * 0.37) * 0.2 + Math.sin(now * 0.91 + 1.3) * 0.08;
+  copyPose(out, REST_POSE);
+  out.rise = breathe * 0.0012;
+  out.stretch = 1 + breathe * 0.008;
+  out.sway = Math.sin(now * 0.53) * 0.025;
+  out.headYaw = glance * (1 - habit);
+  out.headRoll = Math.sin(now * 0.29 + 0.6) * 0.05;
+  out.headPitch = habit * (kind === 'taxInspector' ? 0.42 : 0.3);
+  out.arm = habit;
+  out.armJitter =
+    kind === 'taxInspector' ? habit * Math.sin(now * TAU * 3.1) * Math.sin(now * TAU * 0.9) : 0;
+  out.glint = habit * 0.25;
+  return out;
+}
+
+const WATCH = {
   rise: 0.012,
   lean: 0.2,
   headPitch: 0.3,
-  headYaw: 0,
   headRoll: 0,
   halo: 0.25,
   glint: 0.4,
-};
+} as const;
 
-function watching(kind: BossKind, now: number): BossPose {
-  const base = idle(kind, now);
-  const lean = kind === 'rivalTycoon' ? 1.15 : 1;
-  return {
-    ...base,
-    ...WATCH,
-    lean: (WATCH.lean ?? 0) * lean,
-    arm: kind === 'taxInspector' ? 0.55 : 0.15,
-    armJitter: kind === 'taxInspector' ? Math.sin(now * TAU * 4.2) * 0.6 : 0,
-    headYaw: Math.sin(now * TAU * 0.6) * 0.06,
-  };
+function watching(kind: BossKind, now: number, out: MutableBossPose): MutableBossPose {
+  idle(kind, now, out);
+  out.rise = WATCH.rise;
+  out.lean = WATCH.lean * (kind === 'rivalTycoon' ? 1.15 : 1);
+  out.headPitch = WATCH.headPitch;
+  out.headRoll = WATCH.headRoll;
+  out.halo = WATCH.halo;
+  out.glint = WATCH.glint;
+  out.arm = kind === 'taxInspector' ? 0.55 : 0.15;
+  out.armJitter = kind === 'taxInspector' ? Math.sin(now * TAU * 4.2) * 0.6 : 0;
+  out.headYaw = Math.sin(now * TAU * 0.6) * 0.06;
+  return out;
 }
 
+/** Scratch for the pose a shock or flinch plays over; never handed out of this module. */
+const UNDER = restingPose();
+
 /** The shock at `t` seconds in, of strength `s`. Each kind has its own take on a big win. */
-function shocked(kind: BossKind, t: number, s: number, now: number): BossPose {
-  const watch = watching(kind, now);
+function shocked(
+  kind: BossKind,
+  t: number,
+  s: number,
+  now: number,
+  out: MutableBossPose,
+): MutableBossPose {
+  const watch = watching(kind, now, UNDER);
   const jump = strike(t, 0.1, 0.7);
   const recoil = strike(t, 0.14, 1.25);
   const land = strike(t - 0.55, 0.08, 0.5);
@@ -293,60 +322,68 @@ function shocked(kind: BossKind, t: number, s: number, now: number): BossPose {
   const settleBack = smooth((t - 0.9) / (REACTION_SECONDS.shock - 0.9));
   const flash = strike(t, 0.05, 0.9);
   const inspector = kind === 'taxInspector';
-  const pose: BossPose = {
-    rise: watch.rise + s * (0.026 * jump - 0.008 * land),
-    lean: watch.lean - s * (inspector ? 0.5 : 0.28) * recoil,
-    sway: watch.sway + s * 0.12 * Math.sin(t * TAU * 2.2) * recoil,
-    stretch: 1 + s * (0.075 * jump - 0.06 * land),
-    headPitch: watch.headPitch - s * (inspector ? 0.55 : 0.4) * recoil,
-    headYaw: inspector ? Math.sin(t * TAU * 3.4) * 0.2 * s * recoil : watch.headYaw,
-    headRoll: s * (inspector ? 0.1 : -0.16) * recoil,
-    hatLift: s * (0.05 * hatUp + 0.006 * hatSettle),
-    hatTilt: s * (inspector ? -0.35 : 0.5) * hatUp,
-    arm: inspector ? 0.55 + 0.45 * recoil : 0.15 + 0.85 * smooth(t / 0.25) * (1 - settleBack),
-    armJitter: inspector
-      ? Math.sin(t * TAU * 6) * recoil
-      : Math.sin(t * TAU * 5) * 0.8 * recoil * s,
-    eyewearDrop: inspector ? 0 : s >= 1 ? smooth((t - 0.08) / 0.3) * (1 - settleBack) : 0,
-    glint: watch.glint + s * 4 * flash,
-    halo: watch.halo + s * 0.9 * smooth(t / 0.08) * (1 - smooth((t - 0.2) / 1.3)),
-  };
-  return blend(pose, watch, settleBack * 0.6);
+  out.rise = watch.rise + s * (0.026 * jump - 0.008 * land);
+  out.lean = watch.lean - s * (inspector ? 0.5 : 0.28) * recoil;
+  out.sway = watch.sway + s * 0.12 * Math.sin(t * TAU * 2.2) * recoil;
+  out.stretch = 1 + s * (0.075 * jump - 0.06 * land);
+  out.headPitch = watch.headPitch - s * (inspector ? 0.55 : 0.4) * recoil;
+  out.headYaw = inspector ? Math.sin(t * TAU * 3.4) * 0.2 * s * recoil : watch.headYaw;
+  out.headRoll = s * (inspector ? 0.1 : -0.16) * recoil;
+  out.hatLift = s * (0.05 * hatUp + 0.006 * hatSettle);
+  out.hatTilt = s * (inspector ? -0.35 : 0.5) * hatUp;
+  out.arm = inspector ? 0.55 + 0.45 * recoil : 0.15 + 0.85 * smooth(t / 0.25) * (1 - settleBack);
+  out.armJitter = inspector
+    ? Math.sin(t * TAU * 6) * recoil
+    : Math.sin(t * TAU * 5) * 0.8 * recoil * s;
+  out.eyewearDrop = inspector ? 0 : s >= 1 ? smooth((t - 0.08) / 0.3) * (1 - settleBack) : 0;
+  out.glint = watch.glint + s * 2.5 * flash;
+  out.halo = watch.halo + s * 0.9 * smooth(t / 0.08) * (1 - smooth((t - 0.2) / 1.3));
+  return blendInto(out, out, watch, settleBack * 0.6);
 }
 
-function flinched(kind: BossKind, t: number, s: number, now: number, from: BossPose): BossPose {
+function flinched(
+  kind: BossKind,
+  t: number,
+  s: number,
+  now: number,
+  out: MutableBossPose,
+): MutableBossPose {
+  const from = idle(kind, now, UNDER);
   const hit = strike(t, 0.06, REACTION_SECONDS.flinch);
-  return {
-    ...from,
-    rise: from.rise - 0.008 * s * hit,
-    lean: from.lean - 0.12 * s * hit,
-    headPitch: from.headPitch - 0.2 * s * hit,
-    headRoll: from.headRoll + (kind === 'taxInspector' ? 0.12 : -0.12) * s * hit,
-    stretch: from.stretch - 0.04 * s * hit,
-    glint: from.glint + 1.6 * s * hit,
-    halo: Math.max(from.halo, 0.4 * s * hit),
-    armJitter: from.armJitter + Math.sin(now * TAU * 7) * 0.3 * s * hit,
-  };
+  copyPose(out, from);
+  out.rise = from.rise - 0.008 * s * hit;
+  out.lean = from.lean - 0.12 * s * hit;
+  out.headPitch = from.headPitch - 0.2 * s * hit;
+  out.headRoll = from.headRoll + (kind === 'taxInspector' ? 0.12 : -0.12) * s * hit;
+  out.stretch = from.stretch - 0.04 * s * hit;
+  out.glint = from.glint + 1.6 * s * hit;
+  out.halo = Math.max(from.halo, 0.4 * s * hit);
+  out.armJitter = from.armJitter + Math.sin(now * TAU * 7) * 0.3 * s * hit;
+  return out;
 }
 
 /** How far below the resting peek the figure has sunk by the end of the week. */
 export const EXIT_DEPTH = 0.2;
 
-function exited(kind: BossKind, mood: 'defeated' | 'escaped', t: number): BossPose {
+function exited(
+  kind: BossKind,
+  mood: 'defeated' | 'escaped',
+  t: number,
+  out: MutableBossPose,
+): MutableBossPose {
   const u = smooth(t / REACTION_SECONDS.exit);
   const defeated = mood === 'defeated';
   const beat = strike(t, 0.12, 0.9);
-  return {
-    ...REST_POSE,
-    rise: -EXIT_DEPTH * u + (defeated ? 0 : 0.012 * beat),
-    lean: defeated ? -0.3 * beat : 0.1 * beat,
-    headPitch: defeated ? -0.3 * beat : 0.25 * beat,
-    hatLift: defeated ? 0.03 * beat : 0,
-    hatTilt: defeated ? -0.4 * beat : 0.6 * beat,
-    arm: defeated ? 0 : beat,
-    eyewearDrop: defeated && kind === 'rivalTycoon' ? smooth(t / 0.3) : 0,
-    glint: 1.5 * beat,
-  };
+  copyPose(out, REST_POSE);
+  out.rise = -EXIT_DEPTH * u + (defeated ? 0 : 0.012 * beat);
+  out.lean = defeated ? -0.3 * beat : 0.1 * beat;
+  out.headPitch = defeated ? -0.3 * beat : 0.25 * beat;
+  out.hatLift = defeated ? 0.03 * beat : 0;
+  out.hatTilt = defeated ? -0.4 * beat : 0.6 * beat;
+  out.arm = defeated ? 0 : beat;
+  out.eyewearDrop = defeated && kind === 'rivalTycoon' ? smooth(t / 0.3) : 0;
+  out.glint = 1.5 * beat;
+  return out;
 }
 
 /**
@@ -354,52 +391,57 @@ function exited(kind: BossKind, mood: 'defeated' | 'escaped', t: number): BossPo
  * breathing, no jumps), and moods read through the lens flash and the backlight alone. The end
  * of the week fades it below the wall over the same time, without the flourish.
  */
-function reducedPose(reaction: BossReaction, t: number): BossPose {
+function reducedPose(reaction: BossReaction, t: number, out: MutableBossPose): MutableBossPose {
+  copyPose(out, REST_POSE);
   switch (reaction.mood) {
     case 'idle':
-      return REST_POSE;
+      return out;
     case 'watch':
-      return { ...REST_POSE, halo: 0.25, glint: 0.4 };
+      out.halo = 0.25;
+      out.glint = 0.4;
+      return out;
     case 'shock': {
       const glow = 1 - smooth(t / REACTION_SECONDS.shock);
-      return {
-        ...REST_POSE,
-        glint: 0.4 + reaction.strength * 2.5 * glow,
-        halo: 0.25 + reaction.strength * 0.75 * glow,
-      };
+      out.glint = 0.4 + reaction.strength * 2.5 * glow;
+      out.halo = 0.25 + reaction.strength * 0.75 * glow;
+      return out;
     }
     case 'flinch':
-      return { ...REST_POSE, glint: reaction.strength * (1 - smooth(t / REACTION_SECONDS.flinch)) };
+      out.glint = reaction.strength * (1 - smooth(t / REACTION_SECONDS.flinch));
+      return out;
     case 'defeated':
     case 'escaped':
-      return { ...REST_POSE, rise: -EXIT_DEPTH * smooth(t / REACTION_SECONDS.exit) };
+      out.rise = -EXIT_DEPTH * smooth(t / REACTION_SECONDS.exit);
+      return out;
   }
 }
 
 /**
- * The pose a `kind` figure aims for at `now` seconds in `reaction` (settle it first). The
- * presence eases into it from the pose the last mood left over `MOOD_EASE`, so nothing snaps.
+ * The pose a `kind` figure aims for at `now` seconds in `reaction` (settle it first), written
+ * into `out` (a fresh pose by default). The presence eases into it from the pose the last mood
+ * left over `MOOD_EASE`, so nothing snaps.
  */
 export function poseAt(
   kind: BossKind,
   reaction: BossReaction,
   now: number,
   reducedMotion: boolean,
-): BossPose {
+  out: MutableBossPose = restingPose(),
+): MutableBossPose {
   const t = Math.max(now - reaction.since, 0);
-  if (reducedMotion) return reducedPose(reaction, t);
+  if (reducedMotion) return reducedPose(reaction, t, out);
   switch (reaction.mood) {
     case 'idle':
-      return idle(kind, now);
+      return idle(kind, now, out);
     case 'watch':
-      return watching(kind, now);
+      return watching(kind, now, out);
     case 'shock':
-      return shocked(kind, t, reaction.strength, now);
+      return shocked(kind, t, reaction.strength, now, out);
     case 'flinch':
-      return flinched(kind, t, reaction.strength, now, idle(kind, now));
+      return flinched(kind, t, reaction.strength, now, out);
     case 'defeated':
     case 'escaped':
-      return exited(kind, reaction.mood, t);
+      return exited(kind, reaction.mood, t, out);
   }
 }
 
@@ -415,8 +457,8 @@ export const MOOD_EASE: Readonly<Record<BossMood, number>> = {
 
 /**
  * `to` taking over from `from` `t` seconds into a mood that eases in over `seconds`, on an
- * underdamped spring so a lean-in overshoots a touch and settles. Reduced motion eases without
- * the overshoot.
+ * underdamped spring so a lean-in overshoots a touch and settles, written into `out` (a fresh
+ * pose by default). Reduced motion eases without the overshoot.
  */
 export function crossfade(
   from: BossPose,
@@ -424,9 +466,10 @@ export function crossfade(
   t: number,
   seconds: number,
   reducedMotion: boolean,
-): BossPose {
-  if (t >= seconds * 2.5 || seconds <= 0) return to;
+  out: MutableBossPose = restingPose(),
+): MutableBossPose {
+  if (t >= seconds * 2.5 || seconds <= 0) return copyPose(out, to);
   const u = t / seconds;
   const k = reducedMotion ? smooth(u) : Math.min(spring(u, 0.55, 4.5), 1.08);
-  return blend(from, to, k, false);
+  return blendInto(out, from, to, k, false);
 }
