@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
+import { BOOT_HOLD_MS, PLAYABLE_MARK } from '../src/scene/quality/scaleHold.ts';
 import { SCREENSHOT_DIR } from './env.ts';
 import { bootGame, expect, expectDemoMode, gameUrl, tapDrop, test } from './fixtures.ts';
 
@@ -292,16 +293,25 @@ interface SceneScaleProbe {
   readonly scale: string | undefined;
   readonly pin: string | undefined;
   readonly tier: string | undefined;
+  /** Page time since the playable mark, on the clock the boot pin runs on. */
+  readonly sincePlayableMs: number;
 }
 
 /** What the quality loop last rendered at, mirrored onto the canvas by `reportSceneScale`. */
 function readSceneScale(page: Page): Promise<SceneScaleProbe> {
-  return page.evaluate(() => {
+  return page.evaluate((mark) => {
     const canvas = document.querySelector<HTMLCanvasElement>('#stage');
     if (!canvas) throw new Error('No #stage canvas to read the scene scale from');
+    const [playable] = performance.getEntriesByName(mark, 'mark');
+    if (!playable) throw new Error(`No ${mark} performance mark to time the boot pin from`);
     const { sceneScale, scenePin, qualityTier } = canvas.dataset;
-    return { scale: sceneScale, pin: scenePin, tier: qualityTier };
-  });
+    return {
+      scale: sceneScale,
+      pin: scenePin,
+      tier: qualityTier,
+      sincePlayableMs: performance.now() - playable.startTime,
+    };
+  }, PLAYABLE_MARK);
 }
 
 for (const { layout, locale } of BOOT_WINDOW_CASES) {
@@ -325,9 +335,12 @@ for (const { layout, locale } of BOOT_WINDOW_CASES) {
         const after = await readSceneScale(page);
         test.info().annotations.push({
           type: 'scene scale',
-          description: `${layout.name} ${label}: ${before.scale} -> ${after.scale} (pin ${before.pin} -> ${after.pin}, tier ${after.tier}), done by playable + ${Date.now() - playableAt} ms`,
+          description: `${layout.name} ${label}: ${before.scale} -> ${after.scale} (pin ${before.pin} -> ${after.pin}, tier ${after.tier}), done by playable + ${after.sincePlayableMs.toFixed(0)} ms`,
         });
         for (const probe of [before, after]) {
+          // The pin lasts BOOT_HOLD_MS of active play, never longer, so on a slow host the later
+          // captures can land after it; inside the window it must hold at full scale.
+          if (probe.sincePlayableMs >= BOOT_HOLD_MS) continue;
           expect(probe.pin, `${label}: the boot pin still holds`).toBe('boot');
           expect(probe.scale, `${label}: the scene renders at full scale`).toBe('1.000');
         }

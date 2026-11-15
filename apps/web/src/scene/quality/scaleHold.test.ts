@@ -27,23 +27,26 @@ describe('createScaleHold', () => {
     const s = sources();
     const hold = createScaleHold(s);
     expect(held(hold.until(500), 500)).toBe(true);
-    expect(hold.takeBootPin(500)).toBe(false);
+    expect(hold.takeBootPin(500)).toBeNull();
     expect(held(hold.until(4_000), 4_000)).toBe(true);
     s.state.playable = 4_200;
     expect(held(hold.until(4_216), 4_216)).toBe(false);
-    expect(hold.takeBootPin(4_216)).toBe(true);
-    expect(hold.takeBootPin(4_232)).toBe(false);
+    expect(hold.takeBootPin(4_216)).toBe(BOOT_HOLD_MS - 16);
+    expect(hold.takeBootPin(4_232)).toBeNull();
   });
 
-  it('pins on a playable mark up to BOOT_HOLD_MS old, as after a renderer rebuild in boot', () => {
+  it('pins until BOOT_HOLD_MS after a playable mark seen late, as after a renderer rebuild', () => {
     const recent = sources();
     recent.state.playable = 1_000;
-    expect(createScaleHold(recent).takeBootPin(1_000 + BOOT_HOLD_MS - 1)).toBe(true);
+    expect(createScaleHold(recent).takeBootPin(1_000 + BOOT_HOLD_MS - 1)).toBe(1);
+    const early = sources();
+    early.state.playable = 5_000;
+    expect(createScaleHold(early).takeBootPin(4_000)).toBe(BOOT_HOLD_MS);
     const stale = sources();
     stale.state.playable = 1_000;
     const hold = createScaleHold(stale);
-    expect(hold.takeBootPin(1_000 + BOOT_HOLD_MS)).toBe(false);
-    expect(hold.takeBootPin(1_000 + BOOT_HOLD_MS + 16)).toBe(false);
+    expect(hold.takeBootPin(1_000 + BOOT_HOLD_MS)).toBeNull();
+    expect(hold.takeBootPin(1_000 + BOOT_HOLD_MS + 16)).toBeNull();
   });
 
   it('stops waiting for a playable mark that never comes', () => {

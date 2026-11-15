@@ -13,13 +13,7 @@ import {
 } from './adaptiveQuality.ts';
 import { runBenchmark } from './benchmark.ts';
 import { createGpuFrameTimer } from './gpuTimer.ts';
-import {
-  BOOT_HOLD_MS,
-  BOOT_PIN_FRAMES,
-  createScaleHold,
-  documentScaleHoldSources,
-  type ScaleHoldSources,
-} from './scaleHold.ts';
+import { createScaleHold, documentScaleHoldSources, type ScaleHoldSources } from './scaleHold.ts';
 import { browserStore, type KeyValueStore } from './storage.ts';
 import {
   sceneScalePinFrom,
@@ -172,7 +166,8 @@ export async function createAdaptiveRendering(
         clockChecked = true;
       }
       if (hold !== null) {
-        if (hold.takeBootPin(nowMs)) governor.pinFull(BOOT_HOLD_MS, BOOT_PIN_FRAMES);
+        const bootPinMs = hold.takeBootPin(nowMs);
+        if (bootPinMs !== null) governor.pinFull(bootPinMs);
         governor.hold(hold.until(nowMs));
       }
       governor.frame(nowMs, { cpuMs: lastCpuMs, gpuMs: gpuTimer?.latestMs ?? null });

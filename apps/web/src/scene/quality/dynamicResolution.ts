@@ -96,18 +96,10 @@ const CONFIRMED_FOR_MS = 15_000;
 export const TRIAL_SPAN = 0.15;
 /** Timer readings older than this mean the timer stalled; fall back to frame intervals. */
 const GPU_STALE_MS = 500;
-/**
- * The most a frame advances a full-resolution pin. Slower frames are hitches (a shader compile,
- * a coin spawn, a capture), so a device that draws slowly keeps the pin until it has shown about
- * as many frames as a healthy one would have in the same window.
- */
-export const PIN_FRAME_CAP_MS = 100;
 
 interface Pin {
   readonly forMs: number;
-  readonly minFrames: number;
   elapsedMs: number;
-  frames: number;
 }
 
 interface Trial {
@@ -306,18 +298,17 @@ export class DynamicResolution {
   }
 
   /**
-   * Jumps to full resolution and holds it, unmeasured, until `forMs` of rendered time and at
-   * least `minFrames` frames have passed. Each frame counts for at most `PIN_FRAME_CAP_MS`, and
-   * a gap over `PAUSE_MS` not at all, so a hidden tab or a stalled device does not use up the
-   * window. A running A/B test is dropped, and measuring resumes from a fresh baseline after it.
+   * Jumps to full resolution and holds it, unmeasured, for `forMs` of active time: the sum of
+   * frame intervals, leaving out gaps over `PAUSE_MS` (a hidden tab, a capture stall). A slow
+   * device is released on the same clock as a fast one, so the pin never switches off the
+   * resolution safety net for longer than `forMs` of play. A running A/B test is dropped, and
+   * measuring resumes from a fresh baseline after it.
    */
-  pinFull(forMs: number, minFrames: number): ResolutionEvent | null {
-    if (!(forMs >= 0) || !(minFrames >= 0)) {
-      throw new Error(
-        `DynamicResolution.pinFull needs a non-negative window, got ${forMs} ms and ${minFrames} frames`,
-      );
+  pinFull(forMs: number): ResolutionEvent | null {
+    if (!(forMs >= 0)) {
+      throw new Error(`DynamicResolution.pinFull needs a non-negative window, got ${forMs} ms`);
     }
-    this.pin = { forMs, minFrames, elapsedMs: 0, frames: 0 };
+    this.pin = { forMs, elapsedMs: 0 };
     this.trial = null;
     this.lastProbeAgeMs = null;
     this.interrupt();
@@ -325,11 +316,8 @@ export class DynamicResolution {
   }
 
   private runPin(pin: Pin, intervalMs: number): null {
-    if (intervalMs <= PAUSE_MS) {
-      pin.elapsedMs += Math.min(intervalMs, PIN_FRAME_CAP_MS);
-      pin.frames += 1;
-    }
-    if (pin.elapsedMs >= pin.forMs && pin.frames >= pin.minFrames) {
+    if (intervalMs <= PAUSE_MS) pin.elapsedMs += intervalMs;
+    if (pin.elapsedMs >= pin.forMs) {
       this.pin = null;
       this.interrupt();
     }

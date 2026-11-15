@@ -6,7 +6,7 @@ import {
   type ScalablePipeline,
 } from './adaptiveQuality.ts';
 import type { BenchmarkResult } from './benchmark.ts';
-import { BOOT_HOLD_MS, BOOT_PIN_FRAMES } from './scaleHold.ts';
+import { BOOT_HOLD_MS } from './scaleHold.ts';
 import {
   DOWNGRADE_BOOTS,
   loadQuality,
@@ -533,7 +533,7 @@ describe('createQualityGovernor', () => {
 
   it('restores full resolution on a boot pin and adapts only after it ends', () => {
     const post = fakePipeline(QUALITY_PROFILES.medium);
-    /** Over budget at every scale, but each frame stays under the pin's frame cap. */
+    /** Over budget at every scale. */
     const overload: Load = { cpuMs: 3, gpuMsAtRatio1: 20 };
     const governor = createQualityGovernor(post, {
       backend: 'webgpu',
@@ -544,7 +544,7 @@ describe('createQualityGovernor', () => {
     play(post, governor, overload, 5_000);
     expect(post.dynamicScale).toBeLessThan(1);
 
-    governor.pinFull(BOOT_HOLD_MS, BOOT_PIN_FRAMES);
+    governor.pinFull(BOOT_HOLD_MS);
     expect(post.dynamicScale).toBe(1);
     expect(governor.controller.pinned).toBe(true);
     const pinnedAt = post.history.length;
@@ -565,7 +565,7 @@ describe('createQualityGovernor', () => {
       pinnedScale: 'min',
       logger: quietLogger(),
     });
-    governor.pinFull(BOOT_HOLD_MS, BOOT_PIN_FRAMES);
+    governor.pinFull(BOOT_HOLD_MS);
     expect(post.dynamicScale).toBe(QUALITY_PROFILES.medium.minResolutionScale);
     expect(governor.controller.pinned).toBe(false);
   });
