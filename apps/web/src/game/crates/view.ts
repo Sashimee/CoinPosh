@@ -542,7 +542,9 @@ interface Playing {
  *
  * While held (a sheet is open) nothing starts and a playing unbox freezes with its card out of
  * sight, so the cinematic never plays behind a sheet or stacks over one; `crate:waiting` tells
- * the dock how many crates are ready for when it lets go.
+ * the dock how many crates are ready for when it lets go. An unbox frozen before its reveal
+ * resumes at the reveal: the sheet already broke its build-up, so the player comes back to the
+ * burst and the card rather than replaying the wait.
  */
 export class UnboxDirector {
   private readonly options: UnboxDirectorOptions;
@@ -615,9 +617,12 @@ export class UnboxDirector {
   hold(held: boolean): void {
     if (this.disposed || held === this.isHeld) return;
     this.isHeld = held;
-    this.playing?.card.hold?.(held);
+    const playing = this.playing;
+    playing?.card.hold?.(held);
     this.announceWaiting();
-    if (!held && this.playing === null) this.startNext();
+    if (held) return;
+    if (playing === null) this.startNext();
+    else playing.cinematic.skip();
   }
 
   skip(): void {
