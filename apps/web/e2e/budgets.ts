@@ -106,9 +106,8 @@ export const BUNDLE_BUDGETS = {
    * one chunk per locale file. A player fetches the language they read (plus the EN fallback,
    * which a FR or DE player also takes and an EN player already has), never all three, so the
    * row counts the largest single locale of each namespace rather than EN + FR + DE. On
-   * 2026-11-15 only account's FR and DE files ship as chunks: 1.6 kB. A probe build that called
-   * loadNamespace('fair') and loadNamespace('account') measured 3.5 kB (fair 1.96, account 1.63
-   * at their largest locale), 78 % of this budget, so P-641 can wire fair without touching it.
+   * 2026-11-15, after P-752 split fair per language: 3.5 kB (fair 1.96, account 1.63 at their
+   * largest locale), 78 % of this budget.
    */
   i18nNamespaces: 4.5 * 1024,
   /**
@@ -136,9 +135,11 @@ export const BUNDLE_BUDGETS = {
   gachaDock: 6 * 1024,
   /**
    * The capsule machine sheet with its 3D stage, and the odds panel it links to, each imported on
-   * first press. 25.4 kB gzip on 2026-11-15.
+   * first press. 25.4 kB gzip on 2026-11-15 with all three fair locales inside the odds chunk;
+   * P-752 moved them to the i18n namespaces row (one per player): 20.6 kB, so the budget came
+   * down from 26.5 kB.
    */
-  gachaSheet: 26.5 * 1024,
+  gachaSheet: 23.5 * 1024,
   /**
    * P-425 / P-102: the self-hosted woff2 subsets in public/fonts, counted as served (woff2 is
    * already Brotli inside, so gzip would only hide the bytes). Cormorant Garamond 600, 700 and
