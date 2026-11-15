@@ -15,16 +15,20 @@ import type { AppEnv } from '../http/context.ts';
 import { authenticate, respond } from '../http/signed.ts';
 
 /**
- * How many of each album card the player owns, from the append-only `crate_opens` record a
- * crate open writes in the same transaction as the ledger leg that mints the card into the
- * inventory (`collectible_id`, checked against the ledger by `conservation()`). Charms are not
+ * How many of each album card the player owns, from the append-only `crate_opens` and
+ * `gacha_pulls` records a crate open or gacha pull writes in the same transaction as the ledger
+ * leg that mints the card into the inventory (`collectible_id`, checked against the ledger by
+ * `conservation()`). Charms are not
  * counted: the server keeps no charm inventory yet (P-665), so a charm entry stays unowned.
  */
 function ownedCounts(sql: SqlStorage): Map<string, number> {
   const rows = sql
     .exec<{ id: string; n: number }>(
-      `SELECT collectible_id AS id, COUNT(*) AS n FROM crate_opens
-       WHERE collectible_id IS NOT NULL GROUP BY collectible_id`,
+      `SELECT id, COUNT(*) AS n FROM (
+         SELECT collectible_id AS id FROM crate_opens WHERE collectible_id IS NOT NULL
+         UNION ALL
+         SELECT collectible_id AS id FROM gacha_pulls WHERE collectible_id IS NOT NULL
+       ) GROUP BY id`,
     )
     .toArray();
   return new Map(rows.map((row) => [row.id, row.n]));

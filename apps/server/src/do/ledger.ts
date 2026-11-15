@@ -30,6 +30,7 @@ export const TX_KINDS = [
   'safe.open',
   'scratch.grant',
   'scratch.reveal',
+  'gacha.pull',
   'quest.claim',
   'streak.milestone',
   'season.tier',

@@ -15,6 +15,7 @@ import { createAlbumRoutes } from './routes/album.ts';
 import { createAscendRoutes } from './routes/ascend.ts';
 import { authRoutes } from './routes/auth.ts';
 import { createCrateRoutes } from './routes/crates.ts';
+import { createGachaRoutes } from './routes/gacha.ts';
 import { createSafeRoutes } from './routes/safes.ts';
 import { createScratchRoutes } from './routes/scratch.ts';
 import { createSoireeRoutes } from './routes/soiree.ts';
@@ -51,6 +52,7 @@ export function createApp(deps: AppDeps) {
   app.route('/', createAlbumRoutes(playerStub));
   app.route('/', createSafeRoutes(playerStub));
   app.route('/', createScratchRoutes(playerStub));
+  app.route('/', createGachaRoutes(playerStub));
   app.route('/', createSoireeRoutes(playerStub));
   mountServerFeatures(app, deps.features ?? SERVER_FEATURES);
 
