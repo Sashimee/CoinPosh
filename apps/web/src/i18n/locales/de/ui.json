@@ -44,6 +44,7 @@
     "idle": "Schieben für Kaskaden",
     "next": "Noch {{count}} bis {{tier}}",
     "peak": "Gipfel",
+    "best": "Rekord: {{tier}}",
     "multiplier": "×{{value}}",
     "aria": "Kaskade {{tier}}, {{coins}}, Multiplikator {{multiplier}}",
     "ariaIdle": "Keine Kaskade aktiv",

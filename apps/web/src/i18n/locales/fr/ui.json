@@ -47,6 +47,7 @@
     "idle": "Poussez pour cascader",
     "next": "{{count}} avant {{tier}}",
     "peak": "Sommet",
+    "best": "Record : {{tier}}",
     "multiplier": "×{{value}}",
     "aria": "Cascade {{tier}}, {{coins}}, multiplicateur {{multiplier}}",
     "ariaIdle": "Aucune cascade en cours",
