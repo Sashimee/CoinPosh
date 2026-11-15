@@ -193,7 +193,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-11.14 | done | task/T-11.14 (merge ceaafe5) | Collecting audio: procedural prize impacts, variant shimmers and cellar ambience in apps/web/src/audio/collecting/ (3b623df); pnpm check green after merge; follow-up P-735 |
 | T-11.15 | todo | | Waits on T-11.08, T-11.09, T-11.11, T-11.13, T-11.14. Collecting wiring |
 | T-11.16 | todo | | Waits on T-11.15, T-1.17. E2E: collecting |
-| T-12.01 | todo | | Waits on T-11.01. Standing contracts |
+| T-12.01 | done | task/T-12.01 (merge a3b5919) | Standing contracts for Repute, ranks, perks, achievements, mastery and staff in packages/shared/src/api/standing (b1f89c0); pnpm check green after merge |
 | T-12.02 | todo | | Waits on T-12.01, T-3.07. Standing numbers |
 | T-12.03 | todo | | Waits on T-12.02. Server: Repute, ranks, titles, perks |
 | T-12.04 | todo | | Waits on T-12.02. Server: achievements |
