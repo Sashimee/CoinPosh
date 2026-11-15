@@ -4,14 +4,19 @@ import {
   dot,
   exp,
   float,
+  luminance,
+  max,
+  min,
   mix,
   normalView,
+  output,
   positionLocal,
   positionViewDirection,
   pow,
   uniform,
   vec2,
   vec3,
+  vec4,
 } from 'three/tsl';
 import {
   Color,
@@ -24,6 +29,11 @@ import type { QualityTier } from '../quality/tiers.ts';
 import { rivieraTones } from '../venues/riviera/palette.ts';
 
 type F = Node<'float'>;
+type V3 = Node<'vec3'>;
+
+/** Scene-linear luminance where a highlight starts to roll off: just under every tier's bloom threshold. */
+const HIGHLIGHT_KNEE = 0.85;
+const HIGHLIGHT_CEILING = 2;
 
 /**
  * The few numbers a figure animates on the GPU, one set per figure: the CPU writes a handful
@@ -51,6 +61,25 @@ export function createStaffUniforms(): StaffUniforms {
 
 function fresnel(): F {
   return float(1).sub(abs(dot(normalView, positionViewDirection)));
+}
+
+// The figures are a few centimetres tall, so a cuff, a clasp or the cloche's dome lined up with
+// the key light is a handful of pixels running to 10+; the bloom spreads those over the whole
+// frame. Above the knee the luminance eases towards a ceiling and the colour keeps its hue.
+function compressHighlight(color: V3): V3 {
+  const span = HIGHLIGHT_CEILING - HIGHLIGHT_KNEE;
+  const lum = luminance(color);
+  const over = max(lum.sub(HIGHLIGHT_KNEE), 0);
+  const eased = min(lum, HIGHLIGHT_KNEE).add(
+    float(1)
+      .sub(exp(over.div(-span)))
+      .mul(span),
+  );
+  return color.mul(eased.div(max(lum, 1e-4)));
+}
+
+function withRolledHighlights(material: MeshPhysicalNodeMaterial): void {
+  material.outputNode = vec4(compressHighlight(output.rgb), output.a);
 }
 
 function glintBand(u: StaffUniforms): F {
@@ -103,6 +132,7 @@ export function createStaffMaterial(quality: QualityTier, u: StaffUniforms) {
     .mul(rim)
     .add(faded.mul(trim.y))
     .add(color.mul(glintBand(u).mul(metal).mul(1.5)));
+  withRolledHighlights(material);
   return material;
 }
 
@@ -125,5 +155,6 @@ export function createStaffGlass(u: StaffUniforms) {
   const f = fresnel();
   material.opacityNode = mix(float(0.12), float(0.8), pow(f, 2.4));
   material.emissiveNode = u.rim.mul(pow(f, 3).mul(u.rimStrength).mul(0.6));
+  withRolledHighlights(material);
   return material;
 }

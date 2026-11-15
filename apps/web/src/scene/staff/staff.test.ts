@@ -226,6 +226,16 @@ describe('createStaffFigure', () => {
       figure.dispose();
     }
   });
+
+  it('rolls off the highlights of every staff material so a glint cannot flood the bloom', () => {
+    const figure = createStaffFigure('sommelier');
+    const materials = meshes(figure).map((mesh) => mesh.material as Material);
+    expect(materials.map((m) => m.name)).toEqual(['staff/livery', 'staff/glass']);
+    for (const material of materials) {
+      expect((material as Material & { outputNode: unknown }).outputNode).toBeTruthy();
+    }
+    figure.dispose();
+  });
 });
 
 describe('composePose', () => {
