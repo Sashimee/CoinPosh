@@ -374,7 +374,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-425 | done | task/P-425 (merge 93c1169) | Self-hosted Cormorant Garamond 600/700/700-italic and Manrope 500/700 woff2 (Latin + FR/DE) with font-display: swap, @font-face and tokens in styles.css, preloads in index.html, OFL licences and SOURCES.md, font bytes counted in bundle-size.ts, fonts.spec.ts e2e (f505d38); folds P-102; follow-ups P-689/P-690; pnpm check green after merge |
 | P-102 | done | folded into P-425 (merge 93c1169) | Display serif and UI sans now ship as self-hosted webfonts |
 | P-701 | done | task/P-701 (merge 1b496aa) | mountCrates takes an optional openFair hook and passes it to revealCard; the Certified Fair chip (crate-fair) calls it, with crates.test.ts coverage (a444400); wiring into main.ts requested as P-711; pnpm check green after merge |
-| P-674 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
+| P-674 | done | 6095de5 | T-19.05 keyboard and mouse controls mounted in the running game (systems/create.ts) with tests; pnpm check green after merge |
 | P-640 | done | fd4d02c | dock press during a crate cinematic pauses it under the sheet, resumes on close |
 | P-684 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
 | T-3.05-p4 | blocked(design: Demo world lacks lifetime fusions, activeDays and coinsBanked counters for quest metrics; waits on P-498) | | |
