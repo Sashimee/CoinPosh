@@ -376,7 +376,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-701 | done | task/P-701 (merge 1b496aa) | mountCrates takes an optional openFair hook and passes it to revealCard; the Certified Fair chip (crate-fair) calls it, with crates.test.ts coverage (a444400); wiring into main.ts requested as P-711; pnpm check green after merge |
 | P-674 | done | 6095de5 | T-19.05 keyboard and mouse controls mounted in the running game (systems/create.ts) with tests; pnpm check green after merge |
 | P-640 | done | fd4d02c | dock press during a crate cinematic pauses it under the sheet, resumes on close |
-| P-684 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
+| P-684 | done | task/P-684 (merge 8a7fb4a) | HUD collisions during a cascade: empty widened rail card, Vault plaque pulse covering the pearl chip (569fafd); pnpm check green after merge (one rerun: unrelated persist.test.ts timer test flaked under parallel load, passes 3/3 isolated) |
 | T-3.05-p4 | blocked(design: Demo world lacks lifetime fusions, activeDays and coinsBanked counters for quest metrics; waits on P-498) | | |
 | P-707 | done | task/P-707 (merge 71f8e34) | bundle:check red since T-11.01-p3: i18n namespace row, one-locale loader, split boot-lazy group (48208cc, retry; folds P-702, P-682); pnpm check green after merge |
 | P-657 | todo | | Founder decision 2026-11-15: refused fusion lays the missing inputs back on the table via a new sim restore API (POLISH.md); owns widened to packages/sim/** and session bridge |
