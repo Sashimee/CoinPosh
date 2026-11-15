@@ -5,19 +5,19 @@ Treat it as a claim: reconcile with `git log --oneline -10`, `git status`, `gh p
 
 ## Goal
 Ship the CoinPosh roadmap (`docs/plan/04-ROADMAP.md`) wave by wave with the saved workflow
-`.claude/workflows/execute-wave.js` (5 tasks per wave, review-gated, integrated, playtested, shipped to `dev`).
+`.claude/workflows/execute-wave.js` (3 parallel slots since 2026-11-15, review-gated, integrated, playtested, shipped to `dev`).
 
 ## Status
-- Build loop **paused** by the founder on 2026-11-15 (move to a new machine). Do not launch a wave until the founder says to resume.
+- Build loop **resumed** by the founder on 2026-11-15 on `alex-dev`: wave 45 running from `feat/build-loop` with **3 parallel slots** (`maxTasks: 3`, founder's new default), playtest on.
 - 2026-11-15: new machine `alex-dev` set up: Node 24.20.0 in `/usr/local`, pnpm 12.4.2 via corepack, deps installed, Playwright 1.65.1 Chromium installed; `pnpm check` green (15/15 tasks, 232 sim tests) and `pnpm --filter web build` passes.
-- Next: on resume, fast-forward `feat/build-loop` to `dev`, then launch
-  `Workflow({scriptPath: ".claude/workflows/execute-wave.js", args: {maxTasks: 5, playtest: true}})` from the repo root.
-  Review the `wip/*` branches from wave 44 first (see Blockers). Full procedure: `docs/plan/HANDOFF.md`.
+- Next: let wave 45 finish, ship each approved task to `dev`, then launch the next wave with
+  `Workflow({scriptPath: ".claude/workflows/execute-wave.js", args: {maxTasks: 3, playtest: true}})` from the repo root.
+  After a usage limit resume with `resumeFromRunId`, never relaunch. Full procedure: `docs/plan/HANDOFF.md`.
 
 ## State
 - Working branch for the loop: `feat/build-loop` (from `dev`). Flow: `task/<id>` → `feat/build-loop` → `ship/<name>` PR into `dev` (merge it) → `main` only for a release candidate the founder validated.
 - `dev` head: dbfeb2a (merge of PR #224, `ship/wave-44`). `feat/build-loop` is at 26916b6, 15 commits behind `dev`, nothing unmerged.
-- Open PRs: none. Last shipped wave: 44 (stopped early).
+- Open PRs: none. Last shipped wave: 44 (stopped early). Wave 45 workflow run id: `wf_a5ccfffc-cf5` (started 2026-11-15, resume with `resumeFromRunId`).
 - Dev deploy: https://devcoinposh.bas.lu (API https://api.devcoinposh.bas.lu), Dokploy auto-deploys `dev` on push. `main` is not deployed.
 - Dashboard: https://claude.ai/artifact/13mygXtRWZsppKUrsHx5BA. Refresh with `python3 tools/dashboard/gen.py <repo> <out_dir> <phase> "<detail>"`, then upload the 6 JSON files as assets and repoint `datasets/<name>` (steps in `docs/plan/HANDOFF.md`).
 
