@@ -4,6 +4,7 @@ export * from './collecting/index.ts';
 export * from './endpoint.ts';
 export * from './endpoints.ts';
 export * from './fair.ts';
+export * from './liveEvents/index.ts';
 export * from './loot.ts';
 export * from './meta.ts';
 export * from './progression.ts';
