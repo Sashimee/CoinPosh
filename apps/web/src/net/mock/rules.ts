@@ -47,4 +47,9 @@ export const MOCK_RULES = {
   idempotencyRetained: 1_000,
   /** Ledger entries held in memory; older ones fold into a per-player checkpoint. */
   ledgerRetained: 2_000,
+  /**
+   * Opened Vault Crate rolls kept per player, newest first, so a page that died between the open
+   * and the collect can be shown the roll it was paid for once it boots again.
+   */
+  crateRollsRetained: 8,
 } as const;

@@ -38,6 +38,7 @@ import { createI18n, LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
 import type { FairOpenOptions } from '../../ui/fair/index.ts';
 import type { ApiClient } from '../../net/client.ts';
 import type { Connectivity, Scheduler } from '../../net/connectivity.ts';
+import type { MockStorage } from '../../net/mock/persist.ts';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
 import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
 import type { MockServer } from '../../net/mock/server.ts';
@@ -93,6 +94,7 @@ import {
   type CrateCardPlacement,
 } from './revealCard.ts';
 import { CRATE_RIDE_SECONDS, CrateRide } from './ride.ts';
+import { unseenCrates, type UnseenCrates } from './unseen.ts';
 import { UnboxDirector, type OpenedCrate, type UnboxCard } from './view.ts';
 
 const manualScheduler: Scheduler = { setTimeout: () => ({}), clearTimeout: () => undefined };
@@ -1485,7 +1487,10 @@ describe('crates against the Demo Mode server', () => {
     player = await connectPlayer(server, time);
   });
 
-  async function setup(client: Pick<ApiClient, 'call'> = player.client) {
+  async function setup(
+    client: Pick<ApiClient, 'call'> = player.client,
+    unseen: UnseenCrates | null = null,
+  ) {
     const outbox = await Outbox.open(player.store, rethrow);
     const table = new TableSync({
       client: player.client,
@@ -1531,7 +1536,7 @@ describe('crates against the Demo Mode server', () => {
       events.on(type, record(type));
     }
     events.on('crate:opened', ({ crateId, roll }) => opened.push({ crateId, roll }));
-    const controller = new CrateController({ table, client, sim, events });
+    const controller = new CrateController({ table, client, sim, events, unseen });
     let drops = 0;
     const falling: CoinId[] = [];
 
@@ -1793,6 +1798,114 @@ describe('crates against the Demo Mode server', () => {
     expect(mock.tableSnapshot?.cratePoses).toEqual(resumed);
     expect(mock.snapshotFlags['snapshot.teleport']).toBe(0);
     expectConserved();
+  });
+
+  describe('across a reload mid-unbox', () => {
+    let storage: MockStorage & { readonly items: Map<string, string> };
+
+    beforeEach(async () => {
+      const items = new Map<string, string>();
+      storage = {
+        items,
+        getItem: (key) => items.get(key) ?? null,
+        setItem: (key, value) => {
+          items.set(key, value);
+        },
+        removeItem: (key) => {
+          items.delete(key);
+        },
+      };
+      server = storedPage();
+      player = await connectPlayer(server, time);
+    });
+
+    function storedPage(): MockServer {
+      return createMockServer({
+        now: time.now,
+        storage,
+        lifecycle: null,
+        onPersistWarning: (message) => {
+          throw new Error(`Unexpected persistence warning: ${message}`);
+        },
+      });
+    }
+
+    function noWarnings(message: string): never {
+      throw new Error(`Unexpected unseen-crates warning: ${message}`);
+    }
+
+    /** The page dies: the world is written as pagehide would, and a new page connects. */
+    async function reload(unseen: UnseenCrates) {
+      server.flush();
+      server = storedPage();
+      player = await connectPlayer(server, time);
+      await player.client.call('state', { query: { hydrate: 'boot' } });
+      const game = await setup(player.client, unseen);
+      const replayed: CrateEvents['crate:opened'][] = [];
+      game.events.on('crate:opened', (payload) => {
+        if (payload.replayed === true) replayed.push(payload);
+      });
+      return { game, replayed };
+    }
+
+    function lootFor(crateId: CrateId) {
+      return server.ledger().filter((entry) => entry.ref === `vaultCrate:${crateId}`);
+    }
+
+    it('shows the roll a reload cut off once more, with no second grant', async () => {
+      const unseen = unseenCrates(storage, noWarnings);
+      const first = await openFtueCrate(await setup(player.client, unseen));
+      expect(unseen.list()).toEqual([first.crateId]);
+      const paid = lootFor(first.crateId);
+      expect(paid.length).toBe(
+        first.roll.rewards.filter((reward) => reward.kind === 'currency').length,
+      );
+      const wallet = serverWallet(server, playerId);
+
+      const { game, replayed } = await reload(unseenCrates(storage, noWarnings));
+      game.controller.replayUnseen();
+      await game.controller.settled();
+      expect(replayed.map(({ crateId, roll }) => ({ crateId, roll }))).toEqual([first]);
+      expect(game.log.filter((entry) => entry.type === 'crate:pity')).toEqual([]);
+      expect(lootFor(first.crateId)).toEqual(paid);
+      expect(serverWallet(server, playerId)).toEqual(wallet);
+      expectConserved();
+
+      game.controller.replayUnseen();
+      await game.controller.settled();
+      expect(replayed, 'the server shows a roll once per page').toHaveLength(1);
+      expect(game.log.some((entry) => entry.type === 'crate:failed')).toBe(false);
+      expect(unseenCrates(storage, noWarnings).list()).toEqual([]);
+    });
+
+    it('never shows a collected crate again', async () => {
+      const unseen = unseenCrates(storage, noWarnings);
+      const first = await openFtueCrate(await setup(player.client, unseen));
+      const before = await setup(player.client, unseen);
+      before.controller.seen(first.crateId);
+
+      const { game, replayed } = await reload(unseenCrates(storage, noWarnings));
+      game.controller.replayUnseen();
+      await game.controller.settled();
+      expect(replayed).toEqual([]);
+      await expect(
+        player.client.call('cratesOpen', { body: { crateId: first.crateId } }),
+      ).resolves.toMatchObject({ crateId: first.crateId });
+      expectConserved();
+    });
+
+    it('leaves a crate the table laid again to its ride instead of replaying it', async () => {
+      const unseen = unseenCrates(storage, noWarnings);
+      const game = await setup(player.client, unseen);
+      while (game.controller.riding.length === 0) await game.drop();
+      const [ride] = game.controller.riding;
+      if (!ride) throw new Error('Expected a crate on the table.');
+      unseen.add(ride.crate.id);
+      game.controller.replayUnseen();
+      await game.controller.settled();
+      expect(game.opened).toEqual([]);
+      expect(unseen.list()).toEqual([]);
+    });
   });
 
   it('stops listening once disposed', async () => {

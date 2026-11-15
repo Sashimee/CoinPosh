@@ -518,6 +518,12 @@ describe('Demo persistence: claimed-but-unopened crates', () => {
     const third = await Tab.open(page());
     const rebooted = await third.boot();
     expect(rebooted.table.crates.map((candidate) => candidate.id)).not.toContain(crate.id);
+    const entries = third.server.ledger().length;
+    const replayed = await third.player.client.call('cratesOpen', {
+      body: { crateId: crate.id },
+    });
+    expect(replayed.roll, 'the roll the reload cut off, shown again').toEqual(opened.roll);
+    expect(third.server.ledger(), 'a replay books nothing').toHaveLength(entries);
     await expect(
       third.player.client.call('cratesOpen', { body: { crateId: crate.id } }),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -573,14 +579,137 @@ describe('Demo persistence: claimed-but-unopened crates', () => {
   it('does not open a crate twice when the open landed just before the reload', async () => {
     const first = await Tab.open(page());
     const { crate } = await winFtueCrate(first);
-    await first.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    const opened = await first.player.client.call('cratesOpen', { body: { crateId: crate.id } });
     first.server.flush();
     const second = await Tab.open(page());
     const booted = await second.boot();
     expect(booted.table.crates.map((candidate) => candidate.id)).not.toContain(crate.id);
+    const entries = second.server.ledger().length;
+    const replayed = await second.player.client.call('cratesOpen', {
+      body: { crateId: crate.id },
+    });
+    expect(replayed).toEqual({ crateId: crate.id, roll: opened.roll, wallet: opened.wallet });
+    expect(second.server.ledger()).toHaveLength(entries);
     await expect(
       second.player.client.call('cratesOpen', { body: { crateId: crate.id } }),
     ).rejects.toMatchObject({ code: 'conflict' });
+    second.expectConserved();
+  });
+});
+
+describe('Demo persistence: opened-but-unseen crates (P-703)', () => {
+  function lootEntries(server: MockServer, crateId: CrateId) {
+    return server.ledger().filter((entry) => entry.ref === `vaultCrate:${crateId}`);
+  }
+
+  it('stores the roll in the same write as the ledger that pays it', async () => {
+    const first = await Tab.open(page());
+    const { crate } = await winFtueCrate(first);
+    const opened = await first.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    first.server.flush();
+    const [player] = storedWorld().players;
+    expect(player?.openedRolls).toEqual([{ crateId: crate.id, roll: opened.roll }]);
+    const paid = storedWorld().ledger.filter((entry) => entry.ref === `vaultCrate:${crate.id}`);
+    const currencyLines = opened.roll.rewards.filter((reward) => reward.kind === 'currency');
+    expect(paid.map((entry) => entry.reason)).toEqual(
+      currencyLines.map((reward) => `loot.${reward.currency}`),
+    );
+  });
+
+  it('replays a kept roll once in every page life after the one that opened it, never paying again', async () => {
+    const first = await Tab.open(page());
+    const { crate } = await winFtueCrate(first);
+    const opened = await first.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    const paid = lootEntries(first.server, crate.id);
+    expect(paid.length).toBeGreaterThan(0);
+    first.server.flush();
+
+    for (let reload = 0; reload < 2; reload++) {
+      const tab = await Tab.open(page());
+      await tab.boot();
+      const replayed = await tab.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+      expect(replayed.roll).toEqual(opened.roll);
+      expect(replayed.wallet).toEqual(tab.wallet());
+      expect(lootEntries(tab.server, crate.id), 'exactly one loot entry per reward').toEqual(paid);
+      await expect(
+        tab.player.client.call('cratesOpen', { body: { crateId: crate.id } }),
+      ).rejects.toMatchObject({ code: 'conflict' });
+      tab.expectConserved();
+      tab.server.flush();
+    }
+  });
+
+  it('keeps the newest rolls only, dropping the oldest once more than the rules retain', async () => {
+    const first = await Tab.open(page());
+    const { crate } = await winFtueCrate(first);
+    first.server.flush();
+    const blob = JSON.parse(storedBlob()) as { world: ReturnType<typeof storedWorld> };
+    const [player] = blob.world.players;
+    if (!player) throw new Error('Expected a stored player.');
+    const roll = {
+      rarity: 'fine' as const,
+      rewards: [{ kind: 'currency' as const, currency: 'pearls' as const, amount: 1 }],
+      proof: { serverSeedHash: 'a'.repeat(64), clientSeed: 'velvet', nonce: 1 },
+      pity: { rare: 0, exquisite: 0, legendary: 0 },
+    };
+    const older = Array.from(
+      { length: MOCK_RULES.crateRollsRetained },
+      (_, i) => `crate_OLD${String(i).padStart(13, '0')}` as CrateId,
+    );
+    const edited = {
+      ...player,
+      openedCrates: [...player.openedCrates, ...older],
+      openedRolls: older.map((crateId) => ({ crateId, roll })),
+    };
+    storage.items.set(DEMO_STORAGE_KEY, encodeDemoBlob({ ...blob.world, players: [edited] }));
+
+    const second = await Tab.open(page());
+    const booted = await second.boot();
+    expect(await second.claimCrate(booted, crate.id)).toEqual([
+      { status: 'accepted', credited: 0, cascade: null, minted: null },
+    ]);
+    await second.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    second.server.flush();
+    const kept = storedWorld().players[0]?.openedRolls.map((entry) => entry.crateId);
+    expect(kept).toEqual([...older.slice(1), crate.id]);
+
+    const third = await Tab.open(page());
+    await third.boot();
+    await expect(
+      third.player.client.call('cratesOpen', { body: { crateId: older[0] ?? crate.id } }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    const newest = await third.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    expect(newest.crateId).toBe(crate.id);
+    third.expectConserved();
+  });
+
+  it('refuses a restore whose kept roll names a crate the player never opened', async () => {
+    const first = await Tab.open(page());
+    const { crate } = await winFtueCrate(first);
+    const opened = await first.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    const data = first.server.world.serialize();
+    const [player] = data.players;
+    if (!player) throw new Error('Expected a player.');
+    expect(() => MockWorld.restore(data)).not.toThrow();
+    expect(() =>
+      MockWorld.restore({
+        ...data,
+        players: [{ ...player, openedCrates: player.openedCrates.filter((id) => id !== crate.id) }],
+      }),
+    ).toThrow(new RegExp(`crate ${crate.id} keeps a roll but was never opened`));
+    expect(() =>
+      MockWorld.restore({
+        ...data,
+        players: [{ ...player, openedRolls: [...player.openedRolls, ...player.openedRolls] }],
+      }),
+    ).toThrow(new RegExp(`crate ${crate.id} keeps two rolls`));
+    const tooMany = Array.from({ length: MOCK_RULES.crateRollsRetained + 1 }, () => ({
+      crateId: crate.id,
+      roll: opened.roll,
+    }));
+    expect(() =>
+      MockWorld.restore({ ...data, players: [{ ...player, openedRolls: tooMany }] }),
+    ).toThrow(/keeps 9 crate rolls, more than 8/);
   });
 });
 
