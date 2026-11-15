@@ -35,6 +35,7 @@ import { createBus } from '../../app/bus.ts';
 import type { ImpactEvent } from '../../audio/index.ts';
 import type { DuckOptions } from '../../audio/index.ts';
 import { createI18n, LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
+import type { FairOpenOptions } from '../../ui/fair/index.ts';
 import type { ApiClient } from '../../net/client.ts';
 import type { Connectivity, Scheduler } from '../../net/connectivity.ts';
 import { MOCK_RULES } from '../../net/mock/rules.ts';
@@ -84,6 +85,7 @@ import {
   pityLineCopy,
   placeCrateCard,
   placeSkipHint,
+  pressFairChip,
   rewardLineCopy,
   SKIP_HINT_GAP,
   type CratesT,
@@ -2131,5 +2133,34 @@ describe('adopting the table the server laid', () => {
       controller.adopt([crate(A)], [{ kind: 'pose', pose: [B, 0, 0, 0, 'riding'] }]);
     }).toThrow(/names crate crate_B/);
     expect(controller.riding).toHaveLength(0);
+  });
+});
+
+describe('pressFairChip', () => {
+  const proof = { serverSeedHash: 'c'.repeat(64), clientSeed: 'velvet', nonce: 7 };
+  const chip = {} as HTMLElement;
+
+  it('opens the shared fairness panel on the verify tab with the roll proof when wired', () => {
+    const calls: [HTMLElement, FairOpenOptions][] = [];
+    let sheets = 0;
+    pressFairChip(
+      chip,
+      { proof },
+      (trigger, options) => calls.push([trigger, options]),
+      () => {
+        sheets += 1;
+      },
+    );
+    expect(calls).toEqual([[chip, { tab: 'verify', source: 'vaultCrate', proof }]]);
+    expect(calls[0]?.[0]).toBe(chip);
+    expect(sheets).toBe(0);
+  });
+
+  it('keeps the card seal sheet when no openFair hook is given', () => {
+    let sheets = 0;
+    pressFairChip(chip, { proof }, undefined, () => {
+      sheets += 1;
+    });
+    expect(sheets).toBe(1);
   });
 });

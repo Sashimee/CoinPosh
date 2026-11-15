@@ -543,13 +543,15 @@ export function soireeCoin(sql: SqlStorage, coinId: string): SoireeCoinTag | nul
 
 /**
  * The drafted perk in force at `now` by the server clock, while its run's table is live: it
- * lifts its stat only on the table it was drafted for.
+ * lifts its stat only on the table it was drafted for, and only on a rewarded run, so a run
+ * played for fun past the day's limit can never farm coin value or crates.
  */
 export function activeSoireePerk(sql: SqlStorage, now: EpochMs): SoireeFavorDef | null {
   const row = sql
     .exec<{ perk_id: string }>(
       `SELECT perk_id FROM soiree_runs
-       WHERE table_closed_at IS NULL AND perk_starts_at <= ? AND ? < perk_ends_at`,
+       WHERE table_closed_at IS NULL AND rewarded = 1
+         AND perk_starts_at <= ? AND ? < perk_ends_at`,
       now,
       now,
     )
@@ -721,6 +723,12 @@ export function draftSoireeFavor(
   }
   if (context.at >= run.endsAt) {
     throw new ApiFailure('conflict', 'That Soirée is over. Finish it to collect the night.');
+  }
+  if (!run.rewarded) {
+    throw new ApiFailure(
+      'conflict',
+      'This Soirée plays for fun past today’s rewarded run, so its drafts stay closed. Come back tomorrow for perks.',
+    );
   }
   const verdicts = judgeRun(sql, run, context.at);
   const resolved = verdicts.findIndex((v) => !isResolved(v));

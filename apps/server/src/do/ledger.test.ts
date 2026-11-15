@@ -9,7 +9,16 @@ import { ASCEND_TX_KIND } from '../routes/ascend.ts';
 import { CRATE_OPEN_TX_KIND } from '../routes/crates.ts';
 import { SCRATCH_GRANT_TX_KIND, SCRATCH_REVEAL_TX_KIND } from '../routes/scratch.ts';
 import { SOIREE_REWARD_TX_KIND, SOIREE_TABLE_TX_KIND } from '../routes/soiree.ts';
-import { commit, ConservationError, LedgerTx, TX_KINDS } from './ledger.ts';
+import {
+  commit,
+  ConservationError,
+  featureTxKind,
+  LedgerTx,
+  registerTxKinds,
+  TX_KINDS,
+  txKindOwner,
+  type FeatureTxKind,
+} from './ledger.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
 interface LedgerRow {
@@ -406,5 +415,60 @@ describe('PlayerDO ledger', () => {
       expect(row.at).toBeGreaterThanOrEqual(startedAt - 1000);
       expect(row.at).toBeLessThanOrEqual(Date.now() + 1000);
     }
+  });
+});
+
+describe('feature ledger kinds', () => {
+  const [probePay] = registerTxKinds('ledgerProbe', ['ledgerProbe.pay']);
+  if (probePay === undefined) throw new Error('registerTxKinds returned no kind.');
+
+  it('lets a registered kind through LedgerTx and the conservation check', async () => {
+    expect(txKindOwner(probePay)).toBe('ledgerProbe');
+    const tx = new LedgerTx(featureTxKind('ledgerProbe.pay'))
+      .move('mint', 'wallet', 'coins', 5, null)
+      .move('wallet', 'house', 'coins', 2, null);
+    tx.assertBalanced();
+
+    const session = await newSession();
+    await state(session);
+    const stub = playerStub(session.tokens.playerId);
+    const before = (await stub.conservation()).walletCoins;
+    await runInDurableObject(stub, (_: PlayerDO, ctx) => {
+      commit(ctx.storage.sql, tx, { at: Date.now(), idempotencyKey: null });
+    });
+    expect((await stub.conservation()).walletCoins).toBe(before + 3);
+    await expectConserved(session);
+
+    const unbalanced = new LedgerTx(probePay).post('mint', 'coins', -1, null);
+    expect(() => {
+      unbalanced.assertBalanced();
+    }).toThrow(/ledgerProbe.pay is unbalanced/);
+  });
+
+  it('rejects a kind no feature registered', () => {
+    expect(() => new LedgerTx('nobody.pay' as FeatureTxKind)).toThrow(ConservationError);
+    expect(() => featureTxKind('nobody.pay')).toThrow(/not registered by any feature/);
+    expect(() => featureTxKind('claim.fall')).toThrow(/not registered by any feature/);
+    expect(txKindOwner('claim.fall')).toBeNull();
+  });
+
+  it('rejects a kind that is core or already another feature’s, loudly', () => {
+    expect(() => registerTxKinds('ledgerThief', ['claim.fall'])).toThrow(/core kind in TX_KINDS/);
+    expect(() => registerTxKinds('ledgerThief', ['ledgerProbe.pay'])).toThrow(
+      /feature "ledgerProbe" already owns it/,
+    );
+    expect(() => registerTxKinds('ledgerTwice', ['ledgerTwice.x', 'ledgerTwice.x'])).toThrow(
+      /lists it twice/,
+    );
+    expect(() => registerTxKinds('ledgerSloppy', ['ledger sloppy'])).toThrow(/malformed/);
+    expect(txKindOwner('ledgerTwice.x')).toBeNull();
+  });
+
+  it('accepts the same registration again but not a changed one', () => {
+    expect(registerTxKinds('ledgerProbe', ['ledgerProbe.pay'])).toEqual(['ledgerProbe.pay']);
+    expect(() => registerTxKinds('ledgerProbe', ['ledgerProbe.pay', 'ledgerProbe.more'])).toThrow(
+      /cannot re-register/,
+    );
+    expect(() => new LedgerTx('ledgerProbe.more' as FeatureTxKind)).toThrow(ConservationError);
   });
 });

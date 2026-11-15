@@ -17,7 +17,7 @@ const MAX = A.maxTasks || 5
 const BACKLOG = A.backlog || MAX * 2
 const PLAYTEST_EVERY = A.playtestEvery || 3
 const FIX_ROUNDS = 1
-const REFILLS = A.refills ?? 2
+const REFILLS = A.refills ?? 4
 const GIT_NAME = 'Claude'
 const GIT_EMAIL = 'noreply@anthropic.com'
 const GIT_IDENTITY = `Before any git merge, commit or other git step that writes history, give this worktree the fixed workflow identity.
@@ -208,7 +208,8 @@ Return merged (boolean), the merge sha, and a one-line summary.`,
     { label: `integrate:${r.id}`, phase: 'Integrate', agentType: 'lead-architect', schema: MERGE_SCHEMA },
   ))
   mergeQueue = run.catch(() => null)
-  return run.then(m => { if (m && m.merged) { integrated.push(r.id); ship() } return m })
+  // Shipping per merge restarted CI on every push (perf.yml cancels in-progress runs), so no run finished mid-wave; ship once at the end unless asked.
+  return run.then(m => { if (m && m.merged) { integrated.push(r.id); if (A.shipEach) ship() } return m })
 }
 
 // A ship run already in flight picks up later merges on its next pass, so CI waits are not stacked per task.

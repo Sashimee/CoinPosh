@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 import { endpointFixtures, ids } from '../test/fixtures.ts';
 import { roundTrip } from '../test/roundTrip.ts';
+import { composeEndpoints, get, post } from './endpoint.ts';
 import {
   ACCOUNT_ENDPOINT_NAMES,
   accountEndpoints,
@@ -11,9 +12,11 @@ import {
   requiresIdempotencyKey,
   SOIREE_ENDPOINT_NAMES,
   soireeEndpoints,
+  StateQuerySchema,
   tableSnapshotEndpoint,
   type Endpoint,
   type EndpointName,
+  type Endpoints,
 } from './endpoints.ts';
 
 const ARCHITECTURE_API_SURFACE = [
@@ -314,5 +317,103 @@ describe('buildPath', () => {
     expect(buildPath(name as 'album')).toBe('/v1/album');
     // @ts-expect-error leaderboard needs its :board parameter
     expect(() => buildPath('leaderboard')).toThrow();
+  });
+});
+
+describe('composeEndpoints', () => {
+  const SampleTallyResponseSchema = z.object({ tally: z.number().int().nonnegative() });
+  const SampleBumpRequestSchema = z.strictObject({ by: z.number().int().positive() });
+  const sampleEndpoints = {
+    sampleTally: get('/v1/sample/tally', SampleTallyResponseSchema),
+    sampleBump: post('/v1/sample/bump', SampleBumpRequestSchema, SampleTallyResponseSchema),
+  } as const satisfies Record<string, Endpoint>;
+  const routeOf = (endpoint: Endpoint) => `${endpoint.method} ${endpoint.path}`;
+
+  it('keeps the production registry to the core surface, with no sample theme in it', () => {
+    expect(ENDPOINT_NAMES.filter((name) => name.startsWith('sample'))).toEqual([]);
+    expect(
+      cases.map(({ endpoint }) => endpoint.path).filter((p) => p.startsWith('/v1/sample/')),
+    ).toEqual([]);
+  });
+
+  it('merges a theme map after the core map, in order, keeping every endpoint object', () => {
+    const composed = composeEndpoints(endpoints, sampleEndpoints);
+    expect(Object.keys(composed)).toEqual([...ENDPOINT_NAMES, 'sampleTally', 'sampleBump']);
+    expect(composed.sampleBump).toBe(sampleEndpoints.sampleBump);
+    expect(composed.tableDrop).toBe(endpoints.tableDrop);
+  });
+
+  it('keeps each endpoint literal type through the merge', () => {
+    const composed = composeEndpoints(endpoints, sampleEndpoints);
+    expectTypeOf(composed.sampleTally).toEqualTypeOf<(typeof sampleEndpoints)['sampleTally']>();
+    expectTypeOf(composed.sampleBump.method).toEqualTypeOf<'POST'>();
+    expectTypeOf(composed.sampleBump.path).toEqualTypeOf<'/v1/sample/bump'>();
+    expectTypeOf(composed.sampleBump.body).toEqualTypeOf<typeof SampleBumpRequestSchema>();
+    expectTypeOf(composed.leaderboard).toEqualTypeOf<Endpoints['leaderboard']>();
+    expectTypeOf<keyof typeof composed>().toEqualTypeOf<
+      EndpointName | 'sampleTally' | 'sampleBump'
+    >();
+    // @ts-expect-error a name no map registers is not on the composed type
+    expect(composed.sampleMissing).toBeUndefined();
+  });
+
+  it('types the production registry exactly as its core map, with no index signature', () => {
+    expectTypeOf<string>().not.toExtend<EndpointName>();
+    expectTypeOf(endpoints.state.query).toEqualTypeOf<typeof StateQuerySchema>();
+    expect(endpoints.state.query).toBe(StateQuerySchema);
+  });
+
+  it('returns an empty registry for no maps and a copy, not the input, for one', () => {
+    expect(composeEndpoints()).toEqual({});
+    const single = composeEndpoints(sampleEndpoints);
+    expect(single).toEqual(sampleEndpoints);
+    expect(single).not.toBe(sampleEndpoints);
+  });
+
+  it('throws on a duplicate endpoint name, naming it and both routes', () => {
+    const clash = { sampleTally: get('/v1/other/tally', SampleTallyResponseSchema) };
+    expect(() => composeEndpoints(sampleEndpoints, clash)).toThrow(
+      'endpoint name "sampleTally" is registered twice (GET /v1/sample/tally and GET /v1/other/tally)',
+    );
+  });
+
+  it('throws on a theme reusing a core endpoint name', () => {
+    const clash = {
+      tableDrop: post('/v1/sample/drop', SampleBumpRequestSchema, SampleTallyResponseSchema),
+    };
+    expect(() => composeEndpoints(endpoints, clash)).toThrow(/"tableDrop" is registered twice/);
+  });
+
+  it('throws on a duplicate method and path, naming both endpoints', () => {
+    const clash = { sampleCount: get('/v1/sample/tally', SampleTallyResponseSchema) };
+    expect(() => composeEndpoints(sampleEndpoints, clash)).toThrow(
+      '"sampleTally" and "sampleCount" both register GET /v1/sample/tally',
+    );
+  });
+
+  it('throws on a duplicate route inside a single map', () => {
+    const clash = {
+      sampleBump: sampleEndpoints.sampleBump,
+      sampleBumpAgain: sampleEndpoints.sampleBump,
+    };
+    expect(() => composeEndpoints(clash)).toThrow(
+      '"sampleBump" and "sampleBumpAgain" both register POST /v1/sample/bump',
+    );
+  });
+
+  it('allows the same path under a different method', () => {
+    const sameRoute = {
+      sampleTallyReset: post(
+        '/v1/sample/tally',
+        SampleBumpRequestSchema,
+        SampleTallyResponseSchema,
+      ),
+    };
+    const composed = composeEndpoints(sampleEndpoints, sameRoute);
+    expect(Object.values(composed).map(routeOf)).toEqual([
+      'GET /v1/sample/tally',
+      'POST /v1/sample/bump',
+      'POST /v1/sample/tally',
+    ]);
   });
 });

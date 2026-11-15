@@ -1,6 +1,7 @@
 import './crates.css';
 import type { Rarity, Roll } from '@coinposh/shared';
 import type { UiApp } from '../../app/index.ts';
+import type { FairOpenOptions } from '../../ui/fair/index.ts';
 import { formatBalance, type InterpolationValues, type Language } from '../../i18n/index.ts';
 import { makePressable } from '../../ui/components/pressable.ts';
 import { feedback, type UiContext } from '../../ui/context.ts';
@@ -165,6 +166,8 @@ export interface CrateRevealOptions extends FairSources {
   readonly reducedMotion: boolean;
   /** The HUD element the reward flies into; without one the card simply fades. */
   readonly inventoryTarget?: (() => HTMLElement | null) | undefined;
+  /** Opens the shared fairness panel; without it the chip opens the card's own odds sheet. */
+  readonly openFair?: ((trigger: HTMLElement, options: FairOpenOptions) => void) | undefined;
   /** A tap on the overlay before the reveal. */
   readonly onSkip: () => void;
   readonly onCollect: () => void;
@@ -232,7 +235,7 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
         type: 'button',
         title: roll.proof.serverSeedHash,
         'aria-haspopup': 'dialog',
-        'aria-expanded': 'false',
+        ...(options.openFair ? {} : { 'aria-expanded': 'false' }),
         'data-testid': 'crate-fair',
       },
     },
@@ -368,7 +371,9 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
     feedback: 'open',
     enabled: () => shown && !collecting,
     onPress: () => {
-      oddsSheet().open(fair);
+      pressFairChip(fair, roll, options.openFair, () => {
+        oddsSheet().open(fair);
+      });
     },
   });
   makePressable(collect, ctx, {
@@ -425,6 +430,17 @@ export function mountCrateReveal(options: CrateRevealOptions): CrateReveal {
       root.remove();
     },
   };
+}
+
+/** The Certified Fair chip: the shared panel's verify tab on this roll when wired, else the odds sheet. */
+export function pressFairChip(
+  chip: HTMLElement,
+  roll: Pick<Roll, 'proof'>,
+  openFair: CrateRevealOptions['openFair'],
+  openSheet: () => void,
+): void {
+  if (openFair) openFair(chip, { tab: 'verify', source: 'vaultCrate', proof: roll.proof });
+  else openSheet();
 }
 
 export type CratesT = (

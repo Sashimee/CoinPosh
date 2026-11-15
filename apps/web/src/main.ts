@@ -851,7 +851,7 @@ async function bootScene(
       { stage, venue, bridge: started.bridge, boot, systems, vfx, crates: laid.crates, payouts },
       scope,
     );
-    wireTableSession(
+    holdPlaying = wireTableSession(
       {
         net: boot.net,
         session: sessionModule,
@@ -878,6 +878,7 @@ async function bootScene(
 
   let playing: { readonly sim: StartedSim; readonly layout: OpeningLayout; readonly scope: Scope };
   let playingSystems: GameSystems;
+  let holdPlaying: () => SessionModule.TableHold;
 
   const layFrom = async (state: StateResponse): Promise<Laid> => {
     const laid = openingLayout(state);
@@ -914,6 +915,7 @@ async function bootScene(
    * tab left it.
    */
   const retake = sessionModule.createRetake<StateResponse, Laid>({
+    hold: () => holdPlaying(),
     simReady: () => warmSim(simApi),
     boot: () => boot.net.client.call('state', { query: { hydrate: 'boot' } }),
     lay: layFrom,
@@ -1302,8 +1304,9 @@ interface SessionWiring {
  * Uploads where the table rests whenever it settles after moving, when the page hides and as
  * the page goes away, so a boot anywhere lays it again as it was left. Once another tab or
  * device boots the table, input here stops and the sim holds still under the overlay.
+ * Returns how to hold the table still and posed for a boot in this page.
  */
-function wireTableSession(wiring: SessionWiring, scope: Scope): void {
+function wireTableSession(wiring: SessionWiring, scope: Scope): () => SessionModule.TableHold {
   const { net, session, bridge, systems } = wiring;
   const capture = session.createTableCapture({
     sample: () => bridge.snapshot(),
@@ -1321,6 +1324,7 @@ function wireTableSession(wiring: SessionWiring, scope: Scope): void {
     capture,
     game: systems.events,
     sim: bridge,
+    table: net.table,
     page: documentPage,
     scheduler: realScheduler,
     now: monotonicNow,
@@ -1345,6 +1349,29 @@ function wireTableSession(wiring: SessionWiring, scope: Scope): void {
     document.removeEventListener('visibilitychange', holdStill);
     triggers.close();
   });
+  return () =>
+    session.holdTable({
+      sim: {
+        pause: () => {
+          bridge.pause();
+        },
+        resume: () => {
+          releaseHeldSim(bridge);
+        },
+      },
+      capture,
+      table: net.table,
+      page: {
+        visible: () => documentPage.visible(),
+        // A retake that lays the new table disposes this scope, and the hold with the old sim.
+        onVisibilityChange(listener) {
+          const stop = documentPage.onVisibilityChange(listener);
+          scope.add(stop);
+          return stop;
+        },
+      },
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
 }
 
 /** The "This table is open elsewhere" overlay, mounted hidden once for the page. */

@@ -1,7 +1,9 @@
 import {
   coinTiers,
+  crateSpawnInterval,
   createRng,
   crateRewards,
+  NEUTRAL_MULTIPLIER_BP,
   oddsTotal,
   openingHeap,
   soireeConfig,
@@ -940,6 +942,95 @@ describe('drafted perks', () => {
     expect(await mintMicros(session, (await drop(session)).coin.id)).toBe(base);
     clock = run.startedAt + run.durationMs;
     await finishOk(session, run.runId);
+    await expectConserved(session);
+  });
+
+  /**
+   * Sets the net drop count, so the next drop is drop `count + 1`, and the high-water mark a
+   * drop must lift to reach a new spawn index.
+   */
+  function setDropCount(session: Session, count: number, highWater = count) {
+    return inPlayer(session, (sql) => {
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'drop_count'", String(count));
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'drop_high_water'", String(highWater));
+    });
+  }
+
+  it('spawns Vault Crates closer together only inside the midnight buffet’s window', async () => {
+    const buffet = favor('midnightBuffet');
+    expect(buffet.stat).toBe('crateChance');
+    const base = crateSpawnInterval({});
+    const boosted = crateSpawnInterval({}, NEUTRAL_MULTIPLIER_BP + buffet.magnitudeBp);
+    expect(boosted).toBeLessThan(base);
+    expect(base % boosted).not.toBe(0);
+
+    const session = await newSession();
+    const run = await startOk(session);
+    await setDropCount(session, boosted - 1);
+    expect((await drop(session)).spawnedCrates).toEqual([]);
+
+    await grantPerk(session, buffet, clock);
+    await setDropCount(session, 2 * boosted - 1);
+    const spawned = await drop(session);
+    expect(spawned.spawnedCrates).toHaveLength(1);
+    expect(spawned.spawnedCrates[0]?.kind).toBe('vault');
+    const minted = await inPlayer(session, (sql) =>
+      sql
+        .exec<{ account: string; delta: number }>(
+          "SELECT account, delta FROM ledger WHERE kind = 'crate.spawn' AND ref = ? ORDER BY seq",
+          spawned.spawnedCrates[0]?.id ?? '',
+        )
+        .toArray(),
+    );
+    expect(minted).toEqual([
+      { account: 'mint', delta: -1 },
+      { account: 'table', delta: 1 },
+    ]);
+    await expectConserved(session);
+
+    await setDropCount(session, 2 * boosted - 1, 2 * boosted);
+    expect((await drop(session)).spawnedCrates).toEqual([]);
+    await expectConserved(session);
+
+    clock += buffet.durationMs;
+    await setDropCount(session, 3 * boosted - 1);
+    expect((await drop(session)).spawnedCrates).toEqual([]);
+    clock = run.startedAt + run.durationMs;
+    await finishOk(session, run.runId);
+    await expectConserved(session);
+  });
+
+  it('closes drafts on a run past the day’s rewarded limit, and a forced perk lifts nothing', async () => {
+    const session = await newSession();
+    for (let n = 0; n < soireeConfig.rewardedRunsPerDay; n++) {
+      const paid = await startOk(session);
+      for (const guest of paid.guests) await serve(session, guest);
+      expect((await finishOk(session, paid.runId)).rewards.length).toBeGreaterThan(0);
+    }
+    const unpaid = await startOk(session);
+    const baseMicros = await mintMicros(session, (await drop(session)).coin.id);
+    await pushOff(session, guestAt(unpaid, 1).request.tier, guestAt(unpaid, 1).request.count);
+    for (const favorId of [...unpaid.offered.map((f) => f.id), null]) {
+      await expectError(
+        await post(session, soireeDraft.path, { runId: unpaid.runId, favorId }),
+        409,
+        'conflict',
+      );
+    }
+
+    await grantPerk(session, favor('goldLeaf'), clock);
+    expect(await mintMicros(session, (await drop(session)).coin.id)).toBe(baseMicros);
+    const buffet = favor('midnightBuffet');
+    await grantPerk(session, buffet, clock);
+    await setDropCount(
+      session,
+      2 * crateSpawnInterval({}, NEUTRAL_MULTIPLIER_BP + buffet.magnitudeBp) - 1,
+    );
+    expect((await drop(session)).spawnedCrates).toEqual([]);
+    await expectConserved(session);
+
+    clock = unpaid.startedAt + unpaid.durationMs;
+    expect((await finishOk(session, unpaid.runId)).rewards).toEqual([]);
     await expectConserved(session);
   });
 

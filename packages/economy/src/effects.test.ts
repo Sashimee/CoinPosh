@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { cascade, coinTiers, crateSpawn, offline, upgradeLines, venues } from './config/index.ts';
 import {
+  boostedMintMicros,
   cascadeCreditMicros,
   cascadeWindowTicks,
   crateSpawnInterval,
@@ -13,6 +14,7 @@ import {
   MINT_MICROS_PER_COIN,
   mintedCoinMicros,
   mintedCoinValue,
+  NEUTRAL_MULTIPLIER_BP,
   pushTravelTicks,
   repriceReserved,
   offlineCapHours,
@@ -306,6 +308,83 @@ describe('crate spawns', () => {
   it('refuses a drop count that is not a positive integer', () => {
     expect(() => dropSpawnsCrate(0, {})).toThrow(RangeError);
     expect(() => dropSpawnsCrate(1.5, {})).toThrow(RangeError);
+  });
+
+  it('leaves every spawn unchanged at the neutral 10 000 bp multiplier', () => {
+    const configs = [
+      {},
+      { crateChance: crateLine.maxLevel },
+      { crateChance: 3, privateCourier: courier.maxLevel },
+    ];
+    for (const levels of configs) {
+      expect(crateSpawnInterval(levels, NEUTRAL_MULTIPLIER_BP)).toBe(crateSpawnInterval(levels));
+      for (let n = 1; n <= 400; n++) {
+        expect(dropSpawnsCrate(n, levels, NEUTRAL_MULTIPLIER_BP)).toBe(dropSpawnsCrate(n, levels));
+      }
+    }
+    const spawned = Array.from({ length: 200 }, (_, i) => i + 1).filter((n) =>
+      dropSpawnsCrate(n, {}, NEUTRAL_MULTIPLIER_BP),
+    );
+    expect(spawned).toEqual([crateSpawn.ftueScriptedDrop, 40, 80, 120, 160, 200]);
+  });
+
+  it('brings crates closer together under a boosted chance multiplier', () => {
+    expect(crateSpawnInterval({}, 13_000)).toBe(Math.round(crateSpawn.dropsPerCrate / 1.3));
+    expect(crateSpawnInterval({}, 20_000)).toBe(crateSpawn.dropsPerCrate / 2);
+    const boosted = Array.from({ length: 200 }, (_, i) => i + 1).filter((n) =>
+      dropSpawnsCrate(n, {}, 20_000),
+    );
+    expect(boosted).toEqual([
+      crateSpawn.ftueScriptedDrop,
+      20,
+      40,
+      60,
+      80,
+      100,
+      120,
+      140,
+      160,
+      180,
+      200,
+    ]);
+    const max = { crateChance: crateLine.maxLevel, privateCourier: courier.maxLevel };
+    expect(crateSpawnInterval(max, 15_000)).toBeLessThanOrEqual(crateSpawnInterval(max));
+    expect(crateSpawnInterval(max, 1_000_000)).toBe(1);
+  });
+
+  it('refuses a chance multiplier that is not a positive integer of basis points', () => {
+    expect(() => crateSpawnInterval({}, 0)).toThrow(RangeError);
+    expect(() => crateSpawnInterval({}, -10_000)).toThrow(RangeError);
+    expect(() => dropSpawnsCrate(40, {}, 1.5)).toThrow(RangeError);
+    expect(() => dropSpawnsCrate(40, {}, Number.NaN)).toThrow(RangeError);
+  });
+});
+
+describe('boostedMintMicros', () => {
+  it('leaves a coin unchanged without a boost and raises it by the boost otherwise', () => {
+    expect(boostedMintMicros(1_000_000, 0)).toBe(1_000_000);
+    expect(boostedMintMicros(1_000_000, 1_500)).toBe(1_150_000);
+    expect(boostedMintMicros(1_000_000, 2_500)).toBe(1_250_000);
+    expect(boostedMintMicros(333_333, 1_500)).toBe(383_332);
+  });
+
+  it('never pays less than the unboosted coin', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 10 ** 12 }),
+        fc.integer({ min: 0, max: 50_000 }),
+        (micros, bp) => {
+          expect(boostedMintMicros(micros, bp)).toBeGreaterThanOrEqual(micros);
+        },
+      ),
+    );
+  });
+
+  it('refuses negative or fractional inputs', () => {
+    expect(() => boostedMintMicros(-1, 0)).toThrow(RangeError);
+    expect(() => boostedMintMicros(1.5, 0)).toThrow(RangeError);
+    expect(() => boostedMintMicros(1, -1)).toThrow(RangeError);
+    expect(() => boostedMintMicros(1, 0.5)).toThrow(RangeError);
   });
 });
 
