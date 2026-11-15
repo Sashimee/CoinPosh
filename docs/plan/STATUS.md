@@ -200,7 +200,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-12.05 | todo | | Waits on T-12.02, T-3.01. Server: mastery |
 | T-12.06 | todo | | Waits on T-12.02, T-11.12. Server: staff |
 | T-12.07 | todo | | Waits on T-12.06. Staff on the table |
-| T-12.08 | todo | | Waits on T-12.01. Staff figures |
+| T-12.08 | done | task/T-12.08 (merge a8c1cc1) | Staff figures (scene/staff: figures.ts, index.ts, materials.ts, motion.ts, rig.ts, shapes.ts, preview.html/ts, staff.test.ts, staff.perf.test.ts) (55a4dff); pnpm check green after merge; follow-up P-778 in POLISH |
 | T-12.09 | todo | | Waits on T-12.03, T-12.04. Ranks and achievements UI |
 | T-12.10 | todo | | Waits on T-12.05, T-12.06. Mastery and staff UI |
 | T-12.11 | todo | | Waits on T-12.01. Standing juice and audio |
