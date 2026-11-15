@@ -401,6 +401,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-737-p1 | done | task/P-737-p1 (merge d6a05df) | Capsules sheet: empty state names only sources in the build, locked Pull button readable and explained (panel.ts, plan.ts, tokens.ts, gacha.css, i18n.ts EN/FR/DE, locked.test.ts) (78853cd); pnpm check green after merge; follow-ups for P-737-p2 in POLISH |
 | P-738 | done | task/P-738 (merge 6ef5a66) | Vault Crates fall within 12 s of spawning instead of stalling on the lip (sim constants.ts, snapshot/validate.ts + tests, economy/sim/ladder.ts) (07b3dae); pnpm check green after merge |
 | P-735 | done | task/P-735 (merge 5989c9a) | AudioEngine exposes its context and sfx/music buses (audio/engine.ts + engine.test.ts, game/features.test.ts) (81cd23d); pnpm check green after merge |
+| P-747 | done | task/P-747 (merge 0cef5b2) | The playable frame shows round silver coins, not crumpled grey blobs: scene/quality dynamic resolution and scale hold keep coins crisp (adaptiveQuality.ts, dynamicResolution.ts, scaleHold.ts, quality/index.ts + tests, e2e coin-look.spec.ts) (5952ec4); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
