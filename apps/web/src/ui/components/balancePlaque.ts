@@ -46,9 +46,10 @@ export const WALLET_CHIPS = ['pearls', 'keys', 'tickets'] as const;
 export type WalletChip = (typeof WALLET_CHIPS)[number];
 
 /**
- * How long a crate's card may stand in front of the player, uncollected, before the Vault shows
- * its credit anyway. It runs only while the card is on screen: a crate waiting its turn in the
- * queue or behind a sheet is not left up, and keeps its credit until its card is.
+ * How long a crate's credit may wait for a card that never mounts before the Vault shows it
+ * anyway. A card on screen is never timed out, however long it is left up: its credit is the
+ * payoff the player comes back for. The cap runs only while no card is up and no sheet covers
+ * the table, so a crate waiting its turn keeps its credit for its own card.
  */
 export const PAYOUT_HOLD_CAP_MS = 30_000;
 /** One line's flight from the reward card to its readout. */
@@ -190,9 +191,9 @@ export interface WalletPayout {
   hold(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void;
   /** The server took back part of `id`'s held credit after it reached the balance. */
   retract(id: string, credit: Readonly<Partial<Record<Currency, number>>>): void;
-  /** The crate's card is on screen: start (or restart) the cap on its hold. */
+  /** The crate's card has not mounted: start (or restart) the cap that shows its credit anyway. */
   arm(id: string): void;
-  /** The card left the screen for a while (a sheet over it): the cap waits until it is back. */
+  /** Its card mounted, another card is up or a sheet covers the table: the cap stops. */
   disarm(id: string): void;
   /** The player collected: fly each line to its readout, which then counts up. */
   collect(id: string, payout: Payout): void;
@@ -214,7 +215,7 @@ export interface PayoutLedgerOptions {
 /**
  * The bookkeeping behind the payout, free of the DOM: coin and gold-bar holds against the
  * store's balances, the purse chips' shown and server values, and the cap that lets a hold go
- * if its card is left up and never collected. `changed` runs whenever a readout should repaint.
+ * if its card never mounts. `changed` runs whenever a readout should repaint.
  */
 export class PayoutLedger {
   readonly coins = new CreditHold();
@@ -262,7 +263,7 @@ export class PayoutLedger {
       setTimeout(() => {
         this.#caps.delete(id);
         this.#warn(
-          `CoinPosh HUD: crate ${id} was not collected within ${this.#capMs} ms; the Vault shows its credit now.`,
+          `CoinPosh HUD: crate ${id} had no reward card within ${this.#capMs} ms; the Vault shows its credit now.`,
         );
         this.#settle(id);
       }, this.#capMs),
