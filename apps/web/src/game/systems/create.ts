@@ -4,6 +4,12 @@ import type { UiApp } from '../../app/index.ts';
 import { RIVIERA_TABLE } from '../../scene/venues/riviera/layout.ts';
 import { announcementHoldFor } from '../../ui/components/announcementHold.ts';
 import { bindInputSurface, linearAimMap, type AimMap, type InputHandlers } from '../input/index.ts';
+import {
+  mountKeyboardMouse,
+  type DrawerSlot,
+  type KeyboardMouseControls,
+  type KeyboardMouseOptions,
+} from '../input/keyboard/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
 import type { SimEventBatch } from '../simWorker/protocol.ts';
 import { pauseDuringCinematics } from './cinematicPause.ts';
@@ -14,6 +20,7 @@ import {
   type ContactReport,
   type FusionReport,
   type SimPort,
+  type SystemsCore,
   type TablePort,
 } from './core.ts';
 import type { GameEvents } from './events.ts';
@@ -70,6 +77,67 @@ export interface GameSystems {
   dispose(): void;
 }
 
+/**
+ * The one way input reaches play, for touch, mouse and keyboard alike: every intent is an aim
+ * or a direction, and each drop spends a server-minted coin through the core.
+ */
+export function inputHandlersFor(
+  core: Pick<SystemsCore, 'setAim' | 'drop' | 'startPour' | 'endPour' | 'cancelPour' | 'nudge'>,
+): InputHandlers {
+  return {
+    aim: (aim) => {
+      core.setAim(aim);
+    },
+    drop: (aim) => {
+      core.drop(aim);
+    },
+    pourStart: (aim) => {
+      core.startPour(aim);
+    },
+    pourEnd: (aim) => {
+      core.setAim(aim);
+      core.endPour();
+    },
+    pourCancel: () => {
+      core.cancelPour();
+    },
+    nudge: (direction, strength, source) => {
+      core.nudge(direction, strength, source);
+    },
+  };
+}
+
+/** A button in the HUD dock, as a number key presses it. */
+export interface DockDoor {
+  /** An element's `hidden`, which is `'until-found'` for a door hidden until searched. */
+  readonly hidden: boolean | 'until-found';
+  click(): void;
+}
+
+export interface DesktopControlsOptions extends KeyboardMouseOptions {
+  /** The dock's doors in the order the player sees them, read per press: doors join after boot. */
+  readonly doors: () => Iterable<DockDoor>;
+}
+
+/**
+ * Mouse and keyboard play on top of the touch surface: number key n presses the n-th door the
+ * dock shows, with the spring, sound and haptic a click gets; a key past the last door does
+ * nothing.
+ */
+export function mountDesktopControls(
+  handlers: InputHandlers,
+  options: DesktopControlsOptions,
+): KeyboardMouseControls {
+  const openDrawer = (slot: DrawerSlot): void => {
+    const shown = [...options.doors()].filter((door) => door.hidden === false);
+    shown[slot - 1]?.click();
+  };
+  return mountKeyboardMouse({ ...handlers, openDrawer }, options);
+}
+
+/** The keys the touch surface also reads on a focused canvas; see `bindCanvas`. */
+const SURFACE_KEYS = new Set(['Space', 'Enter', 'ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD', 'KeyW']);
+
 export function createGameSystems(options: GameSystemsOptions): GameSystems {
   const { ui, canvas } = options;
   const now = options.now ?? (() => performance.now());
@@ -105,27 +173,7 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
   });
 
   const overlay = createSystemsOverlay(host, { aim: t('aim.label'), gauge: t('pour.gauge') });
-  const handlers: InputHandlers = {
-    aim: (aim) => {
-      core.setAim(aim);
-    },
-    drop: (aim) => {
-      core.drop(aim);
-    },
-    pourStart: (aim) => {
-      core.startPour(aim);
-    },
-    pourEnd: (aim) => {
-      core.setAim(aim);
-      core.endPour();
-    },
-    pourCancel: () => {
-      core.cancelPour();
-    },
-    nudge: (direction, strength, source) => {
-      core.nudge(direction, strength, source);
-    },
-  };
+  const handlers = inputHandlersFor(core);
 
   const bindCanvas = (surface: HTMLCanvasElement) => {
     const previousLabel = surface.getAttribute('aria-label');
@@ -135,21 +183,30 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
       currentAim: () => core.aim,
       now,
     });
-    // The input surface listens for keys on the canvas, and its pointerdown calls
-    // preventDefault, which in Chromium stops a click from focusing it; so Space and W would go
-    // nowhere. TODO(input owner): focus the canvas in game/input/surface.ts's pointerdown.
+    // The input surface's pointerdown calls preventDefault, which in Chromium stops a tap from
+    // focusing the canvas; focus left on a dock button would keep Space pressing that button
+    // instead of dropping. TODO(input owner): focus the canvas in game/input/surface.ts's pointerdown.
     const focus = (): void => {
       surface.focus({ preventScroll: true });
     };
     const onPointerDown = (event: PointerEvent): void => {
       if (event.isPrimary) focus();
     };
+    // The desktop controls own the keyboard and honour the player's bindings, while the surface
+    // hard-codes Space, arrows and A/D/W; after a rebind both would act on a focused canvas.
+    const onSurfaceKey = (event: KeyboardEvent): void => {
+      if (SURFACE_KEYS.has(event.code)) event.stopImmediatePropagation();
+    };
     surface.addEventListener('pointerdown', onPointerDown);
+    surface.addEventListener('keydown', onSurfaceKey, { capture: true });
+    surface.addEventListener('keyup', onSurfaceKey, { capture: true });
     return {
       input,
       focus,
       dispose() {
         surface.removeEventListener('pointerdown', onPointerDown);
+        surface.removeEventListener('keydown', onSurfaceKey, { capture: true });
+        surface.removeEventListener('keyup', onSurfaceKey, { capture: true });
         input.dispose();
         if (previousLabel === null) surface.removeAttribute('aria-label');
         else surface.setAttribute('aria-label', previousLabel);
@@ -158,6 +215,13 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
   };
   const surface = followSurface(canvas, bindCanvas);
   surface.binding.focus();
+  const desktop = mountDesktopControls(handlers, {
+    surface: () => surface.surface,
+    aimMap,
+    currentAim: () => core.aim,
+    now,
+    doors: () => host.querySelectorAll<HTMLElement>('[data-testid="hud-dock"] .cp-dock-button'),
+  });
 
   const offs = [
     followUpgradeLevels(ui.store, core),
@@ -165,6 +229,7 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
       core,
       interrupt: () => {
         surface.binding.input.interrupt();
+        desktop.interrupt();
       },
       overlay,
     }),
@@ -182,6 +247,7 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
   let disposed = false;
   let suspended = false;
   const letGo = (): void => {
+    desktop.dispose();
     surface.dispose();
     overlay.dispose();
   };
@@ -200,10 +266,12 @@ export function createGameSystems(options: GameSystemsOptions): GameSystems {
         }
       }
       surface.binding.input.tick();
+      desktop.tick();
       core.sync(field);
       core.update();
       const width = surface.surface.getBoundingClientRect().width;
-      overlay.render(aimMap.toPx(core.aim, width), surface.binding.input.pressed, core.pourView());
+      const pressed = surface.binding.input.pressed || desktop.pressed;
+      overlay.render(aimMap.toPx(core.aim, width), pressed, core.pourView());
     },
     hydrate: (state) => {
       core.hydrate(state);
