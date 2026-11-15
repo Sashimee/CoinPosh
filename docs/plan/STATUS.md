@@ -405,6 +405,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-747 | done | task/P-747 (merge 0cef5b2) | The playable frame shows round silver coins, not crumpled grey blobs: scene/quality dynamic resolution and scale hold keep coins crisp (adaptiveQuality.ts, dynamicResolution.ts, scaleHold.ts, quality/index.ts + tests, e2e coin-look.spec.ts) (5952ec4); pnpm check green after merge |
 | P-757 | done | task/P-757 (merge afd8fe2) | Upgrades sheet shows its own balance chip (sticky purse bar) and names each row's shortfall (upgradesPanel.ts, upgrades.css, upgradesPanel.test.ts, ui.json EN/FR/DE) (e90cb65); pnpm check green after merge; follow-ups P-773, P-774 |
 | P-749 | done | task/P-749 (merge 45e04b7) | In-hand chip steps down on every drop and the refill flies in from the Vault, folds P-630 (hud.ts, hud.test.ts, styles.css, ui.json EN/FR/DE, e2e/in-hand.spec.ts) (3915e3e); pnpm check green after merge |
+| P-769 | done | task/P-769 (merge 754ed6e) | Portrait camera: table fills the frame, front lip just above the dock (founder rule); escalates P-154 (layout.ts, layout.test.ts, table.ts) (20f28e0); pnpm check green after merge; follow-up P-788 (poster re-capture) |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
