@@ -223,7 +223,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-13.14 | todo | | Waits on T-13.01. Live events audio |
 | T-13.15 | todo | | Waits on T-13.04, T-13.07, T-13.09, T-13.11, T-13.12, T-13.13, T-13.14, T-12.13. Live events wiring |
 | T-13.16 | todo | | Waits on T-13.15. E2E: live events |
-| T-14.01 | todo | | Waits on T-11.01. World contracts |
+| T-14.01 | done | task/T-14.01 (merge fead954) | World contracts (packages/shared/src/api/world: conditions, endpoints, fixtures, ids, letters, pets, refine, update, index; api/index.ts export) (cd35ece); pnpm check green after merge; follow-ups P-785, P-786, P-787 in POLISH |
 | T-14.02 | done | task/T-14.02 (merge a4db477) | Concierge brain: rule table from bus events to lines and tips under apps/web/src/game/concierge (5b45155); pnpm check green after merge; game-feature wiring queued as P-720 |
 | T-14.03 | done | task/T-14.03 (merge ec1c7cf) | Concierge character and lines: apps/web/src/ui/concierge/** (portrait, stage, present, juice, mount, i18n, preview, PERSONALITY.md, tests) + concierge.json EN/FR/DE (028a06e); pnpm check green after merge |
 | T-14.04 | done | task/T-14.04 (merge d5093a1) | Procedural Concierge voice barks ducked under stingers in apps/web/src/audio/concierge (ef07180); pnpm check green after merge; wiring queued as P-741/P-742 |
