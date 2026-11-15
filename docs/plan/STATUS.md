@@ -399,6 +399,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-746 | done | task/P-746 (merge ffe4e4c) | A spent Cascade card shows the best rank as history ('Best: …') with the idle prompt, no live multiplier or next-rank hint; comboLadder.ts, styles.css, ui.json EN/FR/DE, comboLadder.test.ts (5cb252e); pnpm check green after merge |
 | P-737 | in progress (parts merged: P-737-p1) | | Capsules sheet dead end. Parts P-737-p1, P-737-p2. Parts merged: P-737-p1 (merge d6a05df); parts pending: P-737-p2 |
 | P-737-p1 | done | task/P-737-p1 (merge d6a05df) | Capsules sheet: empty state names only sources in the build, locked Pull button readable and explained (panel.ts, plan.ts, tokens.ts, gacha.css, i18n.ts EN/FR/DE, locked.test.ts) (78853cd); pnpm check green after merge; follow-ups for P-737-p2 in POLISH |
+| P-738 | done | task/P-738 (merge 6ef5a66) | Vault Crates fall within 12 s of spawning instead of stalling on the lip (sim constants.ts, snapshot/validate.ts + tests, economy/sim/ladder.ts) (07b3dae); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
