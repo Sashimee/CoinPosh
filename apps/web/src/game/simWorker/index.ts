@@ -13,7 +13,7 @@ export {
 } from './bridge.ts';
 export { RenderClock, type RenderClockOptions } from './clock.ts';
 export { TELEPORT_METRES_PER_TICK, type CoinTransformTarget } from './interpolate.ts';
-export type { SimEventBatch, TransportKind } from './protocol.ts';
+export type { SimEventBatch, TransportKind, UnfuseInput } from './protocol.ts';
 export {
   COIN_DROP_HEIGHT,
   NUDGE_DIRECTIONS,
@@ -28,4 +28,5 @@ export {
   type SimRestore,
   type SimTableSnapshot,
   type SnapshotPose,
+  type UnfuseEvent,
 } from './sim-api.ts';

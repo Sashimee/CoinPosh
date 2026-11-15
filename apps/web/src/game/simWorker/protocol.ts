@@ -8,6 +8,7 @@ import type {
   SimInput,
   SimRestore,
   SimTableSnapshot,
+  UnfuseEvent,
 } from './sim-api.ts';
 
 export type TransportKind = 'shared' | 'transfer';
@@ -24,6 +25,16 @@ export interface SimEventBatch {
   readonly contacts: readonly ContactEvent[];
   /** Coins merged into the next tier, in tick order. */
   readonly fusions: readonly FusionEvent<CoinTier>[];
+  /**
+   * Refused fusions the sim laid back down, in tick order. Absent from a batch with none, as
+   * every batch is outside the rare refused claim.
+   */
+  readonly unfused?: readonly UnfuseEvent[];
+}
+
+/** One coin a refused fusion consumed, laid back with the tier it had before it fused. */
+export interface UnfuseInput {
+  readonly tier: CoinTier;
 }
 
 export type MainToWorker =
@@ -38,6 +49,11 @@ export type MainToWorker =
       readonly restore?: SimRestore;
     }
   | { readonly type: 'input'; readonly inputs: readonly SimInput[] }
+  /**
+   * Undoes the refused fusion that made sim coin `fusedId`, at the start of the next tick:
+   * that coin leaves with no fall and one coin is laid per input, reported by an `unfused` event.
+   */
+  | { readonly type: 'unfuse'; readonly fusedId: number; readonly inputs: readonly UnfuseInput[] }
   /** Asks for the table as it stands after the newest tick; answered by a `snapshot` with the same id. */
   | { readonly type: 'snapshot'; readonly requestId: number }
   | { readonly type: 'recycle'; readonly buffer: ArrayBuffer }
