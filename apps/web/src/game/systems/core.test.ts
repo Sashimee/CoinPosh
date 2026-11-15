@@ -14,8 +14,8 @@ import { GestureRecognizer, type GestureAction } from '../input/gestures.ts';
 import { pauseDuringCinematics } from './cinematicPause.ts';
 import type { TableEvent } from '../../net/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
-import type { SimEventBatch } from '../simWorker/protocol.ts';
-import type { ContactEvent } from '../simWorker/sim-api.ts';
+import type { SimEventBatch, UnfuseInput } from '../simWorker/protocol.ts';
+import type { ContactEvent, UnfuseEvent } from '../simWorker/sim-api.ts';
 import { createSystemsCore, type SystemsCore, type TablePort } from './core.ts';
 import { followSurface } from './follow.ts';
 import type { GameEventType, GameEvents } from './events.ts';
@@ -48,8 +48,10 @@ class FakeSim {
   readonly nudges: NudgeDirection[] = [];
   readonly bodies = new Map<number, [number, number, number]>();
   readonly listeners = new Set<(batch: SimEventBatch) => void>();
+  readonly unfuses: { fusedId: number; tiers: string[]; slots: number[] }[] = [];
   drawing = true;
   #nextId = 0;
+  #queuedUnfuses: { fusedId: number; count: number }[] = [];
 
   /** Lays `count` coins mid-table before any drop, as the sim lays its opening heap. */
   layHeap(count: number): void {
@@ -72,6 +74,31 @@ class FakeSim {
   nudge(direction: NudgeDirection): void {
     if (this.failure) throw new Error(`SimBridge.nudge: ${this.failure.message}`);
     this.nudges.push(direction);
+  }
+
+  unfuse(fusedId: number, inputs: readonly UnfuseInput[]): void {
+    this.unfuses.push({
+      fusedId,
+      tiers: inputs.map(({ tier }) => tier),
+      slots: inputs.map(({ slot }) => slot),
+    });
+    this.#queuedUnfuses.push({ fusedId, count: inputs.length });
+  }
+
+  /**
+   * Runs the queued unfuses as the sim's next step does: each fused body still here leaves and
+   * one body per input is laid, reported in one batch. Returns the laid ids of each unfuse.
+   */
+  stepUnfuses(): number[][] {
+    const unfused = this.#queuedUnfuses.splice(0).map(({ fusedId, count }): UnfuseEvent => ({
+      kind: 'unfused',
+      tick: this.stats.tick + 1,
+      fusedId,
+      removed: this.bodies.delete(fusedId),
+      coinIds: Array.from({ length: count }, () => this.spawn()),
+    }));
+    if (unfused.length > 0) this.emit({ unfused });
+    return unfused.map(({ coinIds }) => [...coinIds]);
   }
 
   onEvents(listener: (batch: SimEventBatch) => void): () => void {
@@ -143,6 +170,20 @@ const NULL_TARGET: CoinTransformTarget = {
   capacity: () => 1_000,
   setTransforms: () => undefined,
 };
+
+/** Counts the poses one sync draws. */
+function countingTarget(): CoinTransformTarget & { readonly drawn: number } {
+  let drawn = 0;
+  return {
+    capacity: () => 1_000,
+    setTransforms: (_tier, _positions, _quaternions, count) => {
+      drawn = count;
+    },
+    get drawn() {
+      return drawn;
+    },
+  };
+}
 
 function setup(options: { backlog?: readonly SimEventBatch[]; heap?: readonly MintedCoin[] } = {}) {
   const { backlog, heap } = options;
@@ -911,11 +952,19 @@ describe('systems core: the sim event stream', () => {
       { coinId: coin(77, 'silver').id, tick: 140, edge: 'front' },
     ]);
     expect(core.coinOf(kept)).toBeNull();
+    expect(sim.unfuses).toEqual([{ fusedId: refused, tiers: ['copper', 'copper'], slots: [1, 2] }]);
+    const [laid = []] = sim.stepUnfuses();
+    sync();
+    expect(laid.map((id) => core.coinOf(id))).toEqual([coin(105).id, coin(106).id]);
+    expect(table.falls).toHaveLength(2);
   });
 
-  it('P-657: a refused fusion leaves its fused body standing for an input the server kept', () => {
-    const heap = [coin(101), coin(102), coin(103), coin(104)];
+  it('P-657: a refused fusion lays every input back, each bound to the coin the server kept', () => {
+    const heap = [101, 102, 103, 104].map((n, i) => ({ ...coin(n), value: 10 * (i + 1) }));
+    const serverTable = [...heap];
     const { core, sim, table, sync, leave } = setup({ heap });
+    const spawned = record(core, 'coin:spawned');
+    const fell = record(core, 'coin:fell');
     sim.layHeap(heap.length);
     sync();
     sim.stats.tick = 100;
@@ -934,23 +983,44 @@ describe('systems core: the sim event stream', () => {
       ],
     });
     for (const id of [0, 1, 2]) sim.bodies.delete(id);
+    sim.bodies.set(fusedId, FRONT);
     sync();
+    const ids = heap.slice(0, 3).map((c) => c.id) as [CoinId, CoinId, CoinId];
+    expect(table.fusions).toEqual([ids]);
     table.emit({
       type: 'claimSettled',
-      claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 100 },
+      claim: { kind: 'fusion', coinIds: ids, tick: 100 },
       result: { status: 'rejected', reason: 'over_envelope' },
     });
-    sync();
-    const poses = [...sim.bodies.keys()];
-    expect(poses.map((id) => core.coinOf(id))).toEqual([coin(104).id, coin(101).id]);
-    expect(poses.filter((id) => core.coinOf(id) !== null)).toHaveLength(sim.bodies.size);
+    expect(sim.unfuses).toEqual([
+      { fusedId, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+    ]);
+    expect(core.coinOf(fusedId)).toBeNull();
+
+    const spawnedBefore = spawned.length;
+    const [laid = []] = sim.stepUnfuses();
+    const drawn = countingTarget();
+    core.sync(drawn);
+    expect(sim.bodies.size).toBe(serverTable.length);
+    expect(drawn.drawn).toBe(serverTable.length);
+    const bound = [...sim.bodies.keys()].map((id) => core.coinOf(id));
+    expect(bound).toEqual([heap[3]?.id, ...ids]);
+    const value = (id: CoinId | null): number =>
+      serverTable.find((candidate) => candidate.id === id)?.value ?? 0;
+    expect(bound.reduce((sum, id) => sum + value(id), 0)).toBe(
+      serverTable.reduce((sum, c) => sum + c.value, 0),
+    );
+    expect(spawned).toHaveLength(spawnedBefore);
+    expect(fell).toEqual([]);
+    expect(table.falls).toEqual([]);
 
     sim.stats.renderTick = sim.stats.tick = 140;
-    leave(fusedId, FRONT);
-    expect(table.falls).toEqual([{ coinId: coin(101).id, tick: 140, edge: 'front' }]);
+    leave(laid[2] ?? -1, FRONT);
+    expect(table.falls).toEqual([{ coinId: ids[2], tick: 140, edge: 'front' }]);
+    expect(table.fusions).toHaveLength(1);
   });
 
-  it('P-657: a fusion that failed to reach the server re-binds its fused body the same way', () => {
+  it('P-657: a fusion that failed to reach the server lays its inputs back the same way', () => {
     const heap = [coin(101), coin(102), coin(103)];
     const { core, sim, table, sync } = setup({ heap });
     sim.layHeap(heap.length);
@@ -977,7 +1047,23 @@ describe('systems core: the sim event stream', () => {
       claims: [{ kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 0 }],
       error: new Error('offline'),
     });
-    expect(core.coinOf(fusedId)).toBe(coin(101).id);
+    expect(sim.unfuses).toEqual([
+      { fusedId, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+    ]);
+    const [laid = []] = sim.stepUnfuses();
+    sync();
+    expect(core.coinOf(fusedId)).toBeNull();
+    expect(laid.map((id) => core.coinOf(id))).toEqual(heap.map((c) => c.id));
+    expect(sim.bodies.size).toBe(heap.length);
+  });
+
+  it('P-657: refuses to bind an unfuse the systems never asked for', () => {
+    const { sim } = setup();
+    expect(() => {
+      sim.emit({
+        unfused: [{ kind: 'unfused', tick: 1, fusedId: 9, removed: true, coinIds: [10] }],
+      });
+    }).toThrow(/fusion 9, which the systems never asked it to undo/);
   });
 
   it('does not chain a fusion onto a refused fused body that now stands for a lower-tier coin', () => {
@@ -1017,9 +1103,18 @@ describe('systems core: the sim event stream', () => {
       result: { status: 'rejected', reason: 'over_envelope' },
     });
     expect(table.fusions).toEqual([[coin(101).id, coin(102).id, coin(103).id]]);
+    expect(sim.unfuses).toEqual([
+      { fusedId: silver, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+      { fusedId: gold, tiers: ['silver', 'silver'], slots: [1, 2] },
+    ]);
     for (const id of [0, 1, 2, 3, 4, silver]) sim.bodies.delete(id);
     sync();
-    expect(core.coinOf(gold)).toBe(coin(104, 'silver').id);
+    const [coppers = [], silvers = []] = sim.stepUnfuses();
+    sync();
+    expect(core.coinOf(gold)).toBeNull();
+    expect([...coppers, ...silvers].map((id) => core.coinOf(id))).toEqual(heap.map((c) => c.id));
+    expect(sim.bodies.size).toBe(heap.length);
+    expect(table.fusions).toHaveLength(1);
   });
 
   it('drops a held fusion, and the fusions chained on it, once an input can never be claimed', () => {
@@ -1072,6 +1167,13 @@ describe('systems core: the sim event stream', () => {
     expect(table.fusions).toHaveLength(1);
     for (const id of [0, 1, 2, 3, 4, silver, gold]) sim.bodies.delete(id);
     sync();
+    expect(sim.unfuses).toEqual([
+      { fusedId: silver, tiers: ['copper', 'copper', 'copper'], slots: [0, 1, 2] },
+      { fusedId: gold, tiers: ['silver', 'silver'], slots: [1, 2] },
+    ]);
+    const laid = sim.stepUnfuses().flat();
+    sync();
+    expect(laid.map((id) => core.coinOf(id))).toEqual(heap.map((c) => c.id));
     leave(platinum, FRONT);
     expect(table.fusions).toHaveLength(1);
     expect(table.falls).toEqual([]);

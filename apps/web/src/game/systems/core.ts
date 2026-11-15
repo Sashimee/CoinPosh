@@ -18,8 +18,8 @@ import { watch, type Store } from '../../app/store.ts';
 import type { ServerClock, TableEvent, TableSync } from '../../net/index.ts';
 import type { CoinTierId } from '../../scene/coins/index.ts';
 import type { CoinTransformTarget } from '../simWorker/interpolate.ts';
-import type { SimEventBatch } from '../simWorker/protocol.ts';
-import { COIN, type ContactSurface as SimSurface } from '../simWorker/sim-api.ts';
+import type { SimEventBatch, UnfuseInput } from '../simWorker/protocol.ts';
+import { COIN, type ContactSurface as SimSurface, type UnfuseEvent } from '../simWorker/sim-api.ts';
 import { CascadeCombo } from './combo.ts';
 import { DecorumModel } from './decorum.ts';
 import { CoinLedger, aimToMm, clampAim } from './drops.ts';
@@ -53,6 +53,8 @@ export interface SimPort {
   readonly failure: Error | null;
   drop(xMm: number, tier: CoinTierId): void;
   nudge(direction: NudgeDirection): void;
+  /** Lays a refused fusion's inputs back at the next tick; the sim reports them as `unfused`. */
+  unfuse(fusedId: number, inputs: readonly UnfuseInput[]): void;
   sync(target: CoinTransformTarget): void;
   onEvents(listener: (batch: SimEventBatch) => void): () => void;
 }
@@ -241,10 +243,17 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   let lastClaimTick = 0;
   let fallsAtLastClaimTick = 0;
   /**
-   * Sim id of the coin each fusion claim makes, keyed by the claim's first coin. A refused claim
-   * leaves the inputs on the server's table, so the fused body is re-bound to that first coin.
+   * Sim id of the coin each fusion claim makes and the claim's coins, keyed by its first coin. A
+   * refused claim leaves every input on the server's table, so the sim lays each one back.
    */
-  const fusedBodies = new Map<CoinId, { readonly fusedId: number; readonly input: MintedCoin }>();
+  const fusedBodies = new Map<
+    CoinId,
+    { readonly fusedId: number; readonly inputs: readonly MintedCoin[] }
+  >();
+  /** The coins each requested unfuse lays back, in input order, until the sim reports it. */
+  const unfusing = new Map<number, readonly MintedCoin[]>();
+  /** Sim ids of laid-back coins the frame has not drawn yet; they are not drops. */
+  const laidBack = new Set<number>();
   const heldFusions: HeldFusion[] = [];
   /** Fused bodies whose own claim has not settled, held or in flight. */
   const unsettledFused = new Set<number>();
@@ -376,7 +385,8 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
           const fused = fusedBodies.get(claim.coinIds[0]);
           fusedBodies.delete(claim.coinIds[0]);
           if (fused !== undefined) {
-            settleFused(fused.fusedId, result.status === 'accepted' ? result.minted : fused.input);
+            if (result.status === 'accepted') settleFused(fused.fusedId, result.minted);
+            else layBack(fused.fusedId, fused.inputs);
             claimHeldFusions();
           }
           break;
@@ -411,7 +421,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
           if (claim.kind === 'fusion') {
             const fused = fusedBodies.get(claim.coinIds[0]);
             fusedBodies.delete(claim.coinIds[0]);
-            if (fused !== undefined) settleFused(fused.fusedId, fused.input);
+            if (fused !== undefined) layBack(fused.fusedId, fused.inputs);
           }
         }
         claimHeldFusions();
@@ -492,6 +502,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   const fell = (simId: number, edge: FallEdge, position: TablePoint, seen: Tick = tick()): void => {
     settledIds.add(simId);
     simFalls.delete(simId);
+    laidBack.delete(simId);
     ledger.reach(simId);
     const coin = ledger.claimable(simId);
     ledger.release(simId);
@@ -509,7 +520,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   ): void => {
     const [a, b, c] = coins;
     table.claimFusion([a.id, b.id, c.id], fusionClaimTick());
-    if (fusedId !== null) fusedBodies.set(a.id, { fusedId, input: a });
+    if (fusedId !== null) fusedBodies.set(a.id, { fusedId, inputs: coins });
   };
 
   /** An input with no coin yet is waiting only while it is a fused body whose claim is in flight. */
@@ -542,13 +553,64 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
   };
 
   /**
-   * A fusion the server can never be asked for leaves its inputs on the server's table, so its
-   * fused body stands for one of them, or for nothing when none of them was ever bound.
+   * A fusion the server can never be asked for leaves its inputs on the server's table, so the
+   * sim lays back each one that was bound, and its fused body stands for nothing when none was.
    */
   const abandon = (held: HeldFusion): void => {
     for (const simId of held.simIds) departedCoins.delete(simId);
     if (held.fusedId === null) return;
-    settleFused(held.fusedId, held.coins.find((candidate) => candidate !== null) ?? null);
+    layBack(held.fusedId, held.coins);
+  };
+
+  /**
+   * The server kept `coins`, the inputs of fused body `fusedId`, on its table: the sim takes the
+   * fused body off and lays one body per coin back, bound to it once the sim reports them. A
+   * fused body that already fell is claimed as the first coin's fall and the rest are laid back;
+   * one that left as a chained fusion's input is gone from the sim already, so all are laid back
+   * and the chained fusion, now without a coin for that input, is abandoned in turn. `coins` is
+   * in input order, null for an input never bound, and each coin keeps its input's slot.
+   */
+  function layBack(fusedId: number, coins: readonly (MintedCoin | null)[]): void {
+    unsettledFused.delete(fusedId);
+    const departed = departedFused.delete(fusedId);
+    const parked = parkedFalls.get(fusedId);
+    const laid = coins.flatMap((coin, slot) => (coin === null ? [] : [{ coin, slot }]));
+    if (parked) {
+      parkedFalls.delete(fusedId);
+      heldFalls.push({ ...parked, coin: laid.shift()?.coin ?? null });
+      flushFalls();
+    }
+    if (laid.length === 0) return;
+    if (!parked && !departed) fusedAway.add(fusedId);
+    unfusing.set(
+      fusedId,
+      laid.map(({ coin }) => coin),
+    );
+    sim.unfuse(
+      fusedId,
+      laid.map(({ coin, slot }) => ({ tier: coin.tier, slot })),
+    );
+  }
+
+  const laidDown = (event: UnfuseEvent): void => {
+    const coins = unfusing.get(event.fusedId);
+    if (!coins) {
+      throw new RangeError(
+        `GameSystems: the sim laid back fusion ${event.fusedId}, which the systems never asked it to undo`,
+      );
+    }
+    if (event.coinIds.length !== coins.length) {
+      throw new RangeError(
+        `GameSystems: the sim laid back ${event.coinIds.length} coins for fusion ${event.fusedId}, asked for ${coins.length}`,
+      );
+    }
+    unfusing.delete(event.fusedId);
+    event.coinIds.forEach((simId, slot) => {
+      const coin = coins[slot];
+      if (!coin) return;
+      ledger.bind(simId, coin);
+      laidBack.add(simId);
+    });
   };
 
   /** A fusion's own fused body is unsettled until the server answers the fusion's claim. */
@@ -626,6 +688,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
 
   const intake = (batch: SimEventBatch): void => {
     if (disposed) return;
+    for (const unfused of batch.unfused ?? []) laidDown(unfused);
     for (const fall of batch.falls) {
       if (settledIds.has(fall.coinId)) continue;
       simFalls.set(fall.coinId, { edge: fall.edge, tick: Math.max(0, Math.floor(fall.tick)) });
@@ -787,6 +850,7 @@ export function createSystemsCore(options: SystemsCoreOptions): SystemsCore {
       const { appeared, vanished } = watcher.end();
       for (const body of appeared) {
         const coin = ledger.assign(body.id);
+        if (laidBack.delete(body.id)) continue;
         events.emit('coin:spawned', { coin, position: body.position });
       }
       flushFalls();

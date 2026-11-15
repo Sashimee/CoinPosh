@@ -22,6 +22,8 @@ import {
   type SimInput,
   type SimRestore,
   type SimTableSnapshot,
+  type UnfuseEvent,
+  type UnfuseRequest,
 } from './sim-api.ts';
 
 /** The slice of Sim the worker drives; the real Sim satisfies it. */
@@ -32,6 +34,8 @@ export interface HostedSim {
   readonly tiers: readonly string[] | null;
   readonly pusher: FramePusher;
   step(inputs: readonly SimInput[]): SimEvents;
+  /** Queues a refused fusion's undo for the start of the next step (Sim.unfuse). */
+  unfuse(request: UnfuseRequest): void;
   coins(): readonly CoinPose[];
   /** The table quantized for storage, as Sim.snapshot() reads it. */
   snapshot(): SimTableSnapshot;
@@ -85,9 +89,9 @@ type Endpoint = MessageEndpoint<MainToWorker, WorkerToMain>;
 /**
  * The sim worker: owns one Sim, steps it on a fixed 60 Hz schedule against the worker's clock
  * and publishes every coin pose after each step through the transport the page chose, followed by
- * an `events` message with the falls, contacts and fusions of the ticks just run, when there
- * were any. Inputs arriving between ticks are applied, in arrival order, at the start of the next
- * tick. A `snapshot` request is answered between ticks with the table after the newest one, and
+ * an `events` message with the falls, contacts, fusions and unfuses of the ticks just run, when
+ * there were any. Inputs and unfuses arriving between ticks are applied, in arrival order, at the
+ * start of the next tick, the unfuses first as the Sim does. A `snapshot` request is answered between ticks with the table after the newest one, and
  * one that arrives while the Sim is still being built waits for it. The sim itself never sees a
  * clock; only this scheduler does.
  */
@@ -96,6 +100,7 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
   let sim: HostedSim | null = null;
   let sink: FrameSink | null = null;
   let queue: SimInput[] = [];
+  const unfuses: UnfuseRequest[] = [];
   let snapshotRequests: number[] = [];
   let paused = false;
   let epoch = 0;
@@ -161,7 +166,10 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
         const batch = new EventCollector();
         for (let k = 0; k < ticks; k += 1) {
           const inputs = k === 0 && queue.length > 0 ? forSim(queue, sim) : NO_INPUTS;
-          if (k === 0) queue = [];
+          if (k === 0) {
+            queue = [];
+            for (const request of unfuses.splice(0)) sim.unfuse(request);
+          }
           batch.add(sim.step(inputs));
         }
         if (behind > MAX_CATCH_UP_TICKS) rebase(now, epoch + 1);
@@ -224,6 +232,12 @@ export function runSimWorker(endpoint: Endpoint, host: SimWorkerHost): void {
         assertInputs(message.inputs);
         if (state === 'idle' || state === 'starting' || state === 'running') {
           queue.push(...message.inputs);
+        }
+        return;
+      case 'unfuse':
+        assertUnfuse(message);
+        if (state === 'idle' || state === 'starting' || state === 'running') {
+          unfuses.push({ fusedId: message.fusedId, inputs: message.inputs });
         }
         return;
       case 'snapshot': {
@@ -329,15 +343,22 @@ class EventCollector {
   #falls: FallEvent[] = [];
   #contacts: ContactEvent[] = [];
   #fusions: FusionEvent<CoinTier>[] = [];
+  #unfused: UnfuseEvent[] = [];
 
   get empty(): boolean {
-    return this.#falls.length + this.#contacts.length + this.#fusions.length === 0;
+    return (
+      this.#falls.length + this.#contacts.length + this.#fusions.length + this.#unfused.length === 0
+    );
   }
 
   add(events: SimEvents): void {
     this.#falls.push(...events.falls);
     this.#contacts.push(...events.contacts);
     for (const event of events.mechanics) {
+      if (event.kind === 'unfused') {
+        this.#unfused.push(event);
+        continue;
+      }
       if (event.kind !== 'fusion') continue;
       if (!isCoinTier(event.tier) || !isCoinTier(event.into)) {
         throw new RangeError(
@@ -349,7 +370,8 @@ class EventCollector {
   }
 
   take(): SimEventBatch {
-    return { falls: this.#falls, contacts: this.#contacts, fusions: this.#fusions };
+    const batch = { falls: this.#falls, contacts: this.#contacts, fusions: this.#fusions };
+    return this.#unfused.length === 0 ? batch : { ...batch, unfused: this.#unfused };
   }
 }
 
@@ -433,6 +455,33 @@ function assertInputs(inputs: unknown): asserts inputs is readonly SimInput[] {
         `inputs must be nudge, or dropCoin with integer xMm in ±${MAX_DROP_OFFSET_MM} and an optional tier from ${COIN_TIERS.join(', ')}; got ${JSON.stringify(input)}`,
       );
     }
+  }
+}
+
+function assertUnfuse(message: Extract<MainToWorker, { type: 'unfuse' }>): void {
+  const { fusedId, inputs } = message as { fusedId: unknown; inputs: unknown };
+  if (typeof fusedId !== 'number' || !Number.isSafeInteger(fusedId) || fusedId < 0) {
+    throw new RangeError(
+      `unfuse.fusedId must be a non-negative integer, got ${JSON.stringify(fusedId)}`,
+    );
+  }
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw new RangeError(`unfuse.inputs must be a non-empty array, got ${JSON.stringify(inputs)}`);
+  }
+  const slots = new Set<number>();
+  for (const input of inputs as unknown[]) {
+    const { tier, slot } = (input as Partial<Record<string, unknown>> | null) ?? {};
+    if (typeof tier !== 'string' || !isCoinTier(tier)) {
+      throw new RangeError(
+        `unfuse.inputs must each name a tier from ${COIN_TIERS.join(', ')}; got ${JSON.stringify(input)}`,
+      );
+    }
+    if (typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0 || slots.has(slot)) {
+      throw new RangeError(
+        `unfuse.inputs must each name a distinct non-negative slot; got ${JSON.stringify(input)}`,
+      );
+    }
+    slots.add(slot);
   }
 }
 

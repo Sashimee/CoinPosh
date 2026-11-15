@@ -7,6 +7,7 @@ import type {
   MessageEndpoint,
   SimEventBatch,
   TransportKind,
+  UnfuseInput,
   WorkerToMain,
 } from './protocol.ts';
 import { TICK_MS } from './runtime.ts';
@@ -128,7 +129,7 @@ export function isCrossOriginIsolated(): boolean {
  * between the two sim frames around that point, into the coin field by tier. A coin's tier comes
  * from the sim when it tracks tiers (fusion makes new coins), and otherwise from the drop that
  * made it; either way it only picks the look, since what a coin is worth only ever comes from the
- * server. `onEvents` hears the falls, contacts and fusions the worker reports.
+ * server. `onEvents` hears the falls, contacts, fusions and unfuses the worker reports.
  */
 export class SimBridge {
   readonly transport: TransportKind;
@@ -286,6 +287,31 @@ export class SimBridge {
     this.#post({ type: 'input', inputs: [{ kind: 'nudge', direction }] });
   }
 
+  /**
+   * Undoes the refused fusion that made coin `fusedId` at the start of the next sim tick: the
+   * fused coin leaves without a fall and one coin per input is laid back, each drawn in its
+   * input's tier, then an `unfused` event names the new coins in input order. A fused coin that
+   * already left the table still has its inputs laid back.
+   */
+  unfuse(fusedId: number, inputs: readonly UnfuseInput[]): void {
+    if (!Number.isInteger(fusedId) || fusedId < 0) {
+      throw new RangeError(
+        `SimBridge.unfuse: fusedId must be a non-negative integer, got ${fusedId}`,
+      );
+    }
+    if (inputs.length === 0) {
+      throw new RangeError(
+        `SimBridge.unfuse: coin ${fusedId} needs at least one input to lay back`,
+      );
+    }
+    this.#assertRunning('unfuse');
+    this.#post({
+      type: 'unfuse',
+      fusedId,
+      inputs: inputs.map(({ tier, slot }) => ({ tier, slot })),
+    });
+  }
+
   /** Changes the look of a coin already on the table. */
   setTier(id: number, tier: CoinTierId): void {
     this.#tiers.set(id, tier);
@@ -418,6 +444,7 @@ export class SimBridge {
           falls: message.falls,
           contacts: message.contacts,
           fusions: message.fusions,
+          ...(message.unfused ? { unfused: message.unfused } : {}),
         };
         for (const listener of [...this.#listeners]) listener(batch);
         return;

@@ -19,6 +19,8 @@ import type {
   SimOptions,
   SimRestore,
   SimTableSnapshot,
+  UnfuseEvent,
+  UnfuseRequest,
 } from './sim-api.ts';
 import { OPENING_HEAP_CAPACITY, SIM_MECHANICS } from './table-config.ts';
 
@@ -361,29 +363,44 @@ describe('SimBridge events', { timeout: 30_000 }, () => {
     falls: FallEvent[];
     contacts: SimEventBatch['contacts'][number][];
     fusions: SimEventBatch['fusions'][number][];
+    unfused: UnfuseEvent[];
   }
 
   const collect = (bridge: SimBridge): Collected => {
-    const all: Collected = { falls: [], contacts: [], fusions: [] };
+    const all: Collected = { falls: [], contacts: [], fusions: [], unfused: [] };
     bridge.onEvents((batch) => {
-      expect(batch.falls.length + batch.contacts.length + batch.fusions.length).toBeGreaterThan(0);
+      if (batch.unfused)
+        expect(batch.unfused.length, 'an empty unfused list is left out').toBeGreaterThan(0);
+      const unfused = batch.unfused ?? [];
+      expect(
+        batch.falls.length + batch.contacts.length + batch.fusions.length + unfused.length,
+      ).toBeGreaterThan(0);
       all.falls.push(...batch.falls);
       all.contacts.push(...batch.contacts);
       all.fusions.push(...batch.fusions);
+      all.unfused.push(...unfused);
     });
     return all;
   };
 
-  async function replay(options: HarnessOptions, inputs: Map<number, SimInput[]>, ticks: number) {
+  async function replay(
+    options: HarnessOptions,
+    inputs: Map<number, SimInput[]>,
+    ticks: number,
+    unfuses: ReadonlyMap<number, UnfuseRequest> = new Map(),
+  ) {
     const direct = await Sim.create(simOptions(SEED, options));
-    const all: Collected = { falls: [], contacts: [], fusions: [] };
+    const all: Collected = { falls: [], contacts: [], fusions: [], unfused: [] };
     try {
       while (direct.tick < ticks) {
+        const unfuse = unfuses.get(direct.tick);
+        if (unfuse) direct.unfuse(unfuse);
         const events = direct.step(inputs.get(direct.tick) ?? []);
         all.falls.push(...events.falls);
         all.contacts.push(...events.contacts);
         for (const event of events.mechanics) {
           if (event.kind === 'fusion') all.fusions.push(event as Collected['fusions'][number]);
+          if (event.kind === 'unfused') all.unfused.push(event);
         }
       }
       return { all, coins: direct.coins() };
@@ -419,6 +436,133 @@ describe('SimBridge events', { timeout: 30_000 }, () => {
     expect(all.fusions.map((fusion) => fusion.fusedId)).toEqual(
       expect.arrayContaining(fused.map((coin) => coin.id)),
     );
+  });
+
+  it('lays a refused fusion back through the worker exactly as the same unfuse replayed in-thread', async () => {
+    const options: HarnessOptions = { mechanics: SIM_MECHANICS, openingHeap: { coins: 60 } };
+    const { bridge, run, poll, newest } = harness('transfer', options);
+    const all = collect(bridge);
+    await bridge.ready;
+    await poll();
+    const inputs = new Map<number, SimInput[]>();
+    for (const xMm of [0, 6, -6, 0, 6, -6]) {
+      inputs.set(bridge.stats.tick, [{ kind: 'dropCoin', xMm, tier: 'copper' }]);
+      bridge.drop(xMm, 'copper');
+      await settle();
+      await run(20);
+    }
+    for (let k = 0; k < 12 && all.fusions.length === 0; k += 1) await run(20);
+    const [fusion] = all.fusions;
+    if (!fusion) throw new Error('the drops made no fusion to refuse; pick drops that fuse');
+    const request: UnfuseRequest = {
+      fusedId: fusion.fusedId,
+      inputs: fusion.ids.map(() => ({ tier: fusion.tier })),
+    };
+    const unfuses = new Map([[bridge.stats.tick, request]]);
+    bridge.unfuse(
+      fusion.fusedId,
+      request.inputs.map((_, slot) => ({ tier: fusion.tier, slot })),
+    );
+    await settle();
+    await run(30);
+    const expected = await replay(options, inputs, bridge.stats.tick, unfuses);
+    expect(all).toEqual(expected.all);
+    const [unfused] = all.unfused;
+    expect(all.unfused).toHaveLength(1);
+    expect(unfused).toMatchObject({ fusedId: fusion.fusedId });
+    expect(unfused?.coinIds).toHaveLength(fusion.ids.length);
+    const target = newest();
+    expect(expected.coins.map((coin) => coin.id)).not.toContain(fusion.fusedId);
+    for (const coin of expected.coins) {
+      expect(target.ids(coin.tier as CoinTierId), `coin ${coin.id}`).toContain(coin.id);
+    }
+    for (const id of unfused?.coinIds ?? []) {
+      expect(target.ids(fusion.tier), `laid coin ${id}`).toContain(id);
+    }
+  });
+
+  it('lays an input that is not laid back first at its own slot of the fusion record', async () => {
+    const options: HarnessOptions = { mechanics: SIM_MECHANICS, openingHeap: { coins: 60 } };
+    const { bridge, run, poll } = harness('transfer', options);
+    const all = collect(bridge);
+    await bridge.ready;
+    await poll();
+    const inputs = new Map<number, SimInput[]>();
+    for (const xMm of [0, 6, -6, 0, 6, -6]) {
+      inputs.set(bridge.stats.tick, [{ kind: 'dropCoin', xMm, tier: 'copper' }]);
+      bridge.drop(xMm, 'copper');
+      await settle();
+      await run(20);
+    }
+    for (let k = 0; k < 12 && all.fusions.length === 0; k += 1) await run(20);
+    const [fusion] = all.fusions;
+    if (!fusion) throw new Error('the drops made no fusion to refuse; pick drops that fuse');
+    const slots = fusion.ids.map((_, slot) => slot).slice(1);
+    const unfuseTick = bridge.stats.tick;
+    bridge.unfuse(
+      fusion.fusedId,
+      slots.map((slot) => ({ tier: fusion.tier, slot })),
+    );
+    await settle();
+    await run(30);
+    const atOwnSlots: UnfuseRequest = {
+      fusedId: fusion.fusedId,
+      inputs: slots.map((slot) => ({ tier: fusion.tier, slot })),
+    };
+    const expected = await replay(
+      options,
+      inputs,
+      bridge.stats.tick,
+      new Map([[unfuseTick, atOwnSlots]]),
+    );
+    expect(bridge.failure).toBeNull();
+    expect(all).toEqual(expected.all);
+    expect(all.unfused).toHaveLength(1);
+    expect(all.unfused[0]?.coinIds).toHaveLength(slots.length);
+    const shifted = await replay(
+      options,
+      inputs,
+      bridge.stats.tick,
+      new Map([
+        [unfuseTick, { fusedId: fusion.fusedId, inputs: slots.map(() => ({ tier: fusion.tier })) }],
+      ]),
+    );
+    expect(shifted.coins, 'laid at slots 0.. instead, the coins would rest elsewhere').not.toEqual(
+      expected.coins,
+    );
+  });
+
+  it('stops the sim on an unfuse naming an unknown tier, and refuses an empty one on the page', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { bridge } = harness('transfer', { mechanics: SIM_MECHANICS });
+    await bridge.ready;
+    expect(() => {
+      bridge.unfuse(3, []);
+    }).toThrow(/at least one input/);
+    expect(() => {
+      bridge.unfuse(-1, [{ tier: 'copper', slot: 0 }]);
+    }).toThrow(/non-negative integer, got -1/);
+    bridge.unfuse(3, [{ tier: 'tin' as 'copper', slot: 0 }]);
+    await settle();
+    expect(bridge.failure?.message).toMatch(
+      /rejected a message.*unfuse\.inputs must each name a tier/,
+    );
+    expect(errors).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the sim on an unfuse that names one slot twice', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { bridge } = harness('transfer', { mechanics: SIM_MECHANICS });
+    await bridge.ready;
+    bridge.unfuse(3, [
+      { tier: 'copper', slot: 1 },
+      { tier: 'copper', slot: 1 },
+    ]);
+    await settle();
+    expect(bridge.failure?.message).toMatch(
+      /unfuse\.inputs must each name a distinct non-negative slot/,
+    );
+    expect(errors).toHaveBeenCalledTimes(1);
   });
 
   it("forwards the falls and fusions of the Demo table's drops, with the worker's mechanics", async () => {

@@ -24,6 +24,8 @@ export type {
   SimEvents,
   SimInput,
   SimOptions,
+  UnfuseEvent,
+  UnfuseRequest,
 } from '@coinposh/sim';
 export type { CoinPose as SnapshotPose, SimTableSnapshot } from '@coinposh/sim/snapshot';
 

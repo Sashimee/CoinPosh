@@ -103,6 +103,10 @@ class TickSim implements SimPort {
     this.nudges.push(direction);
   }
 
+  unfuse(fusedId: number): void {
+    throw new Error(`TickSim never fuses, so nothing should unfuse coin ${fusedId}`);
+  }
+
   sync(target: CoinTransformTarget): void {
     target.setTransforms('copper', [], [], 0, []);
   }

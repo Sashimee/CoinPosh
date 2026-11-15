@@ -114,6 +114,12 @@ export interface UnfuseCoin {
    * site.
    */
   readonly pose?: CoinPose;
+  /**
+   * Which of the fusion's inputs this coin is, as an index into FusionEvent.ids, so it
+   * takes that input's recorded pose when the inputs before it are not laid back.
+   * Defaults to its index in UnfuseRequest.inputs; each slot at most once per request.
+   */
+  readonly slot?: number;
 }
 
 /** A refused fusion to undo; see Sim.unfuse. */
@@ -509,15 +515,23 @@ export class Sim {
         `Sim.unfuse: inputs must be an array of 1 to ${MAX_UNFUSE_COINS} coins, got ${Array.isArray(inputs) ? inputs.length : typeof inputs}`,
       );
     }
+    const slots = new Set<number>();
     const copied = inputs.map((input: UnfuseCoin, i): UnfuseCoin => {
       if (!tiers.includes(input.tier)) {
         throw new RangeError(
           `Sim.unfuse: inputs[${i}].tier must be one of ${tiers.join(', ')}, got ${JSON.stringify(input.tier)}`,
         );
       }
+      const slot = input.slot ?? i;
+      if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_UNFUSE_COINS || slots.has(slot)) {
+        throw new RangeError(
+          `Sim.unfuse: inputs[${i}].slot must be a distinct integer from 0 to ${MAX_UNFUSE_COINS - 1}, got ${JSON.stringify(input.slot)}`,
+        );
+      }
+      slots.add(slot);
       const { pose } = input;
       if (pose === undefined) {
-        return { tier: input.tier };
+        return { tier: input.tier, slot };
       }
       const { dropped } = validateSnapshot({
         version: SIM_SNAPSHOT_VERSION,
@@ -533,6 +547,7 @@ export class Sim {
       }
       return {
         tier: input.tier,
+        slot,
         pose: { id: pose.id, p: [...pose.p], q: [...pose.q], rest: pose.rest },
       };
     });
@@ -562,7 +577,8 @@ export class Sim {
     }
     const site = fused?.translation ?? record?.position ?? mechanics.lastFusionSite ?? CHUTE_SITE;
     const rotation = fused?.rotation ?? record?.rotation ?? FLAT;
-    const unplaced = inputs.filter((input, i) => !input.pose && !record?.inputs[i]).length;
+    const recordedAt = (input: UnfuseCoin, i: number) => record?.inputs[input.slot ?? i];
+    const unplaced = inputs.filter((input, i) => !input.pose && !recordedAt(input, i)).length;
     const spread =
       unplaced > 0
         ? this.#table.spreadPoses(site, unplaced, rotation, this.#rng, this.#keepClear)
@@ -575,7 +591,7 @@ export class Sim {
           rotation: dequantizeRotation(input.pose.q),
         };
       }
-      const recorded = record?.inputs[i];
+      const recorded = recordedAt(input, i);
       if (recorded) {
         return recorded;
       }
@@ -610,8 +626,8 @@ export class Sim {
     h.int(this.#unfuses.length);
     for (const { fusedId, inputs } of this.#unfuses) {
       h.int(fusedId).int(inputs.length);
-      for (const { tier, pose } of inputs) {
-        h.int(this.#tiers?.indexOf(tier) ?? -1);
+      for (const [i, { tier, pose, slot }] of inputs.entries()) {
+        h.int(this.#tiers?.indexOf(tier) ?? -1).int(slot ?? i);
         if (!pose) {
           h.int(0);
           continue;
