@@ -100,6 +100,22 @@ export interface CrateSpawnConfig {
   readonly ftueScriptedDrop: number;
   readonly ftueScriptedRarity: RarityId;
   readonly ftueScriptedCharm: boolean;
+  readonly firstTicket: FirstTicketRule;
+}
+
+/**
+ * The first Capsule Ticket a player earns, guaranteed: the `byCrate`-th crate open (counted
+ * from 1) pays `amount` Tickets unless an earlier crate open or its own roll already paid one.
+ */
+export interface FirstTicketRule {
+  readonly byCrate: number;
+  readonly amount: number;
+}
+
+/** What a player's earlier crate opens paid, as {@link FirstTicketRule} reads it. */
+export interface CrateOpenHistory {
+  readonly opensBefore: number;
+  readonly ticketsBefore: number;
 }
 
 export interface CrateRewardDef {

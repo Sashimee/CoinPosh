@@ -20,7 +20,8 @@
     "inHand": {
       "label": "In hand",
       "aria_one": "{{value}} coin in hand, paid for and ready to drop",
-      "aria_other": "{{value}} coins in hand, paid for and ready to drop"
+      "aria_other": "{{value}} coins in hand, paid for and ready to drop",
+      "low": "Last coins"
     },
     "vaultEmpty": {
       "title": "Vault empty",

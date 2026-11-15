@@ -1,4 +1,4 @@
-import { fields, numberAbove, oneOf, vec3 } from './params.ts';
+import { fields, numberAbove, oneOf, unitQuat, vec3 } from './params.ts';
 
 export interface Vec3 {
   readonly x: number;
@@ -14,21 +14,41 @@ export interface Quat {
 }
 
 /**
- * A prop's collider in its own frame, in metres, centred on the prop's translation.
+ * One convex collider in its own frame, in metres, centred on its translation.
  * Cylinders and capsules stand along their local y axis.
  */
-export type PropShape =
+export type PrimitiveShape =
   | { readonly kind: 'box'; readonly halfExtents: Vec3 }
   | { readonly kind: 'cylinder'; readonly halfHeight: number; readonly radius: number }
   | { readonly kind: 'ball'; readonly radius: number }
   | { readonly kind: 'capsule'; readonly halfHeight: number; readonly radius: number };
 
-export const PROP_SHAPE_KINDS = ['box', 'cylinder', 'ball', 'capsule'] as const;
+/** A primitive placed in a compound shape's frame. */
+export interface CompoundPart {
+  readonly shape: PrimitiveShape;
+  readonly translation: Vec3;
+  readonly rotation: Quat;
+}
 
-/** The largest half extent a prop shape may have along any axis. */
+/**
+ * A prop's collider in its own frame, in metres, centred on the prop's translation: one
+ * primitive, or a compound of several on the same body (a watch's case and bracelet).
+ * A compound's mass is shared among its parts by volume, as if they did not overlap.
+ */
+export type PropShape =
+  PrimitiveShape | { readonly kind: 'compound'; readonly parts: readonly CompoundPart[] };
+
+export const PRIMITIVE_SHAPE_KINDS = ['box', 'cylinder', 'ball', 'capsule'] as const;
+export const PROP_SHAPE_KINDS = [...PRIMITIVE_SHAPE_KINDS, 'compound'] as const;
+
+/** The largest half extent a primitive may have along any axis, and a part's offset. */
 export const MAX_PROP_EXTENT = 0.1;
 /** The smallest, so every prop is thicker than a coin's contact skin many times over. */
 export const MIN_PROP_EXTENT = 0.001;
+/** The largest bounding radius a compound may have: that of the largest box. */
+export const MAX_COMPOUND_RADIUS = Math.sqrt(3) * MAX_PROP_EXTENT;
+/** Most parts a compound may have; each is one more collider in the broad phase. */
+export const MAX_COMPOUND_PARTS = 8;
 
 function extent(value: unknown, what: string): number {
   const n = numberAbove(value, what, 0, MAX_PROP_EXTENT);
@@ -40,9 +60,47 @@ function extent(value: unknown, what: string): number {
 
 export function parseShape(raw: unknown, what: string): PropShape {
   const kind = oneOf(
-    fields(raw, what, ['kind', 'halfExtents', 'halfHeight', 'radius']).kind,
+    fields(raw, what, ['kind', 'halfExtents', 'halfHeight', 'radius', 'parts']).kind,
     `${what}.kind`,
     PROP_SHAPE_KINDS,
+  );
+  return kind === 'compound' ? parseCompound(raw, what) : parsePrimitive(raw, what);
+}
+
+function parseCompound(raw: unknown, what: string): PropShape {
+  const f = fields(raw, what, ['kind', 'parts']);
+  if (!Array.isArray(f.parts) || f.parts.length === 0) {
+    throw new TypeError(`${what}.parts must be a non-empty array of compound parts`);
+  }
+  if (f.parts.length > MAX_COMPOUND_PARTS) {
+    throw new RangeError(
+      `${what}.parts holds ${f.parts.length} parts; a compound takes at most ${MAX_COMPOUND_PARTS}`,
+    );
+  }
+  const parts = f.parts.map((entry: unknown, i): CompoundPart => {
+    const at = `${what}.parts[${i}]`;
+    const p = fields(entry, at, ['shape', 'translation', 'rotation']);
+    return {
+      shape: parsePrimitive(p.shape, `${at}.shape`),
+      translation: vec3(p.translation, `${at}.translation`, MAX_PROP_EXTENT),
+      rotation: unitQuat(p.rotation, `${at}.rotation`),
+    };
+  });
+  const shape = { kind: 'compound', parts } as const;
+  const radius = boundingRadius(shape);
+  if (radius > MAX_COMPOUND_RADIUS) {
+    throw new RangeError(
+      `${what} reaches ${radius} m from its centre; a compound may reach at most ${MAX_COMPOUND_RADIUS} m`,
+    );
+  }
+  return shape;
+}
+
+function parsePrimitive(raw: unknown, what: string): PrimitiveShape {
+  const kind = oneOf(
+    fields(raw, what, ['kind', 'halfExtents', 'halfHeight', 'radius', 'parts']).kind,
+    `${what}.kind`,
+    PRIMITIVE_SHAPE_KINDS,
   );
   switch (kind) {
     case 'box': {
@@ -86,7 +144,44 @@ export function boundingRadius(shape: PropShape): number {
       return shape.radius;
     case 'capsule':
       return shape.halfHeight + shape.radius;
+    case 'compound':
+      return Math.max(
+        ...shape.parts.map(
+          ({ shape: part, translation: t }) =>
+            Math.sqrt(t.x * t.x + t.y * t.y + t.z * t.z) + boundingRadius(part),
+        ),
+      );
   }
+}
+
+/** A primitive's volume in cubic metres. */
+export function primitiveVolume(shape: PrimitiveShape): number {
+  switch (shape.kind) {
+    case 'box':
+      return 8 * shape.halfExtents.x * shape.halfExtents.y * shape.halfExtents.z;
+    case 'cylinder':
+      return 2 * Math.PI * shape.radius * shape.radius * shape.halfHeight;
+    case 'ball':
+      return (4 / 3) * Math.PI * shape.radius * shape.radius * shape.radius;
+    case 'capsule':
+      return (
+        2 * Math.PI * shape.radius * shape.radius * shape.halfHeight +
+        (4 / 3) * Math.PI * shape.radius * shape.radius * shape.radius
+      );
+  }
+}
+
+/**
+ * The share of a prop's mass each collider of `shape` carries, in collider order: one
+ * share of 1 for a primitive, and each compound part's share of the parts' total volume.
+ */
+export function massShares(shape: PropShape): number[] {
+  if (shape.kind !== 'compound') {
+    return [1];
+  }
+  const volumes = shape.parts.map((part) => primitiveVolume(part.shape));
+  const total = volumes.reduce((sum, v) => sum + v, 0);
+  return volumes.map((v) => v / total);
 }
 
 /** `v` turned by the unit quaternion `q`. */
@@ -148,6 +243,14 @@ export function signedDistance(shape: PropShape, point: Vec3): number {
       const dy = point.y - y;
       return Math.sqrt(point.x * point.x + dy * dy + point.z * point.z) - shape.radius;
     }
+    case 'compound':
+      // The nearest part's distance: exact outside the union, and inside it as deep as
+      // the part it is deepest in, which is all an enter margin asks.
+      return Math.min(
+        ...shape.parts.map((part) =>
+          distanceAt(part.shape, part.translation, part.rotation, point),
+        ),
+      );
   }
 }
 

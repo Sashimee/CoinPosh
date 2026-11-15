@@ -22,7 +22,9 @@ import {
   HANDOVER_DWELL_MS,
   HANDOVER_MAX_STEPS,
   HANDOVER_STEP_MS,
+  IN_HAND_LOW_AT,
   InHandHandover,
+  InHandTally,
   type InHandView,
   inHandCopy,
   posterHeapTarget,
@@ -233,16 +235,147 @@ describe('dock.safesReady', () => {
 
 describe('inHandCopy', () => {
   it.each([
-    ['en', 'In hand', '1 coin in hand', '12 coins in hand'],
-    ['fr', 'En main', '1 pièce en main', '12 pièces en main'],
-    ['de', 'In der Hand', '1 Münze in der Hand', '12 Münzen in der Hand'],
-  ] as const)('labels and pluralises the drop buffer in %s', (language, label, one, many) => {
+    ['en', 'In hand', '0 coins in hand', '12 coins in hand'],
+    ['fr', 'En main', '0 pièce en main', '12 pièces en main'],
+    ['de', 'In der Hand', '0 Münzen in der Hand', '12 Münzen in der Hand'],
+  ] as const)('labels and pluralises the drop buffer in %s', (language, label, empty, many) => {
     const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
     const t = i18n.t.bind(i18n);
     expect(inHandCopy(t, 12, language)).toMatchObject({ label, value: '12' });
-    expect(inHandCopy(t, 1, language).spoken).toContain(one);
     expect(inHandCopy(t, 12, language).spoken).toContain(many);
-    expect(inHandCopy(t, 0, language).value).toBe('0');
+    expect(inHandCopy(t, 0, language)).toMatchObject({ label, value: '0', low: false });
+    expect(inHandCopy(t, 0, language).spoken).toContain(empty);
+  });
+
+  it.each([
+    [
+      'en',
+      'Last coins',
+      '1 coin in hand, paid for and ready to drop',
+      '3 coins in hand, paid for and ready to drop',
+    ],
+    [
+      'fr',
+      'Dernières pièces',
+      '1 pièce en main, déjà payée et prête à lancer',
+      '3 pièces en main, déjà payées et prêtes à lancer',
+    ],
+    [
+      'de',
+      'Letzte Münzen',
+      '1 Münze in der Hand, bezahlt und bereit zum Einwurf',
+      '3 Münzen in der Hand, bezahlt und bereit zum Einwurf',
+    ],
+  ] as const)(
+    'calls out the last coins in %s and keeps the words screen readers hear',
+    (language, label, one, three) => {
+      const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
+      const t = i18n.t.bind(i18n);
+      expect(inHandCopy(t, 1, language)).toMatchObject({ label, low: true, spoken: one });
+      expect(inHandCopy(t, IN_HAND_LOW_AT, language)).toMatchObject({
+        label,
+        low: true,
+        spoken: three,
+      });
+    },
+  );
+
+  it('pulses only from IN_HAND_LOW_AT coins down to 1, not on an empty or a fuller hand', () => {
+    const i18n = createI18n({ language: 'en', resources: BUNDLED_RESOURCES });
+    const t = i18n.t.bind(i18n);
+    expect(IN_HAND_LOW_AT).toBe(3);
+    expect([0, 1, 2, 3, 4, 12].map((coins) => inHandCopy(t, coins, 'en').low)).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+    ]);
+    expect(inHandCopy(t, 4, 'en').label).toBe('In hand');
+    expect(inHandCopy(t, 0, 'en').label).toBe('In hand');
+  });
+});
+
+describe('InHandTally', () => {
+  /** A hand of 12 on show, as the chip holds it once the first buffer has filled. */
+  const fullHand = (): InHandTally => {
+    const tally = new InHandTally();
+    tally.report(12, false);
+    return tally;
+  };
+
+  it('stays out of sight until the hand first holds coins, then keeps its place at 0', () => {
+    const tally = new InHandTally();
+    expect(tally.report(0, true)).toBe(0);
+    expect(tally.visible).toBe(false);
+    expect(tally.report(12, true)).toBe(0);
+    expect(tally).toMatchObject({ visible: true, shown: 12, reported: 12 });
+    tally.report(0, false);
+    expect(tally).toMatchObject({ visible: true, shown: 0 });
+  });
+
+  it('steps down at once for a drop and holds a refill back until its coin lands', () => {
+    const tally = fullHand();
+    tally.report(11, false);
+    expect(tally.shown).toBe(11);
+    expect(tally.report(12, true)).toBe(1);
+    expect(tally).toMatchObject({ shown: 11, reported: 12 });
+    tally.land(1);
+    expect(tally.shown).toBe(12);
+  });
+
+  it('steps down for a drop made while a refill flies, then back up as it lands', () => {
+    const tally = fullHand();
+    const shown: number[] = [tally.shown];
+    tally.report(11, false);
+    shown.push(tally.shown);
+    const carried = tally.report(12, true);
+    shown.push(tally.shown);
+    tally.report(11, false);
+    shown.push(tally.shown);
+    expect(tally.reported).toBe(11);
+    tally.land(carried);
+    shown.push(tally.shown);
+    expect(shown).toEqual([12, 11, 11, 10, 11]);
+  });
+
+  it('walks every value when drops and refills overlap across several flights', () => {
+    const tally = fullHand();
+    const shown: number[] = [tally.shown];
+    const flights: number[] = [];
+    for (let drop = 0; drop < 3; drop += 1) {
+      tally.report(tally.reported - 1, false);
+      shown.push(tally.shown);
+      flights.push(tally.report(tally.reported + 1, true));
+    }
+    for (const carried of flights) {
+      tally.land(carried);
+      shown.push(tally.shown);
+    }
+    expect(shown).toEqual([12, 11, 10, 9, 10, 11, 12]);
+    const steps = shown.slice(1).map((count, i) => Math.abs(count - (shown[i] ?? 0)));
+    expect(steps.every((step) => step === 1)).toBe(true);
+  });
+
+  it('never shows more than the table reports, even when the hand empties under a flight', () => {
+    const tally = fullHand();
+    tally.report(10, false);
+    const carried = tally.report(12, true);
+    expect(carried).toBe(2);
+    tally.report(1, false);
+    expect(tally).toMatchObject({ shown: 0, reported: 1 });
+    tally.land(carried);
+    expect(tally.shown).toBe(1);
+    tally.land(carried);
+    expect(tally.shown).toBe(1);
+  });
+
+  it('paints a rise at once when it does not fly, as under reduced motion', () => {
+    const tally = fullHand();
+    tally.report(11, false);
+    expect(tally.report(12, false)).toBe(0);
+    expect(tally.shown).toBe(12);
   });
 });
 

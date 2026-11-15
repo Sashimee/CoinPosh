@@ -20,7 +20,8 @@
     "inHand": {
       "label": "In der Hand",
       "aria_one": "{{value}} Münze in der Hand, bezahlt und bereit zum Einwurf",
-      "aria_other": "{{value}} Münzen in der Hand, bezahlt und bereit zum Einwurf"
+      "aria_other": "{{value}} Münzen in der Hand, bezahlt und bereit zum Einwurf",
+      "low": "Letzte Münzen"
     },
     "vaultEmpty": {
       "title": "Tresor leer",
