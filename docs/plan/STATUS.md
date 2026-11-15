@@ -179,7 +179,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-11.01-p1 | done | task/T-11.01-p1 (merge 0e3cd7f) | Feature-module seams, part 1: shared per-theme endpoint maps (9a1fe73); pnpm check green after merge |
 | T-11.01-p3 | done | task/T-11.01-p3 (merge 83ec110) | Feature-module seams, part 3: web feature registry (net/features), Demo mock feature hooks, game/features.ts mountGameFeatures, i18n per-feature namespaces (58e1cfb); follow-up P-688; pnpm check green after merge |
 | T-11.02 | done | task/T-11.02 (merge 83cde70) | Sim prop seam: packages/sim/src/props (kinds, params, shape, world), sim and snapshot wiring (462f248); follow-ups P-605..P-608; pnpm check green after merge |
-| T-11.03 | todo | | Waits on T-11.01. Collecting contracts |
+| T-11.03 | done | task/T-11.03 (merge d6b6277) | Collecting contracts: prizes, coin variants, lounge layout, cellar bottles under packages/shared/src/api/collecting (bdea892); pnpm check green after merge; schema wiring queued as P-716 to P-719 |
 | T-11.04 | todo | | Waits on T-11.03, T-3.07. Collecting numbers |
 | T-11.05 | todo | | Waits on T-11.02, T-11.03. Sim: prize bodies |
 | T-11.06 | todo | | Waits on T-11.04. Server: prizes and coin variants |
