@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { LANGUAGES, type ResourceTree } from '../../i18n/index.ts';
 import { hexToRgbChannels } from '../../ui/theme.ts';
 import { GACHA_STRINGS } from './i18n.ts';
-import { pullAction, pullPrompt } from './plan.ts';
+import { pullAction, pullPrompt, unlockCue } from './plan.ts';
+import { rivieraTokens } from '../../scene/venues/riviera/palette.ts';
 import { GACHA_CARD_BED, LOCKED_PULL, LOCKED_PULL_VARIABLES } from './tokens.ts';
 
 function luminance(hex: string): number {
@@ -71,6 +72,44 @@ describe('gacha locked Pull', () => {
     for (const language of LANGUAGES) {
       for (const text of leafTexts(GACHA_STRINGS[language])) expect(text).not.toMatch(unmounted);
     }
+  });
+
+  it('plays the unlock glint only on the render Pull goes from locked to open', () => {
+    const open = pullAction(1, false);
+    expect(unlockCue(true, pullPrompt(open, false), open, false, false)).toBe('play');
+    expect(unlockCue(false, pullPrompt(open, false), open, false, false)).toBe('keep');
+    expect(unlockCue(null, pullPrompt(open, false), open, false, false)).toBe('keep');
+    expect(unlockCue(true, pullPrompt(open, false), open, false, true)).toBe('keep');
+    const busy = pullAction(1, true);
+    expect(unlockCue(true, pullPrompt(busy, false), busy, false, false)).toBe('keep');
+  });
+
+  it('clears the unlock glint once Collect brings back a Pull that is locked again', () => {
+    const spent = pullAction(0, false);
+    expect(unlockCue(false, pullPrompt(spent, false), spent, false, false)).toBe('clear');
+    expect(unlockCue(true, pullPrompt(spent, false), spent, false, false)).toBe('clear');
+  });
+
+  it('clears the unlock glint while Pull is hidden behind a prize card', () => {
+    const open = pullAction(3, false);
+    expect(unlockCue(true, pullPrompt(open, true), open, true, false)).toBe('clear');
+    expect(unlockCue(false, pullPrompt(open, true), open, true, false)).toBe('clear');
+  });
+
+  it('never draws the unlock glint or pop over a locked plaque', () => {
+    expect(css).not.toMatch(/\.cp-gacha-pull\.is-unlocked(?!:not\(\.is-locked\))/);
+    rule('.cp-gacha-pull.is-unlocked:not(.is-locked)::after');
+    rule('.cp-gacha-pull.is-unlocked:not(.is-locked)');
+  });
+
+  it('derives the plaque bed from navy lacquer, keeping its hue', () => {
+    const [r = 0, g = 0, b = 0] = hexToRgbChannels(LOCKED_PULL.bed).split(' ').map(Number);
+    const [nr = 0, ng = 0, nb = 0] = hexToRgbChannels(rivieraTokens['navy-lacquer'])
+      .split(' ')
+      .map(Number);
+    expect(luminance(LOCKED_PULL.bed)).toBeGreaterThan(luminance(GACHA_CARD_BED));
+    expect(r / nr).toBeCloseTo(b / nb, 1);
+    expect(g / ng).toBeCloseTo(b / nb, 1);
   });
 
   it('keeps the locked label and its reason at 4.5:1 or better', () => {

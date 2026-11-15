@@ -257,7 +257,7 @@
   color: var(--cp-gacha-locked-edge);
 }
 
-.cp-gacha-pull.is-unlocked::after {
+.cp-gacha-pull.is-unlocked:not(.is-locked)::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -271,7 +271,7 @@
   animation: cp-gacha-glint 900ms cubic-bezier(0.3, 0.7, 0.4, 1) both;
 }
 
-.cp-gacha-pull.is-unlocked {
+.cp-gacha-pull.is-unlocked:not(.is-locked) {
   animation: cp-gacha-pop 320ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
 }
 

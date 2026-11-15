@@ -5,14 +5,14 @@ import { formatInteger, type InterpolationValues } from '../../i18n/index.ts';
 import type { GachaEvent } from '../../scene/gacha/index.ts';
 import { makePressable } from '../../ui/components/pressable.ts';
 import { feedback, type UiContext } from '../../ui/context.ts';
-import { fromMarkup, h, restartAnimation } from '../../ui/dom.ts';
+import { fromMarkup, h, listen, restartAnimation } from '../../ui/dom.ts';
 import { icon } from '../../ui/icons.ts';
 import { Localizer } from '../../ui/localize.ts';
 import { sharedSheetFocus } from '../../ui/panels/sheetFocus.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../vfx/palette.ts';
 import { gachaKey, registerGachaStrings, type GachaKey } from './i18n.ts';
 import type { PullAction } from './plan.ts';
-import { pullPrompt, revealSteps } from './plan.ts';
+import { pullPrompt, revealSteps, unlockCue } from './plan.ts';
 import { createGachaStage, type GachaStage } from './stage.ts';
 import { LOCKED_PULL_VARIABLES } from './tokens.ts';
 
@@ -221,14 +221,19 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
     pull.setAttribute('aria-disabled', String(!action.enabled));
     const prompt = pullPrompt(action, showingPrize);
     pull.classList.toggle('is-locked', prompt.locked);
-    if (wasLocked === true && !prompt.locked && action.enabled && !reduced) {
-      restartAnimation(pull, 'is-unlocked');
-    }
+    const cue = unlockCue(wasLocked, prompt, action, pull.hidden, reduced);
+    if (cue === 'clear') pull.classList.remove('is-unlocked');
+    if (cue === 'play') restartAnimation(pull, 'is-unlocked');
     wasLocked = prompt.locked;
     hint.textContent = prompt.reason === null ? '' : t(prompt.reason);
     sources.textContent = prompt.sources === null ? '' : t(prompt.sources);
   };
   ctx.own(loc.bind(render));
+  ctx.own(
+    listen(pull, 'animationend', (event) => {
+      if (event.animationName === 'cp-gacha-glint') pull.classList.remove('is-unlocked');
+    }),
+  );
 
   const setCrank = (progress: number) => {
     crankAt = progress;
@@ -347,8 +352,8 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
   makePressable(collect, ctx, {
     feedback: 'confirm',
     onPress: () => {
-      const sources = [...revealList.querySelectorAll('.cp-gacha-reveal-line')];
-      options.onCollect(sources);
+      const lines = [...revealList.querySelectorAll('.cp-gacha-reveal-line')];
+      options.onCollect(lines);
       revealCard.hidden = true;
       render();
       pull.focus({ preventScroll: true });

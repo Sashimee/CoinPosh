@@ -40,6 +40,24 @@ export function pullPrompt(action: PullAction, showingPrize: boolean): PullPromp
   };
 }
 
+export type UnlockCue = 'play' | 'clear' | 'keep';
+
+/**
+ * The unlock glint plays once, on the frame Pull goes from locked to open. It is cleared whenever
+ * Pull is locked or hidden: a hidden button replays its animation when it gets its box back.
+ */
+export function unlockCue(
+  wasLocked: boolean | null,
+  prompt: PullPrompt,
+  action: PullAction,
+  hidden: boolean,
+  reduced: boolean,
+): UnlockCue {
+  if (prompt.locked || hidden) return 'clear';
+  if (wasLocked === true && action.enabled && !reduced) return 'play';
+  return 'keep';
+}
+
 /** The readout while a pull awaits the server: its Ticket already off, marked provisional. */
 export function provisionalTickets(tickets: number | null, pending: boolean): number | null {
   if (tickets === null) return null;
