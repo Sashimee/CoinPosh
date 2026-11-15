@@ -392,6 +392,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-703 | done | task/P-703 (merge 831c64e) | A reload mid Vault Crate unbox replays the stored roll after boot (unseen.ts sessionStorage list, Demo world keeps opened rolls, mount skips the plaque hold for replays) (b6159ec); pnpm check green after merge; follow-ups P-732, P-733, P-734 |
 | P-732 | done | task/P-732 (merge 732f7c0) | demo-reload.spec.ts collects the replayed crate card (Escape until gone) after the reload's playable wait, before the fresh-tab boot; no timeout raised (da6028a); pnpm check green after merge; follow-up P-740 |
 | P-721 | done | task/P-721 (merge a22377e) | Scene scale held through boot and sheet closes (scaleHold.ts, dynamic-resolution pin), coin emboss fades at low pixel radius, coin-look.spec.ts e2e (53572b4); pnpm check green after merge; follow-ups P-750, P-751 |
+| P-728 | done | task/P-728 (merge dcd5e7a) | bundle:check prints a 'near' status at 90 % of budget and a per-row delta against the merge base (BASE_SHA in perf.yml), bundleGate.test.ts (ba07398); pnpm check green after merge; follow-up P-752 (gate still stops on P-736) |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
