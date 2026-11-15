@@ -14,6 +14,7 @@ import {
   safeTypeDef,
   safeUnlocksAt,
   type CrateRewardDef,
+  type FirstTicketRule,
   type PityState,
   type RarityId,
   type Rng,
@@ -62,7 +63,9 @@ import {
   CRATE_CHARM_TYPES,
   CRATE_OPEN_TX_KIND,
   createCrateRoutes,
+  crateOpenHistory,
   drawCrate,
+  firstTicketFor,
   type CrateHost,
 } from './crates.ts';
 import { measuredActiveRate } from './offline.ts';
@@ -80,6 +83,8 @@ const GOLD_SAFE_TABLE = (() => {
   return table;
 })();
 const CRATE_SAFE = safeTypeDef(safes.crateDrop.type);
+/** Read as a rule, not the config's literal, so these tests hold for any tuning of it. */
+const FIRST_TICKET: FirstTicketRule = crateSpawn.firstTicket;
 
 function inPlayer<T>(session: Session, run: (sql: SqlStorage) => T): Promise<T> {
   return runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) =>
@@ -217,14 +222,19 @@ function currencyRewards(rewards: readonly Reward[]): Partial<Wallet> {
   return paid;
 }
 
-function expectedPayout(rarity: RarityId, activeRate: number): Partial<Wallet> {
+/** `firstTickets` is what the `crateSpawn.firstTicket` guarantee adds on this open. */
+function expectedPayout(
+  rarity: RarityId,
+  activeRate: number,
+  firstTickets: number,
+): Partial<Wallet> {
   const reward = crateRewards[rarity];
   const paid: Partial<Record<keyof Wallet, number>> = {};
   const amounts: [keyof Wallet, number][] = [
     ['coins', crateIncomeCoins(reward.incomeSeconds, activeRate, offlineRate)],
     ['pearls', reward.pearls],
     ['keys', reward.keys],
-    ['tickets', reward.tickets],
+    ['tickets', reward.tickets + firstTickets],
   ];
   for (const [currency, amount] of amounts) if (amount > 0) paid[currency] = amount;
   return paid;
@@ -300,8 +310,9 @@ describe('POST /v1/crates/open', () => {
     const opened = await openOk(await postOpen(session, { crateId: crate.id }));
     expect(opened.crateId).toBe(crate.id);
     expect(opened.roll.rarity).toBe(crateSpawn.ftueScriptedRarity);
+    const firstOpenGrant = FIRST_TICKET.byCrate === 1 ? FIRST_TICKET.amount : 0;
     expect(currencyRewards(opened.roll.rewards)).toEqual(
-      expectedPayout(opened.roll.rarity, activeRate),
+      expectedPayout(opened.roll.rarity, activeRate, firstOpenGrant),
     );
     const after = await state(session);
     expect(after.wallet).toEqual(opened.wallet);
@@ -670,6 +681,174 @@ describe('the open roll', () => {
     expect(await inPlayer(session, (sql) => readPity(sql, SOURCE))).not.toEqual(
       initialPityState(pity),
     );
+  });
+});
+
+function ticketsPaid(rewards: readonly Reward[]): number {
+  return currencyRewards(rewards).tickets ?? 0;
+}
+
+describe('the first-Ticket guarantee (crateSpawn.firstTicket)', () => {
+  const { byCrate, amount } = FIRST_TICKET;
+
+  it('pays a Ticket by crate byCrate at the latest, as a ledgered crate.open line', async () => {
+    const session = await newSession();
+    const before = await state(session);
+    let paidEarlier = 0;
+    for (let open = 1; open <= byCrate; open++) {
+      const crateId = await giveCrate(session);
+      const activeRate = await inPlayer(session, measuredActiveRate);
+      const opened = await openOk(await postOpen(session, { crateId }));
+      const rolled = crateRewards[opened.roll.rarity].tickets;
+      const grant = open === byCrate && paidEarlier === 0 && rolled === 0 ? amount : 0;
+      expect(currencyRewards(opened.roll.rewards)).toEqual(
+        expectedPayout(opened.roll.rarity, activeRate, grant),
+      );
+      const ticketLines = opened.roll.rewards.filter(
+        (reward) => reward.kind === 'currency' && reward.currency === 'tickets',
+      );
+      expect(ticketLines.length).toBe(rolled + grant > 0 ? 1 : 0);
+      paidEarlier += ticketsPaid(opened.roll.rewards);
+    }
+    expect(paidEarlier).toBeGreaterThanOrEqual(1);
+    const ticketLegs = (await ledgerOf(session, CRATE_OPEN_TX_KIND)).filter(
+      (leg) => leg.unit === 'tickets' && leg.account === 'wallet',
+    );
+    expect(ticketLegs.reduce((sum, leg) => sum + leg.delta, 0)).toBe(paidEarlier);
+    expect((await state(session)).wallet.tickets - before.wallet.tickets).toBe(paidEarlier);
+    await expectConserved(session);
+  });
+
+  it('leaves every crate after the guarantee paying exactly its roll', async () => {
+    const session = await newSession();
+    for (let open = 1; open <= byCrate; open++) {
+      await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+    }
+    const legendary = pity.rules.find((rule) => rule.rarity === 'legendary');
+    if (legendary === undefined) throw new Error('economy pities no legendary');
+    for (let open = 0; open < 8; open++) {
+      if (open === 4) await setPity(session, { legendary: legendary.within - 1 });
+      const crateId = await giveCrate(session);
+      const activeRate = await inPlayer(session, measuredActiveRate);
+      const opened = await openOk(await postOpen(session, { crateId }));
+      expect(currencyRewards(opened.roll.rewards)).toEqual(
+        expectedPayout(opened.roll.rarity, activeRate, 0),
+      );
+      if (open === 4)
+        expect(rarityRank(opened.roll.rarity)).toBeGreaterThanOrEqual(rarityRank('legendary'));
+    }
+    await expectConserved(session);
+  });
+
+  it('counts opens, not crates lost down the side, and ignores Tickets from other sources', async () => {
+    const session = await newSession();
+    await giveCrate(session, 'side');
+    await inPlayer(session, (sql) => {
+      commit(sql, new LedgerTx('gacha.pull').move('mint', 'wallet', 'tickets', 2, null), {
+        at: Date.now(),
+        idempotencyKey: null,
+      });
+      expect(crateOpenHistory(sql)).toEqual({ opensBefore: 0, ticketsBefore: 0 });
+    });
+    const opened = await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+    const rolled = crateRewards[opened.roll.rarity].tickets;
+    expect(ticketsPaid(opened.roll.rewards)).toBe(
+      rolled > 0 || byCrate !== 1 ? rolled : rolled + amount,
+    );
+    expect(await inPlayer(session, crateOpenHistory)).toEqual({
+      opensBefore: 1,
+      ticketsBefore: ticketsPaid(opened.roll.rewards),
+    });
+  });
+
+  it('grants once under a replayed Idempotency-Key and never again on later opens', async () => {
+    const session = await newSession();
+    const before = await state(session);
+    for (let open = 1; open < byCrate; open++) {
+      await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+    }
+    const crateId = await giveCrate(session);
+    const key = newIdempotencyKey();
+    const first = await openOk(await postOpen(session, { crateId }, key));
+    const afterFirst = await state(session);
+    for (let retry = 0; retry < 3; retry++) {
+      const replay = await postOpen(session, { crateId }, key);
+      expect(replay.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+      expect(await openOk(replay)).toEqual(first);
+    }
+    await expectError(await postOpen(session, { crateId }), 409, 'conflict');
+    expect((await state(session)).wallet).toEqual(afterFirst.wallet);
+
+    for (let open = 0; open < 3; open++) {
+      await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+    }
+    const ticketLegs = (await ledgerOf(session, CRATE_OPEN_TX_KIND)).filter(
+      (leg) => leg.unit === 'tickets' && leg.account === 'wallet',
+    );
+    const rolled = (
+      await inPlayer(session, (sql) =>
+        sql.exec<{ rarity: RarityId }>('SELECT rarity FROM crate_opens').toArray(),
+      )
+    ).reduce((sum, row) => sum + crateRewards[row.rarity].tickets, 0);
+    const paid = ticketLegs.reduce((sum, leg) => sum + leg.delta, 0);
+    expect(paid - rolled === 0 || paid - rolled === amount).toBe(true);
+    expect((await state(session)).wallet.tickets - before.wallet.tickets).toBe(paid);
+    await expectConserved(session);
+  });
+
+  it('grants once when the opens around crate byCrate race', async () => {
+    const session = await newSession();
+    const crates: CrateId[] = [];
+    for (let open = 0; open < byCrate + 3; open++) crates.push(await giveCrate(session));
+    const responses = await Promise.all(crates.map((crateId) => postOpen(session, { crateId })));
+    const opened = await Promise.all(responses.map(openOk));
+    const rolled = opened.reduce((sum, o) => sum + crateRewards[o.roll.rarity].tickets, 0);
+    const paid = opened.reduce((sum, o) => sum + ticketsPaid(o.roll.rewards), 0);
+    expect(paid - rolled === 0 || paid - rolled === amount).toBe(true);
+    expect(paid).toBeGreaterThanOrEqual(1);
+    await expectConserved(session);
+  });
+
+  it('decides each open in bounded reads, however many crates the player has opened', async () => {
+    const session = await newSession();
+    const probe = (sql: SqlStorage): { rowsRead: number; queries: string[] } => {
+      const cursors: SqlStorageCursor<Record<string, SqlStorageValue>>[] = [];
+      const queries: string[] = [];
+      const traced = new Proxy(sql, {
+        get(target, prop): unknown {
+          if (prop !== 'exec') {
+            const value: unknown = Reflect.get(target, prop);
+            return value;
+          }
+          return (query: string, ...bindings: unknown[]) => {
+            const cursor = target.exec(query, ...bindings);
+            queries.push(query);
+            cursors.push(cursor);
+            return cursor;
+          };
+        },
+      });
+      expect(firstTicketFor(traced, 0)).toBeGreaterThanOrEqual(0);
+      return { rowsRead: cursors.reduce((sum, c) => sum + c.rowsRead, 0), queries };
+    };
+    const readsAfter = async (opens: number): Promise<{ rowsRead: number; queries: string[] }> => {
+      const opened = await inPlayer(
+        session,
+        (sql) => sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n,
+      );
+      for (let open = opened; open < opens; open++) {
+        await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+      }
+      return inPlayer(session, probe);
+    };
+
+    const few = await readsAfter(byCrate + 1);
+    const many = await readsAfter(byCrate + 24);
+    expect(many.rowsRead).toBe(few.rowsRead);
+    expect(many.rowsRead).toBeLessThanOrEqual(byCrate + 1);
+    for (const query of [...few.queries, ...many.queries]) {
+      if (query.includes('crate_opens')) expect(query).toMatch(/FROM crate_opens LIMIT \?/);
+    }
   });
 });
 

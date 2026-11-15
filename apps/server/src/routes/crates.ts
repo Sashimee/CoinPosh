@@ -4,10 +4,12 @@ import {
   crateRewards,
   crateSpawn,
   dropTables,
+  firstTicketBonus,
   offlineRate,
   pity,
   rollDrop,
   safes,
+  type CrateOpenHistory,
   type CrateRewardDef,
   type DropTableDef,
   type PityState,
@@ -178,6 +180,64 @@ function pityCounters(state: PityState): PityCounters {
   };
 }
 
+/**
+ * Earlier crate opens, counted only up to `crateSpawn.firstTicket.byCrate`: the rule never
+ * tells a later open from that one, so the probe reads at most `byCrate` index rows however
+ * many crates the player has opened.
+ */
+function crateOpensBefore(sql: SqlStorage): number {
+  return sql
+    .exec<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM (SELECT 1 FROM crate_opens LIMIT ?)',
+      crateSpawn.firstTicket.byCrate,
+    )
+    .one().n;
+}
+
+/**
+ * Tickets the first `byCrate` crate opens paid, the only ones the rule reads. The ledger is
+ * append-only and has no index on kind, account or unit, so it is reached through those few
+ * `crate_opens` rows and the indexed `ref` column, never scanned.
+ */
+function crateTicketsBefore(sql: SqlStorage): number {
+  return sql
+    .exec<{ n: number }>(
+      `SELECT COALESCE(SUM(l.delta), 0) AS n
+       FROM (SELECT crate_id FROM crate_opens LIMIT ?) o
+       JOIN ledger l ON l.ref = o.crate_id
+       WHERE l.kind = ? AND l.account = 'wallet' AND l.unit = 'tickets'`,
+      crateSpawn.firstTicket.byCrate,
+      CRATE_OPEN_TX_KIND,
+    )
+    .one().n;
+}
+
+/**
+ * What the player's earlier crate opens paid, as `crateSpawn.firstTicket` reads it: both counts
+ * stop at the first `byCrate` opens. Read before this open's ledger legs and `crate_opens` row
+ * are written.
+ */
+export function crateOpenHistory(sql: SqlStorage): CrateOpenHistory {
+  return { opensBefore: crateOpensBefore(sql), ticketsBefore: crateTicketsBefore(sql) };
+}
+
+/**
+ * The `crateSpawn.firstTicket` top-up for this open, in bounded reads. Only the `byCrate`-th
+ * open with no rolled Tickets can pay, and `crate_opens` keeps every open final, so a player is
+ * granted it at most once; every other open skips the Tickets read.
+ */
+export function firstTicketFor(sql: SqlStorage, rolledTickets: number): number {
+  const rule = crateSpawn.firstTicket;
+  if (rolledTickets > 0) return 0;
+  const opensBefore = crateOpensBefore(sql);
+  if (opensBefore + 1 !== rule.byCrate) return 0;
+  return firstTicketBonus(
+    rule,
+    { opensBefore, ticketsBefore: crateTicketsBefore(sql) },
+    rolledTickets,
+  );
+}
+
 interface CrateRow extends Record<string, SqlStorageValue> {
   readonly id: string;
   readonly kind: CrateKind;
@@ -232,7 +292,8 @@ function heldCrate(sql: SqlStorage, crateId: CrateId): CrateRow {
  * Opens one crate inside the caller's storage transaction. The client names only the crate:
  * the contents are a provably fair roll on the crate's drop table with its pity counters,
  * paid as that rarity's `crateRewards` currencies plus its album card, and a Gold Safe when
- * the roll's safe chance hits. `scripted` marks the first-session crate whose rarity and
+ * the roll's safe chance hits. The `crateSpawn.firstTicket` guarantee tops up the Tickets line
+ * from the player's own open history, without touching the roll's stream. `scripted` marks the first-session crate whose rarity and
  * charm `crateSpawn` fixes. Charms are drawn and recorded but not granted until the server
  * keeps a charm inventory.
  */
@@ -250,11 +311,12 @@ export function openCrate(
   writeCratePity(sql, source, drawn.pity);
 
   const reward = crateRewards[drawn.rarity];
+  const firstTicket = firstTicketFor(sql, reward.tickets);
   const payout: [Currency, number][] = [
     ['coins', crateIncomeCoins(reward.incomeSeconds, measuredActiveRate(sql), offlineRate)],
     ['pearls', reward.pearls],
     ['keys', reward.keys],
-    ['tickets', reward.tickets],
+    ['tickets', reward.tickets + firstTicket],
   ];
   const tx = new LedgerTx(CRATE_OPEN_TX_KIND).move('inventory', 'house', 'crate', 1, row.id);
   const rewards: Reward[] = [];

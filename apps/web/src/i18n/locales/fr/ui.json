@@ -23,7 +23,8 @@
       "label": "En main",
       "aria_one": "{{value}} pièce en main, déjà payée et prête à lancer",
       "aria_many": "{{value}} pièces en main, déjà payées et prêtes à lancer",
-      "aria_other": "{{value}} pièces en main, déjà payées et prêtes à lancer"
+      "aria_other": "{{value}} pièces en main, déjà payées et prêtes à lancer",
+      "low": "Dernières pièces"
     },
     "vaultEmpty": {
       "title": "Coffre vide",
@@ -90,6 +91,24 @@
     "pending": "Confirmation…",
     "buyAria": "Acheter {{name}} niveau {{level}} pour {{cost}}",
     "cannotAfford": "Fonds insuffisants",
+    "shortfall_one": "encore {{value}}",
+    "shortfall_many": "encore {{value}}",
+    "shortfall_other": "encore {{value}}",
+    "shortfallAria": {
+      "coins_one": "Il manque {{value}} pièce",
+      "coins_many": "Il manque {{value}} pièces",
+      "coins_other": "Il manque {{value}} pièces",
+      "goldBars_one": "Il manque {{value}} lingot d'or",
+      "goldBars_many": "Il manque {{value}} lingots d'or",
+      "goldBars_other": "Il manque {{value}} lingots d'or"
+    },
+    "balance": {
+      "label": "Disponible",
+      "aria_one": "{{value}} pièce à dépenser",
+      "aria_many": "{{value}} pièces à dépenser",
+      "aria_other": "{{value}} pièces à dépenser",
+      "spent": "−{{value}}"
+    },
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",

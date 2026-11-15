@@ -20,7 +20,8 @@
     "inHand": {
       "label": "In der Hand",
       "aria_one": "{{value}} Münze in der Hand, bezahlt und bereit zum Einwurf",
-      "aria_other": "{{value}} Münzen in der Hand, bezahlt und bereit zum Einwurf"
+      "aria_other": "{{value}} Münzen in der Hand, bezahlt und bereit zum Einwurf",
+      "low": "Letzte Münzen"
     },
     "vaultEmpty": {
       "title": "Tresor leer",
@@ -84,6 +85,20 @@
     "pending": "Wird bestätigt…",
     "buyAria": "{{name}} Stufe {{level}} für {{cost}} kaufen",
     "cannotAfford": "Nicht genug Guthaben",
+    "shortfall_one": "noch {{value}}",
+    "shortfall_other": "noch {{value}}",
+    "shortfallAria": {
+      "coins_one": "Noch {{value}} Münze nötig",
+      "coins_other": "Noch {{value}} Münzen nötig",
+      "goldBars_one": "Noch {{value}} Goldbarren nötig",
+      "goldBars_other": "Noch {{value}} Goldbarren nötig"
+    },
+    "balance": {
+      "label": "Verfügbar",
+      "aria_one": "{{value}} Münze verfügbar",
+      "aria_other": "{{value}} Münzen verfügbar",
+      "spent": "−{{value}}"
+    },
     "effect": {
       "multiplier": "×{{value}}",
       "count": "{{value}}",

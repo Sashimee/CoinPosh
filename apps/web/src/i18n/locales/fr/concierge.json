@@ -1,0 +1,261 @@
+{
+  "card": {
+    "region": "Le Concierge",
+    "name": "Augustin",
+    "role": "Concierge",
+    "tip": "Un petit conseil",
+    "dismiss": "Merci, Augustin",
+    "portrait": {
+      "pleased": "Augustin, le Concierge, l’air ravi",
+      "wry": "Augustin, le Concierge, l’air narquois",
+      "scandalised": "Augustin, le Concierge, profondément outré"
+    }
+  },
+  "names": {
+    "coin": {
+      "copper": "une pièce de cuivre",
+      "silver": "une pièce d’argent",
+      "gold": "une pièce d’or",
+      "platinum": "une pièce de platine",
+      "diamond": "une pièce de diamant",
+      "heirloom": "une pièce de famille"
+    },
+    "rarity": {
+      "common": "Commune",
+      "fine": "Raffinée",
+      "rare": "Rare",
+      "exquisite": "Exquise",
+      "legendary": "Légendaire",
+      "heirloom": "Héritage"
+    },
+    "upgradeFallback": "cette amélioration",
+    "venueFallback": "notre nouvelle adresse"
+  },
+  "greeting": {
+    "firstCascade": {
+      "0": "Votre première cascade. Bienvenue ; je suis Augustin, à votre service.",
+      "1": "Déjà une cascade. Augustin, Concierge. Continuez exactement ainsi.",
+      "2": "Splendide début. Je suis Augustin ; quoi qu’il vous faille, c’est arrangé.",
+      "3": "La voilà, votre première cascade. La maison est ravie de vous connaître.",
+      "4": "Bienvenue à bord. Augustin, Concierge. J’avais un pressentiment à votre sujet."
+    }
+  },
+  "cascade": {
+    "chic": {
+      "0": "{{coins}} pièces d’affilée. Chic, et fort juste.",
+      "1": "Chic. Discret, élégant, {{coins}} pièces. J’approuve.",
+      "2": "Une petite cascade chic. On apprécie toujours {{coins}} bien rangées.",
+      "3": "{{coins}} pièces qui tombent en bon ordre. Très chic.",
+      "4": "Chic. Le genre de chose qu’on glisse négligemment au dîner."
+    },
+    "lavish": {
+      "0": "Fastueux. {{coins}} pièces, et pas un cheveu de travers.",
+      "1": "Voilà qui est fastueux. Je ferai lustrer les cuivres en votre honneur.",
+      "2": "{{coins}} pièces. Fastueux. Le personnel fait mine de ne pas regarder.",
+      "3": "Une cascade fastueuse. Vous gâtez cette table.",
+      "4": "Fastueux, si je puis dire. Et je puis ; je suis le Concierge."
+    },
+    "opulent": {
+      "0": "Opulent. {{coins}} pièces ; les lustres en tremblent de jalousie.",
+      "1": "{{coins}} pièces ! Opulent. Il me faut m’asseoir, discrètement.",
+      "2": "Opulent. J’ai vu des ducs faire moins avec davantage.",
+      "3": "Une cascade opulente. Dois-je faire monter du champagne ?",
+      "4": "Opulent, vraiment. Le yacht s’enfonce un peu dans l’eau."
+    },
+    "decadent": {
+      "0": "Décadent. {{coins}} pièces. Je n’en dirai rien. Ou si peu.",
+      "1": "{{coins}} pièces ? Décadent. Mère n’approuverait pas. Moi, si.",
+      "2": "Décadent. Encore une et j’irai chercher les sels.",
+      "3": "Une cascade décadente. Quel excès terrible, merveilleux.",
+      "4": "Décadent. Je suis tenu de froncer les sourcils. J’échoue."
+    },
+    "obscene": {
+      "0": "OBSCÈNE ! Couvrez les yeux de ces dames. Et de ces messieurs.",
+      "1": "Grands dieux. C’était OBSCÈNE. Recommencez.",
+      "2": "OBSCÈNE ! Les autres invités s’éventent.",
+      "3": "Mon monocle ! C’était, il n’y a pas d’autre mot, OBSCÈNE.",
+      "4": "OBSCÈNE. J’écrirai aux journaux à ce sujet. Avec tendresse."
+    }
+  },
+  "fusion": {
+    "first": {
+      "0": "Trois pareilles, et voici {{tier}}. Votre première fusion.",
+      "1": "Votre première fusion, et {{tier}} pour la peine. Gardez-les groupées.",
+      "2": "Trois pareilles en font une plus belle : {{tier}}. Voilà le secret de la maison.",
+      "3": "Une fusion ! {{tier}}, née de la bonne compagnie. Bien vu.",
+      "4": "Première fusion : {{tier}}. Réunissez les pièces identiques ; elles se font des idées."
+    },
+    "minor": {
+      "0": "{{tier}}. Des progrès réguliers, les meilleurs.",
+      "1": "Encore une fusion : {{tier}}. Vos pièces ont d’excellentes manières.",
+      "2": "Fusion. {{tier}}, et sans faire d’histoires.",
+      "3": "Trois qui entrent, {{tier}} qui sort. Fort efficace.",
+      "4": "{{tier}}, tout juste frappée. J’aime voir les pièces s’entendre."
+    },
+    "platinum": {
+      "0": "Platine. Ce sont des choses qui se remarquent.",
+      "1": "Une pièce de platine. Je la ferai annoncer au dîner.",
+      "2": "Platine ! L’argenterie de la maison fait bien pâle figure.",
+      "3": "Du platine, en chair et en os. Enfin, en métal.",
+      "4": "Platine. Vous montez dans le monde, et le monde l’a remarqué."
+    },
+    "diamond": {
+      "0": "Une pièce de diamant. Il me faut un instant.",
+      "1": "Diamant ! Attention à l’éclat ; c’est terriblement brillant.",
+      "2": "Diamant. Les joailliers de Monaco vont être furieux.",
+      "3": "Du diamant. Même moi, je suis ébloui, et j’ai porté les malles d’un sultan.",
+      "4": "Diamant. Je sors le beau velours."
+    },
+    "heirloom": {
+      "0": "Une pièce de FAMILLE ? Sur ma table ? Il faut que je m’asseye.",
+      "1": "Héritage ! Des générations vont se la disputer.",
+      "2": "Grands dieux, une pièce de famille. Je n’en avais lu que dans les livres.",
+      "3": "Une pièce de famille. Mon monocle en est tombé.",
+      "4": "HÉRITAGE. Appelez le notaire de la famille. Appelez tout le monde."
+    }
+  },
+  "pour": {
+    "perfect": {
+      "0": "Un service parfait. Pas une goutte de perdue.",
+      "1": "Parfait. Le sommelier pleure de fierté.",
+      "2": "Dans le temps, chaque pièce. Un sens du rythme exquis.",
+      "3": "Un service parfait. Vous n’en êtes pas à votre coup d’essai, je crois.",
+      "4": "Parfait. Je n’aurais pas mieux versé moi-même, et j’ai essayé."
+    }
+  },
+  "decorum": {
+    "warning": {
+      "0": "Doucement, je vous prie. Ce meuble est ancien.",
+      "1": "Encore une bourrade et je devrai sonner la cloche.",
+      "2": "De la tenue, je vous en conjure. Les autres invités regardent.",
+      "3": "On pousse, on ne lutte pas. Un peu de retenue.",
+      "4": "Hum. La table n’est pas une cavalière."
+    },
+    "freeze": {
+      "0": "Cela suffit ! La table se repose {{seconds}} secondes.",
+      "1": "Enfin ! {{seconds}} secondes de réflexion, s’il vous plaît.",
+      "2": "Ding ! Bas les mains, {{seconds}} secondes.",
+      "3": "Scandaleux ! Je ferme la table pour {{seconds}} secondes.",
+      "4": "Assez. Reprenez-vous ; la table rouvre dans {{seconds}} secondes."
+    },
+    "stillFrozen": {
+      "0": "Patience. La table se remet encore de ses émotions.",
+      "1": "Pas encore. J’ai dit quelques secondes, et je le pensais.",
+      "2": "Toujours au repos. Admirez donc la vue en attendant.",
+      "3": "La table boude. Laissez-lui un instant.",
+      "4": "Bientôt. Tout vient à point à qui cesse de bousculer."
+    }
+  },
+  "tip": {
+    "aimCentre": {
+      "0": "Si je puis : les gouttières latérales gardent tout. Visez le milieu de la table.",
+      "1": "Les pièces lâchées près du centre tombent par l’avant, et c’est là qu’elles rapportent.",
+      "2": "Les côtés sont plutôt gourmands ce soir. Lâchez plus près du milieu.",
+      "3": "Ces bords avalent les pièces tout rond. Centrez vos lancers ; c’est l’avant qui paie.",
+      "4": "Les pièces qui glissent sur les côtés sont perdues. Les fortunes tombent par l’avant."
+    },
+    "upgradeAffordable": {
+      "0": "Vous pouvez désormais vous offrir « {{upgrade}} ». Les Améliorations sont juste en dessous.",
+      "1": "« {{upgrade}} » est à votre portée. Une petite folie, une vraie différence.",
+      "2": "Puis-je suggérer « {{upgrade}} » ? Votre bourse le permet.",
+      "3": "« {{upgrade}} » vous attend dans les Améliorations. Je ne le ferais pas attendre.",
+      "4": "« {{upgrade}} » est abordable. La table vous en saurait gré."
+    },
+    "feedTower": {
+      "0": "Nourrissez la Tour de champagne : les pièces qui s’y empilent font grimper son gain.",
+      "1": "Cette tour paraît bien dégarnie. Posez-y quelques pièces.",
+      "2": "Les pièces empilées sur la Tour de champagne la font tomber en cascade jackpot.",
+      "3": "La tour aime la compagnie. Nourrissez-la, elle vous le rendra.",
+      "4": "Ne négligez pas la Tour de champagne. Une tour haute tombe avec panache."
+    },
+    "idle": {
+      "0": "Vos pièces s’impatientent. Touchez la table pour en lâcher une.",
+      "1": "Le poussoir n’attend personne. Une pièce, peut-être ? Touchez simplement la table.",
+      "2": "Dans la lune ? Touchez la table n’importe où pour lâcher une pièce.",
+      "3": "Un moment de calme. La table accueillerait volontiers une autre pièce.",
+      "4": "Des pièces en main ne rapportent rien, hélas. Touchez pour en lâcher une."
+    }
+  },
+  "crate": {
+    "arrived": {
+      "0": "Une autre caisse est arrivée. Poussez-la jusqu’au bord.",
+      "1": "Une livraison pour vous. Faites basculer cette caisse.",
+      "2": "Ah, une caisse du Coffre. Quelqu’un a pensé à vous.",
+      "3": "Une caisse sur la table. Je me demande ce qu’elle contient. Vous, vous saurez.",
+      "4": "Une cargaison fraîche. Veillez à ce qu’elle passe le bord sans encombre."
+    }
+  },
+  "reward": {
+    "modest": {
+      "0": "{{rarity}}. Modeste, mais toute collection commence quelque part.",
+      "1": "{{rarity}}. Charmante, à sa manière discrète.",
+      "2": "{{rarity}}. Toutes les soirées ne peuvent pas être des galas.",
+      "3": "Ah. {{rarity}}. Je lui trouverai une jolie étagère.",
+      "4": "Modeste. Mais on ne fait jamais la fine bouche devant un cadeau."
+    },
+    "rare": {
+      "0": "{{rarity}} ! Voilà qui avance.",
+      "1": "Oh, {{rarity}}. Cela fera un effet splendide au salon.",
+      "2": "{{rarity}}. J’adore voir votre chance tourner.",
+      "3": "Une belle prise. {{rarity}}, rien de moins.",
+      "4": "{{rarity}}. Les autres invités voudront connaître votre secret."
+    },
+    "legendary": {
+      "0": "{{rarity}} ?! Je dois prévenir la presse.",
+      "1": "{{rarity}}. Il me faut une chaise, et sans doute un cognac.",
+      "2": "{{rarity}} ! Trente ans dans cette maison, et j’en ai rarement vu.",
+      "3": "Juste ciel. {{rarity}}. Levez-la donc à la lumière.",
+      "4": "{{rarity}} ! La maison ne parlera plus que de cela."
+    }
+  },
+  "vault": {
+    "empty": {
+      "0": "Le Coffre est vide. Patientez un instant ; le Steward vous glissera quelques pièces.",
+      "1": "Plus de pièces ? Celles qui glissent encore peuvent tomber. Sinon, le Steward s’en charge.",
+      "2": "Un Coffre vide, cela arrive aux meilleurs. Le Steward est en chemin.",
+      "3": "Rien en main. Surveillez le bord ; les pièces sur la table comptent dès qu’elles tombent.",
+      "4": "Ne désespérez pas. Le Steward remplit un Coffre vide après une courte pause."
+    },
+    "welcomeBack": {
+      "0": "Bon retour. La maison a continué de pousser : {{coins}} pièces récoltées.",
+      "1": "Pendant votre absence, la table a gagné {{coins}}. J’ai pris la liberté.",
+      "2": "Ah, vous voilà. {{coins}} pièces, gardées au chaud pour vous.",
+      "3": "Bon retour. Le personnel de nuit a récolté {{coins}} en votre nom.",
+      "4": "{{coins}} pièces pendant votre repos. La maison ne dort jamais."
+    },
+    "capped": {
+      "0": "Bon retour. Le Coffre s’est rempli à {{coins}} ; un plus grand en garderait davantage.",
+      "1": "{{coins}} récoltées, mais le Coffre était plein. Plus de place, plus de pièces à votre retour.",
+      "2": "Le Coffre a débordé à {{coins}}. Une amélioration l’agrandirait.",
+      "3": "Plein à ras bord : {{coins}}. Le Coffre manque un peu de place.",
+      "4": "{{coins}}, pas une pièce de plus ; le Coffre était plein. Les Améliorations y remédient."
+    }
+  },
+  "upgrade": {
+    "purchased": {
+      "0": "« {{upgrade}} », niveau {{level}}. Excellent choix.",
+      "1": "« {{upgrade}} », amélioré. La table semble déjà plus heureuse.",
+      "2": "Niveau {{level}} de « {{upgrade}} ». De l’argent bien placé.",
+      "3": "Ah, « {{upgrade}} ». Une personne de goût.",
+      "4": "« {{upgrade}} » au niveau {{level}}. J’en informe le personnel."
+    }
+  },
+  "tower": {
+    "wobbling": {
+      "0": "La tour vacille ! Doucement… doucement…",
+      "1": "Attention à la tour ! Elle va tomber.",
+      "2": "Elle tangue ! Qu’on me tienne mon monocle.",
+      "3": "Oh là là, oh là là. La tour penche.",
+      "4": "D’un instant à l’autre. Je ne peux pas regarder. Je regarde."
+    }
+  },
+  "ascension": {
+    "arrived": {
+      "0": "Bienvenue : {{venue}}. Votre réputation vous précède.",
+      "1": "{{venue}}. J’ai pris la liberté d’arriver le premier.",
+      "2": "Une nouvelle adresse : {{venue}}. Tâchez de vous tenir. Ou pas.",
+      "3": "Bienvenue : {{venue}}. Même Concierge, plus belle vue.",
+      "4": "{{venue}}, enfin. Vos bagages sont déjà dans la suite."
+    }
+  }
+}

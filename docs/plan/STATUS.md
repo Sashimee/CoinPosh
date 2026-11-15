@@ -225,7 +225,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-13.16 | todo | | Waits on T-13.15. E2E: live events |
 | T-14.01 | todo | | Waits on T-11.01. World contracts |
 | T-14.02 | done | task/T-14.02 (merge a4db477) | Concierge brain: rule table from bus events to lines and tips under apps/web/src/game/concierge (5b45155); pnpm check green after merge; game-feature wiring queued as P-720 |
-| T-14.03 | todo | | Waits on T-14.02. Concierge character and lines |
+| T-14.03 | done | task/T-14.03 (merge ec1c7cf) | Concierge character and lines: apps/web/src/ui/concierge/** (portrait, stage, present, juice, mount, i18n, preview, PERSONALITY.md, tests) + concierge.json EN/FR/DE (028a06e); pnpm check green after merge |
 | T-14.04 | done | task/T-14.04 (merge d5093a1) | Procedural Concierge voice barks ducked under stingers in apps/web/src/audio/concierge (ef07180); pnpm check green after merge; wiring queued as P-741/P-742 |
 | T-14.05 | todo | | Waits on T-14.01, T-3.07. World numbers |
 | T-14.06 | todo | | Waits on T-14.05. Server: guest stories and pets |
@@ -242,7 +242,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-15.04 | todo | | Waits on T-15.02, T-12.04. Server: weekly chest and goals |
 | T-15.05 | todo | | Waits on T-15.03, T-15.04. Retention UI |
 | T-15.06 | todo | | Waits on T-15.05, T-14.12. Retention wiring and e2e |
-| T-16.01 | todo | | Waits on T-11.01. Table mechanics contracts |
+| T-16.01 | done | task/T-16.01 (merge a22d975) | Table mechanics contracts: layout ids, target/jackpotBall claims, prop rewards (packages/shared/src/api/props/{ids,claims,rewards,fixtures,index}.ts + props.test.ts, api/index.ts) (6046891); pnpm check green after merge; follow-up P-775 |
 | T-16.02 | todo | | Waits on T-16.01, T-3.07. Table mechanics numbers |
 | T-16.03 | todo | | Waits on T-11.02. Sim: bonus targets |
 | T-16.04 | todo | | Waits on T-11.02. Sim: peg field |
@@ -397,11 +397,14 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-740 | done | task/P-740 (merge 8b80b02) | persist burst test counts only its own world encodes, deterministic under full pnpm check load; persist.test.ts (b479b11); pnpm check green after merge |
 | P-722 | done | task/P-722 (merge 26fa553) | A crate card left open never times out into a payout: COLLECT pays the card, the plaque holds until then (mount.ts, main.ts, balancePlaque.ts, crate-card-left-open.spec.ts; folds P-734) (6df0947); pnpm check green after merge; follow-up P-753 |
 | P-746 | done | task/P-746 (merge ffe4e4c) | A spent Cascade card shows the best rank as history ('Best: …') with the idle prompt, no live multiplier or next-rank hint; comboLadder.ts, styles.css, ui.json EN/FR/DE, comboLadder.test.ts (5cb252e); pnpm check green after merge |
-| P-737 | in progress (parts merged: P-737-p1) | | Capsules sheet dead end. Parts P-737-p1, P-737-p2. Parts merged: P-737-p1 (merge d6a05df); parts pending: P-737-p2 |
+| P-737 | done | | Capsules sheet dead end. Parts P-737-p1, P-737-p2. Parts merged: P-737-p1 (merge d6a05df), P-737-p2 (merge 419611a) |
 | P-737-p1 | done | task/P-737-p1 (merge d6a05df) | Capsules sheet: empty state names only sources in the build, locked Pull button readable and explained (panel.ts, plan.ts, tokens.ts, gacha.css, i18n.ts EN/FR/DE, locked.test.ts) (78853cd); pnpm check green after merge; follow-ups for P-737-p2 in POLISH |
+| P-737-p2 | done | task/P-737-p2 (merge 419611a) | First Capsule Ticket from the first Vault Crate, server + Demo, with seeded gacha e2e, folds P-759, P-760 (crates.ts, crates.test.ts, mock/world.ts, mock/server.test.ts, economy drops.ts/types.ts/validate.ts, drops.test.ts, e2e/gacha.spec.ts) (9723a66); pnpm check green after merge; follow-ups in POLISH |
 | P-738 | done | task/P-738 (merge 6ef5a66) | Vault Crates fall within 12 s of spawning instead of stalling on the lip (sim constants.ts, snapshot/validate.ts + tests, economy/sim/ladder.ts) (07b3dae); pnpm check green after merge |
 | P-735 | done | task/P-735 (merge 5989c9a) | AudioEngine exposes its context and sfx/music buses (audio/engine.ts + engine.test.ts, game/features.test.ts) (81cd23d); pnpm check green after merge |
 | P-747 | done | task/P-747 (merge 0cef5b2) | The playable frame shows round silver coins, not crumpled grey blobs: scene/quality dynamic resolution and scale hold keep coins crisp (adaptiveQuality.ts, dynamicResolution.ts, scaleHold.ts, quality/index.ts + tests, e2e coin-look.spec.ts) (5952ec4); pnpm check green after merge |
+| P-757 | done | task/P-757 (merge afd8fe2) | Upgrades sheet shows its own balance chip (sticky purse bar) and names each row's shortfall (upgradesPanel.ts, upgrades.css, upgradesPanel.test.ts, ui.json EN/FR/DE) (e90cb65); pnpm check green after merge; follow-ups P-773, P-774 |
+| P-749 | done | task/P-749 (merge 45e04b7) | In-hand chip steps down on every drop and the refill flies in from the Vault, folds P-630 (hud.ts, hud.test.ts, styles.css, ui.json EN/FR/DE, e2e/in-hand.spec.ts) (3915e3e); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
@@ -449,3 +452,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 40 · 2026-11-14 · P-645 P-642 P-639 P-655 P-507 T-3.03-p1 T-17.02 P-660 T-19.05 T-3.06-p1 T-11.01-p1 P-508 T-3.06-p2 P-641 T-11.01-p2 P-654 T-11.01-p3 P-425 P-656 · merged P-645 (391dd67), P-639 (01bddb2), P-655 (59974b0), P-507 (ee21b91), T-17.02 (0714e82), P-660 (e3baefd), T-19.05 (ad02892), T-3.06-p1 (375bb8a), T-11.01-p1 (0e3cd7f), P-508 (fdab531), P-654 (1dee4f0), T-11.01-p3 (83ec110), P-425 (93c1169), P-656 (bad26c4); 5 rejected (P-642, T-3.03-p1, T-3.06-p2, P-641, T-11.01-p2)
 - wave 41 · 2026-11-15 · P-701 T-11.01-p2 T-3.03-p1 P-708 P-657 P-670 T-3.05-p4 P-707 P-642 T-3.06-p2 P-684 T-3.05-p3 P-640 P-674 · merged P-701 (1b496aa), T-11.01-p2 (59d4859), T-3.03-p1 (9dcf7ef), P-708 (3839822), P-670 (f49bf57, lead salvage); rejected P-657, T-3.05-p4, P-707, P-642, T-3.06-p2; P-684, T-3.05-p3, P-640, P-674 cut by the usage limit
 - wave 42 · 2026-11-15 · merged T-3.06-p2, P-707, P-640, P-674, T-11.03, T-14.02, P-684, P-657-p1, P-730, P-703, T-11.14, P-732, P-657-p2, T-12.01, T-14.04, P-721, P-728; rejected T-3.05-p3 (juice), P-602 (console.warn downgrade, focus target), T-2.03-p2b (superseded by lead build 01178fe), P-681 (idle frames cut to 4), P-704 (FR copy), P-641 (Collection wiring, budget); P-609, T-11.05, P-643 not delivered; T-11.07, P-722, P-734, T-14.03 cut by the usage limit
+- wave 43 · 2026-11-15 · merged P-752, P-740, T-3.05-p3, P-722, P-746, P-737-p1, P-738, P-735, P-747, T-13.01, T-14.03, P-757, T-16.01; rejected P-745 (falls envelope loosened to 445, bot bound test weakened), P-737-p2 (unbounded COUNT on crate_opens per open), P-749 (in-hand chip skips a step-down during a refill flight; styles.css outside owns), P-748 (fix round cut by the limit); P-755-p1, P-769, T-13.09, T-11.07, T-12.08 cut by the usage limit

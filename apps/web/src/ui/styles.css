@@ -332,8 +332,94 @@
   height: 16px;
 }
 
+.cp-chip.cp-in-hand {
+  position: relative;
+  border-color: var(--cp-hairline-soft);
+  transition:
+    opacity 240ms ease,
+    border-color 200ms ease;
+}
+
+.cp-in-hand-value {
+  display: inline-block;
+  min-width: 2ch;
+  text-align: center;
+}
+
+.cp-in-hand-label {
+  color: var(--cp-gold-brushed);
+  transition: color 200ms ease;
+}
+
+.cp-in-hand .cp-icon {
+  transition:
+    color 200ms ease,
+    filter 200ms ease;
+}
+
+.cp-in-hand.is-refilling .cp-icon {
+  color: var(--cp-champagne);
+  filter: drop-shadow(0 0 4px rgb(var(--cp-gold-brushed-rgb) / 0.8));
+}
+
+.cp-in-hand.is-draining {
+  animation: cp-in-hand-drain 300ms ease-out;
+}
+
+@keyframes cp-in-hand-drain {
+  0% {
+    border-color: rgb(var(--cp-ivory-rgb) / 0.7);
+  }
+}
+
 [data-testid='hud-in-hand'].is-receiving {
   animation: cp-in-hand-receive 520ms ease-out;
+}
+
+.cp-in-hand.is-received-still {
+  border-color: var(--cp-gold-brushed);
+}
+
+.cp-in-hand.is-low {
+  border-color: rgb(var(--cp-coral-sunset-rgb) / 0.75);
+}
+
+.cp-in-hand.is-low .cp-in-hand-label {
+  color: var(--cp-coral-sunset);
+}
+
+/* The pulse runs for as long as the hand is low, over the canvas: only opacity and scale move,
+   so the compositor carries it without repainting the chip each frame. */
+.cp-in-hand::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 2px rgb(var(--cp-coral-sunset-rgb) / 0.65);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.cp-in-hand.is-low::after {
+  animation: cp-in-hand-low 1400ms ease-out infinite;
+}
+
+@keyframes cp-in-hand-low {
+  0% {
+    opacity: 1;
+    scale: 1;
+  }
+
+  70%,
+  100% {
+    opacity: 0;
+    scale: 1.12 1.4;
+  }
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-in-hand.is-low::after {
+  animation: none;
+  opacity: 0.55;
 }
 
 @keyframes cp-in-hand-receive {
