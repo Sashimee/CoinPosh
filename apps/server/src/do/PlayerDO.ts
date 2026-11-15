@@ -50,6 +50,8 @@ import {
   type SafeOpenResponse,
   type ScratchRevealRequest,
   type ScratchRevealResponse,
+  type GachaPullRequest,
+  type GachaPullResponse,
   type SoireeDraftRequest,
   type SoireeDraftResponse,
   type SoireeFinishRequest,
@@ -139,6 +141,7 @@ import {
   revealScratchCard,
   type ScratchHost,
 } from '../routes/scratch.ts';
+import { countGachaCollectibles, pullGacha, type GachaHost } from '../routes/gacha.ts';
 import {
   activeSoireePerk,
   closeSoireeTable,
@@ -287,7 +290,15 @@ function settleLegs(
 
 export class PlayerDO
   extends DurableObject<Env>
-  implements UpgradeHost, AscendHost, CrateHost, SafeHost, ScratchHost, AlbumHost, SoireeHost
+  implements
+    UpgradeHost,
+    AscendHost,
+    CrateHost,
+    SafeHost,
+    ScratchHost,
+    GachaHost,
+    AlbumHost,
+    SoireeHost
 {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
@@ -606,6 +617,28 @@ export class PlayerDO
   }
 
   /**
+   * Pulls Gacha capsules for Tickets (T-2.03): each capsule is a provably fair roll on the
+   * `gacha` table with pity. A card that completes an album set raises the coin value from the
+   * next mint, so the reserved buffer is re-minted at it, as a crate open does. The coins the
+   * capsules pay top the reserved buffer up so the returned wallet is final.
+   */
+  async pullGacha(command: Command<GachaPullRequest>): Promise<DoResult<GachaPullResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const setsBefore = this.completedAlbumSets();
+      const pulled = pullGacha(this.sql, this.fair, command.body, context);
+      const setsAfter = completedAlbumSets(this.sql);
+      if (setsAfter.join() !== setsBefore.join()) {
+        this.setMeta('album_sets', JSON.stringify(setsAfter));
+        this.repriceBuffer();
+      }
+      this.reserveBuffer(context);
+      return { ...pulled, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /**
    * Starts a Soirée Night (T-3.06) on a fresh, provably fair table seed and seat plan, timed by
    * the server clock. One run is open per player. Its table session supersedes the main
    * table's, so the client boots the run's table from `GET /v1/state?hydrate=boot`.
@@ -872,7 +905,7 @@ export class PlayerDO
         .exec<{ n: number }>("SELECT COUNT(*) AS n FROM crates WHERE state = 'table'")
         .one().n,
       cratesHeld: countHeldCrates(this.sql),
-      collectiblesHeld: countCollectiblesGranted(this.sql),
+      collectiblesHeld: countCollectiblesGranted(this.sql) + countGachaCollectibles(this.sql),
       safesHeld: countLockedSafes(this.sql),
       scratchCardsHeld: countHeldScratchCards(this.sql),
     };
@@ -1695,8 +1728,8 @@ export class PlayerDO
 
   /**
    * The album sets the player completed, kept in meta because every mint reads them and only a
-   * crate open can change them. Only the ids are kept, never their bonus, so a retune of the
-   * economy reaches the player. A player whose crate opens predate the key derives them once.
+   * crate open or gacha pull can change them. Only the ids are kept, never their bonus, so a
+   * retune of the economy reaches the player. A player whose crate opens predate the key derives them once.
    */
   private completedAlbumSets(): string[] {
     const stored = this.meta('album_sets');
