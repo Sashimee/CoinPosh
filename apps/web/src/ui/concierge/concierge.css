@@ -1,0 +1,581 @@
+.cp-concierge-root {
+  z-index: 3;
+  pointer-events: none;
+}
+
+.cp-concierge {
+  --cp-concierge-accent: var(--cp-gold-brushed);
+  --cp-concierge-accent-rgb: var(--cp-gold-brushed-rgb);
+  --cp-concierge-duration: 3400ms;
+  --cp-concierge-overshoot: cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: absolute;
+  inset-inline: 0;
+  bottom: calc(var(--cp-safe-bottom) + 14px + 56px + 14px);
+  width: calc(100% - var(--cp-safe-left) - var(--cp-safe-right) - 2 * var(--cp-gutter));
+  max-width: calc(var(--cp-column) - 2 * var(--cp-gutter));
+  margin-inline: auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  opacity: 0;
+  translate: 0 10px;
+  transition:
+    opacity 200ms ease,
+    translate 320ms var(--cp-concierge-overshoot);
+}
+
+.cp-concierge[hidden] {
+  display: none;
+}
+
+.cp-concierge.is-open {
+  opacity: 1;
+  translate: 0 0;
+}
+
+.cp-concierge.is-leaving {
+  opacity: 0;
+  translate: 0 8px;
+  transition:
+    opacity 200ms ease,
+    translate 240ms ease-in;
+}
+
+.cp-concierge[data-expression='wry'] {
+  --cp-concierge-accent: var(--cp-champagne);
+  --cp-concierge-accent-rgb: var(--cp-champagne-rgb);
+}
+
+.cp-concierge[data-expression='scandalised'] {
+  --cp-concierge-accent: var(--cp-coral-sunset);
+  --cp-concierge-accent-rgb: var(--cp-coral-sunset-rgb);
+}
+
+/* Medallion */
+
+.cp-concierge-medallion {
+  position: relative;
+  flex: none;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  padding: 3px;
+  background: linear-gradient(160deg, #fff1c9, var(--cp-gold-brushed) 45%, #8f6d17);
+  box-shadow:
+    0 8px 22px rgb(0 0 0 / 0.42),
+    0 0 0 1px rgb(var(--cp-navy-lacquer-rgb) / 0.9),
+    0 0 18px rgb(var(--cp-concierge-accent-rgb) / 0.28);
+  transition: box-shadow 320ms ease;
+}
+
+.cp-concierge-ring {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1px solid rgb(var(--cp-concierge-accent-rgb) / 0.5);
+  transition: border-color 320ms ease;
+}
+
+.cp-concierge-portrait {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  clip-path: circle(50%);
+  transition: rotate 420ms var(--cp-concierge-overshoot);
+}
+
+.cp-concierge-portrait[data-expression='wry'] {
+  rotate: -4deg;
+}
+
+.cp-concierge-portrait[data-expression='scandalised'] {
+  rotate: 3deg;
+}
+
+.cp-concierge-portrait g,
+.cp-concierge-portrait path,
+.cp-concierge-portrait rect,
+.cp-concierge-portrait ellipse,
+.cp-concierge-portrait circle {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.cp-cg-brow,
+.cp-cg-eye,
+.cp-cg-iris,
+.cp-cg-stache-l,
+.cp-cg-stache-r,
+.cp-cg-monocle,
+.cp-cg-mouth,
+.cp-cg-cheek,
+.cp-cg-sweat,
+.cp-cg-halo {
+  transition:
+    transform 340ms var(--cp-concierge-overshoot),
+    opacity 220ms ease;
+}
+
+.cp-cg-lid {
+  transition: transform 260ms var(--cp-concierge-overshoot);
+}
+
+.cp-cg-lid-up {
+  transform: translateY(-3.2px);
+}
+
+.cp-cg-lid-low {
+  transform: translateY(3px);
+}
+
+.cp-concierge-portrait .cp-cg-stache-l {
+  transform-origin: right center;
+}
+
+.cp-concierge-portrait .cp-cg-stache-r {
+  transform-origin: left center;
+}
+
+.cp-concierge-portrait .cp-cg-monocle {
+  transform-origin: 70% 0%;
+}
+
+.cp-cg-mouth {
+  opacity: 0;
+  transform: scale(0.6);
+}
+
+.cp-cg-sweat {
+  opacity: 0;
+  transform: translateY(-3px);
+}
+
+.cp-cg-cheek {
+  opacity: 0.3;
+}
+
+.cp-cg-halo {
+  opacity: 0.55;
+}
+
+/* Pleased: easy brows, smiling eyes, a warm smile and the moustache tips turned up. */
+
+[data-expression='pleased'] .cp-cg-brow-l {
+  transform: translateY(-1px) rotate(-5deg);
+}
+
+[data-expression='pleased'] .cp-cg-brow-r {
+  transform: translateY(-1px) rotate(5deg);
+}
+
+[data-expression='pleased'] .cp-cg-lid-up {
+  transform: translateY(-2.6px);
+}
+
+[data-expression='pleased'] .cp-cg-lid-low {
+  transform: translateY(1.3px);
+}
+
+[data-expression='pleased'] .cp-cg-mouth-pleased {
+  opacity: 1;
+  transform: none;
+}
+
+[data-expression='pleased'] .cp-cg-stache-l {
+  transform: rotate(7deg);
+}
+
+[data-expression='pleased'] .cp-cg-stache-r {
+  transform: rotate(-7deg);
+}
+
+[data-expression='pleased'] .cp-cg-cheek {
+  opacity: 0.5;
+}
+
+[data-expression='pleased'] .cp-cg-halo {
+  opacity: 0.8;
+}
+
+/* Wry: one brow up, lids at half-mast, a side-glance and a one-sided smirk. */
+
+[data-expression='wry'] .cp-cg-brow-l {
+  transform: translateY(1.4px) rotate(7deg);
+}
+
+[data-expression='wry'] .cp-cg-brow-r {
+  transform: translateY(-3.2px) rotate(-7deg);
+}
+
+[data-expression='wry'] .cp-cg-lid-up {
+  transform: translateY(-1.2px);
+}
+
+[data-expression='wry'] .cp-cg-lid-low {
+  transform: translateY(2.2px);
+}
+
+[data-expression='wry'] .cp-cg-iris {
+  transform: translateX(1.2px);
+}
+
+[data-expression='wry'] .cp-cg-mouth-wry {
+  opacity: 1;
+  transform: none;
+}
+
+[data-expression='wry'] .cp-cg-stache-l {
+  transform: rotate(2deg);
+}
+
+[data-expression='wry'] .cp-cg-stache-r {
+  transform: rotate(-11deg);
+}
+
+[data-expression='wry'] .cp-cg-cheek {
+  opacity: 0.18;
+}
+
+/* Scandalised: brows to the hairline, eyes wide, mouth an O, flushed, and the monocle drops. */
+
+[data-expression='scandalised'] .cp-cg-brow-l {
+  transform: translateY(-4.6px) rotate(-9deg);
+}
+
+[data-expression='scandalised'] .cp-cg-brow-r {
+  transform: translateY(-4.6px) rotate(9deg);
+}
+
+[data-expression='scandalised'] .cp-cg-eye {
+  transform: scale(1.16);
+}
+
+[data-expression='scandalised'] .cp-cg-lid-up {
+  transform: translateY(-4.2px);
+}
+
+[data-expression='scandalised'] .cp-cg-lid-low {
+  transform: translateY(3.8px);
+}
+
+[data-expression='scandalised'] .cp-cg-iris {
+  transform: scale(0.78);
+}
+
+[data-expression='scandalised'] .cp-cg-mouth-scandalised {
+  opacity: 1;
+  transform: none;
+}
+
+[data-expression='scandalised'] .cp-cg-stache-l {
+  transform: translateY(-1px) rotate(-9deg);
+}
+
+[data-expression='scandalised'] .cp-cg-stache-r {
+  transform: translateY(-1px) rotate(9deg);
+}
+
+[data-expression='scandalised'] .cp-cg-monocle {
+  transform: translate(2px, 10px) rotate(16deg);
+}
+
+[data-expression='scandalised'] .cp-cg-cheek {
+  opacity: 1;
+  transform: scale(1.2);
+}
+
+[data-expression='scandalised'] .cp-cg-sweat {
+  opacity: 1;
+  transform: none;
+}
+
+[data-expression='scandalised'] .cp-cg-halo {
+  opacity: 0.35;
+}
+
+.cp-concierge-portrait.is-blinking .cp-cg-lid {
+  transition-duration: 70ms;
+  transition-timing-function: ease-out;
+}
+
+.cp-concierge-portrait.is-blinking .cp-cg-lid-up {
+  transform: translateY(0.6px);
+}
+
+.cp-concierge-portrait.is-blinking .cp-cg-lid-low {
+  transform: translateY(-0.2px);
+}
+
+/* Glints: gold sparks that fly off the medallion, or twinkle on its ring when motion is reduced. */
+
+.cp-concierge-glints {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cp-concierge-glint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  background: radial-gradient(
+    circle,
+    #fffbea 0 22%,
+    rgb(var(--cp-concierge-accent-rgb) / 0.9) 40%,
+    transparent 72%
+  );
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+  opacity: 0;
+}
+
+.cp-concierge-glint.is-burst {
+  animation: cp-concierge-burst 900ms cubic-bezier(0.16, 0.84, 0.3, 1) both;
+}
+
+.cp-concierge-glint.is-twinkle {
+  opacity: 0.95;
+  transform: rotate(var(--a)) translateY(-40px);
+  transition: opacity 500ms ease;
+}
+
+.cp-concierge-glint.is-twinkle.is-out {
+  opacity: 0;
+}
+
+@keyframes cp-concierge-burst {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--a)) translateY(-30px) scale(0.4);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--a)) translateY(calc(-1 * var(--d))) scale(1.25) rotate(90deg);
+  }
+}
+
+/* Speech card */
+
+.cp-concierge-card {
+  flex: 1;
+  min-width: 0;
+  min-height: 72px;
+  padding: 11px 44px 14px 16px;
+  border-color: rgb(var(--cp-concierge-accent-rgb) / 0.7);
+  border-bottom-left-radius: 6px;
+  transform-origin: 0% 100%;
+  transition:
+    border-color 320ms ease,
+    box-shadow 320ms ease;
+}
+
+.cp-concierge-card::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  bottom: 16px;
+  width: 12px;
+  height: 12px;
+  rotate: 45deg;
+  background: var(--cp-lacquer);
+  border-left: 1px solid rgb(var(--cp-concierge-accent-rgb) / 0.7);
+  border-bottom: 1px solid rgb(var(--cp-concierge-accent-rgb) / 0.7);
+  transition: border-color 320ms ease;
+}
+
+.cp-concierge-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.cp-concierge-sheen::after {
+  content: '';
+  position: absolute;
+  inset: -20% auto -20% 0;
+  width: 46%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    rgb(var(--cp-ivory-rgb) / 0.2) 40%,
+    rgb(var(--cp-concierge-accent-rgb) / 0.35) 52%,
+    transparent
+  );
+  translate: -120% 0;
+  opacity: 0;
+}
+
+.cp-concierge-sheen.is-sweep::after {
+  animation: cp-concierge-sweep 900ms cubic-bezier(0.3, 0.6, 0.2, 1) 80ms both;
+}
+
+.cp-concierge-sheen.is-glow {
+  box-shadow:
+    inset 0 0 22px rgb(var(--cp-concierge-accent-rgb) / 0.28),
+    0 0 26px rgb(var(--cp-concierge-accent-rgb) / 0.22);
+}
+
+@keyframes cp-concierge-sweep {
+  0% {
+    translate: -120% 0;
+    opacity: 1;
+  }
+  100% {
+    translate: 320% 0;
+    opacity: 1;
+  }
+}
+
+.cp-concierge-eyebrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 3px;
+  color: var(--cp-concierge-accent);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  transition: color 320ms ease;
+}
+
+.cp-concierge-key {
+  width: 15px;
+  height: 15px;
+}
+
+.cp-concierge-key[hidden] {
+  display: none;
+}
+
+.cp-concierge-text {
+  position: relative;
+  margin: 0;
+  color: var(--cp-ivory);
+  font-family: var(--cp-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.22;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+
+.cp-concierge-word {
+  display: inline-block;
+  animation: cp-concierge-word 380ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes cp-concierge-word {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    filter: none;
+  }
+}
+
+.cp-concierge-timer {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 6px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    rgb(var(--cp-concierge-accent-rgb) / 0.2),
+    var(--cp-concierge-accent)
+  );
+  transform-origin: 0 50%;
+  opacity: 0.8;
+}
+
+.cp-concierge-timer.is-running {
+  animation: cp-concierge-timer var(--cp-concierge-duration) linear both;
+}
+
+@keyframes cp-concierge-timer {
+  from {
+    scale: 1 1;
+  }
+  to {
+    scale: 0 1;
+  }
+}
+
+.cp-concierge-dismiss {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--cp-ink-muted);
+  transition: color 160ms ease;
+}
+
+.cp-concierge-dismiss::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+}
+
+.cp-concierge-dismiss .cp-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.cp-concierge.is-open .cp-concierge-dismiss {
+  pointer-events: auto;
+}
+
+@media (hover: hover) {
+  .cp-concierge-dismiss:hover {
+    color: var(--cp-ivory);
+  }
+}
+
+@media (min-width: 768px) {
+  .cp-concierge {
+    max-width: 440px;
+  }
+}
+
+/* Reduced motion: no spring, no flying sparks, no word cascade, no blink, no timer sweep; the
+   face still changes and the card still warms, just without travel. */
+
+.cp-concierge-root.is-reduced .cp-concierge,
+.cp-concierge-root.is-reduced .cp-concierge.is-leaving {
+  translate: 0 0;
+  transition: opacity 160ms ease;
+}
+
+.cp-concierge-root.is-reduced .cp-concierge-portrait,
+.cp-concierge-root.is-reduced .cp-concierge-portrait * {
+  transition-duration: 1ms !important;
+}
+
+.cp-concierge-root.is-reduced .cp-concierge-timer {
+  display: none;
+}
+
+.cp-concierge-root.is-reduced .cp-concierge-word {
+  animation: none;
+}

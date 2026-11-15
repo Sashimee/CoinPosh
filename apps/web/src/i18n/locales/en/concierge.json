@@ -1,0 +1,261 @@
+{
+  "card": {
+    "region": "The Concierge",
+    "name": "Augustin",
+    "role": "Concierge",
+    "tip": "A word of advice",
+    "dismiss": "Thank you, Augustin",
+    "portrait": {
+      "pleased": "Augustin, the Concierge, looking pleased",
+      "wry": "Augustin, the Concierge, with a wry look",
+      "scandalised": "Augustin, the Concierge, utterly scandalised"
+    }
+  },
+  "names": {
+    "coin": {
+      "copper": "a copper coin",
+      "silver": "a silver coin",
+      "gold": "a gold coin",
+      "platinum": "a platinum coin",
+      "diamond": "a diamond coin",
+      "heirloom": "an heirloom coin"
+    },
+    "rarity": {
+      "common": "Common",
+      "fine": "Fine",
+      "rare": "Rare",
+      "exquisite": "Exquisite",
+      "legendary": "Legendary",
+      "heirloom": "Heirloom"
+    },
+    "upgradeFallback": "this upgrade",
+    "venueFallback": "our new address"
+  },
+  "greeting": {
+    "firstCascade": {
+      "0": "Your first cascade. Welcome; I am Augustin, at your service.",
+      "1": "A cascade already. Augustin, Concierge. Do carry on exactly like that.",
+      "2": "Splendid start. I am Augustin; whatever you need, I have arranged it.",
+      "3": "There it is, your first cascade. The house is delighted to meet you.",
+      "4": "Welcome aboard. Augustin, Concierge. I had a feeling about you."
+    }
+  },
+  "cascade": {
+    "chic": {
+      "0": "{{coins}} coins in a row. Chic, and quite right.",
+      "1": "Chic. Understated, tasteful, {{coins}} coins. I approve.",
+      "2": "A chic little cascade. One does like a tidy {{coins}}.",
+      "3": "{{coins}} coins tumbling in good order. Very chic.",
+      "4": "Chic. The sort of thing one mentions casually at dinner."
+    },
+    "lavish": {
+      "0": "Lavish. {{coins}} coins, and not a hair out of place.",
+      "1": "Now that is lavish. I shall have the brass polished in your honour.",
+      "2": "{{coins}} coins. Lavish. The staff are pretending not to stare.",
+      "3": "A lavish cascade. You do spoil the table.",
+      "4": "Lavish, if I may say so. And I may; I am the Concierge."
+    },
+    "opulent": {
+      "0": "Opulent. {{coins}} coins; the chandeliers are trembling with envy.",
+      "1": "{{coins}} coins! Opulent. I may need to sit down, discreetly.",
+      "2": "Opulent. I have seen dukes do less with more.",
+      "3": "An opulent cascade. Shall I ring for more champagne?",
+      "4": "Opulent, truly. The yacht sits a little lower in the water."
+    },
+    "decadent": {
+      "0": "Decadent. {{coins}} coins. I shan’t tell anyone. Much.",
+      "1": "{{coins}} coins? Decadent. Mother would not approve. I rather do.",
+      "2": "Decadent. One more and I shall fetch the smelling salts.",
+      "3": "A decadent cascade. How terribly, wonderfully excessive.",
+      "4": "Decadent. I am obliged to frown. I am failing."
+    },
+    "obscene": {
+      "0": "OBSCENE! Cover the ladies’ eyes. And the gentlemen’s.",
+      "1": "Good heavens. That was OBSCENE. Do it again.",
+      "2": "OBSCENE! The other guests are fanning themselves.",
+      "3": "My monocle! That was, there is no other word, OBSCENE.",
+      "4": "OBSCENE. I shall write to the papers about this. Fondly."
+    }
+  },
+  "fusion": {
+    "first": {
+      "0": "Three alike, and now {{tier}}. Your first fusion.",
+      "1": "Your first fusion, and {{tier}} for your trouble. Keep them close.",
+      "2": "Three alike make one finer: {{tier}}. Now you know the house secret.",
+      "3": "A fusion! {{tier}}, born of good company. Well spotted.",
+      "4": "First fusion: {{tier}}. Keep matching coins together; they get ideas."
+    },
+    "minor": {
+      "0": "{{tier}}. Steady progress, the best kind.",
+      "1": "Another fusion: {{tier}}. Your coins have excellent manners.",
+      "2": "Fusion. {{tier}}, and without a fuss.",
+      "3": "Three in, {{tier}} out. Most efficient.",
+      "4": "{{tier}}, freshly struck. I do like to see coins get along."
+    },
+    "platinum": {
+      "0": "Platinum. One notices these things.",
+      "1": "A platinum coin. I shall have it announced at dinner.",
+      "2": "Platinum! The house silver feels quite inadequate.",
+      "3": "Platinum, in the flesh. Or rather, in the metal.",
+      "4": "Platinum. You are moving up in the world, and the world has noticed."
+    },
+    "diamond": {
+      "0": "A diamond coin. I may need a moment.",
+      "1": "Diamond! Mind the glare; it is terribly bright.",
+      "2": "Diamond. The jewellers of Monaco will be furious.",
+      "3": "A diamond coin. Even I am impressed, and I have carried a sultan’s luggage.",
+      "4": "Diamond. I shall bring out the good velvet."
+    },
+    "heirloom": {
+      "0": "An HEIRLOOM? On my table? I must sit down.",
+      "1": "Heirloom! Generations will squabble over that one.",
+      "2": "Good heavens, an heirloom coin. I had only read about those.",
+      "3": "An heirloom. My monocle has quite fallen out.",
+      "4": "HEIRLOOM. Call the family solicitor. Call everyone."
+    }
+  },
+  "pour": {
+    "perfect": {
+      "0": "A perfect pour. Not a drop wasted.",
+      "1": "Perfect. The sommelier is weeping with pride.",
+      "2": "On the beat, every coin. Exquisite timing.",
+      "3": "A perfect pour. You have done this before, I think.",
+      "4": "Perfect. I could not have poured it better myself, and I have tried."
+    }
+  },
+  "decorum": {
+    "warning": {
+      "0": "Gently, please. The cabinet is antique.",
+      "1": "One more shove and I shall have to ring the bell.",
+      "2": "Decorum, I beg you. The other guests are looking.",
+      "3": "We nudge; we do not wrestle. A little restraint.",
+      "4": "Ahem. The table is not a dance partner."
+    },
+    "freeze": {
+      "0": "That will do! The table rests for {{seconds}} seconds.",
+      "1": "Really! {{seconds}} seconds of quiet reflection, if you please.",
+      "2": "Ding! Hands off the cabinet for {{seconds}} seconds.",
+      "3": "Scandalous! I am closing the table for {{seconds}} seconds.",
+      "4": "Enough. Compose yourself; the table reopens in {{seconds}} seconds."
+    },
+    "stillFrozen": {
+      "0": "Patience. The table is still collecting itself.",
+      "1": "Not yet. I did say a few seconds, and I meant it.",
+      "2": "Still resting. Perhaps admire the view meanwhile?",
+      "3": "The table is sulking. Give it a moment.",
+      "4": "Soon. Good things come to those who stop shoving."
+    }
+  },
+  "tip": {
+    "aimCentre": {
+      "0": "If I may: the side gutters keep everything. Aim for the middle of the table.",
+      "1": "Coins dropped near the centre fall off the front, which is where they pay.",
+      "2": "The sides are rather greedy tonight. Try dropping closer to the middle.",
+      "3": "Those edges swallow coins whole. Centre your drops; the front lip pays.",
+      "4": "Coins that slide off the sides are simply gone. Fortunes fall off the front."
+    },
+    "upgradeAffordable": {
+      "0": "You can now afford {{upgrade}}. Upgrades are just below.",
+      "1": "{{upgrade}} is within reach. A small indulgence, a lasting difference.",
+      "2": "If I may suggest {{upgrade}}: your purse can bear it.",
+      "3": "{{upgrade}} awaits you in Upgrades. I would not keep it waiting.",
+      "4": "{{upgrade}} is affordable. The table would thank you for it."
+    },
+    "feedTower": {
+      "0": "Feed the Champagne Tower: coins that stack on it raise its payout.",
+      "1": "That tower is looking rather bare. Land a few coins on it.",
+      "2": "Coins stacked on the Champagne Tower bring it down in a jackpot cascade.",
+      "3": "The tower likes company. Feed it, and it will return the favour.",
+      "4": "Do not neglect the Champagne Tower. A tall one falls gloriously."
+    },
+    "idle": {
+      "0": "Your coins are getting restless. Tap the table to drop one.",
+      "1": "The pusher waits for no one. A coin, perhaps? Just tap the table.",
+      "2": "Woolgathering? Tap anywhere on the table to drop a coin.",
+      "3": "A quiet moment. The table would welcome another coin.",
+      "4": "Coins in hand earn nothing, I am afraid. Tap to drop one in."
+    }
+  },
+  "crate": {
+    "arrived": {
+      "0": "Another crate has arrived. Push it home.",
+      "1": "A delivery for you. Nudge that crate over the edge.",
+      "2": "Ah, a Vault Crate. Somebody has been thinking of you.",
+      "3": "A crate on the table. I wonder what is inside. Well, you will.",
+      "4": "Fresh cargo. Do see it safely over the edge."
+    }
+  },
+  "reward": {
+    "modest": {
+      "0": "{{rarity}}. Modest, but every collection starts somewhere.",
+      "1": "{{rarity}}. Charming, in its own quiet way.",
+      "2": "{{rarity}}. Not every evening can be a gala.",
+      "3": "Ah. {{rarity}}. I shall find it a nice shelf.",
+      "4": "Modest. Still, one never sniffs at a gift."
+    },
+    "rare": {
+      "0": "{{rarity}}! Now we are getting somewhere.",
+      "1": "Oh, {{rarity}}. That will look splendid in the lounge.",
+      "2": "{{rarity}}. I do enjoy watching your luck improve.",
+      "3": "A fine catch. {{rarity}}, no less.",
+      "4": "{{rarity}}. The other guests will want to know your secret."
+    },
+    "legendary": {
+      "0": "{{rarity}}?! I must alert the press.",
+      "1": "{{rarity}}. I need a chair, and possibly a brandy.",
+      "2": "{{rarity}}! Thirty years in this house and I have seldom seen one.",
+      "3": "Good gracious. {{rarity}}. Hold it up to the light.",
+      "4": "{{rarity}}! The house will talk of nothing else."
+    }
+  },
+  "vault": {
+    "empty": {
+      "0": "The Vault is empty. Wait a moment; the Steward will slip you a few coins.",
+      "1": "Out of coins? The ones still sliding may yet fall. If not, the Steward obliges.",
+      "2": "An empty Vault happens to the best of us. The Steward is on his way.",
+      "3": "Nothing in hand. Watch the ledge; coins on the table still count once they fall.",
+      "4": "Do not despair. The Steward tops up an empty Vault after a short pause."
+    },
+    "welcomeBack": {
+      "0": "Welcome back. The house kept pushing: {{coins}} coins collected.",
+      "1": "While you were away, the table earned {{coins}}. I took the liberty.",
+      "2": "Ah, you return. {{coins}} coins, kept warm for you.",
+      "3": "Welcome back. The night staff collected {{coins}} on your behalf.",
+      "4": "{{coins}} coins while you rested. The house never sleeps."
+    },
+    "capped": {
+      "0": "Welcome back. The Vault filled up at {{coins}}; a larger one would hold more.",
+      "1": "{{coins}} collected, but the Vault was full. More room means more waiting for you.",
+      "2": "The Vault overflowed at {{coins}}. An upgrade would widen it.",
+      "3": "Full to the brim: {{coins}}. The Vault could do with more room.",
+      "4": "{{coins}}, and not a coin more; the Vault was full. Upgrades can fix that."
+    }
+  },
+  "upgrade": {
+    "purchased": {
+      "0": "{{upgrade}}, level {{level}}. Excellent choice.",
+      "1": "{{upgrade}}, improved. The table already looks happier.",
+      "2": "Level {{level}} of {{upgrade}}. Money well spent.",
+      "3": "Ah, {{upgrade}}. A guest of taste.",
+      "4": "{{upgrade}} at level {{level}}. I shall inform the staff."
+    }
+  },
+  "tower": {
+    "wobbling": {
+      "0": "The tower is wobbling! Steady… steady…",
+      "1": "Mind the tower! It is about to go.",
+      "2": "It sways! Somebody hold my monocle.",
+      "3": "Oh dear, oh dear. The tower is leaning.",
+      "4": "Any moment now. I cannot look. I am looking."
+    }
+  },
+  "ascension": {
+    "arrived": {
+      "0": "Welcome to {{venue}}. Your reputation precedes you.",
+      "1": "{{venue}}. I took the liberty of arriving first.",
+      "2": "A new address: {{venue}}. Do try to behave. Or do not.",
+      "3": "Welcome to {{venue}}. Same Concierge, finer view.",
+      "4": "{{venue}}, at last. Your luggage is already in the suite."
+    }
+  }
+}

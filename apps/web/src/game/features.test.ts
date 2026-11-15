@@ -2,6 +2,7 @@ import { CoinIdSchema } from '@coinposh/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { createBus } from '../app/bus.ts';
 import type { AudioEngine } from '../audio/index.ts';
+import { FAKE_AUDIO_GLOBALS, FakeAudioContext } from '../audio/music/adaptive/fakeAudio.ts';
 import { createI18n } from '../i18n/core.ts';
 import { connectPlayer, createMockServer, FakeTime } from '../net/test/harness.ts';
 import { Haptics } from '../vfx/haptics.ts';
@@ -16,7 +17,11 @@ import type { GameEvents } from './systems/events.ts';
 /** Stands in for the audio engine, recording the ladder steps a feature plays. */
 function recordingAudio(steps: number[]): AudioEngine {
   const silent = () => undefined;
+  const fake = new FakeAudioContext();
+  const bus = new FAKE_AUDIO_GLOBALS.GainNode(fake) as unknown as AudioNode;
   return {
+    context: fake as unknown as BaseAudioContext,
+    buses: { sfx: bus, music: bus },
     unlocked: true,
     whenUnlocked: Promise.resolve(),
     activeVoices: 0,

@@ -14,6 +14,7 @@ interface GachaFlatStrings {
   pullLabel: string;
   pulling: string;
   needTickets: string;
+  ticketSources: string;
   odds: string;
   collect: string;
   announce: string;
@@ -34,7 +35,8 @@ export const GACHA_STRINGS: Readonly<Record<Language, GachaStrings>> = {
     pull: 'Pull · 1 Ticket',
     pullLabel: 'Pull a capsule for 1 Ticket',
     pulling: 'Turning…',
-    needTickets: 'You need a Ticket to pull. Daily quests and streaks pay Tickets.',
+    needTickets: 'Earn a Ticket from a Vault Crate to pull.',
+    ticketSources: 'Vault Crates can hold Tickets, and rarer crates hold more.',
     odds: 'Odds and fairness',
     collect: 'Collect',
     announce: '{{rarity}} capsule: {{contents}}',
@@ -58,8 +60,9 @@ export const GACHA_STRINGS: Readonly<Record<Language, GachaStrings>> = {
     pull: 'Tirer · 1 ticket',
     pullLabel: 'Tirer une capsule pour 1 ticket',
     pulling: 'La manivelle tourne…',
-    needTickets:
-      'Il vous faut un ticket pour tirer. Les quêtes du jour et les séries rapportent des tickets.',
+    needTickets: 'Gagnez un ticket dans une caisse du coffre pour tirer.',
+    ticketSources:
+      'Les caisses du coffre peuvent contenir des tickets, et les plus rares en contiennent davantage.',
     odds: 'Probabilités et équité',
     collect: 'Récupérer',
     announce: 'Capsule {{rarity}} : {{contents}}',
@@ -83,7 +86,8 @@ export const GACHA_STRINGS: Readonly<Record<Language, GachaStrings>> = {
     pull: 'Ziehen · 1 Ticket',
     pullLabel: 'Eine Kapsel für 1 Ticket ziehen',
     pulling: 'Kurbel dreht…',
-    needTickets: 'Zum Ziehen brauchen Sie ein Ticket. Tagesaufgaben und Serien bringen Tickets.',
+    needTickets: 'Verdienen Sie ein Ticket aus einer Tresorkiste, um zu ziehen.',
+    ticketSources: 'Tresorkisten können Tickets enthalten, seltenere Kisten sogar mehr.',
     odds: 'Chancen und Fairness',
     collect: 'Einsammeln',
     announce: 'Kapsel ({{rarity}}): {{contents}}',

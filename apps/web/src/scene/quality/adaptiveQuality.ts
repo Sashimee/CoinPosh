@@ -164,6 +164,11 @@ export interface QualityGovernor {
    * extend the hold.
    */
   hold(untilMs: number): void;
+  /**
+   * Shows full resolution now and keeps it for `forMs` of active time (see
+   * `DynamicResolution.pinFull`). A `pinnedScale` session ignores it.
+   */
+  pinFull(forMs: number): void;
 }
 
 /**
@@ -245,6 +250,10 @@ export function createQualityGovernor(
     },
     hold(untilMs) {
       heldUntil = Math.max(heldUntil, untilMs);
+    },
+    pinFull(forMs) {
+      if (pinned !== undefined) return;
+      handle(controller.pinFull(forMs));
     },
   };
 

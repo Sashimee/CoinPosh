@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCollectingAudio } from './collecting/index.ts';
 import { createAudioEngine, isAudioSupported, type AudioEngine } from './engine.ts';
 import { Mixer } from './mixer.ts';
 import {
@@ -210,6 +211,31 @@ describe('createAudioEngine with the adaptive band', () => {
     expect(tier.mock.calls).toEqual([['opulent'], [null]]);
     expect(enabled).toHaveBeenCalledWith(false);
     expect(reduced).toHaveBeenCalledWith(true);
+  });
+
+  it('exposes its context and the mixer buses, suspended until the first gesture', async () => {
+    const duck = vi.spyOn(Mixer.prototype, 'duckMusic');
+    const { engine, ctx, unlock } = rig();
+    engine.duckMusic();
+    const mixer = duck.mock.contexts[0] as Mixer;
+    expect(engine.context).toBe(ctx);
+    expect(engine.context.state).toBe('suspended');
+    expect(engine.buses.sfx).toBe(mixer.sfx);
+    expect(engine.buses.music).toBe(mixer.music);
+    expect(engine.buses.sfx).not.toBe(engine.buses.music);
+    expect((engine.buses.sfx as unknown as FakeNode).ctx).toBe(ctx.asFake());
+    expect((engine.buses.music as unknown as FakeNode).ctx).toBe(ctx.asFake());
+    await unlock();
+    expect(engine.context).toBe(ctx);
+    expect(engine.context.state).toBe('running');
+  });
+
+  it('hosts the collecting sounds directly, with no adapter', () => {
+    const { engine } = rig();
+    const collecting = createCollectingAudio(engine, { timer: () => () => undefined });
+    expect(collecting.activeVoices).toBe(0);
+    expect(collecting.cellarPlaying).toBe(false);
+    collecting.dispose();
   });
 
   it('lets the band reject bad input instead of hiding it', () => {

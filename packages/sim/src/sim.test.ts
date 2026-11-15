@@ -193,7 +193,7 @@ describe('determinism', () => {
     const checkpoints = await referenceTo(TICKS);
     // Changing this value breaks replay audits of every input log recorded before
     // the change. Update it only alongside a deliberate SIM_VERSION bump.
-    expect(SIM_VERSION).toBe(9);
+    expect(SIM_VERSION).toBe(10);
     expect(checkpoints.at(-1)).toMatchInlineSnapshot(`"bdd732e82cbaab2c"`);
   });
 

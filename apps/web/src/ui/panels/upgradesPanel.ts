@@ -1,17 +1,26 @@
+import './upgrades.css';
 import { upgradeLines, type UpgradeLineDef } from '@coinposh/economy';
 import { browserVibrate, type HapticPattern } from '../../app/feedback.ts';
-import { upgradeRow, type StatFormat, type UpgradeRow } from '../../app/model.ts';
+import {
+  spendableCoins,
+  upgradeRow,
+  type StatFormat,
+  type UpgradeRow,
+  type Wallet,
+} from '../../app/model.ts';
 import { watch } from '../../app/store.ts';
 import {
+  formatBalance,
   formatDecimal,
   formatInteger,
   formatPrice,
   type InterpolationValues,
   type Language,
 } from '../../i18n/index.ts';
-import { tr, type UiContext } from '../context.ts';
+import { feedback, tr, type UiContext } from '../context.ts';
 import { h, listen, restartAnimation } from '../dom.ts';
 import { icon } from '../icons.ts';
+import { Odometer } from '../components/odometer.ts';
 import { makePressable } from '../components/pressable.ts';
 import { isReducedMotion } from '../motion/reduced.ts';
 import { SPRINGS } from '../motion/spring.ts';
@@ -91,6 +100,153 @@ export function upgradeRowCopy(
     buyLabel: pending ? t('upgrades.pending') : t('upgrades.buy'),
     price: formatPrice(view.cost ?? 0, language),
   };
+}
+
+/** What a row's next level costs beyond what the wallet can spend; null once it is in reach. */
+export function upgradeShortfall(view: UpgradeRow, wallet: Wallet): number | null {
+  if (view.maxed || view.affordable || view.cost === null) return null;
+  const spendable = view.line.currency === 'coins' ? spendableCoins(wallet) : wallet.goldBars;
+  return view.cost - spendable;
+}
+
+export interface ShortfallCopy {
+  /** Short enough for the buy button's label line: "22 more". */
+  readonly label: string;
+  /** The full sentence a screen reader hears, currency and plural included. */
+  readonly spoken: string;
+}
+
+export function shortfallCopy(
+  t: Translate,
+  shortfall: number,
+  currency: UpgradeLineDef['currency'],
+  language: Language,
+): ShortfallCopy {
+  const values = { count: shortfall, value: formatInteger(shortfall, language) };
+  return {
+    label: t('upgrades.shortfall', values),
+    spoken: t(`upgrades.shortfallAria.${currency}`, values),
+  };
+}
+
+export interface BalanceCopy {
+  /** The chip's readout, in the same notation as the Vault plaque. */
+  readonly amount: string;
+  readonly spoken: string;
+}
+
+export function balanceCopy(t: Translate, coins: number, language: Language): BalanceCopy {
+  return {
+    amount: formatBalance(coins, language),
+    spoken: t('upgrades.balance.aria', {
+      count: coins,
+      value: formatInteger(coins, language),
+    }),
+  };
+}
+
+/** How far the chip dips when a purchase leaves the wallet, released on the pop spring. */
+const CHIP_SPEND_DIP = 0.9;
+/** Matches the `cp-upgrades-spend` keyframes, so the "−37" leaves the chip before it is reused. */
+export const SPEND_TICK_MS = 1100;
+
+/**
+ * The sheet's own purse: what the server says the wallet can spend, as the rows are priced
+ * against it. It never guesses a purchase's cost: a buy counts down only once the server's
+ * wallet arrives, so the figure is always the one the server reported.
+ */
+function createBalanceChip(ctx: UiContext): HTMLElement {
+  const odometer = new Odometer();
+  const label = h('span', { class: 'cp-upgrades-purse-label', attrs: { 'aria-hidden': 'true' } });
+  const spent = h('span', { class: 'cp-upgrades-spent', attrs: { 'aria-hidden': 'true' } });
+  const chip = h(
+    'span',
+    { class: 'cp-chip cp-upgrades-chip', attrs: { 'aria-hidden': 'true' } },
+    h('span', { class: 'cp-upgrades-sheen' }, h('span', { class: 'cp-glint' })),
+    icon('coin'),
+    odometer.el,
+    spent,
+  );
+  const spoken = h('span', {
+    class: 'cp-sr-only',
+    attrs: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
+  });
+  const purse = h(
+    'div',
+    { class: 'cp-upgrades-purse', attrs: { 'data-testid': 'upgrades-balance' } },
+    label,
+    chip,
+    spoken,
+  );
+  ctx.loc.text(label, () => tr(ctx, 'upgrades.balance.label'));
+
+  const dip = new SpringValue(1, SPRINGS.pop, (value) => {
+    chip.style.scale = value === 1 ? '' : String(value);
+  });
+  let shown: number | null = null;
+  let tickTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearTick = (): void => {
+    if (tickTimer !== null) clearTimeout(tickTimer);
+    tickTimer = null;
+    purse.classList.remove('is-spending');
+  };
+  ctx.own(clearTick);
+
+  const tick = (amount: number): void => {
+    const calm = isReducedMotion();
+    spent.textContent = tr(ctx, 'upgrades.balance.spent', {
+      value: formatInteger(amount, ctx.i18n.language),
+    });
+    purse.classList.toggle('is-calm', calm);
+    clearTick();
+    restartAnimation(purse, 'is-spending');
+    tickTimer = setTimeout(clearTick, SPEND_TICK_MS);
+    feedback(ctx, 'tick');
+    if (calm) return;
+    dip.jump(CHIP_SPEND_DIP);
+    void dip.to(1);
+  };
+
+  const show = (coins: number): void => {
+    const state = ctx.store.getState();
+    const copy = balanceCopy((key, values) => tr(ctx, key, values), coins, ctx.i18n.language);
+    const live = state.panel === 'upgrades' && shown !== null && !isReducedMotion();
+    if (!live || shown === null) odometer.jump(copy.amount);
+    else if (coins !== shown) odometer.set(copy.amount, coins > shown ? 1 : -1);
+    const spend = state.panel === 'upgrades' && state.pendingUpgrade !== null;
+    if (shown !== null && coins < shown && spend) tick(shown - coins);
+    shown = coins;
+    purse.dataset.value = String(coins);
+    if (spoken.textContent !== copy.spoken) spoken.textContent = copy.spoken;
+  };
+
+  ctx.own(
+    watch(
+      ctx.store,
+      (s) => spendableCoins(s),
+      (coins) => {
+        show(coins);
+      },
+    ),
+  );
+  ctx.own(
+    watch(
+      ctx.store,
+      (s) => s.pendingUpgrade !== null,
+      (pending) => {
+        purse.classList.toggle('is-pending', pending);
+      },
+    ),
+  );
+  ctx.own(
+    ctx.loc.bind(() => {
+      if (shown === null) return;
+      const copy = balanceCopy((key, values) => tr(ctx, key, values), shown, ctx.i18n.language);
+      odometer.jump(copy.amount);
+      spoken.textContent = copy.spoken;
+    }),
+  );
+  return purse;
 }
 
 /** How far a button part shrinks to sit whole inside the fixed buy column; never enlarges. */
@@ -207,13 +363,20 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
       icon(view.maxed ? 'laurel' : line.scope === 'venue' ? 'upgrades' : 'goldBar'),
     );
 
+    const shortfall = upgradeShortfall(view, state);
+    const short =
+      shortfall === null
+        ? null
+        : shortfallCopy((key, values) => tr(ctx, key, values), shortfall, line.currency, language);
+
     row.classList.toggle('is-maxed', view.maxed);
     row.classList.toggle('is-affordable', view.affordable);
     row.classList.toggle('is-pending', pending);
     buy.classList.toggle('is-pending', pending);
+    buy.classList.toggle('is-short', short !== null);
     const disabled = view.maxed || !view.affordable || state.pendingUpgrade !== null;
     buy.setAttribute('aria-disabled', String(disabled));
-    buyLabel.textContent = copy.buyLabel;
+    buyLabel.textContent = short?.label ?? copy.buyLabel;
     price.textContent = copy.price;
     if (view.maxed) {
       currencyIcon.setAttribute('hidden', '');
@@ -235,7 +398,9 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
     });
     buy.setAttribute(
       'aria-label',
-      view.affordable || pending ? label : `${label}. ${tr(ctx, 'upgrades.cannotAfford')}`,
+      short === null || pending
+        ? label
+        : `${label}. ${tr(ctx, 'upgrades.cannotAfford')}. ${short.spoken}`,
     );
   };
 
@@ -283,6 +448,15 @@ function createUpgradeRow(ctx: UiContext, line: UpgradeLineDef): HTMLElement {
     watch(
       ctx.store,
       (s) => s.pendingUpgrade,
+      () => {
+        paint(current());
+      },
+    ),
+  );
+  ctx.own(
+    watch(
+      ctx.store,
+      (s) => upgradeShortfall(current(), s),
       () => {
         paint(current());
       },
@@ -344,6 +518,7 @@ export function createUpgradesPanel(ctx: UiContext): HTMLElement {
   return h(
     'div',
     { class: 'cp-upgrades' },
+    createBalanceChip(ctx),
     ...UPGRADE_SHEET_SECTIONS.map((section) =>
       createSection(ctx, section.id, section.titleKey, section.hintKey, section.lines),
     ),
@@ -367,10 +542,13 @@ export function revealUpgradeLine(panel: HTMLElement, lineId: string): void {
   const bodyRect = body.getBoundingClientRect();
   const scale = body.offsetHeight > 0 ? bodyRect.height / body.offsetHeight : 1;
   const rowTop = (row.getBoundingClientRect().top - bodyRect.top) / (scale || 1) + body.scrollTop;
-  const fits = row.offsetHeight + REVEAL_HEADROOM <= body.clientHeight;
+  // The purse stays stuck over the top of the body, so a row is only in view below it.
+  const covered = panel.querySelector<HTMLElement>('.cp-upgrades-purse')?.offsetHeight ?? 0;
+  const headroom = REVEAL_HEADROOM + covered;
+  const fits = row.offsetHeight + headroom <= body.clientHeight;
   const target = Math.max(
     0,
-    Math.min(body.scrollHeight - body.clientHeight, fits ? rowTop - REVEAL_HEADROOM : rowTop),
+    Math.min(body.scrollHeight - body.clientHeight, rowTop - (fits ? headroom : covered)),
   );
   const scroll = new SpringValue(body.scrollTop, SPRINGS.sheet, (value) => {
     body.scrollTop = value;

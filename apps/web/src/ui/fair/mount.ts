@@ -27,7 +27,7 @@ import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { createSheet } from '../panels/sheet.ts';
 import type { FairData } from './data.ts';
-import { fairT, registerFairStrings, type FairKey } from './i18n.ts';
+import { fairT, loadFairStrings, type FairKey } from './i18n.ts';
 import { fairCuePlan, type FairCue, type FairCuePlan } from './juice.ts';
 import {
   digestWords,
@@ -97,8 +97,9 @@ function accentStyle(el: HTMLElement, rarity: Rarity): void {
   if (rarity === 'heirloom') el.style.setProperty('--cp-fair-prism', HEIRLOOM_PRISM.join(', '));
 }
 
-export function mountFair(options: FairMountOptions): FairPanel {
-  registerFairStrings(options.ui.i18n);
+/** Resolves once the strings for the active language are in, so the first paint is never a raw key. */
+export async function mountFair(options: FairMountOptions): Promise<FairPanel> {
+  await loadFairStrings(options.ui.i18n);
   const disposers: (() => void)[] = [];
   const loc = new Localizer(options.ui.i18n);
   const ctx: UiContext = {

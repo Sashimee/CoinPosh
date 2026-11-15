@@ -1825,7 +1825,12 @@ interface CratePayoutOrder {
   /** The feedback effects, with the number pops of held falls kept back until they are paid. */
   feedbackVfx(vfx: () => Vfx | null): () => SystemsModule.FeedbackVfx | null;
   bindTable(events: GameSystems['events']): () => void;
-  opened(crateId: string): void;
+  /**
+   * The payout the crates module drives: the plaque's own, with the table's falls held behind
+   * every crate it holds. The falls follow the crate's cap, so they stay held while its card is
+   * up, and a replayed crate, which the module never holds, holds none.
+   */
+  readonly crates: WalletPayout;
   /** The player collected; the card's coin line reaches the Vault in `landsInMs`. */
   collected(crateId: string, landsInMs: number): void;
   /** The crate left without a collect, or every crate cinematic is over. */
@@ -1846,7 +1851,7 @@ interface CratePayoutOrder {
  * its estimate back out of the hold, so the Vault does not dip while the reveal holds.
  */
 function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
-  const unpaid = new Map<string, ReturnType<typeof setTimeout>>();
+  const unpaid = new Map<string, ReturnType<typeof setTimeout> | null>();
   const landing = new Map<string, () => void>();
   const estimates = new Map<MintedCoin['id'], number>();
   /** The batch each held front fall's estimate went into, so a refusal takes it back from there. */
@@ -1914,8 +1919,13 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
   };
 
   const forget = (crateId: string): void => {
-    clearTimeout(unpaid.get(crateId));
+    clearTimeout(unpaid.get(crateId) ?? undefined);
     unpaid.delete(crateId);
+  };
+  const stopCap = (crateId: string): void => {
+    if (!unpaid.has(crateId)) return;
+    clearTimeout(unpaid.get(crateId) ?? undefined);
+    unpaid.set(crateId, null);
   };
 
   return {
@@ -1980,15 +1990,37 @@ function orderCratePayouts(payout: WalletPayout): CratePayoutOrder {
         for (const off of offs) off();
       };
     },
-    opened(crateId) {
-      forget(crateId);
-      unpaid.set(
-        crateId,
-        setTimeout(() => {
-          forget(crateId);
-          settle();
-        }, PAYOUT_HOLD_CAP_MS),
-      );
+    crates: {
+      hold(crateId, credit) {
+        if (!unpaid.has(crateId)) unpaid.set(crateId, null);
+        payout.hold(crateId, credit);
+      },
+      retract(crateId, credit) {
+        payout.retract(crateId, credit);
+      },
+      arm(crateId) {
+        stopCap(crateId);
+        if (unpaid.has(crateId)) {
+          unpaid.set(
+            crateId,
+            setTimeout(() => {
+              forget(crateId);
+              settle();
+            }, PAYOUT_HOLD_CAP_MS),
+          );
+        }
+        payout.arm(crateId);
+      },
+      disarm(crateId) {
+        stopCap(crateId);
+        payout.disarm(crateId);
+      },
+      collect(crateId, given) {
+        payout.collect(crateId, given);
+      },
+      release(crateId) {
+        payout.release(crateId);
+      },
     },
     collected(crateId, landsInMs) {
       forget(crateId);
@@ -2084,6 +2116,7 @@ function mountTableCrates(
       haptics,
       audio: () => audio,
       inventoryTarget: () => uiRoot.querySelector<HTMLElement>('.cp-plaque'),
+      payout: payouts.crates,
     });
   } catch (error) {
     console.error(
@@ -2107,9 +2140,8 @@ function mountTableCrates(
     crates.events.on('crate:spawned', () => {
       counts.cratesSpawned += 1;
     }),
-    crates.events.on('crate:opened', ({ crateId }) => {
+    crates.events.on('crate:opened', () => {
       counts.cratesOpened += 1;
-      payouts.opened(crateId);
     }),
     crates.events.on('crate:collected', ({ crateId, roll }) => {
       counts.cratesCollected += 1;

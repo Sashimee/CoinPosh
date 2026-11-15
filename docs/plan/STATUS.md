@@ -152,7 +152,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-2.02-p2 | done | task/T-2.02-p2 (merge 8731f9c) | Scratch Cards client part: game/scratch controller, mount and session; vfx/scratch card, GPU scratch mask, foil flakes and 3-match reveal (4c0dedb); follow-ups P-595..P-601; pnpm check green after merge |
 | T-2.02 | done | parts merged: T-2.02-p1 (6faa121), T-2.02-p2 (8731f9c) | Scratch Cards (GPU scratch mask); all parts merged |
 | T-2.03-p1 | done | task/T-2.03-p1 (merge 5228103) | Gacha Capsule Machine scene: procedural 3D machine, crank, chute and capsule pop in apps/web/src/scene/gacha/** (0e711fe); pnpm check green after merge |
-| T-2.03 | todo | | Reopened 2026-11-15 (#218): only p1 (scene) merged (5228103); ticket spend missing. Next parts: p2 game/gacha flow + dock entry + apps/server/src/routes/gacha.ts pull (1 Ticket, server roll); p3 odds link, i18n EN/FR/DE, e2e |
+| T-2.03 | in-progress | | Reopened 2026-11-15 (#218). Done: p1 scene (5228103), p2a server pull route (01a6a8f), p2b client sheet + dock (01178fe, lead build; PR #219), reveal-lock fix (PR #222). Follow-ups: unit tests for gacha/panel.ts and mount.ts, ticket price into packages/economy (#15), charm grant (P-665), pause the main scene while the sheet is open, budgets.ts:127 sheet size comment (13.6 kB) |
 | T-2.04 | done | task/T-2.04 (merge d411f01) | Odds & "Certified Fair" UI (apps/web/src/ui/fair, EN/FR/DE fair.json). Fix round (c196d1f): Web Crypto failure shows a distinct verify "unavailable" state with a throwing crypto.subtle test; odds row/total aria labels interpolated via i18next; main.ts mount and pity log stay queued in POLISH; pnpm check green after merge |
 | T-2.05 | done | task/T-2.05 (merge c45f2f6) | Inventory & item cards: apps/web/src/ui/inventory/** (rarity-framed 3D cards, sort/filter, duplicate level-up view) (d41904f); shared contract, fuse route, duplicatesPerLevel and main.ts mount queued as P-455..P-458, WebGPU card art check as P-459 (H); pnpm check green after merge |
 | T-3.01-p1 | done | task/T-3.01-p1 (merge 68994d5) | Charm catalog: shared CharmKind, economy charm numbers and drop-id mapping, folds P-565, P-571 (c511c44); follow-ups P-589 to P-592; pnpm check green after merge |
@@ -164,8 +164,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-3.04 | done | task/T-3.04 (merge 33f6a67) | Venue Ascension (prestige) + Family Office: server-validated reset route and Gold Bars/Family Office logic (apps/server/src/routes/ascend.ts), ascension screen (apps/web/src/game/ascension) and 3 s ascend cinematic (apps/web/src/vfx/cinematics/ascend) (fa08c97); wiring follow-ups P-378..P-387 in POLISH; pnpm check green after merge; parts merged: P-384 (a499843), P-380 (c03c6a7), P-385 (205de2f) |
 | T-3.05-p1 | done | task/T-3.05-p1 (merge 1865458) | Quest, streak and season numbers in packages/economy (config/quests.ts, config/season.ts, 02-ECONOMY.md) (b226137); pnpm check green after merge |
 | T-3.05-p2 | blocked(review: not delivered, needs quest/streak/season TxKinds in ledger.ts and design calls on tier claims, scratch-card rewards and Season Stars) | | Nothing committed; server design ready once POLISH ledger and design items land |
-| T-3.05-p3 | blocked(review: not delivered, Demo quest claim cannot credit the ledger without a public MockWorld grant hook; quest book persistence needs a lead call) | | Nothing committed; re-run after the world.ts grant method and persistence option land (POLISH) |
-| T-3.05 | in progress (parts merged: T-3.05-p1) | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag). Parts T-3.05-p1, T-3.05-p2, T-3.05-p3. Parts merged: T-3.05-p1 (merge 1865458); parts pending: T-3.05-p2, T-3.05-p3 |
+| T-3.05-p3 | done | task/T-3.05-p3 (merge 791d2c6) | Season track and quests UI: mountSeason panel, season i18n namespace EN/FR/DE, apps/web/src/ui/season (78589dc, retry from d12f355); pnpm check green after merge |
+| T-3.05 | in progress (parts merged: T-3.05-p1, T-3.05-p3) | | Waits on T-2.05. Quests, streaks, Season Pass (free track; premium behind flag). Parts T-3.05-p1, T-3.05-p2, T-3.05-p3. Parts merged: T-3.05-p1 (merge 1865458), T-3.05-p3 (merge 791d2c6); parts pending: T-3.05-p2 |
 | T-3.06 | done | task/T-3.06-p1 (merge 375bb8a), task/T-3.06-p2 (merge d48268d) | Soirée Nights run mode; parts T-3.06-p1 (375bb8a), T-3.06-p2 (d48268d); all parts merged |
 | T-3.06-p1 | done | task/T-3.06-p1 (merge 375bb8a) | Soirée Nights contract and numbers: shared API types, endpoints, economy config and 02-ECONOMY section (fc27c3b); pnpm check green after merge; follow-ups P-675 to P-680 |
 | T-3.07 | todo | | Waits on T-3.04, T-3.05. Meta balancing |
@@ -207,7 +207,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-12.12 | todo | | Waits on T-12.01. Standing sounds |
 | T-12.13 | todo | | Waits on T-12.07, T-12.08, T-12.09, T-12.10, T-12.11, T-12.12, T-11.15. Standing wiring |
 | T-12.14 | todo | | Waits on T-12.13. E2E: standing |
-| T-13.01 | todo | | Waits on T-11.01. Live events contracts |
+| T-13.01 | done | task/T-13.01 (merge 0fdaff0) | Live events contracts: packages/shared/src/api/liveEvents/** (calendars, puzzle, boss, themes, time zone, rewards, ids, endpoints, fixtures + tests) (44ace76); pnpm check green after merge |
 | T-13.02 | todo | | Waits on T-13.01, T-3.07. Live events numbers |
 | T-13.03 | todo | | Waits on T-13.02. Server: login calendars |
 | T-13.04 | todo | | Waits on T-13.03. Calendar UI |
@@ -225,7 +225,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-13.16 | todo | | Waits on T-13.15. E2E: live events |
 | T-14.01 | todo | | Waits on T-11.01. World contracts |
 | T-14.02 | done | task/T-14.02 (merge a4db477) | Concierge brain: rule table from bus events to lines and tips under apps/web/src/game/concierge (5b45155); pnpm check green after merge; game-feature wiring queued as P-720 |
-| T-14.03 | todo | | Waits on T-14.02. Concierge character and lines |
+| T-14.03 | done | task/T-14.03 (merge ec1c7cf) | Concierge character and lines: apps/web/src/ui/concierge/** (portrait, stage, present, juice, mount, i18n, preview, PERSONALITY.md, tests) + concierge.json EN/FR/DE (028a06e); pnpm check green after merge |
 | T-14.04 | done | task/T-14.04 (merge d5093a1) | Procedural Concierge voice barks ducked under stingers in apps/web/src/audio/concierge (ef07180); pnpm check green after merge; wiring queued as P-741/P-742 |
 | T-14.05 | todo | | Waits on T-14.01, T-3.07. World numbers |
 | T-14.06 | todo | | Waits on T-14.05. Server: guest stories and pets |
@@ -242,7 +242,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-15.04 | todo | | Waits on T-15.02, T-12.04. Server: weekly chest and goals |
 | T-15.05 | todo | | Waits on T-15.03, T-15.04. Retention UI |
 | T-15.06 | todo | | Waits on T-15.05, T-14.12. Retention wiring and e2e |
-| T-16.01 | todo | | Waits on T-11.01. Table mechanics contracts |
+| T-16.01 | done | task/T-16.01 (merge a22d975) | Table mechanics contracts: layout ids, target/jackpotBall claims, prop rewards (packages/shared/src/api/props/{ids,claims,rewards,fixtures,index}.ts + props.test.ts, api/index.ts) (6046891); pnpm check green after merge; follow-up P-775 |
 | T-16.02 | todo | | Waits on T-16.01, T-3.07. Table mechanics numbers |
 | T-16.03 | todo | | Waits on T-11.02. Sim: bonus targets |
 | T-16.04 | todo | | Waits on T-11.02. Sim: peg field |
@@ -386,13 +386,23 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-670 | done | task/P-670 (merge f49bf57) | Lead salvage: one AdaptiveMusic bed in createAudioEngine, setDropRate/setCascadeTier/playJackpotSting/setMusicEnabled/setReducedMotion forwarded (engine.test.ts); features.test.ts stub widened; pnpm check green |
 | P-642 | blocked(review: streamTicks 45 passes fusion and front-fall criteria, but the Vault hits 0 before the first upgrade on 9/10 seeds; needs an economy retune) | | Lead decision 2026-11-14 in POLISH.md; trial edits reverted |
 | T-3.06-p2 | done | task/T-3.06-p2 (merge d48268d) | Soirée Nights server: runs, guest judging, drafts and ledger payouts (f9c6d5a, retry); pnpm check green after merge; follow-ups P-714, P-715 |
-| P-641 | blocked(review: safes.spec.ts dock-fit list lacks inventory-trigger, 3 e2e failures; Fair-from-crate-chip not met; vite.config.ts chunk comment is false) | task/P-641 (bc99682, not merged) | Add 'inventory-trigger' after 'dock-upgrades' in safes.spec.ts:134 (fold in or request) and recheck the 5-door gutter at 360x740; crates owner openFair hook P-701; correct the vite.config.ts:143-155 comment; Other lazy JS headroom 0.2 kB (P-682); branch kept |
+| P-641 | blocked(review wave 42: capsule pulls not wired into the Collection, main.ts:1212; post-table boot-lazy at 96 % with a stale budget comment) | task/P-641 (bc99682, not merged) | Add 'inventory-trigger' after 'dock-upgrades' in safes.spec.ts:134 (fold in or request) and recheck the 5-door gutter at 360x740; crates owner openFair hook P-701; correct the vite.config.ts:143-155 comment; Other lazy JS headroom 0.2 kB (P-682); branch kept |
 | T-11.01-p2 | done | task/T-11.01-p2 (merge 59d4859) | Feature-module seams, part 2: server registry, DO RPC, tx kinds and harness; review fix: conservation cost (a23eda8); pnpm check green after merge |
 | P-708 | done | task/P-708 (merge 3839822) | lining-nums for Safes serif counts in safes.css plus the display-serif digit guard in apps/web/e2e/fonts.spec.ts (folds P-709) (cc93a4b); pnpm check green after merge |
 | P-703 | done | task/P-703 (merge 831c64e) | A reload mid Vault Crate unbox replays the stored roll after boot (unseen.ts sessionStorage list, Demo world keeps opened rolls, mount skips the plaque hold for replays) (b6159ec); pnpm check green after merge; follow-ups P-732, P-733, P-734 |
 | P-732 | done | task/P-732 (merge 732f7c0) | demo-reload.spec.ts collects the replayed crate card (Escape until gone) after the reload's playable wait, before the fresh-tab boot; no timeout raised (da6028a); pnpm check green after merge; follow-up P-740 |
 | P-721 | done | task/P-721 (merge a22377e) | Scene scale held through boot and sheet closes (scaleHold.ts, dynamic-resolution pin), coin emboss fades at low pixel radius, coin-look.spec.ts e2e (53572b4); pnpm check green after merge; follow-ups P-750, P-751 |
 | P-728 | done | task/P-728 (merge dcd5e7a) | bundle:check prints a 'near' status at 90 % of budget and a per-row delta against the merge base (BASE_SHA in perf.yml), bundleGate.test.ts (ba07398); pnpm check green after merge; follow-up P-752 (gate still stops on P-736) |
+| P-752 | done | task/P-752 (merge 5a7158a) | bundle:check runs to completion again: fair strings load per language (fair/i18n.ts), no chunk holds three fair.json; i18n.test.ts, budgets.ts (bd54b01); pnpm check green after merge |
+| P-740 | done | task/P-740 (merge 8b80b02) | persist burst test counts only its own world encodes, deterministic under full pnpm check load; persist.test.ts (b479b11); pnpm check green after merge |
+| P-722 | done | task/P-722 (merge 26fa553) | A crate card left open never times out into a payout: COLLECT pays the card, the plaque holds until then (mount.ts, main.ts, balancePlaque.ts, crate-card-left-open.spec.ts; folds P-734) (6df0947); pnpm check green after merge; follow-up P-753 |
+| P-746 | done | task/P-746 (merge ffe4e4c) | A spent Cascade card shows the best rank as history ('Best: …') with the idle prompt, no live multiplier or next-rank hint; comboLadder.ts, styles.css, ui.json EN/FR/DE, comboLadder.test.ts (5cb252e); pnpm check green after merge |
+| P-737 | in progress (parts merged: P-737-p1) | | Capsules sheet dead end. Parts P-737-p1, P-737-p2. Parts merged: P-737-p1 (merge d6a05df); parts pending: P-737-p2 |
+| P-737-p1 | done | task/P-737-p1 (merge d6a05df) | Capsules sheet: empty state names only sources in the build, locked Pull button readable and explained (panel.ts, plan.ts, tokens.ts, gacha.css, i18n.ts EN/FR/DE, locked.test.ts) (78853cd); pnpm check green after merge; follow-ups for P-737-p2 in POLISH |
+| P-738 | done | task/P-738 (merge 6ef5a66) | Vault Crates fall within 12 s of spawning instead of stalling on the lip (sim constants.ts, snapshot/validate.ts + tests, economy/sim/ladder.ts) (07b3dae); pnpm check green after merge |
+| P-735 | done | task/P-735 (merge 5989c9a) | AudioEngine exposes its context and sfx/music buses (audio/engine.ts + engine.test.ts, game/features.test.ts) (81cd23d); pnpm check green after merge |
+| P-747 | done | task/P-747 (merge 0cef5b2) | The playable frame shows round silver coins, not crumpled grey blobs: scene/quality dynamic resolution and scale hold keep coins crisp (adaptiveQuality.ts, dynamicResolution.ts, scaleHold.ts, quality/index.ts + tests, e2e coin-look.spec.ts) (5952ec4); pnpm check green after merge |
+| P-757 | done | task/P-757 (merge afd8fe2) | Upgrades sheet shows its own balance chip (sticky purse bar) and names each row's shortfall (upgradesPanel.ts, upgrades.css, upgradesPanel.test.ts, ui.json EN/FR/DE) (e90cb65); pnpm check green after merge; follow-ups P-773, P-774 |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
@@ -439,3 +449,5 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 39 · 2026-11-14 · T-3.03-p1 P-624 T-3.03-p2 P-497 P-617 P-616 P-507 P-614 P-627 P-626 · merged P-624 (c7a19b9), T-3.03-p2 (2205228), P-497 (8972529), P-617 (02a492a), P-614 (c317eea); 5 rejected (T-3.03-p1, P-616, P-507, P-627, P-626)
 - wave 40 · 2026-11-14 · P-645 P-642 P-639 P-655 P-507 T-3.03-p1 T-17.02 P-660 T-19.05 T-3.06-p1 T-11.01-p1 P-508 T-3.06-p2 P-641 T-11.01-p2 P-654 T-11.01-p3 P-425 P-656 · merged P-645 (391dd67), P-639 (01bddb2), P-655 (59974b0), P-507 (ee21b91), T-17.02 (0714e82), P-660 (e3baefd), T-19.05 (ad02892), T-3.06-p1 (375bb8a), T-11.01-p1 (0e3cd7f), P-508 (fdab531), P-654 (1dee4f0), T-11.01-p3 (83ec110), P-425 (93c1169), P-656 (bad26c4); 5 rejected (P-642, T-3.03-p1, T-3.06-p2, P-641, T-11.01-p2)
 - wave 41 · 2026-11-15 · P-701 T-11.01-p2 T-3.03-p1 P-708 P-657 P-670 T-3.05-p4 P-707 P-642 T-3.06-p2 P-684 T-3.05-p3 P-640 P-674 · merged P-701 (1b496aa), T-11.01-p2 (59d4859), T-3.03-p1 (9dcf7ef), P-708 (3839822), P-670 (f49bf57, lead salvage); rejected P-657, T-3.05-p4, P-707, P-642, T-3.06-p2; P-684, T-3.05-p3, P-640, P-674 cut by the usage limit
+- wave 42 · 2026-11-15 · merged T-3.06-p2, P-707, P-640, P-674, T-11.03, T-14.02, P-684, P-657-p1, P-730, P-703, T-11.14, P-732, P-657-p2, T-12.01, T-14.04, P-721, P-728; rejected T-3.05-p3 (juice), P-602 (console.warn downgrade, focus target), T-2.03-p2b (superseded by lead build 01178fe), P-681 (idle frames cut to 4), P-704 (FR copy), P-641 (Collection wiring, budget); P-609, T-11.05, P-643 not delivered; T-11.07, P-722, P-734, T-14.03 cut by the usage limit
+- wave 43 · 2026-11-15 · merged P-752, P-740, T-3.05-p3, P-722, P-746, P-737-p1, P-738, P-735, P-747, T-13.01, T-14.03, P-757, T-16.01; rejected P-745 (falls envelope loosened to 445, bot bound test weakened), P-737-p2 (unbounded COUNT on crate_opens per open), P-749 (in-hand chip skips a step-down during a refill flight; styles.css outside owns), P-748 (fix round cut by the limit); P-755-p1, P-769, T-13.09, T-11.07, T-12.08 cut by the usage limit

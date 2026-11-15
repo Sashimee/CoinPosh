@@ -165,9 +165,14 @@ export async function createAdaptiveRendering(
         }
         clockChecked = true;
       }
-      if (hold !== null) governor.hold(hold.until(nowMs));
+      if (hold !== null) {
+        const bootPinMs = hold.takeBootPin(nowMs);
+        if (bootPinMs !== null) governor.pinFull(bootPinMs);
+        governor.hold(hold.until(nowMs));
+      }
       governor.frame(nowMs, { cpuMs: lastCpuMs, gpuMs: gpuTimer?.latestMs ?? null });
       post.render(nowMs);
+      reportSceneScale(renderer.domElement, post, governor.controller.pinned);
       gpuTimer?.afterRender();
       const busy = now() - nowMs;
       lastCpuMs = Number.isFinite(busy) && busy >= 0 ? busy : null;
@@ -180,6 +185,21 @@ export async function createAdaptiveRendering(
       post.dispose();
     },
   };
+}
+
+/**
+ * Mirrors the scene scale the last frame drew at onto the canvas (`data-scene-scale`,
+ * `data-quality-tier`, and `data-scene-pin` while the boot pin holds), so captures can record
+ * the scale behind each screenshot.
+ */
+function reportSceneScale(canvas: HTMLCanvasElement, post: PostPipeline, pinned: boolean): void {
+  const dataset = canvas.dataset as DOMStringMap | undefined;
+  if (dataset === undefined) return;
+  const scale = post.dynamicScale.toFixed(3);
+  if (dataset.sceneScale !== scale) dataset.sceneScale = scale;
+  if (dataset.qualityTier !== post.profile.tier) dataset.qualityTier = post.profile.tier;
+  const pin = pinned ? 'boot' : 'none';
+  if (dataset.scenePin !== pin) dataset.scenePin = pin;
 }
 
 function pageSearch(): string {

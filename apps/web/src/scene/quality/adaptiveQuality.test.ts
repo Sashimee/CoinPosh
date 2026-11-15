@@ -6,6 +6,7 @@ import {
   type ScalablePipeline,
 } from './adaptiveQuality.ts';
 import type { BenchmarkResult } from './benchmark.ts';
+import { BOOT_HOLD_MS } from './scaleHold.ts';
 import {
   DOWNGRADE_BOOTS,
   loadQuality,
@@ -528,6 +529,45 @@ describe('createQualityGovernor', () => {
     expect(firstChangeAt).not.toBeNull();
     expect(firstChangeAt).toBeGreaterThanOrEqual(10_000);
     expect(post.dynamicScale).toBeLessThan(1);
+  });
+
+  it('restores full resolution on a boot pin and adapts only after it ends', () => {
+    const post = fakePipeline(QUALITY_PROFILES.medium);
+    /** Over budget at every scale. */
+    const overload: Load = { cpuMs: 3, gpuMsAtRatio1: 20 };
+    const governor = createQualityGovernor(post, {
+      backend: 'webgpu',
+      store: null,
+      source: 'benchmark',
+      logger: quietLogger(),
+    });
+    play(post, governor, overload, 5_000);
+    expect(post.dynamicScale).toBeLessThan(1);
+
+    governor.pinFull(BOOT_HOLD_MS);
+    expect(post.dynamicScale).toBe(1);
+    expect(governor.controller.pinned).toBe(true);
+    const pinnedAt = post.history.length;
+    play(post, governor, overload, BOOT_HOLD_MS - 100);
+    expect(post.history.slice(pinnedAt)).toEqual([]);
+
+    play(post, governor, overload, 10_000);
+    expect(governor.controller.pinned).toBe(false);
+    expect(post.dynamicScale).toBeLessThan(1);
+  });
+
+  it('ignores a boot pin in a pinned scene scale session', () => {
+    const post = fakePipeline(QUALITY_PROFILES.medium);
+    const governor = createQualityGovernor(post, {
+      backend: 'webgpu',
+      store: null,
+      source: 'benchmark',
+      pinnedScale: 'min',
+      logger: quietLogger(),
+    });
+    governor.pinFull(BOOT_HOLD_MS);
+    expect(post.dynamicScale).toBe(QUALITY_PROFILES.medium.minResolutionScale);
+    expect(governor.controller.pinned).toBe(false);
   });
 
   it('does nothing while held, even for a long overload', () => {

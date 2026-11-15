@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
+import { BOOT_HOLD_MS, PLAYABLE_MARK } from '../src/scene/quality/scaleHold.ts';
 import { SCREENSHOT_DIR } from './env.ts';
 import { bootGame, expect, expectDemoMode, gameUrl, tapDrop, test } from './fixtures.ts';
 
@@ -32,14 +33,16 @@ interface Layout {
   readonly posterFramesTable: boolean;
 }
 
+const PORTRAIT: Layout = {
+  name: 'portrait',
+  viewport: { width: 390, height: 844 },
+  deck: { left: 20, top: 470, right: 370, bottom: 545 },
+  maxRoughness: 0.16,
+  posterFramesTable: true,
+};
+
 const LAYOUTS: readonly Layout[] = [
-  {
-    name: 'portrait',
-    viewport: { width: 390, height: 844 },
-    deck: { left: 20, top: 470, right: 370, bottom: 545 },
-    maxRoughness: 0.16,
-    posterFramesTable: true,
-  },
+  PORTRAIT,
   {
     name: 'landscape',
     viewport: { width: 844, height: 390 },
@@ -262,3 +265,102 @@ test.describe('coin look across scene scales (P-681)', () => {
     ).toBeLessThanOrEqual(0.06);
   });
 });
+
+interface BootWindowCase {
+  readonly layout: Layout;
+  readonly locale: string;
+}
+
+/** The narrow phone runs in German, whose longer labels crowd the header and dock the most. */
+const BOOT_WINDOW_CASES: readonly BootWindowCase[] = [
+  { layout: { ...PORTRAIT, name: 'boot-390x844' }, locale: 'en-US' },
+  {
+    layout: {
+      name: 'boot-360x640',
+      viewport: { width: 360, height: 640 },
+      deck: { left: 20, top: 415, right: 340, bottom: 452 },
+      maxRoughness: 0.17,
+      posterFramesTable: true,
+    },
+    locale: 'de-DE',
+  },
+];
+
+/** Capture times after the playable mark (P-747). */
+const BOOT_SHOTS_MS = [200, 800, 3000] as const;
+
+interface SceneScaleProbe {
+  readonly scale: string | undefined;
+  readonly pin: string | undefined;
+  readonly tier: string | undefined;
+  /** Page time since the playable mark, on the clock the boot pin runs on. */
+  readonly sincePlayableMs: number;
+}
+
+/** What the quality loop last rendered at, mirrored onto the canvas by `reportSceneScale`. */
+function readSceneScale(page: Page): Promise<SceneScaleProbe> {
+  return page.evaluate((mark) => {
+    const canvas = document.querySelector<HTMLCanvasElement>('#stage');
+    if (!canvas) throw new Error('No #stage canvas to read the scene scale from');
+    const [playable] = performance.getEntriesByName(mark, 'mark');
+    if (!playable) throw new Error(`No ${mark} performance mark to time the boot pin from`);
+    const { sceneScale, scenePin, qualityTier } = canvas.dataset;
+    return {
+      scale: sceneScale,
+      pin: scenePin,
+      tier: qualityTier,
+      sincePlayableMs: performance.now() - playable.startTime,
+    };
+  }, PLAYABLE_MARK);
+}
+
+for (const { layout, locale } of BOOT_WINDOW_CASES) {
+  test.describe(`coin look through the boot window, ${layout.name} (P-747)`, () => {
+    test.use({ viewport: layout.viewport, deviceScaleFactor: 1, locale });
+
+    test('the first frames and the first tap render round silver coins at full scale', async ({
+      page,
+    }) => {
+      test.setTimeout(240_000);
+      await page.goto(gameUrl());
+      await page.waitForFunction(() => window.__coinposh?.playable === true, null, {
+        timeout: 60_000,
+        polling: 16,
+      });
+      const playableAt = Date.now();
+
+      const capture = async (label: string): Promise<FrameLook> => {
+        const before = await readSceneScale(page);
+        const look = await shoot(page, layout, label);
+        const after = await readSceneScale(page);
+        test.info().annotations.push({
+          type: 'scene scale',
+          description: `${layout.name} ${label}: ${before.scale} -> ${after.scale} (pin ${before.pin} -> ${after.pin}, tier ${after.tier}), done by playable + ${after.sincePlayableMs.toFixed(0)} ms`,
+        });
+        for (const probe of [before, after]) {
+          // The pin lasts BOOT_HOLD_MS of active play, never longer, so on a slow host the later
+          // captures can land after it; inside the window it must hold at full scale.
+          if (probe.sincePlayableMs >= BOOT_HOLD_MS) continue;
+          expect(probe.pin, `${label}: the boot pin still holds`).toBe('boot');
+          expect(probe.scale, `${label}: the scene renders at full scale`).toBe('1.000');
+        }
+        return look;
+      };
+
+      const looks: FrameLook[] = [];
+      for (const at of BOOT_SHOTS_MS) {
+        const wait = playableAt + at - Date.now();
+        if (wait > 0) await page.waitForTimeout(wait);
+        looks.push(await capture(`playable+${at}ms`));
+      }
+      await expectDemoMode(page);
+      await tapDrop(page);
+      await page.waitForTimeout(TAP_GAP_MS);
+      looks.push(await capture('tap-1'));
+
+      const [first] = looks;
+      if (!first) throw new Error('The playable + 200 ms capture is missing');
+      for (const look of looks) expectRoundSilver(layout, look, first);
+    });
+  });
+}
