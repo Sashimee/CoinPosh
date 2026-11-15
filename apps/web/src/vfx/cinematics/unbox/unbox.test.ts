@@ -17,6 +17,7 @@ import {
   burstFrameMs,
   burstStyle,
   FULL_UNBOX,
+  LEAK_LEAD_MS,
   rayStyle,
   REDUCED_UNBOX,
   UNBOX_JUICE,
@@ -141,6 +142,27 @@ describe('unbox timeline', () => {
     expect(reduced.leak).toBeGreaterThan(0.9);
   });
 
+  it('bleeds the rarity light out of the lid line over the 0.4 s before the lid lifts', () => {
+    const at = (ms: number) => unboxPose(ms, FULL_UNBOX, false);
+    const from = FULL_UNBOX.burstAtMs - LEAK_LEAD_MS;
+    expect(at(from - 1).bleed).toBe(0);
+    let last = 0;
+    for (let ms = from; ms < FULL_UNBOX.burstAtMs; ms += 20) {
+      expect(at(ms).bleed).toBeGreaterThanOrEqual(last);
+      last = at(ms).bleed;
+    }
+    expect(last).toBeGreaterThan(0.95);
+    expect(at(FULL_UNBOX.burstAtMs - 100).lidLift).toBeGreaterThan(0);
+    expect(at(FULL_UNBOX.burstAtMs - 100).lidOpen).toBe(0);
+    expect(at(FULL_UNBOX.revealAtMs).bleed).toBe(0);
+
+    const reduced = (ms: number) => unboxPose(ms, REDUCED_UNBOX, true);
+    expect(reduced(REDUCED_UNBOX.burstAtMs - 10).bleed).toBeGreaterThan(0.95);
+    for (let ms = 0; ms < REDUCED_UNBOX.burstAtMs; ms += 20) {
+      expect(reduced(ms).lidLift).toBe(0);
+    }
+  });
+
   it('draws the leak halo in as the crate crouches, so the burst pops out of an inhale', () => {
     const at = (ms: number) => unboxPose(ms, FULL_UNBOX, false).flareScale;
     const swollen = at(FULL_UNBOX.burstAtMs - 180);
@@ -261,12 +283,15 @@ describe('UnboxStage', () => {
     expect(leaking.glow).toBeGreaterThan(settled.glow * 1.5);
     expect(leaking.rim).toBeGreaterThan(settled.rim);
     expect(leaking.rimTint).toBeGreaterThan(RIM_TINT);
+    expect(settled.bleed).toBe(0);
+    expect(leaking.bleed).toBeGreaterThan(0.4);
     expect(stage.flareLevel).toBeGreaterThan(0);
     const halo = stage.flareLevel;
     stage.apply(unboxPose(FULL_UNBOX.burstAtMs + 40, FULL_UNBOX, false));
     expect(stage.flareLevel).toBeGreaterThan(halo * 3);
     stage.apply(unboxPose(FULL_UNBOX.revealAtMs, FULL_UNBOX, false));
     expect(assets.crateLight.glow).toBe(0);
+    expect(assets.crateLight.bleed).toBe(0);
     stage.dispose();
     assets.dispose();
   });
