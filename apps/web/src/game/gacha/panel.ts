@@ -202,14 +202,21 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
     stage?.machine.crank(progress % 1);
   };
 
+  let settleTurn: (() => void) | null = null;
+
+  /** Settles any turn in flight, so a reveal awaiting it never hangs when the sheet closes. */
   const stopSpin = () => {
     if (spin !== null) cancelAnimationFrame(spin);
     spin = null;
+    const settle = settleTurn;
+    settleTurn = null;
+    settle?.();
   };
 
   const turnTo = (target: number, ms: number): Promise<void> =>
     new Promise((resolve) => {
       stopSpin();
+      settleTurn = resolve;
       const from = crankAt;
       const start = performance.now();
       const step = () => {
@@ -219,6 +226,7 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
         if (k < 1) spin = requestAnimationFrame(step);
         else {
           spin = null;
+          settleTurn = null;
           resolve();
         }
       };
