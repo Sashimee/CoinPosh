@@ -22,6 +22,24 @@ export function pullAction(tickets: number | null, busy: boolean): PullAction {
   return { enabled: true, blocked: null };
 }
 
+export interface PullPrompt {
+  /** Pull is shut for want of a Ticket, not merely busy or syncing. */
+  readonly locked: boolean;
+  readonly reason: 'needTickets' | null;
+  readonly sources: 'ticketSources' | null;
+}
+
+/** What the sheet says under Pull. Only sources the current build pays Tickets from are named. */
+export function pullPrompt(action: PullAction, showingPrize: boolean): PullPrompt {
+  const locked = action.blocked === 'noTickets';
+  const explain = locked && !showingPrize;
+  return {
+    locked,
+    reason: explain ? 'needTickets' : null,
+    sources: explain ? 'ticketSources' : null,
+  };
+}
+
 /** The readout while a pull awaits the server: its Ticket already off, marked provisional. */
 export function provisionalTickets(tickets: number | null, pending: boolean): number | null {
   if (tickets === null) return null;

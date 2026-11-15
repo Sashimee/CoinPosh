@@ -5,15 +5,19 @@ import { formatInteger, type InterpolationValues } from '../../i18n/index.ts';
 import type { GachaEvent } from '../../scene/gacha/index.ts';
 import { makePressable } from '../../ui/components/pressable.ts';
 import { feedback, type UiContext } from '../../ui/context.ts';
-import { h, restartAnimation } from '../../ui/dom.ts';
+import { fromMarkup, h, restartAnimation } from '../../ui/dom.ts';
 import { icon } from '../../ui/icons.ts';
 import { Localizer } from '../../ui/localize.ts';
 import { sharedSheetFocus } from '../../ui/panels/sheetFocus.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../vfx/palette.ts';
 import { gachaKey, registerGachaStrings, type GachaKey } from './i18n.ts';
 import type { PullAction } from './plan.ts';
-import { revealSteps } from './plan.ts';
+import { pullPrompt, revealSteps } from './plan.ts';
 import { createGachaStage, type GachaStage } from './stage.ts';
+import { LOCKED_PULL_VARIABLES } from './tokens.ts';
+
+const LOCK_ICON =
+  '<svg class="cp-gacha-lock" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2.4" fill="currentColor" fill-opacity=".18"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7M12 14.6v2.2"/></svg>';
 
 /** How long one idle crank turn takes while the pull waits for the server. */
 const ANTICIPATION_TURN_MS = 1_400;
@@ -130,11 +134,28 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
     revealList,
     collect,
   );
-  const hint = h('p', { class: 'cp-gacha-hint', attrs: { id: 'cp-gacha-hint' } });
-  const pull = h('button', {
-    class: 'cp-buy cp-gacha-pull',
-    attrs: { type: 'button', 'data-testid': 'gacha-pull', 'aria-describedby': 'cp-gacha-hint' },
+  const hint = h('p', {
+    class: 'cp-gacha-hint',
+    attrs: { id: 'cp-gacha-hint', 'data-testid': 'gacha-hint' },
   });
+  const sources = h('p', {
+    class: 'cp-gacha-sources',
+    attrs: { id: 'cp-gacha-sources', 'data-testid': 'gacha-sources' },
+  });
+  const pullText = h('span', { class: 'cp-gacha-pull-text' });
+  const pull = h(
+    'button',
+    {
+      class: 'cp-buy cp-gacha-pull',
+      attrs: {
+        type: 'button',
+        'data-testid': 'gacha-pull',
+        'aria-describedby': 'cp-gacha-hint cp-gacha-sources',
+      },
+    },
+    fromMarkup(LOCK_ICON),
+    pullText,
+  );
   const odds = h('button', {
     class: 'cp-gacha-odds',
     attrs: { type: 'button', 'data-testid': 'gacha-odds' },
@@ -151,6 +172,7 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
     revealCard,
     pull,
     hint,
+    sources,
     odds,
   );
   const root = h(
@@ -167,8 +189,12 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
     card,
   );
   if (reduced) root.classList.add('is-reduced');
+  for (const [name, value] of Object.entries(LOCKED_PULL_VARIABLES)) {
+    root.style.setProperty(name, value);
+  }
 
   let stage: GachaStage | null = null;
+  let wasLocked: boolean | null = null;
   let disposed = false;
   let revealing = false;
   let spin: number | null = null;
@@ -190,10 +216,17 @@ export function showGachaPanel(options: GachaPanelOptions): GachaPanel {
     const action = options.action();
     const showingPrize = !revealCard.hidden;
     pull.hidden = showingPrize;
-    pull.textContent = action.blocked === 'busy' ? t('pulling') : t('pull');
+    pullText.textContent = action.blocked === 'busy' ? t('pulling') : t('pull');
     pull.setAttribute('aria-label', action.blocked === 'busy' ? t('pulling') : t('pullLabel'));
     pull.setAttribute('aria-disabled', String(!action.enabled));
-    hint.textContent = action.blocked === 'noTickets' && !showingPrize ? t('needTickets') : '';
+    const prompt = pullPrompt(action, showingPrize);
+    pull.classList.toggle('is-locked', prompt.locked);
+    if (wasLocked === true && !prompt.locked && action.enabled && !reduced) {
+      restartAnimation(pull, 'is-unlocked');
+    }
+    wasLocked = prompt.locked;
+    hint.textContent = prompt.reason === null ? '' : t(prompt.reason);
+    sources.textContent = prompt.sources === null ? '' : t(prompt.sources);
   };
   ctx.own(loc.bind(render));
 
