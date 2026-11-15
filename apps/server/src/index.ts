@@ -17,6 +17,7 @@ import { authRoutes } from './routes/auth.ts';
 import { createCrateRoutes } from './routes/crates.ts';
 import { createSafeRoutes } from './routes/safes.ts';
 import { createScratchRoutes } from './routes/scratch.ts';
+import { createSoireeRoutes } from './routes/soiree.ts';
 import { playerStub, tableRoutes } from './routes/table.ts';
 import { createUpgradeRoutes } from './routes/upgrades.ts';
 
@@ -50,6 +51,7 @@ export function createApp(deps: AppDeps) {
   app.route('/', createAlbumRoutes(playerStub));
   app.route('/', createSafeRoutes(playerStub));
   app.route('/', createScratchRoutes(playerStub));
+  app.route('/', createSoireeRoutes(playerStub));
   mountServerFeatures(app, deps.features ?? SERVER_FEATURES);
 
   app.notFound((c) => c.json(errorEnvelope('not_found', 'No such route.'), 404));
