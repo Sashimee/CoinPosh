@@ -6,12 +6,6 @@ import { initialUiState } from '../app/state.ts';
 import { createStore } from '../app/store.ts';
 import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../i18n/index.ts';
 import {
-  PLAQUE_PULSE_MAX,
-  pulseKick,
-  PURSE_CLEARANCE_PX,
-  purseShift,
-} from './components/balancePlaque.ts';
-import {
   boxesIntersect,
   cardIsOpen,
   cardWipe,
@@ -505,29 +499,6 @@ describe('HUD collisions during a cascade (P-684)', () => {
     for (const slot of slots) {
       expect(railOpens(true, slot, '')).toBe(false);
       expect(railOpens(true, slot, 'CASCADE Chic ×1.1')).toBe(true);
-    }
-  });
-
-  it('keeps the pearl chip clear of the Vault plaque through a burst of credits', () => {
-    const viewport = 390;
-    const width = 196;
-    const chipWidth = 42;
-    const gap = 8;
-    const spring = new Spring(1, SPRINGS.pop);
-    for (let frame = 0; frame < 150; frame += 1) {
-      if (frame < 45 && frame % 4 === 0) spring.impulse(pulseKick(spring.value, spring.velocity));
-      spring.step(1 / 60);
-      const scale = Math.min(PLAQUE_PULSE_MAX, spring.value);
-      const plaque = {
-        left: viewport / 2 - (width * scale) / 2,
-        top: 100,
-        width: width * scale,
-        height: 56,
-      };
-      const chipRight = viewport / 2 - width / 2 - gap - purseShift(scale, width);
-      const chip = { left: chipRight - chipWidth, top: 110, width: chipWidth, height: 28 };
-      expect(boxesIntersect(plaque, chip)).toBe(false);
-      expect(plaque.left - chipRight).toBeGreaterThanOrEqual(PURSE_CLEARANCE_PX);
     }
   });
 });

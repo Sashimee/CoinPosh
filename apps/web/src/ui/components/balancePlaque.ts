@@ -554,16 +554,20 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   const wrap = h('div', { class: 'cp-plaque-wrap' }, purse, plaque, bars);
 
   let pulseVelocity = 0;
+  let pulseWidth = 0;
   const pulse = new SpringValue(1, SPRINGS.pop, (value, velocity) => {
     pulseVelocity = velocity;
     const scale = Math.min(PLAQUE_PULSE_MAX, value);
     plaque.style.scale = scale === 1 ? '' : String(scale);
-    const shift = scale > 1 ? purseShift(scale, plaque.offsetWidth) : 0;
+    const shift = scale > 1 ? purseShift(scale, pulseWidth) : 0;
     purse.style.translate = shift > 0 ? `${(-shift).toFixed(2)}px -50%` : '';
     bars.style.translate = shift > 0 ? `${shift.toFixed(2)}px 0` : '';
   });
+  // The juice proof in src/vfx/juice.ts matches the literal `pop.kick(POP_VELOCITY);` below, so
+  // this capped-pulse wrapper keeps the name `pop`: renaming it breaks that proof.
   const pop = {
     kick: (velocity: number): void => {
+      pulseWidth = plaque.offsetWidth;
       pulse.kick(pulseKick(pulse.value, pulseVelocity, velocity));
     },
   };
