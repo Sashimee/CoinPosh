@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DynamicResolution,
   PAUSE_MS,
+  PIN_FRAME_CAP_MS,
   RESUME_GRACE_MS,
   TRIAL_SPAN,
   type ResolutionEvent,
 } from './dynamicResolution.ts';
+import { BOOT_HOLD_MS, BOOT_PIN_FRAMES } from './scaleHold.ts';
 
 const VSYNC_MS = 1000 / 60;
 
@@ -615,6 +617,89 @@ describe('DynamicResolution', () => {
 
       expect(tested).toContain(0.5 + TRIAL_SPAN);
       expect([...tested].filter((scale) => scale > 0.5 && scale < 1)).toEqual([0.5 + TRIAL_SPAN]);
+    });
+  });
+
+  describe('pinned to full resolution for the boot window (P-747)', () => {
+    /** GPU-bound well past the budget at full resolution: it drops within a second unpinned. */
+    const overloaded: Device = { cpuMs: 2, gpuFullMs: 30 };
+    /** SwiftShader in CI: about two frames a second, whatever the scale. */
+    const crawling: Device = { cpuMs: 2, gpuFullMs: 500 };
+
+    it('jumps to full resolution and holds it for BOOT_HOLD_MS on an overloaded device', () => {
+      const controller = controllerAt(0.7);
+      expect(controller.pinFull(BOOT_HOLD_MS, BOOT_PIN_FRAMES)).toEqual({
+        kind: 'scale',
+        scale: 1,
+      });
+
+      const pinned = simulate(controller, () => overloaded, BOOT_HOLD_MS - 50);
+      expect(pinned.events).toEqual([]);
+      expect(pinned.frames.every((frame) => frame.scale === 1)).toBe(true);
+      expect(controller.pinned).toBe(true);
+
+      const after = simulate(controller, () => overloaded, 10_000);
+      expect(controller.pinned).toBe(false);
+      expect(controller.scale).toBeLessThan(1);
+      const firstDrop = after.frames.find((frame) => frame.scale < 1);
+      expect(firstDrop?.at ?? 0).toBeGreaterThan(50 + RESUME_GRACE_MS);
+    });
+
+    it('does not let an unpinned controller wait that long', () => {
+      const controller = controllerAt();
+      const { frames } = simulate(controller, () => overloaded, 3000);
+      expect(frames.some((frame) => frame.scale < 1)).toBe(true);
+    });
+
+    it('keeps the pin on a crawling device until it has shown a healthy window of frames', () => {
+      const controller = controllerAt();
+      controller.pinFull(BOOT_HOLD_MS, BOOT_PIN_FRAMES);
+      const frameCount = Math.ceil(BOOT_HOLD_MS / PIN_FRAME_CAP_MS);
+      const wallMs = frameCount * crawling.gpuFullMs;
+
+      const early = simulate(controller, () => crawling, wallMs - crawling.gpuFullMs);
+      expect(early.frames.length).toBe(frameCount - 1);
+      expect(early.frames.every((frame) => frame.scale === 1)).toBe(true);
+      expect(controller.pinned).toBe(true);
+
+      simulate(controller, () => crawling, crawling.gpuFullMs);
+      expect(controller.pinned).toBe(false);
+    });
+
+    it('holds for at least BOOT_PIN_FRAMES frames however short the window', () => {
+      const controller = controllerAt();
+      controller.pinFull(0, BOOT_PIN_FRAMES);
+      for (let i = 1; i < BOOT_PIN_FRAMES; i += 1) controller.sample(interval(VSYNC_MS));
+      expect(controller.pinned).toBe(true);
+      controller.sample(interval(VSYNC_MS));
+      expect(controller.pinned).toBe(false);
+    });
+
+    it('does not spend the window while the tab is away', () => {
+      const controller = controllerAt();
+      controller.pinFull(BOOT_HOLD_MS, BOOT_PIN_FRAMES);
+      simulate(controller, () => overloaded, BOOT_HOLD_MS / 2);
+      expect(controller.sample(interval(60_000))).toBeNull();
+      expect(controller.sample(interval(PAUSE_MS + 1))).toBeNull();
+      const { frames } = simulate(controller, () => overloaded, BOOT_HOLD_MS / 2 - 100);
+      expect(frames.every((frame) => frame.scale === 1)).toBe(true);
+      expect(controller.pinned).toBe(true);
+    });
+
+    it('drops a running A/B test and restores full resolution', () => {
+      const controller = controllerAt();
+      const capped: Device = { cpuMs: 3, gpuFullMs: 6, refreshHz: 30 };
+      const { frames } = simulate(controller, () => capped, 2000);
+      expect(frames.some((frame) => frame.scale < 1)).toBe(true);
+      controller.pinFull(BOOT_HOLD_MS, BOOT_PIN_FRAMES);
+      expect(controller.scale).toBe(1);
+      const pinned = simulate(controller, () => capped, BOOT_HOLD_MS - 50);
+      expect(pinned.frames.every((frame) => frame.scale === 1)).toBe(true);
+    });
+
+    it('rejects a negative window', () => {
+      expect(() => controllerAt().pinFull(-1, 30)).toThrow(/pinFull/);
+      expect(() => controllerAt().pinFull(1000, Number.NaN)).toThrow(/pinFull/);
     });
   });
 

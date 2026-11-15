@@ -23,15 +23,27 @@ function sources() {
 const held = (until: number, nowMs: number) => nowMs < until;
 
 describe('createScaleHold', () => {
-  it('holds through boot and for BOOT_HOLD_MS after the playable mark', () => {
+  it('holds through boot and hands the playable frame to the boot pin', () => {
     const s = sources();
     const hold = createScaleHold(s);
     expect(held(hold.until(500), 500)).toBe(true);
+    expect(hold.takeBootPin(500)).toBe(false);
     expect(held(hold.until(4_000), 4_000)).toBe(true);
     s.state.playable = 4_200;
-    expect(held(hold.until(4_300), 4_300)).toBe(true);
-    expect(held(hold.until(4_200 + BOOT_HOLD_MS - 1), 4_200 + BOOT_HOLD_MS - 1)).toBe(true);
-    expect(held(hold.until(4_200 + BOOT_HOLD_MS), 4_200 + BOOT_HOLD_MS)).toBe(false);
+    expect(held(hold.until(4_216), 4_216)).toBe(false);
+    expect(hold.takeBootPin(4_216)).toBe(true);
+    expect(hold.takeBootPin(4_232)).toBe(false);
+  });
+
+  it('pins on a playable mark up to BOOT_HOLD_MS old, as after a renderer rebuild in boot', () => {
+    const recent = sources();
+    recent.state.playable = 1_000;
+    expect(createScaleHold(recent).takeBootPin(1_000 + BOOT_HOLD_MS - 1)).toBe(true);
+    const stale = sources();
+    stale.state.playable = 1_000;
+    const hold = createScaleHold(stale);
+    expect(hold.takeBootPin(1_000 + BOOT_HOLD_MS)).toBe(false);
+    expect(hold.takeBootPin(1_000 + BOOT_HOLD_MS + 16)).toBe(false);
   });
 
   it('stops waiting for a playable mark that never comes', () => {
