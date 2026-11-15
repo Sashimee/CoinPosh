@@ -233,17 +233,19 @@ describe('dock.safesReady', () => {
 });
 
 describe('inHandCopy', () => {
+  // A hand of 1 always reads as low, so only French, whose singular also covers 0, still
+  // reaches hud.inHand.aria_one; en and de keep it so every plural key has its _one form.
   it.each([
-    ['en', 'In hand', '1 coin in hand', '12 coins in hand'],
-    ['fr', 'En main', '1 pièce en main', '12 pièces en main'],
-    ['de', 'In der Hand', '1 Münze in der Hand', '12 Münzen in der Hand'],
-  ] as const)('labels and pluralises the drop buffer in %s', (language, label, one, many) => {
+    ['en', 'In hand', '0 coins in hand', '12 coins in hand'],
+    ['fr', 'En main', '0 pièce en main', '12 pièces en main'],
+    ['de', 'In der Hand', '0 Münzen in der Hand', '12 Münzen in der Hand'],
+  ] as const)('labels and pluralises the drop buffer in %s', (language, label, empty, many) => {
     const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
     const t = i18n.t.bind(i18n);
     expect(inHandCopy(t, 12, language)).toMatchObject({ label, value: '12' });
-    expect(t('hud.inHand.aria', { count: 1, value: '1' })).toContain(one);
     expect(inHandCopy(t, 12, language).spoken).toContain(many);
-    expect(inHandCopy(t, 0, language).value).toBe('0');
+    expect(inHandCopy(t, 0, language)).toMatchObject({ label, value: '0', low: false });
+    expect(inHandCopy(t, 0, language).spoken).toContain(empty);
   });
 
   it.each([

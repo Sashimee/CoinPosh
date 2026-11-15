@@ -1,9 +1,11 @@
 import type { Page } from '@playwright/test';
+import { MOCK_RULES } from '../src/net/mock/rules.ts';
 import { bootGame, expect, reviewShot, tapDrop, test } from './fixtures.ts';
 
 /** P-749: the in-hand chip answers every drop, and the Vault's refill flies into it. */
 const TAPS = 10;
 const TAP_EVERY_MS = 420;
+/** The count steps down as the table accepts the drop, so well inside this. */
 const ANSWER_WITHIN_MS = 150;
 /** A refill glyph takes off once the table reports the refill, well inside this. */
 const GLYPH_WITHIN_MS = 400;
@@ -31,6 +33,8 @@ interface Flight {
 
 interface ChipLog {
   readonly taps: number[];
+  /** The sim tick at the last tap's release, when the table takes the drop. */
+  dropTick: number;
   readonly changes: ChipChange[];
   readonly flights: Flight[];
 }
@@ -50,7 +54,7 @@ async function watchChip(page: Page): Promise<void> {
         'The in-hand chip, its digits, its words or the Vault plaque coin is missing',
       );
     }
-    const log: ChipLog = { taps: [], changes: [], flights: [] };
+    const log: ChipLog = { taps: [], dropTick: -Infinity, changes: [], flights: [] };
     (window as unknown as { __chip: ChipLog }).__chip = log;
     const middle = (el: Element): { x: number; y: number } => {
       const r = el.getBoundingClientRect();
@@ -66,6 +70,13 @@ async function watchChip(page: Page): Promise<void> {
       (event) => {
         if (event.target instanceof Element && event.target.closest('.cp-ui-host')) return;
         log.taps.push(performance.now());
+      },
+      { capture: true },
+    );
+    window.addEventListener(
+      'pointerup',
+      () => {
+        log.dropTick = Math.floor(window.__coinposh?.sim?.tick ?? 0);
       },
       { capture: true },
     );
@@ -119,10 +130,28 @@ function readLog(page: Page): Promise<ChipLog> {
   return page.evaluate(() => (window as unknown as { __chip: ChipLog }).__chip);
 }
 
+/**
+ * The table refuses a drop inside its cooldown, which counts sim ticks, not wall time, and a
+ * SwiftShader sim on a loaded runner can stand still for longer than the tap gap. A refused tap
+ * moves no coin, so each tap waits until the table can take it.
+ */
+async function untilTableTakesADrop(page: Page): Promise<void> {
+  await page.waitForFunction(
+    (gap) => {
+      const log = (window as unknown as { __chip?: ChipLog }).__chip;
+      const tick = window.__coinposh?.sim?.tick ?? 0;
+      return !log || Math.floor(tick) - log.dropTick >= gap;
+    },
+    MOCK_RULES.minTicksBetweenDrops,
+    { timeout: 10_000, polling: 16 },
+  );
+}
+
 async function tapTen(page: Page, shotAt?: { tap: number; name: string }): Promise<void> {
   const next = { at: Date.now() };
   for (let tap = 1; tap <= TAPS; tap += 1) {
     await expect(page.getByTestId('crate-reveal'), 'no crate card owns the screen').toHaveCount(0);
+    await untilTableTakesADrop(page);
     await tapDrop(page);
     if (shotAt?.tap === tap) {
       await page.waitForFunction(
@@ -160,13 +189,20 @@ async function tapTen(page: Page, shotAt?: { tap: number; name: string }): Promi
   }
 }
 
-/** For each tap, how long until the chip's digits or state changed, or null if it never did. */
+const countOf = (text: string): number => Number(text.replace(/\D/g, ''));
+
+/**
+ * For each tap, how long until the shown count stepped down for the coin it dropped, or null if
+ * it did not before the next tap. A class or a glyph alone is no answer: the count must move.
+ */
 function answers(log: ChipLog): (number | null)[] {
-  return log.taps.map((at) => {
+  return log.taps.map((at, i) => {
+    const until = log.taps[i + 1] ?? Infinity;
     const before = log.changes.filter((change) => change.at < at).at(-1);
+    if (!before) return null;
     const after = log.changes.find(
       (change) =>
-        change.at >= at && (change.digits !== before?.digits || change.classes !== before.classes),
+        change.at >= at && change.at < until && countOf(change.digits) < countOf(before.digits),
     );
     return after ? Math.round(after.at - at) : null;
   });
@@ -174,7 +210,7 @@ function answers(log: ChipLog): (number | null)[] {
 
 /** How many times a count stepped down: one per coin a drop took from the hand. */
 function drains(log: ChipLog, field: 'digits' | 'reported'): number {
-  const counts = log.changes.map((change) => Number(change[field].replace(/\D/g, '')));
+  const counts = log.changes.map((change) => countOf(change[field]));
   return counts.filter((count, i) => i > 0 && count < (counts[i - 1] ?? 0)).length;
 }
 
@@ -186,10 +222,6 @@ function invented(log: ChipLog): string[] {
     return reported.has(change.digits) ? [] : [change.digits];
   });
 }
-
-/** A table under load can hand a drop and its refill to the UI in one frame, so not every
- * coin out shows as its own step. */
-const MIN_DRAINS = TAPS / 2;
 
 function timeline(log: ChipLog): string {
   const start = log.taps[0] ?? 0;
@@ -233,11 +265,11 @@ test.describe('in-hand chip (P-749)', () => {
     expect(
       drains(log, 'reported'),
       `the table reported coins leaving the hand: ${timeline(log)}`,
-    ).toBeGreaterThanOrEqual(MIN_DRAINS);
+    ).toBe(TAPS);
     expect(
       drains(log, 'digits'),
       `the shown count rolls down off ${String(full)} and the refill lands it back up: ${timeline(log)}`,
-    ).toBeGreaterThanOrEqual(MIN_DRAINS);
+    ).toBe(TAPS);
 
     expect(log.flights.length, 'refills fly coin glyphs into the hand').toBeGreaterThanOrEqual(
       TAPS / 2,
@@ -290,7 +322,7 @@ test.describe('in-hand chip (P-749)', () => {
     expect(
       drains(log, 'digits'),
       `the shown count steps down with the hand: ${timeline(log)}`,
-    ).toBeGreaterThanOrEqual(MIN_DRAINS);
+    ).toBe(TAPS);
     expect(log.flights, 'reduced motion flies no glyph').toEqual([]);
     expect(
       log.changes.filter((change) => change.classes.includes('is-received-still')).length,

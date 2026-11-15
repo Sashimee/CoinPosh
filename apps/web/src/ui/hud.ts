@@ -633,7 +633,6 @@ const rollFrames = (from: string): Keyframe[] => [
 ];
 /** How long the chip keeps its static gold rim for a refill under reduced motion. */
 const IN_HAND_STILL_RIM_MS = 360;
-const IN_HAND_REACH_MS = 200;
 /** One coin glyph's hop from the plaque into the hand, for a refill or a handover step. */
 const HANDOVER_FLIGHT_MS = 460;
 /** A refill after a drop lands before a brisk next tap, so the count is back up between drops. */
@@ -833,7 +832,11 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
     }
   };
 
-  /** A drop took a coin from the hand: the count rolls down and the coin dips away. */
+  /**
+   * A drop took a coin from the hand: the count rolls down and the coin dips away. main.ts
+   * reports the spent coin as the table accepts the drop, so a tap the table refuses (cooldown,
+   * empty Vault, a frozen table) never moves the hand.
+   */
   const drain = (coins: number): void => {
     dropped = true;
     readout.classList.remove('is-refilling');
@@ -859,29 +862,6 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
       },
     ),
   );
-  let reaching: ReturnType<typeof setTimeout> | undefined;
-  /**
-   * The hand reaches for a coin the moment the table is pressed, before the drop it asks for is
-   * settled; the count itself waits for the coin to leave.
-   */
-  const reach = (): void => {
-    if (readout.hidden || inHand.getState().coins === 0) return;
-    clearTimeout(reaching);
-    restartAnimation(readout, 'is-reaching');
-    reaching = setTimeout(() => {
-      readout.classList.remove('is-reaching');
-    }, IN_HAND_REACH_MS);
-  };
-  ctx.own(
-    listen(
-      window,
-      'pointerdown',
-      (event) => {
-        if (isTableTap(event)) reach();
-      },
-      { capture: true, passive: true },
-    ),
-  );
   ctx.own(
     ctx.loc.bind(() => {
       paint(inHand.getState().coins, true);
@@ -890,7 +870,6 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   ctx.own(() => {
     pop.stop();
     clearTimeout(stillRim);
-    clearTimeout(reaching);
     for (const finish of [...flights]) finish();
     layer?.remove();
   });
