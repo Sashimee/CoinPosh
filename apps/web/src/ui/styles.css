@@ -1150,12 +1150,10 @@
   align-items: flex-end;
 }
 
-/* Flush against the gauge, the rank-up swell grows away from it rather than into the clip. */
-.cp-combo-caption.is-stacked .cp-combo-tier {
-  transform-origin: right center;
-}
-
+/* The rank-up swell grows from the name's gauge-side edge, out into the room fitCaption kept for
+   it, never into the multiplier or the gauge. */
 .cp-combo-tier {
+  transform-origin: right center;
   font-family: var(--cp-font-display);
   font-size: 20px;
   line-height: 1.1;

@@ -1,4 +1,5 @@
 import { PerspectiveCamera, Vector3 } from 'three/webgpu';
+import { Spring, SPRINGS, type SpringConfig } from '../motion/spring.ts';
 import {
   applyCameraPreset,
   RIVIERA_TABLE as T,
@@ -270,6 +271,22 @@ export function swellOverhang(scale: number, reach: number): number {
   return Math.max(0, scale - 1) * Math.max(0, reach);
 }
 
+/** Highest value a spring at rest at 1 reaches once kicked with `velocity`. */
+export function springPeak(config: SpringConfig, velocity: number): number {
+  const spring = new Spring(1, config);
+  spring.impulse(velocity);
+  let peak = 1;
+  for (let step = 0; step < 4000 && !spring.step(1 / 240); step++) {
+    peak = Math.max(peak, spring.value);
+  }
+  return peak;
+}
+
+/** The kick the Cascade gives its rank name on a rank-up, on the `pop` spring. */
+export const RANK_SWELL_KICK = 6;
+/** The scale that swell peaks at, which every Cascade caption is fitted for. */
+export const RANK_SWELL_PEAK = springPeak(SPRINGS.pop, RANK_SWELL_KICK);
+
 export interface CaptionFitInput {
   /** Width the caption may use inside the card. */
   readonly room: number;
@@ -277,6 +294,11 @@ export interface CaptionFitInput {
   readonly name: number;
   readonly multiplier: number;
   readonly gap: number;
+  /**
+   * Peak scale the name swells to, about its gauge-side edge, on a rank-up; 1 when it never
+   * swells. The fit leaves the name room for it, so a swell never pushes it out of the card.
+   */
+  readonly swell?: number;
 }
 
 export interface CaptionFit {
@@ -290,12 +312,13 @@ export interface CaptionFit {
 export const CAPTION_MIN_SCALE = 0.6;
 
 /**
- * Fits a Cascade caption to its card: the name and multiplier share a line when they can, the
- * multiplier wraps under the name when they cannot, and a name too long for a line of its own
- * shrinks until it fits.
+ * Fits a Cascade caption to its card at the peak of its swell: the name and multiplier share a
+ * line when they can, the multiplier wraps under the name when they cannot, and a name too long
+ * for a line of its own shrinks until it fits.
  */
 export function fitCaption(input: CaptionFitInput): CaptionFit {
-  const { room, name, multiplier, gap } = input;
+  const { room, multiplier, gap } = input;
+  const name = input.name * Math.max(1, input.swell ?? 1);
   if (name + gap + multiplier <= room) return { stacked: false, scale: 1 };
   if (name <= room) return { stacked: true, scale: 1 };
   return { stacked: true, scale: Math.max(CAPTION_MIN_SCALE, room / name) };

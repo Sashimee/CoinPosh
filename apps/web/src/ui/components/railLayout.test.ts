@@ -17,7 +17,10 @@ import {
   RAIL_MAX_WIDTH,
   railBox,
   railOpens,
+  RANK_SWELL_KICK,
+  RANK_SWELL_PEAK,
   REVEAL_FADE_PX,
+  springPeak,
   swellOverhang,
   type Box,
   type Insets,
@@ -352,6 +355,39 @@ describe('fitCaption', () => {
     }
   });
 
+  it('leaves a swelling name room for its peak scale', () => {
+    expect(fitCaption({ room: 120, name: 78, multiplier: 35, gap: 6 }).stacked).toBe(false);
+    expect(fitCaption({ room: 120, name: 78, multiplier: 35, gap: 6, swell: 1.2 })).toEqual({
+      stacked: true,
+      scale: 1,
+    });
+    const shrunk = fitCaption({ room: 90, name: 90, multiplier: 30, gap: 6, swell: 1.2 });
+    expect(shrunk.stacked).toBe(true);
+    expect(90 * shrunk.scale * 1.2).toBeCloseTo(90);
+  });
+
+  it('fits every swelling name and multiplier the card can hold, at the peak', () => {
+    for (const swell of [1.1, 1.18, 1.3]) {
+      for (let room = 60; room <= 160; room += 7) {
+        for (let name = 20; name * swell <= room / CAPTION_MIN_SCALE; name += 9) {
+          for (const multiplier of [16, 27, 35]) {
+            if (multiplier > room) continue;
+            const fit = fitCaption({ room, name, multiplier, gap: 6, swell });
+            const peak = name * fit.scale * swell;
+            const line = fit.stacked ? Math.max(peak, multiplier) : peak + 6 + multiplier;
+            expect(line).toBeLessThanOrEqual(room + 1e-9);
+          }
+        }
+      }
+    }
+  });
+
+  it('treats a shrinking or missing swell as no swell', () => {
+    const rest = fitCaption({ room: 119, name: 78, multiplier: 35, gap: 6 });
+    expect(fitCaption({ room: 119, name: 78, multiplier: 35, gap: 6, swell: 0.9 })).toEqual(rest);
+    expect(fitCaption({ room: 119, name: 78, multiplier: 35, gap: 6, swell: 1 })).toEqual(rest);
+  });
+
   it('stops shrinking at the floor rather than shrink a name to nothing', () => {
     expect(fitCaption({ room: 10, name: 200, multiplier: 8, gap: 6 }).scale).toBe(
       CAPTION_MIN_SCALE,
@@ -433,6 +469,7 @@ function cascadeCard(slot: RailSlot | null, name: string, multiplier: string) {
     name: nameWidth,
     multiplier: multWidth,
     gap: CAPTION_GAP,
+    swell: RANK_SWELL_PEAK,
   });
   const drawn = nameWidth * fit.scale;
   const contentRight = frame.left + frame.width - PAD_GAUGE;
@@ -450,6 +487,12 @@ describe('Cascade card with the real rank names', () => {
     expect(peak).toBeGreaterThan(1.05);
   });
 
+  it('fits captions for the peak the swell spring really reaches', () => {
+    expect(RANK_SWELL_PEAK).toBeCloseTo(peak, 3);
+    expect(springPeak(SPRINGS.pop, RANK_SWELL_KICK)).toBe(RANK_SWELL_PEAK);
+    expect(springPeak(SPRINGS.pop, 0)).toBe(1);
+  });
+
   it('has a measured width for every rank name and multiplier in EN, FR and DE', () => {
     for (const language of Object.keys(LOCALES) as Language[]) {
       for (const tier of cascade.tiers) {
@@ -459,7 +502,7 @@ describe('Cascade card with the real rank names', () => {
     }
   });
 
-  for (const screen of SCREENS.filter((s) => ['390x844', '360x780'].includes(s.name))) {
+  for (const screen of SCREENS.filter((s) => ['390x844', '360x640', '360x780'].includes(s.name))) {
     const slot = planMeterRails(inputFor(screen)).right;
 
     for (const language of Object.keys(LOCALES) as Language[]) {
@@ -481,10 +524,25 @@ describe('Cascade card with the real rank names', () => {
           if (!fit.stacked) expect(boxesIntersect(nameBox, multBox)).toBe(false);
         });
 
+        it(`${label}: stays inside the card's padding box at the peak of its swell`, () => {
+          const { frame, spine, fit, nameBox, multBox } = cascadeCard(slot, name, multiplier);
+          const grow = RANK_SWELL_PEAK - 1;
+          const swollen: Box = {
+            left: nameBox.left - grow * nameBox.width,
+            top: nameBox.top - (grow * nameBox.height) / 2,
+            width: nameBox.width * RANK_SWELL_PEAK,
+            height: nameBox.height * RANK_SWELL_PEAK,
+          };
+          expect(swollen.left).toBeGreaterThanOrEqual(frame.left - 1e-6);
+          expect(boxContains(frame, swollen)).toBe(true);
+          expect(boxesIntersect(swollen, spine)).toBe(false);
+          if (!fit.stacked) expect(boxesIntersect(swollen, multBox)).toBe(false);
+        });
+
         it(`${label}: never shows past the opening box, even mid-swell`, () => {
-          const { slot: open, frame, fit, nameBox } = cascadeCard(slot, name, multiplier);
-          // The stacked name swells about its gauge-side edge, an unstacked one about its centre.
-          const reach = fit.stacked ? nameBox.width : nameBox.width / 2;
+          const { slot: open, frame, nameBox } = cascadeCard(slot, name, multiplier);
+          // The name swells about its gauge-side edge, stacked or not.
+          const reach = nameBox.width;
           const gauge = frame.left + frame.width;
           for (let step = 0; step <= 8; step++) {
             const overhang = swellOverhang(1 + ((peak - 1) * step) / 8, reach);

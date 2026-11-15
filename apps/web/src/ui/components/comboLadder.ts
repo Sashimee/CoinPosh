@@ -9,7 +9,7 @@ import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { announcementHoldFor, createRankGate, peakReplay } from './announcementHold.ts';
 import { createMeterRail, type MeterRail } from './meterRail.ts';
-import { fitCaption, swellOverhang } from './railLayout.ts';
+import { fitCaption, RANK_SWELL_KICK, RANK_SWELL_PEAK, swellOverhang } from './railLayout.ts';
 
 const BOWL_TOP = 8;
 const BOWL_BOTTOM = 112;
@@ -125,7 +125,10 @@ export function createComboLadder(ctx: UiContext): MeterRail {
   const frame = captionRow.closest('.cp-rail-card');
   if (!(frame instanceof HTMLElement)) throw new Error('Combo caption is not inside a rail card');
   let fitted = '';
-  /** Keeps the longest rank name, in every language, inside the card: wrap first, then shrink. */
+  /**
+   * Keeps the longest rank name, in every language and at the peak of its swell, inside the card:
+   * wrap first, then shrink.
+   */
   const fit = (): void => {
     const style = getComputedStyle(frame);
     const room = frame.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
@@ -137,6 +140,7 @@ export function createComboLadder(ctx: UiContext): MeterRail {
       name: tierName.offsetWidth,
       multiplier: multiplier.offsetWidth,
       gap: multiplier.textContent ? parseFloat(getComputedStyle(captionRow).columnGap) || 0 : 0,
+      swell: RANK_SWELL_PEAK,
     });
     captionRow.classList.toggle('is-stacked', stacked);
     if (scale < 1) {
@@ -278,10 +282,10 @@ export function createComboLadder(ctx: UiContext): MeterRail {
     hold,
     {
       rise: () => {
-        swell.kick(6);
+        swell.kick(RANK_SWELL_KICK);
       },
       replay: (peak, live) => {
-        if (live > 0) swell.kick(6);
+        if (live > 0) swell.kick(RANK_SWELL_KICK);
         if (peakReplay(peak, live) === 'pulse') pulse(peak);
       },
     },
