@@ -17,7 +17,7 @@ Ship the CoinPosh roadmap (`docs/plan/04-ROADMAP.md`) wave by wave with the save
 ## State
 - Working branch for the loop: `feat/build-loop` (from `dev`). Flow: `task/<id>` → `feat/build-loop` → `ship/<name>` PR into `dev` (merge it) → `main` only for a release candidate the founder validated.
 - `dev` head: dbfeb2a (merge of PR #224, `ship/wave-44`). `feat/build-loop` is at 26916b6, 15 commits behind `dev`, nothing unmerged.
-- Open PRs: none. Last shipped wave: 44 (stopped early). Wave 45 workflow run id: `wf_a5ccfffc-cf5` (started 2026-11-15, resume with `resumeFromRunId`).
+- Open PRs: none. Wave 45 run `wf_a5ccfffc-cf5` (3 slots): P-769 merged (754ed6e); P-766 in fix round, P-755 building, P-767 built awaiting review as of 2026-11-15 22:01 UTC. Usage limit hit then: resume with `resumeFromRunId`, never relaunch. Dashboard refreshed 22:01 UTC.
 - Dev deploy: https://devcoinposh.bas.lu (API https://api.devcoinposh.bas.lu), Dokploy auto-deploys `dev` on push. `main` is not deployed.
 - Dashboard: https://claude.ai/artifact/13mygXtRWZsppKUrsHx5BA. Refresh with `python3 tools/dashboard/gen.py <repo> <out_dir> <phase> "<detail>"`, then upload the 6 JSON files as assets and repoint `datasets/<name>` (steps in `docs/plan/HANDOFF.md`).
 
