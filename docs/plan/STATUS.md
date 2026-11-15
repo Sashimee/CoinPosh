@@ -397,6 +397,8 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-740 | done | task/P-740 (merge 8b80b02) | persist burst test counts only its own world encodes, deterministic under full pnpm check load; persist.test.ts (b479b11); pnpm check green after merge |
 | P-722 | done | task/P-722 (merge 26fa553) | A crate card left open never times out into a payout: COLLECT pays the card, the plaque holds until then (mount.ts, main.ts, balancePlaque.ts, crate-card-left-open.spec.ts; folds P-734) (6df0947); pnpm check green after merge; follow-up P-753 |
 | P-746 | done | task/P-746 (merge ffe4e4c) | A spent Cascade card shows the best rank as history ('Best: …') with the idle prompt, no live multiplier or next-rank hint; comboLadder.ts, styles.css, ui.json EN/FR/DE, comboLadder.test.ts (5cb252e); pnpm check green after merge |
+| P-737 | in progress (parts merged: P-737-p1) | | Capsules sheet dead end. Parts P-737-p1, P-737-p2. Parts merged: P-737-p1 (merge d6a05df); parts pending: P-737-p2 |
+| P-737-p1 | done | task/P-737-p1 (merge d6a05df) | Capsules sheet: empty state names only sources in the build, locked Pull button readable and explained (panel.ts, plan.ts, tokens.ts, gacha.css, i18n.ts EN/FR/DE, locked.test.ts) (78853cd); pnpm check green after merge; follow-ups for P-737-p2 in POLISH |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
