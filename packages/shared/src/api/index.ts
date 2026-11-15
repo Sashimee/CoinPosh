@@ -8,6 +8,7 @@ export * from './liveEvents/index.ts';
 export * from './loot.ts';
 export * from './meta.ts';
 export * from './progression.ts';
+export * from './props/index.ts';
 export * from './social.ts';
 export * from './soiree.ts';
 export * from './standing/index.ts';
