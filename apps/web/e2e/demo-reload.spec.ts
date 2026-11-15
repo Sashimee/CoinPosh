@@ -206,6 +206,23 @@ async function settle(page: Page): Promise<StoredPlayer> {
   return player;
 }
 
+async function collectReplayedCrate(page: Page): Promise<void> {
+  const reveal = page.getByTestId('crate-reveal');
+  await expect
+    .poll(
+      async () => {
+        if ((await reveal.count()) > 0) {
+          await page.keyboard.press('Escape');
+          return false;
+        }
+        const player = await storedPlayer(page);
+        return player?.crates.every((record) => record.state !== 'openable') ?? false;
+      },
+      { message: 'the crate card replayed after the reload never went away', timeout: 30_000 },
+    )
+    .toBe(true);
+}
+
 test('a reload in the same tab keeps the Vault and the table; a new tab starts fresh', async ({
   page,
   browser,
@@ -272,6 +289,9 @@ test('a reload in the same tab keeps the Vault and the table; a new tab starts f
     'the reloaded table holds the coins the player last saw, within the snapshot tolerance',
   ).toBeLessThanOrEqual(COIN_TOLERANCE);
 
+  // A crate mid-unbox at the reload replays its card; an open card starves a second context's
+  // boot on software GL, so it is collected before the new tab opens.
+  await collectReplayedCrate(page);
   const context = await browser.newContext({ viewport: page.viewportSize() });
   try {
     const other = await context.newPage();
