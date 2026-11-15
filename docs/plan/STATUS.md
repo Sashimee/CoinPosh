@@ -225,7 +225,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-13.16 | todo | | Waits on T-13.15. E2E: live events |
 | T-14.01 | todo | | Waits on T-11.01. World contracts |
 | T-14.02 | done | task/T-14.02 (merge a4db477) | Concierge brain: rule table from bus events to lines and tips under apps/web/src/game/concierge (5b45155); pnpm check green after merge; game-feature wiring queued as P-720 |
-| T-14.03 | todo | | Waits on T-14.02. Concierge character and lines |
+| T-14.03 | done | task/T-14.03 (merge ec1c7cf) | Concierge character and lines: apps/web/src/ui/concierge/** (portrait, stage, present, juice, mount, i18n, preview, PERSONALITY.md, tests) + concierge.json EN/FR/DE (028a06e); pnpm check green after merge |
 | T-14.04 | done | task/T-14.04 (merge d5093a1) | Procedural Concierge voice barks ducked under stingers in apps/web/src/audio/concierge (ef07180); pnpm check green after merge; wiring queued as P-741/P-742 |
 | T-14.05 | todo | | Waits on T-14.01, T-3.07. World numbers |
 | T-14.06 | todo | | Waits on T-14.05. Server: guest stories and pets |
