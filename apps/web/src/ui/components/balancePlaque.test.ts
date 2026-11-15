@@ -9,6 +9,7 @@ import { BUNDLED_RESOURCES, createI18n, type Language } from '../../i18n/index.t
 import type { UiContext } from '../context.ts';
 import { Localizer } from '../localize.ts';
 import { setMotionPreference } from '../motion/reduced.ts';
+import { Spring, SPRINGS } from '../motion/spring.ts';
 import {
   createBalancePlaque,
   CreditHold,
@@ -16,6 +17,11 @@ import {
   PAYOUT_HOLD_CAP_MS,
   PAYOUT_STAGGER_MS,
   PayoutLedger,
+  PLAQUE_PULSE_MAX,
+  POP_VELOCITY,
+  pulseKick,
+  PURSE_CLEARANCE_PX,
+  purseShift,
   PROVISIONAL_REVEAL_MS,
   walletPayoutFor,
   type PayoutLine,
@@ -896,5 +902,82 @@ describe('createBalancePlaque waits for the house without moving the Vault', () 
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(PROVISIONAL_REVEAL_MS);
     expect(plaque.plaque().classList.contains('is-provisional')).toBe(false);
+  });
+});
+
+function pulsePeak(gapsMs: readonly number[], frameMs = 1000 / 60): number {
+  const spring = new Spring(1, SPRINGS.pop);
+  const at = [0];
+  for (const gap of gapsMs) at.push((at.at(-1) ?? 0) + gap);
+  const end = (at.at(-1) ?? 0) + 1500;
+  let peak = 1;
+  let next = 0;
+  for (let now = 0; now < end; now += frameMs) {
+    while (next < at.length && (at[next] ?? Infinity) <= now) {
+      spring.impulse(pulseKick(spring.value, spring.velocity));
+      next += 1;
+    }
+    spring.step(frameMs / 1000);
+    peak = Math.max(peak, spring.value);
+  }
+  return peak;
+}
+
+describe('the Vault pulse keeps clear of the purse chips (P-684)', () => {
+  it('gives a lone credit the full pop', () => {
+    expect(pulseKick(1, 0)).toBe(POP_VELOCITY);
+    expect(pulsePeak([])).toBeGreaterThan(1.02);
+  });
+
+  it('never swells past its ceiling, however fast or slow a burst of credits lands', () => {
+    for (const gap of [0, 16, 40, 70, 110, 160, 240]) {
+      for (const frameMs of [1000 / 120, 1000 / 60, 1000 / 15]) {
+        const peak = pulsePeak(
+          Array.from({ length: 8 }, () => gap),
+          frameMs,
+        );
+        expect(
+          peak,
+          `credits ${gap} ms apart, ${frameMs.toFixed(1)} ms frames`,
+        ).toBeLessThanOrEqual(PLAQUE_PULSE_MAX + 1e-3);
+      }
+    }
+  });
+
+  it('adds nothing to a swing already at the ceiling, and never brakes one', () => {
+    const omega = Math.sqrt(SPRINGS.pop.stiffness);
+    expect(pulseKick(PLAQUE_PULSE_MAX, 0)).toBe(0);
+    expect(pulseKick(1, (PLAQUE_PULSE_MAX - 1) * omega)).toBe(0);
+    expect(pulseKick(1, -0.5)).toBeCloseTo(POP_VELOCITY);
+    expect(pulseKick(1.03, 2)).toBe(0);
+  });
+
+  it('steps the readouts out by exactly what the plaque swells past each side', () => {
+    expect(purseShift(1, 196)).toBe(0);
+    expect(purseShift(0.97, 196)).toBe(0);
+    expect(purseShift(PLAQUE_PULSE_MAX, 196)).toBeCloseTo(((PLAQUE_PULSE_MAX - 1) * 196) / 2);
+  });
+
+  it('keeps the gap beside the plaque wider than the clearance at every frame of a burst', () => {
+    const gap = 8;
+    const width = 196;
+    const spring = new Spring(1, SPRINGS.pop);
+    for (let frame = 0; frame < 120; frame += 1) {
+      if (frame % 3 === 0 && frame < 30) spring.impulse(pulseKick(spring.value, spring.velocity));
+      spring.step(1 / 60);
+      const scale = Math.min(PLAQUE_PULSE_MAX, spring.value);
+      const plaqueReach = (Math.max(1, scale) * width) / 2;
+      const chipEdge = width / 2 + gap + purseShift(scale, width);
+      expect(chipEdge - plaqueReach).toBeGreaterThanOrEqual(PURSE_CLEARANCE_PX);
+    }
+  });
+
+  it('pops each purse chip from the edge away from the plaque', () => {
+    const [chip] = rulesMatching((selector) => selector === '.cp-wallet-chip').filter(
+      (rule) => 'transform-origin' in rule,
+    );
+    expect(chip?.['transform-origin']).toBe('right center');
+    const [bars] = rulesMatching((selector) => selector === '.cp-plaque-wrap > .cp-chip-bars');
+    expect(bars?.['transform-origin']).toBe('left center');
   });
 });

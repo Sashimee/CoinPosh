@@ -6,6 +6,23 @@ import { initialUiState } from '../app/state.ts';
 import { createStore } from '../app/store.ts';
 import { BUNDLED_RESOURCES, createI18n, LANGUAGES } from '../i18n/index.ts';
 import {
+  PLAQUE_PULSE_MAX,
+  pulseKick,
+  PURSE_CLEARANCE_PX,
+  purseShift,
+} from './components/balancePlaque.ts';
+import {
+  boxesIntersect,
+  cardIsOpen,
+  cardWipe,
+  coinFloorRect,
+  planMeterRails,
+  railBox,
+  railOpens,
+  type RailSlot,
+} from './components/railLayout.ts';
+import { Spring, SPRINGS } from './motion/spring.ts';
+import {
   createPosterGate,
   dockAffordableCount,
   HANDOVER_DWELL_MS,
@@ -437,5 +454,80 @@ describe('InHandHandover', () => {
     rig.advance(HANDOVER_DWELL_MS * 2);
     expect(rig.views).toHaveLength(seen);
     expect(rig.hand.held).toBe(false);
+  });
+});
+
+describe('HUD collisions during a cascade (P-684)', () => {
+  const plan = planMeterRails({
+    viewport: { width: 390, height: 844 },
+    safe: { top: 0, right: 0, bottom: 0, left: 0 },
+    floor: coinFloorRect(390, 844),
+    ceiling: 164,
+    base: 774,
+  });
+  const slots = [plan.left, plan.right].filter(
+    (slot): slot is RailSlot => slot !== null && slot.card !== null,
+  );
+
+  function morphFrames(slot: RailSlot, from: number, to: number): number[] {
+    const spring = new Spring(from, to === 1 ? SPRINGS.snappy : SPRINGS.sheet);
+    spring.setTarget(to);
+    const widths: number[] = [];
+    for (let frame = 0; frame < 90; frame += 1) {
+      spring.step(1 / 60);
+      widths.push(railBox(slot, spring.value).width);
+    }
+    return widths;
+  }
+
+  it('plans a card for each 390x844 rail, outside the playfield', () => {
+    expect(slots).toHaveLength(2);
+    const floor = coinFloorRect(390, 844);
+    for (const slot of slots) expect(boxesIntersect(slot.rail, floor)).toBe(false);
+  });
+
+  it('shows card text in every frame a rail is wider than its spine, opening or closing', () => {
+    for (const slot of slots) {
+      for (const [from, to] of [
+        [0, 1],
+        [1, 0],
+      ] as const) {
+        for (const width of morphFrames(slot, from, to)) {
+          if (width <= slot.rail.width + 0.5) continue;
+          const uncovered = cardIsOpen(width, slot) || cardWipe(width, slot) > 0;
+          expect(uncovered, `${slot.side} ${from}→${to} at ${width.toFixed(1)}px`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('keeps a rail folded while its card has no text yet', () => {
+    for (const slot of slots) {
+      expect(railOpens(true, slot, '')).toBe(false);
+      expect(railOpens(true, slot, 'CASCADE Chic ×1.1')).toBe(true);
+    }
+  });
+
+  it('keeps the pearl chip clear of the Vault plaque through a burst of credits', () => {
+    const viewport = 390;
+    const width = 196;
+    const chipWidth = 42;
+    const gap = 8;
+    const spring = new Spring(1, SPRINGS.pop);
+    for (let frame = 0; frame < 150; frame += 1) {
+      if (frame < 45 && frame % 4 === 0) spring.impulse(pulseKick(spring.value, spring.velocity));
+      spring.step(1 / 60);
+      const scale = Math.min(PLAQUE_PULSE_MAX, spring.value);
+      const plaque = {
+        left: viewport / 2 - (width * scale) / 2,
+        top: 100,
+        width: width * scale,
+        height: 56,
+      };
+      const chipRight = viewport / 2 - width / 2 - gap - purseShift(scale, width);
+      const chip = { left: chipRight - chipWidth, top: 110, width: chipWidth, height: 28 };
+      expect(boxesIntersect(plaque, chip)).toBe(false);
+      expect(plaque.left - chipRight).toBeGreaterThanOrEqual(PURSE_CLEARANCE_PX);
+    }
   });
 });

@@ -9,8 +9,37 @@ import { SPRINGS } from '../motion/spring.ts';
 import { SpringValue } from '../motion/value.ts';
 import { Odometer } from './odometer.ts';
 
-const POP_VELOCITY = 0.9;
+export const POP_VELOCITY = 0.9;
 const CHIP_POP_VELOCITY = 1.6;
+
+/**
+ * P-684: the Vault's credit pulse never swells the plaque past this scale. A burst of credits
+ * re-kicks it, but each kick only tops the swing up to this ceiling instead of stacking on it.
+ */
+export const PLAQUE_PULSE_MAX = 1.06;
+/** What the purse chips beside the plaque keep clear of it, mid-pulse included. */
+export const PURSE_CLEARANCE_PX = 6;
+
+/**
+ * The velocity one more credit adds to a plaque pulse at `scale`, moving at `velocity`: the full
+ * kick while there is headroom, less once the swing it would start reaches past PLAQUE_PULSE_MAX.
+ * The ceiling is the undamped amplitude, so the damped spring always stays under it.
+ */
+export function pulseKick(scale: number, velocity: number, kick = POP_VELOCITY): number {
+  const omega = Math.sqrt(SPRINGS.pop.stiffness);
+  const reach = PLAQUE_PULSE_MAX - 1;
+  const offset = scale - 1;
+  const fastest = Math.sqrt(Math.max(0, reach * reach - offset * offset)) * omega;
+  return Math.max(0, Math.min(velocity + kick, fastest) - velocity);
+}
+
+/**
+ * How far the readouts beside a plaque `width` px wide step outward while it swells to `scale`
+ * about its centre, so each keeps the gap the layout gives it.
+ */
+export function purseShift(scale: number, width: number): number {
+  return (Math.max(0, scale - 1) * width) / 2;
+}
 
 /** The currencies the Vault plaque has no readout for, shown in the compact purse beside it. */
 export const WALLET_CHIPS = ['pearls', 'keys', 'tickets'] as const;
@@ -524,9 +553,20 @@ export function createBalancePlaque(ctx: UiContext): HTMLElement {
   );
   const wrap = h('div', { class: 'cp-plaque-wrap' }, purse, plaque, bars);
 
-  const pop = new SpringValue(1, SPRINGS.pop, (value) => {
-    plaque.style.scale = value === 1 ? '' : String(value);
+  let pulseVelocity = 0;
+  const pulse = new SpringValue(1, SPRINGS.pop, (value, velocity) => {
+    pulseVelocity = velocity;
+    const scale = Math.min(PLAQUE_PULSE_MAX, value);
+    plaque.style.scale = scale === 1 ? '' : String(scale);
+    const shift = scale > 1 ? purseShift(scale, plaque.offsetWidth) : 0;
+    purse.style.translate = shift > 0 ? `${(-shift).toFixed(2)}px -50%` : '';
+    bars.style.translate = shift > 0 ? `${shift.toFixed(2)}px 0` : '';
   });
+  const pop = {
+    kick: (velocity: number): void => {
+      pulse.kick(pulseKick(pulse.value, pulseVelocity, velocity));
+    },
+  };
   const barsPop = new SpringValue(1, SPRINGS.pop, (value) => {
     bars.style.scale = value === 1 ? '' : String(value);
   });
