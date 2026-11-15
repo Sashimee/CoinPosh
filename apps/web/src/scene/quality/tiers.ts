@@ -98,6 +98,29 @@ export function qualityOverrideFrom(search: string): QualityTier | undefined {
   return isQualityTier(requested) ? requested : undefined;
 }
 
+/** A fixed scene scale: a tier bound by name, or a fraction of the renderer pixel ratio. */
+export type SceneScalePin = 'min' | 'max' | number;
+
+/**
+ * Parses a `?scene-scale=min|max|<fraction>` pin, which holds the scene pass at one scale and
+ * turns dynamic resolution off, for captures that compare the look across scales. Anything
+ * else, or a fraction outside (0, 1], means "no pin".
+ */
+export function sceneScalePinFrom(search: string): SceneScalePin | undefined {
+  const requested = new URLSearchParams(search).get('scene-scale');
+  if (requested === 'min' || requested === 'max') return requested;
+  if (requested === null || requested.trim() === '') return undefined;
+  const fraction = Number(requested);
+  return Number.isFinite(fraction) && fraction > 0 && fraction <= 1 ? fraction : undefined;
+}
+
+/** The scene scale `pin` holds on `profile`, inside the tier's dynamic resolution bounds. */
+export function pinnedSceneScale(pin: SceneScalePin, profile: QualityProfile): number {
+  if (pin === 'min') return profile.minResolutionScale;
+  if (pin === 'max') return profile.maxResolutionScale;
+  return Math.min(profile.maxResolutionScale, Math.max(profile.minResolutionScale, pin));
+}
+
 export function lowerTier(tier: QualityTier): QualityTier | null {
   const index = QUALITY_TIERS.indexOf(tier);
   return index > 0 ? (QUALITY_TIERS[index - 1] ?? null) : null;

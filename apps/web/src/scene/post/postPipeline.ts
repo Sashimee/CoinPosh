@@ -10,7 +10,7 @@ import {
   type Scene,
   type WebGPURenderer,
 } from 'three/webgpu';
-import { pass, renderOutput, uniform, vec4 } from 'three/tsl';
+import { pass, renderOutput, rtt, uniform, vec4 } from 'three/tsl';
 import { bloom, type default as BloomNode } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { pixelRatioFor, type QualityProfile } from '../quality/tiers.ts';
@@ -63,6 +63,7 @@ export interface PostPipeline {
 interface Graph {
   readonly scenePass: PassNode;
   readonly bloomPass: BloomNode;
+  readonly fxaaSource: ReturnType<typeof rtt> | null;
 }
 
 export function createPostPipeline(
@@ -128,14 +129,18 @@ export function createPostPipeline(
     });
     // renderOutput reads renderer.toneMappingExposure, which applyRenderLook owns.
     const display = renderOutput(vignetted, AgXToneMapping, SRGBColorSpace);
+    // FXAA has to see the scene pass's own pixels: on the stretched image a below-full scene
+    // scale draws every stair two or more pixels tall, past what its edge search can blend, and
+    // small coins read as notched blobs.
+    const fxaaSource = next.antiAlias === 'fxaa' ? rtt(display) : null;
     // Grain goes last: FXAA would read per-pixel noise as edges and smear it into blotches.
     // @types/three declares FXAANode as an untyped Node; at runtime it outputs vec4 colour.
     const antiAliased =
-      next.antiAlias === 'fxaa' ? (fxaa(display) as unknown as Node<'vec4'>) : display;
+      fxaaSource === null ? display : (fxaa(fxaaSource) as unknown as Node<'vec4'>);
     pipeline.outputNode = filmGrain(antiAliased, grainAmount, grainSeed);
     pipeline.needsUpdate = true;
     appliedSceneScale = Number.NaN;
-    return { scenePass, bloomPass };
+    return { scenePass, bloomPass, fxaaSource };
   }
 
   function syncPixelRatio(): void {
@@ -207,6 +212,7 @@ export function createPostPipeline(
       syncPixelRatio();
       if (dynamicScale !== appliedSceneScale) {
         graph.scenePass.setResolutionScale(dynamicScale);
+        graph.fxaaSource?.setResolutionScale(dynamicScale);
         appliedSceneScale = dynamicScale;
       }
       if (!reducedMotion) grainSeed.value = Math.floor((nowMs / 1000) * GRAIN_FPS) % 4096;
@@ -223,4 +229,5 @@ export function createPostPipeline(
 function disposeGraph(graph: Graph): void {
   graph.scenePass.dispose();
   graph.bloomPass.dispose();
+  graph.fxaaSource?.dispose();
 }

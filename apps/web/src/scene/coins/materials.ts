@@ -159,6 +159,16 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
     slope = slope.add(vec2(cos(spin), sin(spin)).mul(flake));
   }
 
+  // A coin a few scene pixels across, after a drop in scene scale or far down the table, has
+  // 2x2 derivative quads straddling its relief, face and edge, so the per-pixel frame and the
+  // emboss slopes turn into speckle that reads as a crumpled rim. Below about 12 px of radius
+  // the coin fades to its smooth body. Both terms are pixels per coin radius (the face spans
+  // r 0..1, the edge band one turn of st.x), so the fade follows the effective scale.
+  const pixelFootprint = mix(fwidth(r), fwidth(st.x).mul(Math.PI * 2), part);
+  const farLook = smoothstep(0.085, 0.17, pixelFootprint);
+  const detail = float(1).sub(farLook);
+  slope = slope.mul(detail);
+
   const nz = sqrt(clamp(float(1).sub(dot(slope, slope)), 0.02, 1));
   const geometric = normalView;
   const frame = cotangentFrame(geometric, st);
@@ -187,7 +197,10 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
     lip,
   );
   const roughness = clamp(
-    mix(faceRoughness, float(look.edgeRoughness), part).add(turning).add(minified.mul(0.14)),
+    mix(faceRoughness, float(look.edgeRoughness), part)
+      .add(turning)
+      .add(minified.mul(0.14))
+      .add(farLook.mul(0.06)),
     0.04,
     1,
   );
@@ -203,7 +216,7 @@ export function createCoinMaterial(look: CoinLook, motion: F): CoinMaterial {
     .mul(mix(float(1), float(1.25), lip))
     .mul(float(1).sub(minified.mul(0.6)));
   const edgeAnisotropy = vec2(1, 0).mul(Math.min(look.anisotropy, 0.6));
-  const anisotropy = mix(faceAnisotropy, edgeAnisotropy, part);
+  const anisotropy = mix(faceAnisotropy, edgeAnisotropy, part).mul(detail);
 
   // The geometric normal, not the shaded one: in a colour node `normalView` already carries the
   // emboss and flake detail, and feeding that into the prismatic hue turns sub-pixel relief into
