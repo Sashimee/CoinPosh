@@ -85,6 +85,11 @@ Audio API. The one vendored asset is `src/scene/env/hdri/venice_sunset_512.hdr` 
 CC0), pinned by SHA-256 in `src/scene/env/hdri/SOURCES.md`; audio provenance lives in
 `public/audio/CREDITS.md`.
 
+P-425 vendors the webfonts without an npm package: woff2 subsets of Cormorant Garamond
+(600, 700, 700 italic) and Manrope (500, 700), both SIL OFL 1.1, cut with fontTools 4.60.1 from
+google/fonts `cc39c4c2c304bc368c9b7c311ea2bcc6013299fe` into `apps/web/public/fonts`. The
+source hashes, the subset and the exact command live in `apps/web/public/fonts/SOURCES.md`.
+
 Planned, added by the owning task through lead-architect: React 19, @react-three/fiber 9,
 drei, Tailwind v4, Motion, zustand, Playwright. Physics is not planned here: Rapier
 lives in `packages/sim` (above), and the client will reach it only through `@coinposh/sim`.

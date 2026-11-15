@@ -63,27 +63,49 @@ export const BUNDLE_BUDGETS = {
    */
   wasm: 1_600 * 1024,
   /**
-   * Every other lazy JS chunk together. Re-baselined from 95 kB on 2026-11-13 (founder call to
-   * favour dev speed) to the Demo build of c239efa: 112.1 kB, of which crates 33.7 (unbox
-   * cinematic, reveal card, odds sheet), vfx 20.3 (P-224 pop coalescing), riviera 14.9, stage
-   * 12.8 and systems 10.1 kB. That is feature growth, not duplication; the one cut found, three's
-   * ConvexHull in unbox/shot.ts (about 2.6 kB), is queued with vfx-juice. Growth past the 5 %
-   * tolerance still fails.
+   * P-682 split the single 118 kB "other lazy" budget (history: 95 kB, re-baselined to 113 kB on
+   * 2026-11-13 by founder call to favour dev speed, then 118 kB by P-578 at 117.7 kB of feature
+   * growth) into the three boot-lazy rows below, so each group's growth shows in its own row and
+   * P-641's on-tap features get rows of their own instead of eating shared slack. Each budget sits
+   * about 10 % above the Demo build of feat/build-loop b1138ce (2026-11-15), as P-682 asks; that
+   * headroom is why the three add up to 134 kB where the old group was 118 kB. No byte was added:
+   * the old group measured 118.7 kB, the three rows 118.8 kB together.
    *
-   * P-578 re-baselined from 113 kB on 2026-11-14 to the Demo build of feat/build-loop 3e8cff3:
-   * 117.7 kB once the account UI left for its own row, of which crates 33.0, vfx 21.1, riviera
-   * 14.5, stage 12.6, systems 10.7, the sim worker bridge 5.3 and coin emboss 5.2 kB. The 5.6 kB
-   * since c239efa (the trace P-496 asked for) is spread across feature chunks rather than one
-   * regression; the budget sits just above the build so new growth shows at once.
+   * The renderer, the Riviera venue and the sim bridge with what they import (coins, emboss,
+   * geometry, look, tiers): the lazy JS the first frame waits on. 45.5 kB gzip, of which riviera
+   * 14.9, stage 12.9, the sim bridge 5.4, emboss 5.2, coins 3.9 and table geometry 3.1 kB.
    */
-  otherLazyJs: 118 * 1024,
+  stageLazyJs: 51 * 1024,
+  /**
+   * Crates (unbox cinematic, reveal card, odds sheet: the 34.4 kB mount chunk), vfx 21.7 and game
+   * systems 10.9 kB: imported beside the stage but first used once the table is up. 66.5 kB gzip.
+   * The one cut found, three's ConvexHull in unbox/shot.ts (about 2.6 kB), is queued with
+   * vfx-juice.
+   */
+  postTableLazyJs: 75 * 1024,
+  /**
+   * Every lazy JS chunk no other row claims: today the session clock 3.5, the Turnstile overlay
+   * 1.9 and its loader 1.5 kB, 6.8 kB gzip. A new on-demand feature belongs in a row of its own.
+   */
+  otherLazyJs: 8 * 1024,
+  /**
+   * P-707: feature strings loaded through loadNamespace or a feature's own per-language import,
+   * one chunk per locale file. A player fetches the language they read (plus the EN fallback,
+   * which a FR or DE player also takes and an EN player already has), never all three, so the
+   * row counts the largest single locale of each namespace rather than EN + FR + DE. On
+   * 2026-11-15 only account's FR and DE files ship as chunks: 1.6 kB. A probe build that called
+   * loadNamespace('fair') and loadNamespace('account') measured 3.5 kB (fair 1.96, account 1.63
+   * at their largest locale), 78 % of this budget, so P-641 can wire fair without touching it.
+   */
+  i18nNamespaces: 4.5 * 1024,
   /**
    * The account UI (T-10.04, P-577), apart from the net layer's 7.5 kB sign-in chunks: the prompt
-   * clock imported after boot, the Settings section and gentle prompt on first need, the
-   * progress choice on a sign-in that finds two saves, and one translation of its strings (FR
-   * and DE load per language). 12.3 kB gzip at most per player on 2026-11-14.
+   * clock imported after boot, the Settings section and gentle prompt on first need, and the
+   * progress choice on a sign-in that finds two saves. 10.8 kB gzip on 2026-11-15. P-707 moved
+   * its FR and DE strings (1.6 kB, one per player) to the i18n namespaces row, so the budget
+   * came down from 13 kB.
    */
-  accountUi: 13 * 1024,
+  accountUi: 12 * 1024,
   /**
    * The safes dock (T-2.01-p3): controller, countdowns and strings behind the HUD's Safes badge,
    * imported once the table is up. 6.3 kB gzip on 2026-11-14.
@@ -94,6 +116,23 @@ export const BUNDLE_BUDGETS = {
    * 6.6 kB gzip on 2026-11-14.
    */
   safesSheet: 7 * 1024,
+  /**
+   * The capsule machine dock (T-2.03-p2b): controller, strings and the Capsules door, imported
+   * once the table is up. 5.3 kB gzip on 2026-11-15.
+   */
+  gachaDock: 6 * 1024,
+  /**
+   * The capsule machine sheet with its 3D stage, and the odds panel it links to, each imported on
+   * first press. 25.4 kB gzip on 2026-11-15.
+   */
+  gachaSheet: 26.5 * 1024,
+  /**
+   * P-425 / P-102: the self-hosted woff2 subsets in public/fonts, counted as served (woff2 is
+   * already Brotli inside, so gzip would only hide the bytes). Cormorant Garamond 600, 700 and
+   * 700 italic plus Manrope 500 and 700: 85.3 kB on 2026-11-14. P-102 caps the payload at 120 kB;
+   * the budget sits just above the build, so even the 5 % tolerance stays well under that cap.
+   */
+  fonts: 90 * 1024,
   /**
    * P-641: the Collection (inventory) sheet, imported on the first Collection press.
    * 10.8 kB gzip on 2026-11-14.

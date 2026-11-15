@@ -1,6 +1,8 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   BoardIdSchema,
+  BottleIdSchema,
+  BottleTypeIdSchema,
   CATALOG_KEY,
   CATALOG_KEY_MAX_LENGTH,
   CatalogKeySchema,
@@ -10,16 +12,21 @@ import {
   ENTITY_ID_PREFIXES,
   EventIdSchema,
   PlayerIdSchema,
+  PrizeIdSchema,
+  PrizeTypeIdSchema,
   QuestIdSchema,
   SafeIdSchema,
   ScratchCardIdSchema,
   SeasonIdSchema,
   TableSessionIdSchema,
+  TrophyIdSchema,
   UpgradeLineIdSchema,
   VENUE_IDS,
   VenueIdSchema,
+  type BottleId,
   type CoinId,
   type CrateId,
+  type PrizeTypeId,
   type VenueId,
 } from './ids.ts';
 import { roundTrip } from './test/roundTrip.ts';
@@ -34,6 +41,8 @@ const entitySchemas = {
   season: SeasonIdSchema,
   event: EventIdSchema,
   tableSession: TableSessionIdSchema,
+  prize: PrizeIdSchema,
+  bottle: BottleIdSchema,
 } as const;
 
 const entityCases = Object.entries(entitySchemas).map(([kind, schema]) => ({
@@ -154,5 +163,30 @@ describe('brands', () => {
 
   it('keeps catalog keys apart from each other', () => {
     expectTypeOf<VenueId>().not.toEqualTypeOf(UpgradeLineIdSchema.parse('pusher-speed'));
+  });
+
+  it('keeps a prize kind apart from the prize on the table, and a bottle label from its bottle', () => {
+    const takesPrizeType = (id: PrizeTypeId): string => id;
+    const takesBottle = (id: BottleId): string => id;
+    // @ts-expect-error a PrizeId names one prize on the table, not its catalogue kind
+    takesPrizeType(PrizeIdSchema.parse('prize_Ab3De6Gh9J'));
+    // @ts-expect-error a BottleTypeId is a label, not a bottle in the cellar
+    takesBottle(BottleTypeIdSchema.parse('chateauMargaux'));
+    expect(takesPrizeType(PrizeTypeIdSchema.parse('goldWatch'))).toBe('goldWatch');
+    expect(takesBottle(BottleIdSchema.parse('bottle_Ab3De6Gh9J'))).toBe('bottle_Ab3De6Gh9J');
+  });
+});
+
+describe('collecting catalogue keys', () => {
+  it.each([
+    ['prize kind', PrizeTypeIdSchema, 'riviera-chronograph'],
+    ['bottle label', BottleTypeIdSchema, 'grandCru.1982'],
+    ['trophy', TrophyIdSchema, 'firstMisprint'],
+  ])('round-trips a %s and refuses a path or an entity id', (_label, schema, key) => {
+    const { parsed, reparsed } = roundTrip(schema, key);
+    expect(parsed).toBe(key);
+    expect(reparsed).toBe(key);
+    expect(schema.safeParse('../admin').success).toBe(false);
+    expect(schema.safeParse('Prize_Ab3De6Gh9J').success).toBe(false);
   });
 });

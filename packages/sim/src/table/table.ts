@@ -31,6 +31,7 @@ import {
 } from './layout.ts';
 import {
   type HeapGeometry,
+  type HeapKeepClear,
   type HeapLayout,
   type HeapPose,
   heapCapacity,
@@ -47,6 +48,7 @@ import {
   NUDGE,
   TABLE_MATERIAL,
   TABLE_SOLVER,
+  UNFUSE_SPREAD,
 } from './tuning.ts';
 
 /** Mirrors FallEdge in packages/shared, which packages/sim cannot import yet. */
@@ -74,6 +76,28 @@ function smallAngleCos(theta: number): number {
   }
   const t2 = theta * theta;
   return 1 - (t2 / 2) * (1 - (t2 / 12) * (1 - (t2 / 30) * (1 - t2 / 56)));
+}
+
+/**
+ * sin θ and cos θ from their Taylor series, for |θ| up to π, since Math.sin and Math.cos
+ * are engine-approximated; 18 terms each leave an error far below double precision.
+ */
+function sinCos(theta: number): { sin: number; cos: number } {
+  if (!(Math.abs(theta) <= Math.PI)) {
+    throw new RangeError(`sinCos: ${theta} rad is outside [-π, π]`);
+  }
+  const t2 = theta * theta;
+  let sinTerm = theta;
+  let cosTerm = 1;
+  let sin = sinTerm;
+  let cos = cosTerm;
+  for (let k = 1; k < 18; k++) {
+    sinTerm *= -t2 / (2 * k * (2 * k + 1));
+    cosTerm *= -t2 / ((2 * k - 1) * (2 * k));
+    sin += sinTerm;
+    cos += cosTerm;
+  }
+  return { sin, cos };
 }
 
 const SCALE = TABLE_SOLVER.worldScale;
@@ -666,6 +690,103 @@ export class PusherTable {
     this.#wakeAround(body.translation());
     this.#forget(id);
     this.#world.removeRigidBody(body);
+  }
+
+  hasCoin(id: number): boolean {
+    return this.#coins.has(id);
+  }
+
+  /**
+   * `count` poses for coins laid back around `site` (metres), with `rotation`: one on the
+   * spot for a single coin, else a ring just wide enough that neighbours do not touch
+   * (UNFUSE_SPREAD.spacing), turned by an angle drawn from `rng`. Each spot is pushed
+   * out of the `keepClear` circles and kept on the table: clear of the gutters, the
+   * backboard and, by UNFUSE_SPREAD.brinkMargin, the front edge, so laying coins back
+   * never pays one out. The heights are the site's; placeClear lifts them clear.
+   */
+  spreadPoses(
+    site: Readonly<Vector>,
+    count: number,
+    rotation: Readonly<Rotation>,
+    rng: Xoshiro128ss,
+    keepClear: readonly HeapKeepClear[] = [],
+  ): HeapPose[] {
+    const R = COIN.radius;
+    const ring = count > 1 ? (UNFUSE_SPREAD.spacing * R) / sinCos(Math.PI / count).sin : 0;
+    const step = count > 1 ? sinCos((2 * Math.PI) / count) : { sin: 0, cos: 1 };
+    const turn = sinCos(rng.nextRange(-Math.PI, Math.PI));
+    let dx0 = turn.cos;
+    let dz0 = turn.sin;
+    const maxX = PLAYFIELD.fieldHalfWidth - R - UNFUSE_SPREAD.wallMargin;
+    const minZ = BACKBOARD.frontZ + R + UNFUSE_SPREAD.wallMargin;
+    const maxZ = PLAYFIELD.fieldFrontZ - R - UNFUSE_SPREAD.brinkMargin;
+    return Array.from({ length: count }, () => {
+      const ux0 = dx0;
+      const uz0 = dz0;
+      dx0 = ux0 * step.cos - uz0 * step.sin;
+      dz0 = ux0 * step.sin + uz0 * step.cos;
+      let x = site.x + ring * ux0;
+      let z = site.z + ring * uz0;
+      for (const spot of keepClear) {
+        const dx = x - spot.x;
+        const dz = z - spot.z;
+        const clear = spot.radius + R;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < clear) {
+          const ux = d > 0 ? dx / d : ux0;
+          const uz = d > 0 ? dz / d : uz0;
+          x = spot.x + ux * clear;
+          z = spot.z + uz * clear;
+        }
+      }
+      return {
+        translation: {
+          x: Math.min(maxX, Math.max(-maxX, x)),
+          y: site.y,
+          z: Math.min(maxZ, Math.max(minZ, z)),
+        },
+        rotation: { x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w },
+      };
+    });
+  }
+
+  /**
+   * Adds coins among those on the table, and returns their ids in `coins` order. Each is
+   * raised straight up from its pose, COIN_RESTORE.liftStep at a time, until it clears the
+   * pusher, every coin on the table and the coins placed before it; one that cannot clear
+   * below the wall top is left there for the separation pass. Every coin is awake, wakes
+   * the frozen coins around it, and moves with the block when it lies on the pusher top,
+   * as PusherTable.restore lays it. Never throws for a crowded table.
+   */
+  placeClear(coins: readonly HeapPose[]): number[] {
+    const pusher = this.#pusherBox();
+    const placed: Disc[] = Array.from(this.#coins.values(), (body) => this.#discOf(body));
+    const shelfSpeed = this.#lastPusherSpeed();
+    const shelfFrontZ = pusher.z + pusher.hz + COIN.radius * SCALE;
+    return coins.map(({ translation, rotation }) => {
+      const { x, y, z } = translation;
+      let lifted = { x, y, z };
+      for (let lifts = 0; ; lifts++) {
+        const next = { x, y: y + lifts * COIN_RESTORE.liftStep, z };
+        if (next.y > PLAYFIELD.wallHeight) {
+          break;
+        }
+        lifted = next;
+        const disc = discAt(next, rotation);
+        if (!blocked(disc, placed, pusher)) {
+          break;
+        }
+      }
+      placed.push(discAt(lifted, rotation));
+      const id = this.addCoin(lifted, rotation);
+      const body = this.#coin(id);
+      const t = body.translation();
+      if (t.y > SHELF_Y && t.z <= shelfFrontZ) {
+        body.setLinvel({ x: 0, y: 0, z: shelfSpeed }, true);
+      }
+      this.#wakeAround(t);
+      return id;
+    });
   }
 
   /** Jolts the cabinet: every coin gets the same change of velocity (NUDGE), waking it. */

@@ -54,6 +54,9 @@ export const ENTITY_ID_PREFIXES = {
   season: 'season',
   event: 'event',
   tableSession: 'session',
+  soireeRun: 'soiree',
+  prize: 'prize',
+  bottle: 'bottle',
 } as const;
 
 export const PlayerIdSchema = z.uuid().brand<'PlayerId'>();
@@ -88,6 +91,18 @@ export type EventId = z.infer<typeof EventIdSchema>;
 export const TableSessionIdSchema = entityId(ENTITY_ID_PREFIXES.tableSession, 'TableSessionId');
 export type TableSessionId = z.infer<typeof TableSessionIdSchema>;
 
+/** One Soirée Night run, minted by `POST /v1/soiree/start`. */
+export const SoireeRunIdSchema = entityId(ENTITY_ID_PREFIXES.soireeRun, 'SoireeRunId');
+export type SoireeRunId = z.infer<typeof SoireeRunIdSchema>;
+
+/** One prize riding the table, from spawn until it falls; its kind is a {@link PrizeTypeId}. */
+export const PrizeIdSchema = entityId(ENTITY_ID_PREFIXES.prize, 'PrizeId');
+export type PrizeId = z.infer<typeof PrizeIdSchema>;
+
+/** One bottle laid down in the wine cellar; its label is a {@link BottleTypeId}. */
+export const BottleIdSchema = entityId(ENTITY_ID_PREFIXES.bottle, 'BottleId');
+export type BottleId = z.infer<typeof BottleIdSchema>;
+
 export const VenueIdSchema = z.enum(VENUE_IDS);
 export type VenueId = z.infer<typeof VenueIdSchema>;
 
@@ -112,3 +127,22 @@ export type QuestTemplateId = z.infer<typeof QuestTemplateIdSchema>;
 
 export const BoardIdSchema = catalogKey('BoardId');
 export type BoardId = z.infer<typeof BoardIdSchema>;
+
+export const SoireeGuestIdSchema = catalogKey('SoireeGuestId');
+export type SoireeGuestId = z.infer<typeof SoireeGuestIdSchema>;
+
+/** A Soirée perk from the Favor catalogue in `packages/economy`. */
+export const SoireeFavorIdSchema = catalogKey('SoireeFavorId');
+export type SoireeFavorId = z.infer<typeof SoireeFavorIdSchema>;
+
+/** A prize in the collecting catalogue of `packages/economy` (a watch, a perfume, …). */
+export const PrizeTypeIdSchema = catalogKey('PrizeTypeId');
+export type PrizeTypeId = z.infer<typeof PrizeTypeIdSchema>;
+
+/** A wine label in the cellar catalogue; its class sets the ageing curve. */
+export const BottleTypeIdSchema = catalogKey('BottleTypeId');
+export type BottleTypeId = z.infer<typeof BottleTypeIdSchema>;
+
+/** A trophy the lounge can display, keyed by the achievement that awards it. */
+export const TrophyIdSchema = catalogKey('TrophyId');
+export type TrophyId = z.infer<typeof TrophyIdSchema>;

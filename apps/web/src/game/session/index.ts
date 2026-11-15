@@ -31,6 +31,14 @@ export {
 } from './i18n.ts';
 export { createRetake, type RetakeSteps } from './retake.ts';
 export {
+  HOLD_SETTLE_LIMIT_MS,
+  HOLD_SETTLE_STEP_MS,
+  HOLD_UPLOAD_TRIES,
+  holdTable,
+  type TableHold,
+  type TableHoldDeps,
+} from './hold.ts';
+export {
   createDemoHandle,
   installDemoHandle,
   type DemoHandle,

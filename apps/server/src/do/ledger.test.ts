@@ -6,8 +6,19 @@ import { describe, expect, it } from 'vitest';
 import { newSession, type Session } from '../test/client.ts';
 import { claims, drop, dropAsClient, expectConserved, playerStub, state } from '../test/game.ts';
 import { ASCEND_TX_KIND } from '../routes/ascend.ts';
+import { CRATE_OPEN_TX_KIND } from '../routes/crates.ts';
 import { SCRATCH_GRANT_TX_KIND, SCRATCH_REVEAL_TX_KIND } from '../routes/scratch.ts';
-import { commit, ConservationError, LedgerTx, TX_KINDS } from './ledger.ts';
+import { SOIREE_REWARD_TX_KIND, SOIREE_TABLE_TX_KIND } from '../routes/soiree.ts';
+import {
+  commit,
+  ConservationError,
+  featureTxKind,
+  LedgerTx,
+  registerTxKinds,
+  TX_KINDS,
+  txKindOwner,
+  type FeatureTxKind,
+} from './ledger.ts';
 import type { PlayerDO } from './PlayerDO.ts';
 
 interface LedgerRow {
@@ -115,6 +126,43 @@ describe('LedgerTx', () => {
     });
   });
 
+  it('lists crate opens as their own kind: the crate leaves the inventory, the mint pays each currency and card', () => {
+    expect(TX_KINDS).toContain(CRATE_OPEN_TX_KIND);
+    const opened = new LedgerTx(CRATE_OPEN_TX_KIND)
+      .move('inventory', 'house', 'crate', 1, 'crate_x')
+      .move('mint', 'wallet', 'pearls', 4, 'crate_x')
+      .move('mint', 'inventory', 'collectible', 1, 'anchorCoin');
+    expect(() => {
+      opened.assertBalanced();
+    }).not.toThrow();
+    const conjuredCard = new LedgerTx(CRATE_OPEN_TX_KIND)
+      .move('inventory', 'house', 'crate', 1, 'crate_x')
+      .post('inventory', 'collectible', 1, 'anchorCoin');
+    expect(() => {
+      conjuredCard.assertBalanced();
+    }).toThrow(/crate.open is unbalanced: collectible legs sum to 1/);
+    const paidWithTheCrate = new LedgerTx(CRATE_OPEN_TX_KIND)
+      .post('inventory', 'crate', -1, 'crate_x')
+      .post('wallet', 'pearls', 1, 'crate_x');
+    expect(() => {
+      paidWithTheCrate.assertBalanced();
+    }).toThrow(/crate legs sum to -1/);
+  });
+
+  it('keeps album cards out of the wallet', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) => {
+      expect(() => {
+        commit(
+          ctx.storage.sql,
+          new LedgerTx(CRATE_OPEN_TX_KIND).move('mint', 'wallet', 'collectible', 1, 'anchorCoin'),
+          { at: Date.now(), idempotencyKey: null },
+        );
+      }).toThrow(/wallet only holds currencies, not collectible/);
+    });
+  });
+
   it('lists ascensions as their own kind and holds them to the same per-unit balance', () => {
     expect(TX_KINDS).toContain(ASCEND_TX_KIND);
     const minted = new LedgerTx(ASCEND_TX_KIND).post('wallet', 'goldBars', 20, 'rivieraYacht');
@@ -153,6 +201,52 @@ describe('LedgerTx', () => {
       }).toThrow(`${kind} is unbalanced: ${unit} legs sum to 3`);
     },
   );
+
+  it('lists Soirée payouts as their own kind: the mint pays crates into the inventory and keys into the wallet', () => {
+    expect(TX_KINDS).toContain(SOIREE_REWARD_TX_KIND);
+    const paid = new LedgerTx(SOIREE_REWARD_TX_KIND)
+      .move('mint', 'inventory', 'crate', 1, 'crate_x')
+      .move('mint', 'wallet', 'keys', 2, 'soiree_x');
+    expect(() => {
+      paid.assertBalanced();
+    }).not.toThrow();
+    const conjured = new LedgerTx(SOIREE_REWARD_TX_KIND).post('inventory', 'crate', 1, 'crate_x');
+    expect(() => {
+      conjured.assertBalanced();
+    }).toThrow(/soiree.reward is unbalanced: crate legs sum to 1/);
+    const paidInCrates = new LedgerTx(SOIREE_REWARD_TX_KIND)
+      .post('mint', 'crate', -1, 'crate_x')
+      .post('wallet', 'keys', 1, 'soiree_x');
+    expect(() => {
+      paidInCrates.assertBalanced();
+    }).toThrow(/crate legs sum to -1/);
+  });
+
+  it('lists the house stake on a Soirée table as its own kind, balanced in coins', () => {
+    expect(TX_KINDS).toContain(SOIREE_TABLE_TX_KIND);
+    const staked = new LedgerTx(SOIREE_TABLE_TX_KIND).move('house', 'table', 'coins', 5, 'coin_x');
+    expect(() => {
+      staked.assertBalanced();
+    }).not.toThrow();
+    const conjured = new LedgerTx(SOIREE_TABLE_TX_KIND).post('table', 'coins', 5, 'coin_x');
+    expect(() => {
+      conjured.assertBalanced();
+    }).toThrow(/soiree.table is unbalanced: coins legs sum to 5/);
+  });
+
+  it('keeps Soirée crates out of the wallet', async () => {
+    const session = await newSession();
+    await state(session);
+    await runInDurableObject(playerStub(session.tokens.playerId), (_: PlayerDO, ctx) => {
+      expect(() => {
+        commit(
+          ctx.storage.sql,
+          new LedgerTx(SOIREE_REWARD_TX_KIND).move('mint', 'wallet', 'crate', 1, 'crate_x'),
+          { at: Date.now(), idempotencyKey: null },
+        );
+      }).toThrow(/wallet only holds currencies, not crate/);
+    });
+  });
 
   it('refuses negative moves and fractional amounts', () => {
     expect(() => new LedgerTx('claim.fall').move('table', 'wallet', 'coins', -3, null)).toThrow(
@@ -321,5 +415,60 @@ describe('PlayerDO ledger', () => {
       expect(row.at).toBeGreaterThanOrEqual(startedAt - 1000);
       expect(row.at).toBeLessThanOrEqual(Date.now() + 1000);
     }
+  });
+});
+
+describe('feature ledger kinds', () => {
+  const [probePay] = registerTxKinds('ledgerProbe', ['ledgerProbe.pay']);
+  if (probePay === undefined) throw new Error('registerTxKinds returned no kind.');
+
+  it('lets a registered kind through LedgerTx and the conservation check', async () => {
+    expect(txKindOwner(probePay)).toBe('ledgerProbe');
+    const tx = new LedgerTx(featureTxKind('ledgerProbe.pay'))
+      .move('mint', 'wallet', 'coins', 5, null)
+      .move('wallet', 'house', 'coins', 2, null);
+    tx.assertBalanced();
+
+    const session = await newSession();
+    await state(session);
+    const stub = playerStub(session.tokens.playerId);
+    const before = (await stub.conservation()).walletCoins;
+    await runInDurableObject(stub, (_: PlayerDO, ctx) => {
+      commit(ctx.storage.sql, tx, { at: Date.now(), idempotencyKey: null });
+    });
+    expect((await stub.conservation()).walletCoins).toBe(before + 3);
+    await expectConserved(session);
+
+    const unbalanced = new LedgerTx(probePay).post('mint', 'coins', -1, null);
+    expect(() => {
+      unbalanced.assertBalanced();
+    }).toThrow(/ledgerProbe.pay is unbalanced/);
+  });
+
+  it('rejects a kind no feature registered', () => {
+    expect(() => new LedgerTx('nobody.pay' as FeatureTxKind)).toThrow(ConservationError);
+    expect(() => featureTxKind('nobody.pay')).toThrow(/not registered by any feature/);
+    expect(() => featureTxKind('claim.fall')).toThrow(/not registered by any feature/);
+    expect(txKindOwner('claim.fall')).toBeNull();
+  });
+
+  it('rejects a kind that is core or already another feature’s, loudly', () => {
+    expect(() => registerTxKinds('ledgerThief', ['claim.fall'])).toThrow(/core kind in TX_KINDS/);
+    expect(() => registerTxKinds('ledgerThief', ['ledgerProbe.pay'])).toThrow(
+      /feature "ledgerProbe" already owns it/,
+    );
+    expect(() => registerTxKinds('ledgerTwice', ['ledgerTwice.x', 'ledgerTwice.x'])).toThrow(
+      /lists it twice/,
+    );
+    expect(() => registerTxKinds('ledgerSloppy', ['ledger sloppy'])).toThrow(/malformed/);
+    expect(txKindOwner('ledgerTwice.x')).toBeNull();
+  });
+
+  it('accepts the same registration again but not a changed one', () => {
+    expect(registerTxKinds('ledgerProbe', ['ledgerProbe.pay'])).toEqual(['ledgerProbe.pay']);
+    expect(() => registerTxKinds('ledgerProbe', ['ledgerProbe.pay', 'ledgerProbe.more'])).toThrow(
+      /cannot re-register/,
+    );
+    expect(() => new LedgerTx('ledgerProbe.more' as FeatureTxKind)).toThrow(ConservationError);
   });
 });

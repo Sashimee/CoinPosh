@@ -566,3 +566,84 @@ test.describe('crate behind a sheet (P-510)', () => {
     expect(dropped, 'no hold was given up on the way to the collect').toEqual([]);
   });
 });
+
+/** How far into the unbox the dock is pressed: well inside the build-up, long before the burst. */
+const DOCK_PRESS_INTO_UNBOX_MS = 300;
+/** From the dock press until the sheet's Buy row takes a tap. */
+const SHEET_READY_WITHIN_MS = 600;
+/** From the sheet closing until the held unbox has its card up. */
+const CARD_BACK_WITHIN_MS = 300;
+/** How long the sheet stays up over the unbox: past where the full burst (2,000 ms) would land. */
+const SHEET_OVER_UNBOX_MS = 2_500;
+const BUY_TEMPO = '[data-testid="upgrade-buy-pusherSpeed"]';
+
+/** Whether a tap at the centre of `selector` lands on it rather than on something over it. */
+function tapLandsOn(page: Page, selector: string): Promise<boolean> {
+  return page.evaluate((target) => {
+    const el = document.querySelector(target);
+    if (!el) return false;
+    const box = el.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return false;
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return hit !== null && el.contains(hit);
+  }, selector);
+}
+
+test.describe('dock pressed during an unbox (P-640)', () => {
+  test('the dock opens its sheet over a running unbox, which waits under it and comes back on the card', async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await bootGame(page);
+    await dropUntilCrate(page);
+    await playUntilRevealMounts(page);
+    const mountedAt = Date.now();
+    await releaseTaps(page);
+
+    const reveal = page.getByTestId('crate-reveal');
+    await page.waitForTimeout(Math.max(0, mountedAt + DOCK_PRESS_INTO_UNBOX_MS - Date.now()));
+    await expect(reveal, 'the dock is pressed during the cinematic').not.toHaveClass(/is-revealed/);
+
+    const pressedAt = Date.now();
+    await page.getByTestId('dock-upgrades').click({ timeout: SHEET_READY_WITHIN_MS });
+    const sheet = page.getByTestId('sheet-upgrades');
+    await expect(sheet).toBeVisible({ timeout: SHEET_READY_WITHIN_MS });
+    await expect
+      .poll(() => tapLandsOn(page, BUY_TEMPO), {
+        message: 'a tap on the Pusher Tempo Buy reaches it, not the reward card',
+        timeout: Math.max(1, pressedAt + SHEET_READY_WITHIN_MS - Date.now()),
+        intervals: [16],
+      })
+      .toBe(true);
+    await expect(reveal, 'the press is no skip: the unbox steps out of sight').toBeHidden();
+    expect((await probe(page)).counts.cratesCollected, 'the press never collects').toBe(0);
+
+    await page.waitForTimeout(SHEET_OVER_UNBOX_MS);
+    await expect(reveal, 'the unbox waits under the sheet').toBeHidden();
+    await expect(reveal, 'its card stays down while the sheet is up').not.toHaveClass(
+      /is-revealed/,
+    );
+    expect(await tapLandsOn(page, BUY_TEMPO), 'the Buy row still takes taps').toBe(true);
+
+    await page.keyboard.press('Escape');
+    const collect = page.getByTestId('crate-collect');
+    await expect(collect, 'the card is up as the sheet closes').toBeVisible({
+      timeout: CARD_BACK_WITHIN_MS,
+    });
+    await expect(sheet).toBeHidden();
+    await expect(reveal).toHaveClass(/is-revealed/);
+    expect((await probe(page)).counts.cratesCollected).toBe(0);
+
+    const collected = await reveal.elementHandle();
+    await page.keyboard.press('Escape');
+    await expect
+      .poll(() => collected.evaluate((el) => el.isConnected), {
+        message: 'Escape on the card collects it and the reveal leaves',
+        timeout: COLLECT_SETTLES_MS,
+      })
+      .toBe(false);
+    await collected.dispose();
+    expect((await probe(page)).counts.cratesCollected).toBe(1);
+  });
+});

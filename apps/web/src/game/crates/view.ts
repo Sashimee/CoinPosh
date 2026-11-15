@@ -9,6 +9,7 @@ import {
   Mesh,
   MeshBasicNodeMaterial,
   MeshPhysicalNodeMaterial,
+  Sprite,
   Vector3,
   type BufferGeometry,
   type Object3D,
@@ -33,6 +34,7 @@ import type { TablePoint } from '../systems/events.ts';
 import type { CrateEvents, CrateStingerCue } from './events.ts';
 import { heroOf } from './loot.ts';
 import type { CrateRide } from './ride.ts';
+import type { WarmBatch } from './warmup.ts';
 
 const ARRIVE_S = 0.36;
 const ARRIVE_HEIGHT = 0.09;
@@ -540,7 +542,9 @@ interface Playing {
  *
  * While held (a sheet is open) nothing starts and a playing unbox freezes with its card out of
  * sight, so the cinematic never plays behind a sheet or stacks over one; `crate:waiting` tells
- * the dock how many crates are ready for when it lets go.
+ * the dock how many crates are ready for when it lets go. An unbox frozen before its reveal
+ * resumes at the reveal: the sheet already broke its build-up, so the player comes back to the
+ * burst and the card rather than replaying the wait.
  */
 export class UnboxDirector {
   private readonly options: UnboxDirectorOptions;
@@ -559,6 +563,30 @@ export class UnboxDirector {
   /** Starts compiling the unbox props; call it ahead of the first crate. */
   prime(): void {
     if (!this.disposed) this.assets.prime();
+  }
+
+  /**
+   * One prop per unbox material, the set the unbox's own primer draws, for a warm-up that links
+   * them sooner (or again, on a new renderer). `release` frees the god-ray slot it binds.
+   */
+  warmParts(): WarmBatch {
+    const assets = this.assets;
+    const ray = new Mesh(assets.ray, assets.rayMaterial);
+    assets.bindRay({ mesh: ray, tint: new Color(), strength: 0, angle: 0 });
+    return {
+      parts: [
+        new Mesh(assets.body, assets.lacquer),
+        new Mesh(assets.band, assets.gold),
+        new Mesh(assets.column, assets.velvet),
+        new Mesh(assets.seam, assets.seamMaterial),
+        new Mesh(assets.hero('card'), assets.heroMaterial),
+        ray,
+        new Sprite(assets.flareMaterial),
+      ],
+      release: () => {
+        assets.unbindRay(ray);
+      },
+    };
   }
 
   get active(): CrateId | null {
@@ -589,9 +617,12 @@ export class UnboxDirector {
   hold(held: boolean): void {
     if (this.disposed || held === this.isHeld) return;
     this.isHeld = held;
-    this.playing?.card.hold?.(held);
+    const playing = this.playing;
+    playing?.card.hold?.(held);
     this.announceWaiting();
-    if (!held && this.playing === null) this.startNext();
+    if (held) return;
+    if (playing === null) this.startNext();
+    else playing.cinematic.skip();
   }
 
   skip(): void {

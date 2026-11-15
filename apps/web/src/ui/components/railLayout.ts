@@ -225,24 +225,45 @@ export function railBox(slot: RailSlot, open: number): Box {
   return { left, top: slot.rail.top, width, height: slot.rail.height };
 }
 
-/** Width over which a card's contents fade in once the morphing box has uncovered them. */
+/** Width of the feather on the wipe's leading edge, so glyphs fade in rather than show cut. */
 export const REVEAL_FADE_PX = 14;
 
 /**
- * How opaque a card's contents may be while its box is `boxWidth` wide. `inset` is how far the
- * contents' leading (field-side) edge sits inside the open card, so they stay invisible until the
- * box has uncovered every glyph and never show clipped by the card edge mid-morph. Contents that
- * overflow the card (`inset` ≤ 0) only show once it is fully open.
+ * P-684: a card's contents are wiped in by the morphing box itself. They sit still beside the
+ * gauge, and the box's field-side edge uncovers them from the gauge outward as it widens and
+ * covers them again as it folds, so a widened rail always shows its text and the text stays up
+ * until the box has closed over it. Returns how deep into the card, in px from the gauge, the
+ * contents show; `overhang` holds the edge back by what a swell pushes past its rest position.
  */
-export function cardReveal(boxWidth: number, cardWidth: number, inset: number): number {
-  if (inset <= 0) return boxWidth >= cardWidth ? 1 : 0;
-  const uncovered = boxWidth - (cardWidth - inset);
-  return Math.min(1, Math.max(0, uncovered / Math.min(REVEAL_FADE_PX, inset)));
+export function cardWipe(boxWidth: number, slot: RailSlot, overhang = 0): number {
+  if (!slot.card) return 0;
+  const frame = slot.card.width - slot.rail.width;
+  return Math.min(frame, Math.max(0, boxWidth - slot.rail.width - Math.max(0, overhang)));
+}
+
+/** True once the box has reached its card, where the contents show whole, with no wipe mask. */
+export function cardIsOpen(boxWidth: number, slot: RailSlot): boolean {
+  return slot.card !== null && boxWidth >= slot.card.width - 1e-6;
+}
+
+/** The mask that shows a card `depth` px deep from the gauge, feathered on its leading edge. */
+export function wipeMask(side: RailSide, depth: number): string {
+  const towards = side === 'right' ? 'left' : 'right';
+  const solid = Math.max(0, depth - REVEAL_FADE_PX);
+  return `linear-gradient(to ${towards}, #000 ${solid.toFixed(1)}px, transparent ${depth.toFixed(1)}px)`;
+}
+
+/**
+ * A rail only widens into its card when the card has something to say: a slot with room for a
+ * card, a reason to open, and text set in it. An empty lacquer box never opens over the table.
+ */
+export function railOpens(wanted: boolean, slot: RailSlot | null, text: string): boolean {
+  return wanted && slot !== null && slot.card !== null && text.trim() !== '';
 }
 
 /**
  * How far a name swollen to `scale` reaches past its own field-side edge, where `reach` is the
- * distance from that edge to the scale's origin. The reveal holds back by this much, so a rank-up
+ * distance from that edge to the scale's origin. The wipe holds back by this much, so a rank-up
  * swell never pokes out past the morphing box while the card is still opening.
  */
 export function swellOverhang(scale: number, reach: number): number {

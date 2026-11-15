@@ -905,9 +905,121 @@ describe('systems core: the sim event stream', () => {
       claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 100 },
       result: { status: 'accepted', credited: 0, cascade: null, minted: coin(77, 'silver') },
     });
-    expect(fell.map((f) => f.coin?.id ?? null)).toEqual([null, coin(77, 'silver').id]);
-    expect(table.falls).toEqual([{ coinId: coin(77, 'silver').id, tick: 140, edge: 'front' }]);
+    expect(fell.map((f) => f.coin?.id ?? null)).toEqual([coin(104).id, coin(77, 'silver').id]);
+    expect(table.falls).toEqual([
+      { coinId: coin(104).id, tick: 140, edge: 'front' },
+      { coinId: coin(77, 'silver').id, tick: 140, edge: 'front' },
+    ]);
     expect(core.coinOf(kept)).toBeNull();
+  });
+
+  it('P-657: a refused fusion leaves its fused body standing for an input the server kept', () => {
+    const heap = [coin(101), coin(102), coin(103), coin(104)];
+    const { core, sim, table, sync, leave } = setup({ heap });
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.tick = 100;
+    const fusedId = sim.spawn();
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: 100,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId,
+          position: { x: 0, y: 0.1, z: 0 },
+        },
+      ],
+    });
+    for (const id of [0, 1, 2]) sim.bodies.delete(id);
+    sync();
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 100 },
+      result: { status: 'rejected', reason: 'over_envelope' },
+    });
+    sync();
+    const poses = [...sim.bodies.keys()];
+    expect(poses.map((id) => core.coinOf(id))).toEqual([coin(104).id, coin(101).id]);
+    expect(poses.filter((id) => core.coinOf(id) !== null)).toHaveLength(sim.bodies.size);
+
+    sim.stats.renderTick = sim.stats.tick = 140;
+    leave(fusedId, FRONT);
+    expect(table.falls).toEqual([{ coinId: coin(101).id, tick: 140, edge: 'front' }]);
+  });
+
+  it('P-657: a fusion that failed to reach the server re-binds its fused body the same way', () => {
+    const heap = [coin(101), coin(102), coin(103)];
+    const { core, sim, table, sync } = setup({ heap });
+    sim.layHeap(heap.length);
+    sync();
+    const fusedId = sim.spawn();
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: 0,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId,
+          position: { x: 0, y: 0.1, z: 0 },
+        },
+      ],
+    });
+    for (const id of [0, 1, 2]) sim.bodies.delete(id);
+    sync();
+    expect(core.coinOf(fusedId)).toBeNull();
+    table.emit({
+      type: 'claimsFailed',
+      claims: [{ kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 0 }],
+      error: new Error('offline'),
+    });
+    expect(core.coinOf(fusedId)).toBe(coin(101).id);
+  });
+
+  it('does not chain a fusion onto a refused fused body that now stands for a lower-tier coin', () => {
+    const heap = [coin(101), coin(102), coin(103), coin(104, 'silver'), coin(105, 'silver')];
+    const { core, sim, table, sync } = setup({ heap });
+    sim.layHeap(heap.length);
+    sync();
+    sim.stats.tick = 100;
+    const silver = sim.spawn();
+    const gold = sim.spawn();
+    const center = { x: 0, y: 0.1, z: 0 };
+    sim.emit({
+      fusions: [
+        {
+          kind: 'fusion',
+          tick: 100,
+          ids: [0, 1, 2],
+          tier: 'copper',
+          into: 'silver',
+          fusedId: silver,
+          position: center,
+        },
+        {
+          kind: 'fusion',
+          tick: 101,
+          ids: [silver, 3, 4],
+          tier: 'silver',
+          into: 'gold',
+          fusedId: gold,
+          position: center,
+        },
+      ],
+    });
+    table.emit({
+      type: 'claimSettled',
+      claim: { kind: 'fusion', coinIds: [coin(101).id, coin(102).id, coin(103).id], tick: 100 },
+      result: { status: 'rejected', reason: 'over_envelope' },
+    });
+    expect(table.fusions).toEqual([[coin(101).id, coin(102).id, coin(103).id]]);
+    for (const id of [0, 1, 2, 3, 4, silver]) sim.bodies.delete(id);
+    sync();
+    expect(core.coinOf(gold)).toBe(coin(104, 'silver').id);
   });
 
   it('drops a held fusion, and the fusions chained on it, once an input can never be claimed', () => {

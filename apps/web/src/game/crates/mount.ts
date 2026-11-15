@@ -13,6 +13,7 @@ import type { KeyLike } from '../../ui/panels/sheetFocus.ts';
 import { isReducedMotion } from '../../ui/motion/reduced.ts';
 import type { CoinField } from '../../scene/coins/coin-field.ts';
 import type { CameraPreset } from '../../scene/venues/riviera/layout.ts';
+import type { FairOpenOptions } from '../../ui/fair/index.ts';
 import type { HapticPattern } from '../../vfx/haptics.ts';
 import type { UnboxVfx } from '../../vfx/cinematics/unbox/index.ts';
 import type { GameEvents } from '../systems/events.ts';
@@ -24,6 +25,7 @@ import { registerCratesStrings } from './i18n.ts';
 import { rewardLines, type AlbumProgressMap } from './loot.ts';
 import { mountCrateReveal, type CrateReveal } from './revealCard.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
+import { bindCrateWarmup } from './warmup.ts';
 
 export interface CratesMountOptions {
   /** Defaults to a fresh bus; pass one to share crate events with HUD or analytics. */
@@ -35,6 +37,8 @@ export interface CratesMountOptions {
   readonly stage: {
     readonly scene: Object3D;
     readonly camera: PerspectiveCamera;
+    /** The live renderer: a swap (device loss, backend fallback) links the unbox's programs again. */
+    readonly renderer?: object;
     onFrame(listener: (deltaSeconds: number) => void): () => void;
     /** The table's coins, whose baked faces the unbox hero borrows. */
     readonly coins?: Pick<CoinField, 'faceTexture'>;
@@ -49,6 +53,8 @@ export interface CratesMountOptions {
   readonly haptics?: { pulse(pattern: HapticPattern): boolean } | null;
   readonly audio?: (() => CrateAudioPort | null) | null;
   readonly inventoryTarget?: () => HTMLElement | null;
+  /** Opens the shared fairness panel from the card's Certified Fair chip, on the roll's proof. */
+  readonly openFair?: (trigger: HTMLElement, options: FairOpenOptions) => void;
   readonly reducedMotion?: () => boolean;
 }
 
@@ -218,6 +224,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
           album: albums.get(opened.crateId) ?? null,
           reducedMotion: reducedMotion(),
           inventoryTarget: options.inventoryTarget,
+          openFair: options.openFair,
           onSkip: controls.skip,
           onCollect: controls.collect,
         });
@@ -259,6 +266,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
 
   disposers.push(holdWhileSheetOpen(options.ui.store, director));
 
+  const warmup = bindCrateWarmup(options.stage, director);
+
   const hint = mountArrivalHint({ ui: options.ui, host: options.host, reducedMotion });
   disposers.push(bindArrivalHint(events, hint), () => {
     hint.dispose();
@@ -276,7 +285,8 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   disposers.push(
     events.on('crate:spawned', ({ crateId, resumed }) => {
       table.spawn(crateId, resumed);
-      director.prime();
+      // A warm-up still drawing primes the unbox when it is done; two primers would double the links.
+      if (!warmup.warming) director.prime();
       if (resumed) return;
       events.emit('crate:stinger', { cue: 'arrive', rarity: null, step: 1, duckSeconds: 0 });
       options.haptics?.pulse('tap');
@@ -336,6 +346,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       if (disposed) return;
       disposed = true;
       for (const off of disposers.splice(0)) off();
+      warmup.dispose();
       payout.dispose();
       albums.clear();
       reveals.clear();

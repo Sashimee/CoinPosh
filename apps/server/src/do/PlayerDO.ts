@@ -1,9 +1,11 @@
 import {
+  boostedMintMicros,
   cascade,
   cascadeCreditMicros,
   cascadeTierFor,
   cascadeWindowTicks,
   coinTiers,
+  crateSpawn,
   creditMintMicros,
   dropBufferTarget,
   dropSpawnsCrate,
@@ -11,16 +13,19 @@ import {
   fusion,
   fusionValue,
   mintedCoinMicros,
+  NEUTRAL_MULTIPLIER_BP,
   openingHeap,
   repriceReserved,
   upgradeLines,
   type CascadeChain,
+  type RateEnvelopeTable,
   type UpgradeLevelMap,
 } from '@coinposh/economy';
 import {
   DEFAULT_FEATURE_FLAGS,
   nextCoinTier,
   StateResponseSchema,
+  type AlbumResponse,
   type ApiError,
   type AscendRequest,
   type AscendResponse,
@@ -30,6 +35,8 @@ import {
   type ClaimsResponse,
   type CoinId,
   type CoinTier,
+  type CrateOpenRequest,
+  type CrateOpenResponse,
   type DropRequest,
   type DropResponse,
   type EpochMs,
@@ -38,10 +45,20 @@ import {
   type NudgeRequest,
   type NudgeResponse,
   type PlayerId,
+  PlayerIdSchema,
   type SafeOpenRequest,
   type SafeOpenResponse,
   type ScratchRevealRequest,
   type ScratchRevealResponse,
+  type GachaPullRequest,
+  type GachaPullResponse,
+  type SoireeDraftRequest,
+  type SoireeDraftResponse,
+  type SoireeFinishRequest,
+  type SoireeFinishResponse,
+  type SoireeStartRequest,
+  type SoireePerkStat,
+  type SoireeStartResponse,
   TableSessionIdSchema,
   VenueIdSchema,
   CURRENCIES,
@@ -103,6 +120,7 @@ import {
   type AscendHost,
   type AscensionCommit,
 } from '../routes/ascend.ts';
+import { albumBonusOf, completedAlbumSets, readAlbum, type AlbumHost } from '../routes/album.ts';
 import {
   quoteUpgrade,
   readUpgradeLevels,
@@ -110,6 +128,12 @@ import {
   UPGRADE_TX_KIND,
   type UpgradeHost,
 } from '../routes/upgrades.ts';
+import {
+  countCollectiblesGranted,
+  countHeldCrates,
+  openCrate,
+  type CrateHost,
+} from '../routes/crates.ts';
 import { countLockedSafes, openSafe, readSafes, type SafeHost } from '../routes/safes.ts';
 import {
   countHeldScratchCards,
@@ -117,6 +141,31 @@ import {
   revealScratchCard,
   type ScratchHost,
 } from '../routes/scratch.ts';
+import { countGachaCollectibles, pullGacha, type GachaHost } from '../routes/gacha.ts';
+import {
+  activeSoireePerk,
+  closeSoireeTable,
+  draftSoireeFavor,
+  finishSoireeRun,
+  liveSoireeRun,
+  openSoireeCrate,
+  recordSoireeCoin,
+  soireeCoin,
+  soireeCrateRarity,
+  SOIREE_TABLE_TX_KIND,
+  startSoireeRun,
+  type RunTable,
+  type SoireeHost,
+} from '../routes/soiree.ts';
+import type { FeatureCall } from '../features/types.ts';
+import {
+  applyFeatureTables,
+  registeredServerFeatures,
+  resolveFeatureHandler,
+  runFeatureHandler,
+  type EntityFingerprint,
+  type FeatureHost,
+} from './features.ts';
 import { migrate } from './schema.ts';
 import {
   CHUTE_POSE,
@@ -180,6 +229,11 @@ export interface ConservationReport {
   readonly tableValue: number;
   readonly tableCrates: number;
   readonly ledgerCratesOnTable: number;
+  readonly cratesHeld: number;
+  readonly ledgerCratesHeld: number;
+  /** Album cards crate opens granted, against the `collectible` units the mint put in the inventory. */
+  readonly collectiblesHeld: number;
+  readonly ledgerCollectiblesHeld: number;
   readonly safesHeld: number;
   readonly ledgerSafesHeld: number;
   readonly scratchCardsHeld: number;
@@ -196,6 +250,7 @@ type MetaKey =
   | 'created_at'
   | 'drop_count'
   | 'drop_high_water'
+  | 'ftue_crate'
   | 'flushed_seq'
   | 'fair_server_seed'
   | 'fair_server_seed_hash'
@@ -211,7 +266,8 @@ type MetaKey =
   | 'table_session_max_tick'
   | 'table_session_origin'
   | 'snapshot_tokens'
-  | 'snapshot_tokens_at';
+  | 'snapshot_tokens_at'
+  | 'album_sets';
 
 const CASCADE_WINDOW_TICKS = cascadeWindowTicks(SIM_TICKS_PER_SECOND);
 
@@ -234,17 +290,71 @@ function settleLegs(
 
 export class PlayerDO
   extends DurableObject<Env>
-  implements UpgradeHost, AscendHost, SafeHost, ScratchHost
+  implements
+    UpgradeHost,
+    AscendHost,
+    CrateHost,
+    SafeHost,
+    ScratchHost,
+    GachaHost,
+    AlbumHost,
+    SoireeHost
 {
   private readonly sql: SqlStorage;
   private readonly entities: Entities;
   private readonly fair: FairSeeds;
+  /** Features whose tables this instance has brought up to date. */
+  private readonly featuresReady = new Set<string>();
+
+  /**
+   * A Soirée run is played on its own table (T-3.06): the main table's coins stay where they
+   * are, out of play, and its poses are parked in the run until the run's table closes.
+   */
+  private readonly runTable: RunTable = {
+    open: (at) => {
+      const stored = readTableSnapshot(this.sql);
+      const session = this.startTableSession(at);
+      this.clearCascadeChain();
+      return { session, parked: stored === null ? null : JSON.stringify(stored) };
+    },
+    lay: (runId, at) => {
+      const levels = this.levels();
+      const tx = new LedgerTx(SOIREE_TABLE_TX_KIND);
+      for (let slot = 0; slot < openingHeap.coins; slot++) {
+        const coin = this.mintFromCarry(openingHeap.tier, levels, 'table', 0, at);
+        this.entities.setHeapSlot(coin.id, slot);
+        recordSoireeCoin(this.sql, runId, coin.id, true, slot);
+        tx.move('house', 'table', 'coins', coin.value, coin.id);
+      }
+      commit(this.sql, tx, { at, idempotencyKey: null });
+    },
+    close: (run, at) => {
+      this.refundStranded(
+        this.entities
+          .coinsIn('table')
+          .filter((coin) => soireeCoin(this.sql, coin.id)?.runId === run.id),
+        at,
+      );
+      if (run.parkedSnapshot === null) {
+        this.sql.exec('DELETE FROM table_snapshot WHERE id = 1');
+      } else {
+        writeTableSnapshot(this.sql, JSON.parse(run.parkedSnapshot) as StoredTableSnapshot);
+        readTableSnapshot(this.sql);
+      }
+      this.clearCascadeChain();
+      this.startTableSession(at);
+    },
+  };
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.entities = new Entities(this.sql);
     migrate(this.sql, (run) => ctx.storage.transactionSync(run));
+    for (const feature of registeredServerFeatures()) {
+      applyFeatureTables(this.sql, feature, (run) => ctx.storage.transactionSync(run));
+      this.featuresReady.add(feature.id);
+    }
     this.fair = new FairSeeds(this.sql);
   }
 
@@ -429,6 +539,7 @@ export class PlayerDO
   async ascend(command: Command<AscendRequest>): Promise<DoResult<AscendResponse>> {
     return this.mutate(command, (now) => {
       const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.closeRunTable(now);
       const post: AscensionCommit = (kind, legs) => {
         const tx = new LedgerTx(kind);
         for (const leg of [...this.settleTableForAscension(now), ...legs]) {
@@ -442,6 +553,34 @@ export class PlayerDO
       this.seedOpeningHeap(now);
       this.reserveBuffer(context);
       return { ...result, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /**
+   * Opens a crate the player pushed off the front edge into the inventory, once. The contents
+   * are a provably fair roll on the player's seed chain; the scripted first-session crate is
+   * the one the scripted drop spawned. A card that completes an album set raises the coin value
+   * from the next mint, so the reserved buffer is re-minted at it, as an upgrade does. The coins
+   * it pays top the reserved buffer up so the returned wallet is final.
+   */
+  async openCrate(command: Command<CrateOpenRequest>): Promise<DoResult<CrateOpenResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const paidRarity = soireeCrateRarity(this.sql, command.body.crateId);
+      const scripted = this.meta('ftue_crate') === command.body.crateId;
+      const setsBefore = this.completedAlbumSets();
+      const opened =
+        paidRarity === null
+          ? openCrate(this.sql, this.fair, command.body, context, scripted)
+          : openSoireeCrate(this.sql, this.fair, command.body.crateId, paidRarity, context);
+      const setsAfter = completedAlbumSets(this.sql);
+      if (setsAfter.join() !== setsBefore.join()) {
+        this.setMeta('album_sets', JSON.stringify(setsAfter));
+        this.repriceBuffer();
+      }
+      this.reserveBuffer(context);
+      return { ...opened, wallet: readWallet(this.sql) };
     });
   }
 
@@ -477,6 +616,110 @@ export class PlayerDO
     });
   }
 
+  /**
+   * Pulls Gacha capsules for Tickets (T-2.03): each capsule is a provably fair roll on the
+   * `gacha` table with pity. A card that completes an album set raises the coin value from the
+   * next mint, so the reserved buffer is re-minted at it, as a crate open does. The coins the
+   * capsules pay top the reserved buffer up so the returned wallet is final.
+   */
+  async pullGacha(command: Command<GachaPullRequest>): Promise<DoResult<GachaPullResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const setsBefore = this.completedAlbumSets();
+      const pulled = pullGacha(this.sql, this.fair, command.body, context);
+      const setsAfter = completedAlbumSets(this.sql);
+      if (setsAfter.join() !== setsBefore.join()) {
+        this.setMeta('album_sets', JSON.stringify(setsAfter));
+        this.repriceBuffer();
+      }
+      this.reserveBuffer(context);
+      return { ...pulled, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /**
+   * Starts a Soirée Night (T-3.06) on a fresh, provably fair table seed and seat plan, timed by
+   * the server clock. One run is open per player. Its table session supersedes the main
+   * table's, so the client boots the run's table from `GET /v1/state?hydrate=boot`.
+   */
+  async startSoiree(command: Command<SoireeStartRequest>): Promise<DoResult<SoireeStartResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      return startSoireeRun(this.sql, this.fair, context, this.runTable);
+    });
+  }
+
+  /** Takes or passes the draft between two guests, paid from the Favors the server counted. */
+  async draftSoiree(command: Command<SoireeDraftRequest>): Promise<DoResult<SoireeDraftResponse>> {
+    return this.mutate(command, (now) =>
+      draftSoireeFavor(this.sql, command.body, { at: now, idempotencyKey: command.idempotencyKey }),
+    );
+  }
+
+  /**
+   * Judges every guest from the front falls the server accepted and pays the run's crates and
+   * keys once; a repeat answers with the same payout.
+   */
+  async finishSoiree(
+    command: Command<SoireeFinishRequest>,
+  ): Promise<DoResult<SoireeFinishResponse>> {
+    return this.mutate(command, (now) => {
+      const context = { at: now, idempotencyKey: command.idempotencyKey };
+      this.adoptFairSeed(now);
+      const finished = finishSoireeRun(this.sql, this.fair, command.body, context, this.runTable);
+      return { ...finished, wallet: readWallet(this.sql) };
+    });
+  }
+
+  /** The album as the server's crate opens granted it (T-3.03); the client sends nothing. */
+  album(): Promise<DoResult<AlbumResponse>> {
+    if (this.meta('player_id') === null) return Promise.resolve(this.uninitialized());
+    return Promise.resolve({ ok: true, replayed: false, body: readAlbum(this.sql) });
+  }
+
+  /**
+   * The table configuration the rate envelope is keyed on, all from server state: the levels
+   * the player bought, the venue they are at, the charms the server holds for them (none until
+   * it keeps a charm inventory) and the bonus of the album sets their crate opens completed.
+   */
+  envelopeTable(): RateEnvelopeTable {
+    return {
+      levels: this.levels(),
+      venue: this.venueId(),
+      charms: 0,
+      albumBonus: this.albumBonus(),
+    };
+  }
+
+  /**
+   * The one entry point for server features (T-11.01): runs `handler` of `featureId` inside
+   * the storage transaction, as an idempotent write when the call carries an Idempotency-Key
+   * and as a read otherwise, and re-checks conservation over everything it wrote.
+   */
+  async feature(featureId: string, handler: string, call: FeatureCall): Promise<DoResult<unknown>> {
+    const { feature, run } = resolveFeatureHandler(featureId, handler);
+    if (this.meta('player_id') === null) return this.uninitialized();
+    if (!this.featuresReady.has(feature.id)) {
+      applyFeatureTables(this.sql, feature, (inner) => this.ctx.storage.transactionSync(inner));
+      this.featuresReady.add(feature.id);
+    }
+    const host = this.featureHost();
+    if (call.idempotencyKey === null) {
+      return this.readFeature((now) =>
+        runFeatureHandler(host, feature, run, now, null, call.input),
+      );
+    }
+    if (call.fingerprint === null) {
+      throw new Error(`Feature "${featureId}" write "${handler}" has no request fingerprint.`);
+    }
+    const idempotencyKey = call.idempotencyKey;
+    return this.mutate({ idempotencyKey, fingerprint: call.fingerprint, body: call.input }, (now) =>
+      runFeatureHandler(host, feature, run, now, idempotencyKey, call.input),
+    );
+  }
+
   /** Double-entry totals next to the entity tables they must agree with. */
   conservation(): ConservationReport {
     const wallet = readWallet(this.sql);
@@ -494,22 +737,31 @@ export class PlayerDO
       mint: ledgerBalance(this.sql, 'mint', 'coins'),
     };
     const walletCoins = wallet.coins;
-    const buffer = this.entities.coinsIn('buffer');
-    const bufferPaid = buffer.reduce((total, coin) => total + coin.paid, 0);
-    const tableValue = this.entities
-      .coinsIn('table')
-      .reduce((total, coin) => total + coin.value, 0);
-    const tableCrates = this.entities.cratesOnTable().length;
+    const {
+      bufferPaid,
+      tableValue,
+      tableCrates,
+      cratesHeld,
+      collectiblesHeld,
+      safesHeld,
+      scratchCardsHeld,
+    } = this.entityFingerprint();
     const ledgerCratesOnTable = ledgerBalance(this.sql, 'table', 'crate');
-    const safesHeld = countLockedSafes(this.sql);
+    const ledgerCratesHeld = ledgerBalance(this.sql, 'inventory', 'crate');
+    const ledgerCollectiblesHeld = ledgerBalance(this.sql, 'inventory', 'collectible');
+    const unitSettled = (unit: Leg['unit']) =>
+      ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, unit), 0) === 0;
     const ledgerSafesHeld = ledgerBalance(this.sql, 'inventory', 'safe');
-    const scratchCardsHeld = countHeldScratchCards(this.sql);
     const ledgerScratchCardsHeld = ledgerBalance(this.sql, 'inventory', 'scratchCard');
     const conserved =
       ledger.wallet === walletCoins &&
       ledger.buffer === bufferPaid &&
       ledger.table === tableValue &&
       ledgerCratesOnTable === tableCrates &&
+      ledgerCratesHeld === cratesHeld &&
+      unitSettled('crate') &&
+      ledgerCollectiblesHeld === collectiblesHeld &&
+      unitSettled('collectible') &&
       ledgerSafesHeld === safesHeld &&
       ACCOUNTS.reduce((sum, account) => sum + ledgerBalance(this.sql, account, 'safe'), 0) === 0 &&
       ledgerScratchCardsHeld === scratchCardsHeld &&
@@ -522,11 +774,15 @@ export class PlayerDO
     return {
       walletCoins,
       ledger,
-      bufferCoins: buffer.length,
+      bufferCoins: this.entities.countCoinsIn('buffer'),
       bufferPaid,
       tableValue,
       tableCrates,
       ledgerCratesOnTable,
+      cratesHeld,
+      ledgerCratesHeld,
+      collectiblesHeld,
+      ledgerCollectiblesHeld,
       safesHeld,
       ledgerSafesHeld,
       scratchCardsHeld,
@@ -618,6 +874,56 @@ export class PlayerDO
     return !caughtUp;
   }
 
+  private featureHost(): FeatureHost {
+    return {
+      sql: this.sql,
+      playerId: PlayerIdSchema.parse(this.requireMeta('player_id')),
+      transactionSync: (run) => this.ctx.storage.transactionSync(run),
+      roll: (purpose, ref, now) => {
+        this.adoptFairSeed(now);
+        return this.fair.roll(purpose, ref, now);
+      },
+      requireLease: (session) => {
+        this.requireLease(session);
+      },
+      entityFingerprint: () => this.entityFingerprint(),
+    };
+  }
+
+  private entityFingerprint(): EntityFingerprint {
+    const coins = this.sql
+      .exec<{ paid: number | null; value: number | null }>(
+        `SELECT SUM(CASE state WHEN 'buffer' THEN paid END) AS paid,
+                SUM(CASE state WHEN 'table' THEN value END) AS value
+         FROM coins WHERE state IN ('buffer', 'table')`,
+      )
+      .one();
+    return {
+      bufferPaid: coins.paid ?? 0,
+      tableValue: coins.value ?? 0,
+      tableCrates: this.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM crates WHERE state = 'table'")
+        .one().n,
+      cratesHeld: countHeldCrates(this.sql),
+      collectiblesHeld: countCollectiblesGranted(this.sql) + countGachaCollectibles(this.sql),
+      safesHeld: countLockedSafes(this.sql),
+      scratchCardsHeld: countHeldScratchCards(this.sql),
+    };
+  }
+
+  private readFeature<T>(run: (now: EpochMs) => T): DoResult<T> {
+    const now = Date.now();
+    try {
+      const body = this.ctx.storage.transactionSync(() => run(now));
+      return { ok: true, replayed: false, body };
+    } catch (error) {
+      if (error instanceof ApiFailure) {
+        return { ok: false, error: { code: error.code, message: error.message, ...error.extra } };
+      }
+      throw error;
+    }
+  }
+
   private async mutate<T>(
     command: Command<unknown>,
     run: (now: EpochMs) => T,
@@ -678,13 +984,17 @@ export class PlayerDO
         `A drop costs ${cost} coin and the wallet holds ${balance}. Collect coins before dropping again.`,
       );
     }
+    const boostBp = this.perkBp('coinValue', now);
     let coin: StoredCoin;
     if (reserved !== null) {
-      this.entities.placeOnTable(reserved.id, body.tick);
-      coin = { ...reserved, state: 'table', droppedTick: body.tick };
+      const boosted = boostBp === 0 ? reserved : this.boostReserved(reserved, boostBp);
+      this.entities.placeOnTable(boosted.id, body.tick);
+      coin = { ...boosted, state: 'table', droppedTick: body.tick };
     } else {
-      coin = this.mintFromCarry(DROP_TIER, levels, 'table', body.tick, now);
+      coin = this.mintFromCarry(DROP_TIER, levels, 'table', body.tick, now, boostBp);
     }
+    const run = liveSoireeRun(this.sql);
+    if (run !== null) recordSoireeCoin(this.sql, run.id, coin.id, false);
     commit(
       this.sql,
       new LedgerTx(reserved !== null ? 'drop.buffer' : 'drop.mint')
@@ -695,8 +1005,11 @@ export class PlayerDO
     );
 
     const spawnedCrates: TableCrate[] = [];
-    if (this.countDrop(levels)) {
+    if (this.countDrop(levels, now)) {
       const crate = this.entities.spawnCrate('vault', body.tick, now);
+      if (Number(this.requireMeta('drop_count')) === crateSpawn.ftueScriptedDrop) {
+        this.setMeta('ftue_crate', crate.id);
+      }
       commit(this.sql, new LedgerTx('crate.spawn').move('mint', 'table', 'crate', 1, crate.id), {
         at: now,
         idempotencyKey,
@@ -716,14 +1029,54 @@ export class PlayerDO
   /**
    * Counts a drop and says whether it spawns a crate. `drop_count` is the net of drops not
    * refunded and `drop_high_water` the most it ever reached, so only a drop that lifts the mark
-   * reaches a new spawn index: re-spending refunded coins never earns the same crate twice.
+   * reaches a new spawn index: re-spending refunded coins never earns the same crate twice. A
+   * drafted crateChance perk multiplies the chance, so crates come closer together while it runs.
    */
-  private countDrop(levels: UpgradeLevelMap): boolean {
+  private countDrop(levels: UpgradeLevelMap, now: EpochMs): boolean {
     const dropCount = Number(this.requireMeta('drop_count')) + 1;
     this.setMeta('drop_count', String(dropCount));
     if (dropCount <= Number(this.requireMeta('drop_high_water'))) return false;
     this.setMeta('drop_high_water', String(dropCount));
-    return dropSpawnsCrate(dropCount, levels);
+    return dropSpawnsCrate(
+      dropCount,
+      levels,
+      NEUTRAL_MULTIPLIER_BP + this.perkBp('crateChance', now),
+    );
+  }
+
+  /** The magnitude of the drafted perk on `stat` in force now, in basis points, or 0. */
+  private perkBp(stat: SoireePerkStat, now: EpochMs): number {
+    const perk = activeSoireePerk(this.sql, now);
+    return perk?.stat === stat ? perk.magnitudeBp : 0;
+  }
+
+  /** Re-mints a reserved coin at the perk's raise, crediting only the raise through the carry. */
+  private boostReserved(reserved: StoredCoin, boostBp: number): StoredCoin {
+    const micros = storedMicros(reserved);
+    const raised = boostedMintMicros(micros, boostBp);
+    const credit = creditMintMicros(raised - micros, this.mintCarry());
+    this.setMeta('mint_carry', String(credit.carry));
+    const value = reserved.value + credit.value;
+    this.entities.repriceBuffered(reserved.id, value, raised);
+    return { ...reserved, value, mintMicros: raised };
+  }
+
+  /**
+   * Whether a table coin is in play: on the live Soirée run's own table while one is open, on
+   * the main table otherwise. A coin of the other table waits out of play.
+   */
+  private inPlay(coin: StoredCoin, runId: string | null): boolean {
+    return (soireeCoin(this.sql, coin.id)?.runId ?? null) === runId;
+  }
+
+  private tableCoins(): StoredCoin[] {
+    const runId = liveSoireeRun(this.sql)?.id ?? null;
+    return this.entities.coinsIn('table').filter((coin) => this.inPlay(coin, runId));
+  }
+
+  private closeRunTable(now: EpochMs): void {
+    const run = liveSoireeRun(this.sql);
+    if (run !== null) closeSoireeTable(this.sql, run, now, this.runTable);
   }
 
   private bufferedCoin(id: CoinId): StoredCoin {
@@ -743,6 +1096,9 @@ export class PlayerDO
       case 'fall': {
         const coin = this.entities.coinOnTable(claim.coinId, claim.tick);
         if (typeof coin === 'string') return { status: 'rejected', reason: coin };
+        if (!this.inPlay(coin, liveSoireeRun(this.sql)?.id ?? null)) {
+          return { status: 'rejected', reason: 'not_on_table' };
+        }
         if (claim.edge !== 'front') {
           this.entities.settleCoin(coin.id, 'lost', now);
           commit(
@@ -752,6 +1108,7 @@ export class PlayerDO
           );
           return { status: 'accepted', credited: 0, cascade: null, minted: null };
         }
+        if (soireeCoin(this.sql, coin.id)?.staked === true) return this.claimStaked(coin, context);
         const chain = extendCascade(this.cascadeChain(), claim.tick, CASCADE_WINDOW_TICKS);
         this.setCascadeChain(chain);
         const credit = creditMintMicros(
@@ -776,9 +1133,11 @@ export class PlayerDO
       }
       case 'fusion': {
         const inputs: StoredCoin[] = [];
+        const runId = liveSoireeRun(this.sql)?.id ?? null;
         for (const id of claim.coinIds) {
           const coin = this.entities.coinOnTable(id, claim.tick);
           if (typeof coin === 'string') return { status: 'rejected', reason: coin };
+          if (!this.inPlay(coin, runId)) return { status: 'rejected', reason: 'not_on_table' };
           inputs.push(coin);
         }
         const tier = inputs[0]?.tier;
@@ -794,6 +1153,10 @@ export class PlayerDO
           ),
         );
         const fused = this.entities.mintCoin(next, value, null, 'table', claim.tick, now);
+        if (runId !== null) {
+          const staked = inputs.some((coin) => soireeCoin(this.sql, coin.id)?.staked === true);
+          recordSoireeCoin(this.sql, runId, fused.id, staked);
+        }
         const tx = new LedgerTx('claim.fusion');
         let inputValue = 0;
         for (const coin of inputs) {
@@ -828,6 +1191,24 @@ export class PlayerDO
   }
 
   /**
+   * A front fall of a coin the house staked on a Soirée table, or fused from one: it serves a
+   * guest, but the wallet gets back only what it paid for the drops behind it, as a refund
+   * would, and the house takes the rest. A run pays crates and keys, never its staked heap.
+   */
+  private claimStaked(coin: StoredCoin, context: CommitContext): ClaimResult {
+    const credited = Math.min(this.dropsBehind(coin.id).paid, coin.value);
+    this.entities.settleCoin(coin.id, 'claimed', context.at);
+    commit(
+      this.sql,
+      new LedgerTx('claim.fall')
+        .move('table', 'wallet', 'coins', credited, coin.id)
+        .move('table', 'house', 'coins', coin.value - credited, coin.id),
+      context,
+    );
+    return { status: 'accepted', credited, cascade: null, minted: null };
+  }
+
+  /**
    * Tops the buffer up to the target with coins the wallet pays for now. A reservation made
    * before buffers were prepaid is paid for too, or let go when the wallet cannot cover it.
    */
@@ -855,8 +1236,9 @@ export class PlayerDO
     state: 'buffer' | 'table',
     droppedTick: Tick | null,
     at: EpochMs,
+    boostBp = 0,
   ): StoredCoin {
-    const micros = this.mintedMicros(tier, levels);
+    const micros = boostedMintMicros(this.mintedMicros(tier, levels), boostBp);
     const credit = creditMintMicros(micros, this.mintCarry());
     this.setMeta('mint_carry', String(credit.carry));
     return this.entities.mintCoin(tier, credit.value, micros, state, droppedTick, at);
@@ -994,12 +1376,14 @@ export class PlayerDO
    * start state.
    */
   private bootTable(now: EpochMs): TableLayout {
+    const run = liveSoireeRun(this.sql);
+    if (run !== null && now >= run.endsAt) closeSoireeTable(this.sql, run, now, this.runTable);
     const stored = readTableSnapshot(this.sql);
     const usable =
       stored !== null && stored.pusherTick < DEFAULT_PUSHER_MOTION.periodTicks ? stored : null;
     const pusherTick = usable?.pusherTick ?? 0;
     const session = this.startTableSession(now);
-    const before = this.entities.coinsIn('table');
+    const before = this.tableCoins();
     const poses = this.judgePoses(before, usable?.poses ?? [], pusherTick).ok;
     this.refundStranded(
       before.filter((coin) => coin.heapSlot === null && !poses.has(coin.id)),
@@ -1010,7 +1394,7 @@ export class PlayerDO
     this.seedOpeningHeap(now);
     this.reserveBuffer({ at: now, idempotencyKey: null });
 
-    const coins = this.entities.coinsIn('table');
+    const coins = this.tableCoins();
     const crates = this.entities.cratesOnTable();
     const cratePoses = new Map(
       (usable?.cratePoses ?? [])
@@ -1122,7 +1506,7 @@ export class PlayerDO
     let ignored = 0;
     let foreign = 0;
     let teleport = 0;
-    const tableCoins = this.entities.coinsIn('table');
+    const tableCoins = this.tableCoins();
     const onTable = new Set(tableCoins.map((coin) => coin.id));
     const owned: PoseTuple[] = [];
     for (const pose of body.coins) {
@@ -1326,9 +1710,39 @@ export class PlayerDO
     };
   }
 
-  /** A coin of `tier` minted now at the current venue, in millionths. */
+  /**
+   * A coin of `tier` minted now at the current venue, in millionths. Completed album sets add
+   * their bonus to the global coin multiplier (02-ECONOMY), folded into the venue's so the
+   * economy's mint rounds the whole product once.
+   */
   private mintedMicros(tier: CoinTier, levels: UpgradeLevelMap): number {
-    return mintedCoinMicros(tierDef(tier), currentVenue(this.sql), levels);
+    const venue = currentVenue(this.sql);
+    const coinValueMultiplier = venue.coinValueMultiplier * (1 + this.albumBonus());
+    return mintedCoinMicros(tierDef(tier), { ...venue, coinValueMultiplier }, levels);
+  }
+
+  /** The completed album sets' bonus, priced from the economy config on every read. */
+  private albumBonus(): number {
+    return albumBonusOf(this.completedAlbumSets());
+  }
+
+  /**
+   * The album sets the player completed, kept in meta because every mint reads them and only a
+   * crate open or gacha pull can change them. Only the ids are kept, never their bonus, so a
+   * retune of the economy reaches the player. A player whose crate opens predate the key derives them once.
+   */
+  private completedAlbumSets(): string[] {
+    const stored = this.meta('album_sets');
+    if (stored === null) {
+      const derived = completedAlbumSets(this.sql);
+      this.setMeta('album_sets', JSON.stringify(derived));
+      return derived;
+    }
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed) || !parsed.every((id): id is string => typeof id === 'string')) {
+      throw new Error(`PlayerDO meta "album_sets" is ${stored}, not a list of album set ids.`);
+    }
+    return parsed;
   }
 
   private startingCoins(): number {
@@ -1341,7 +1755,7 @@ export class PlayerDO
 
   private snapshot(): TableSnapshot {
     return {
-      coins: this.entities.coinsIn('table').map(publicCoin),
+      coins: this.tableCoins().map(publicCoin),
       crates: this.entities.cratesOnTable().map(publicCrate),
       buffer: this.entities.coinsIn('buffer').map(publicCoin),
       decorum: 0,

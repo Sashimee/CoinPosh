@@ -167,18 +167,58 @@ export function cascadeCreditMicros(
   return Math.round(value * cascadeMultiplier(count, config) * MINT_MICROS_PER_COIN);
 }
 
-/** Drops between Vault Crates: the base spacing shortened by the crateChance lines. */
-export function crateSpawnInterval(levels: UpgradeLevelMap): number {
-  const chance = upgradeStatAt(levels, 'crateChance') * upgradeStatAt(levels, 'globalCrateChance');
+/** Basis points of a multiplier that leaves a stat unchanged (×1). */
+export const NEUTRAL_MULTIPLIER_BP = 10_000;
+
+function requireMultiplierBp(name: string, multiplierBp: number): void {
+  if (!Number.isSafeInteger(multiplierBp) || multiplierBp < 1) {
+    throw new RangeError(`${name}: multiplier must be an integer ≥ 1 bp, got ${multiplierBp}`);
+  }
+}
+
+/**
+ * Drops between Vault Crates: the base spacing shortened by the crateChance lines and by
+ * `chanceMultiplierBp` (a timed boost such as a Soirée perk; 10 000 bp is ×1).
+ */
+export function crateSpawnInterval(
+  levels: UpgradeLevelMap,
+  chanceMultiplierBp: number = NEUTRAL_MULTIPLIER_BP,
+): number {
+  requireMultiplierBp('crateSpawnInterval', chanceMultiplierBp);
+  const chance =
+    upgradeStatAt(levels, 'crateChance') *
+    upgradeStatAt(levels, 'globalCrateChance') *
+    (chanceMultiplierBp / NEUTRAL_MULTIPLIER_BP);
   return Math.max(1, Math.round(crateSpawn.dropsPerCrate / chance));
 }
 
 /** Whether the player's `dropCount`-th drop (1-based) spawns a Vault Crate. */
-export function dropSpawnsCrate(dropCount: number, levels: UpgradeLevelMap): boolean {
+export function dropSpawnsCrate(
+  dropCount: number,
+  levels: UpgradeLevelMap,
+  chanceMultiplierBp: number = NEUTRAL_MULTIPLIER_BP,
+): boolean {
   if (!Number.isSafeInteger(dropCount) || dropCount < 1) {
     throw new RangeError(`dropSpawnsCrate: drop count must be an integer ≥ 1, got ${dropCount}`);
   }
-  return dropCount === crateSpawn.ftueScriptedDrop || dropCount % crateSpawnInterval(levels) === 0;
+  return (
+    dropCount === crateSpawn.ftueScriptedDrop ||
+    dropCount % crateSpawnInterval(levels, chanceMultiplierBp) === 0
+  );
+}
+
+/**
+ * A coin minted at `micros` raised by a timed coinValue boost of `boostBp` basis points
+ * (a Soirée perk: ×(1 + boostBp / 10 000)), floored to whole millionths.
+ */
+export function boostedMintMicros(micros: number, boostBp: number): number {
+  if (!Number.isSafeInteger(micros) || micros < 0) {
+    throw new RangeError(`boostedMintMicros: micros must be an integer ≥ 0, got ${micros}`);
+  }
+  if (!Number.isSafeInteger(boostBp) || boostBp < 0) {
+    throw new RangeError(`boostedMintMicros: boost must be an integer ≥ 0 bp, got ${boostBp}`);
+  }
+  return Math.floor((micros * (NEUTRAL_MULTIPLIER_BP + boostBp)) / NEUTRAL_MULTIPLIER_BP);
 }
 
 /**
