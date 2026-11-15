@@ -13,6 +13,14 @@ const PUSHER_REAR_CLEARANCE = 0.01;
 const TRAY_LENGTH = 0.065;
 /** How far the backboard face rises above the sim's back wall, to seat the gold crest. */
 const BACKBOARD_HEADROOM = 0.016;
+/**
+ * The lacquer frieze above the backboard crest, carried across the whole back wall. No coin
+ * reaches it; it is there so a portrait frame, whose width sets the camera distance and leaves
+ * the table shorter than the screen, shows cabinet up to the top edge instead of yacht deck.
+ */
+const FRIEZE_HEIGHT = 0.32;
+/** How far down the catch tray its front lip's top sits, as a fraction of the tray depth. */
+export const TRAY_LIP_TOP_FRACTION = 0.3;
 
 /**
  * Riviera table dimensions in metres. +Y is up, the player stands at +Z, and the lower
@@ -39,6 +47,7 @@ export const RIVIERA_TABLE = {
   /** Back of the cabinet: far enough that the retracted block never pokes out of it. */
   cabinetBackZ: PUSHER.frontZ - PUSHER.depth - PUSHER_REAR_CLEARANCE,
   backboardHeight: PLAYFIELD.wallHeight - PUSHER.height + BACKBOARD_HEADROOM,
+  friezeHeight: FRIEZE_HEIGHT,
   cabinetFrontZ: PLAYFIELD.fieldFrontZ + TRAY_LENGTH,
   /** Catch tray floor depth below the coin floor. */
   trayDepth: 0.075,
@@ -89,9 +98,8 @@ export const PORTRAIT_FIELD_MAX_X = 0.92;
 /** Widest NDC x the coin floor may reach on any other screen. */
 const FIELD_MAX_X = 0.96;
 /**
- * NDC y of the backboard crest, and the lowest it may drop to on a portrait phone so the lip
- * drops low: at most 14 % of the frame shows deck above the backboard, so the
- * table, not the yacht, fills the screen.
+ * NDC y of the backboard crest, and the lowest it may drop to before a portrait phone takes
+ * over: the frieze above it then fills the top of the frame instead (see TRAY_DOCK_MARGIN).
  */
 const CREST_NDC_Y = 0.78;
 const CREST_MIN_NDC_Y = 0.73;
@@ -107,6 +115,13 @@ const PLAYFIELD_SHARE = 0.84;
  * along the top edge. Every frame looks down at the table; none is a seascape.
  */
 const SEA_MIN_NDC_Y = 0.92;
+/**
+ * On a portrait phone, NDC height of the catch tray's front lip above the dock band edge: the
+ * lip and tray sit just above the dock (390x844: about 740 px), so falls land by the thumb and
+ * no strip of bare cabinet front opens between the table and the dock. The frieze over the
+ * backboard carries the cabinet up past the top edge, so lowering the table opens no deck.
+ */
+const TRAY_DOCK_MARGIN = 0.07;
 
 const T = RIVIERA_TABLE;
 const CREST = new Vector3(
@@ -115,8 +130,13 @@ const CREST = new Vector3(
   T.backboardFrontZ - T.backboardDepth,
 );
 
+/** Top of the frieze cap: the highest edge of the cabinet's back wall. */
+const CABINET_CREST = CREST.clone().setY(CREST.y + T.friezeHeight);
+
 /** The payout edge of the coin floor, on the centre line. */
 export const COIN_FLOOR_FRONT = new Vector3(0, 0, T.fieldFrontZ);
+/** The top of the catch tray's front lip, on the centre line. */
+export const TRAY_FRONT_LIP = new Vector3(0, -T.trayDepth * TRAY_LIP_TOP_FRACTION, T.cabinetFrontZ);
 const STERN_BULWARK_TOP = new Vector3(0, T.deckY + RIVIERA_DECK.bulwarkHeight, RIVIERA_DECK.sternZ);
 
 interface Band {
@@ -165,9 +185,10 @@ const MAX_DISTANCE = 12;
  * Frames the table for any aspect ratio from a player's pitch over the cabinet: the backboard
  * crest near the top edge and the payout lip low in the HUD band, so the playfield fills the
  * screen and the sea and sky stay out of it. Where the screen is too narrow for that (a portrait
- * phone) the coin floor's width sets the distance instead, and the frame drops until the lip
- * is low in the frame, as far as the crest allows. The coin floor always stays in the band the
- * HUD leaves free, and the stern bulwark hides the sea behind the cabinet.
+ * phone) the coin floor's width sets the distance instead, and the frame drops until the catch
+ * tray sits just above the dock, with the frieze over the backboard filling the top. The coin
+ * floor always stays in the band the HUD leaves free, and the stern bulwark or the cabinet's
+ * back wall hides the sea behind the cabinet.
  */
 export function rivieraCameraPreset(aspect: number): CameraPreset {
   const safeAspect = Number.isFinite(aspect) ? Math.max(aspect, 0.1) : 1;
@@ -238,7 +259,15 @@ export function rivieraCameraPreset(aspect: number): CameraPreset {
     Math.max(liftFor(crest, CREST_NDC_Y), liftFor(lip, LIP_MAX_NDC_Y)),
     liftFor(crest, CREST_MIN_NDC_Y),
   );
-  const lift = Math.min(Math.max(Math.min(composedLift, liftFor(sea, SEA_MIN_NDC_Y)), low), high);
+  // A portrait frame is too narrow for the table to fill it top to bottom, so it drops the
+  // table until the tray sits on the dock and lets the frieze, not the sea, fill the top. The
+  // back wall spans the whole width there, so it is what hides the sea.
+  const thumbLift = liftFor(local(TRAY_FRONT_LIP), band.bottom + TRAY_DOCK_MARGIN);
+  const framedLift = composedLift + tall * (Math.max(composedLift, thumbLift) - composedLift);
+  const seaLift = liftFor(sea, SEA_MIN_NDC_Y);
+  const ceiling =
+    tall > 0 ? Math.max(seaLift, liftFor(local(CABINET_CREST), SEA_MIN_NDC_Y)) : seaLift;
+  const lift = Math.min(Math.max(Math.min(framedLift, ceiling), low), high);
 
   const position = ANCHOR.clone().addScaledVector(forward, -distance).addScaledVector(up, lift);
   const target = position.clone().addScaledVector(forward, distance);
