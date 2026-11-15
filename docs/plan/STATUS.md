@@ -394,6 +394,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-721 | done | task/P-721 (merge a22377e) | Scene scale held through boot and sheet closes (scaleHold.ts, dynamic-resolution pin), coin emboss fades at low pixel radius, coin-look.spec.ts e2e (53572b4); pnpm check green after merge; follow-ups P-750, P-751 |
 | P-728 | done | task/P-728 (merge dcd5e7a) | bundle:check prints a 'near' status at 90 % of budget and a per-row delta against the merge base (BASE_SHA in perf.yml), bundleGate.test.ts (ba07398); pnpm check green after merge; follow-up P-752 (gate still stops on P-736) |
 | P-752 | done | task/P-752 (merge 5a7158a) | bundle:check runs to completion again: fair strings load per language (fair/i18n.ts), no chunk holds three fair.json; i18n.test.ts, budgets.ts (bd54b01); pnpm check green after merge |
+| P-740 | done | task/P-740 (merge 8b80b02) | persist burst test counts only its own world encodes, deterministic under full pnpm check load; persist.test.ts (b479b11); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
