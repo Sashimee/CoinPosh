@@ -9,12 +9,17 @@ import {
   RIVIERA_DECK,
   RIVIERA_TABLE as T,
   rivieraCameraPreset,
+  TRAY_FRONT_LIP,
 } from './layout.ts';
 import { createRivieraMaterials } from './materials.ts';
-import { createRivieraTable, type RivieraTable } from './table.ts';
+import { createRivieraTable, TABLE_BOUNDS, type RivieraTable } from './table.ts';
 
 const COIN_RADIUS = 0.0135;
 const COIN_THICKNESS = 0.0026;
+/** How far below the tray lip's top the brass plate on its face ends. */
+const LIP_PLATE_BOTTOM = 0.024;
+/** Row pitch, in CSS px, of the rays cast down the cabinet front: a 60 px band still shows. */
+const BARE_BAND_STEP = 4;
 const materials = createRivieraMaterials({ noise: createNoiseTexture(16) });
 
 interface Viewport {
@@ -34,6 +39,14 @@ const PORTRAIT: Viewport = {
   height: 844,
   plaqueBottom: 164,
   dockTop: 774,
+  minPlayfieldShare: 0.55,
+  minLipDepth: 0.55,
+};
+const SMALL_PORTRAIT: Viewport = {
+  width: 360,
+  height: 640,
+  plaqueBottom: 154,
+  dockTop: 574,
   minPlayfieldShare: 0.55,
   minLipDepth: 0.55,
 };
@@ -202,8 +215,9 @@ describe('createRivieraTable on the sim layout', () => {
 });
 
 /**
- * Share of the frame showing open sea or sky: view rays on a grid that hit neither the deck
- * inside its outline nor the stern bulwark below its top.
+ * Share of the frame showing open sea or sky: view rays on a grid that hit neither the
+ * cabinet's back wall below its crest, nor the deck inside its outline, nor the stern bulwark
+ * below its top.
  */
 function skyFraction(camera: PerspectiveCamera, samples = 60): number {
   const D = RIVIERA_DECK;
@@ -212,6 +226,12 @@ function skyFraction(camera: PerspectiveCamera, samples = 60): number {
     for (let j = 0; j < samples; j += 1) {
       const ndc = new Vector3(((i + 0.5) / samples) * 2 - 1, ((j + 0.5) / samples) * 2 - 1, 0.5);
       const dir = ndc.unproject(camera).sub(camera.position).normalize();
+      if (dir.z < 0) {
+        const atWall = camera.position
+          .clone()
+          .addScaledVector(dir, (T.backboardFrontZ - camera.position.z) / dir.z);
+        if (atWall.y <= TABLE_BOUNDS.top && Math.abs(atWall.x) <= TABLE_BOUNDS.halfWidth) continue;
+      }
       if (dir.y < 0) {
         const onDeck = camera.position
           .clone()
@@ -234,7 +254,7 @@ function skyFraction(camera: PerspectiveCamera, samples = 60): number {
 
 /**
  * First row from the top, in CSS px, where any of a few columns across the backboard meets the
- * table: everything above it is deck.
+ * table: everything above it is deck. 0 when the frieze runs off the top edge.
  */
 function crestTop(camera: PerspectiveCamera, view: Viewport, table: RivieraTable): number {
   for (const mesh of table.meshes) mesh.updateMatrixWorld(true);
@@ -254,6 +274,36 @@ function crestTop(camera: PerspectiveCamera, view: Viewport, table: RivieraTable
     }
   }
   throw new Error('no table surface anywhere down the backboard columns');
+}
+
+/**
+ * Tallest run of rows, in CSS px, from the payout lip down to the dock top, in any of several
+ * columns across the coin floor, where the view finds no table: it misses the cabinet, or meets
+ * it only below the tray's brass lip plate (the cabinet front, plinth or deck).
+ */
+function bareBandBelowLip(camera: PerspectiveCamera, view: Viewport, table: RivieraTable): number {
+  const solid = table.meshes.filter((m) => m.name !== 'table-glass');
+  for (const mesh of solid) mesh.updateMatrixWorld(true);
+  const lip = Math.ceil(toPixels(COIN_FLOOR_FRONT, camera, view).y);
+  const raycaster = new Raycaster();
+  let tallest = 0;
+  for (const f of [-0.9, -0.5, 0, 0.5, 0.9]) {
+    const column = toPixels(new Vector3(f * T.fieldHalfWidth, 0, T.fieldFrontZ), camera, view).x;
+    let run = 0;
+    for (let y = lip; y < view.dockTop; y += BARE_BAND_STEP) {
+      const ndc = new Vector3(
+        (column / view.width) * 2 - 1,
+        1 - ((y + 0.5) / view.height) * 2,
+        0.5,
+      );
+      raycaster.set(camera.position, ndc.unproject(camera).sub(camera.position).normalize());
+      const hit = raycaster.intersectObjects(solid, false)[0];
+      const bare = !hit || hit.point.y < TRAY_FRONT_LIP.y - LIP_PLATE_BOTTOM;
+      run = bare ? run + BARE_BAND_STEP : 0;
+      tallest = Math.max(tallest, run);
+    }
+  }
+  return tallest;
 }
 
 /** Rows of the centre column below the lip whose first surface is the empty catch tray. */
@@ -278,7 +328,7 @@ function trayRows(camera: PerspectiveCamera, view: Viewport, table: RivieraTable
 describe('rivieraCameraPreset', () => {
   const table = createRivieraTable(materials, false);
 
-  for (const view of [PORTRAIT, LANDSCAPE, DESKTOP]) {
+  for (const view of [PORTRAIT, SMALL_PORTRAIT, LANDSCAPE, DESKTOP]) {
     const label = `${view.width}x${view.height}`;
     const preset = rivieraCameraPreset(view.width / view.height);
     const camera = presetCamera(view.width / view.height);
@@ -320,10 +370,8 @@ describe('rivieraCameraPreset', () => {
       expect(pitch).toBeLessThanOrEqual(45);
     });
 
-    it(`shows at most 15 % deck above the backboard at ${label}`, () => {
-      const top = crestTop(camera, view, table);
-      expect(top / view.height).toBeLessThanOrEqual(0.15);
-      expect(top).toBeGreaterThan(0);
+    it(`shows at most 15 % deck above the cabinet at ${label}`, () => {
+      expect(crestTop(camera, view, table) / view.height).toBeLessThanOrEqual(0.15);
     });
 
     it(`fills at least ${view.minPlayfieldShare * 100} % of the HUD band with the playfield at ${label}`, () => {
@@ -353,6 +401,31 @@ describe('rivieraCameraPreset', () => {
           expect(px.z).toBeLessThan(1);
         }
       }
+    });
+  }
+
+  for (const view of [PORTRAIT, SMALL_PORTRAIT]) {
+    const label = `${view.width}x${view.height}`;
+    const camera = presetCamera(view.width / view.height);
+
+    it(`drops the payout lip to within 110 px of the dock top at ${label}`, () => {
+      const lip = toPixels(COIN_FLOOR_FRONT, camera, view).y;
+      expect(view.dockTop - lip).toBeLessThanOrEqual(110);
+      expect(view.dockTop - lip).toBeGreaterThan(0);
+    });
+
+    it(`seats the tray's front lip just above the dock at ${label}`, () => {
+      const tray = toPixels(TRAY_FRONT_LIP, camera, view).y;
+      expect(tray).toBeLessThan(view.dockTop);
+      expect(view.dockTop - tray).toBeLessThanOrEqual(40);
+    });
+
+    it(`leaves no band over 60 px of bare cabinet between the table and the dock at ${label}`, () => {
+      expect(bareBandBelowLip(camera, view, table)).toBeLessThanOrEqual(60);
+    });
+
+    it(`runs the cabinet up past the top edge at ${label}`, () => {
+      expect(crestTop(camera, view, table)).toBe(0);
     });
   }
 
@@ -387,6 +460,7 @@ describe('rivieraCameraPreset', () => {
     ['1280x800', 1280 / 800],
     ['1920x1080', 1920 / 1080],
     ['1024x768', 1024 / 768],
+    ['768x1024', 768 / 1024],
     ['360x780', 360 / 780],
     ['430x932', 430 / 932],
     ['2560x1080', 2560 / 1080],

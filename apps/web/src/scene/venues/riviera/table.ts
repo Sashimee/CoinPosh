@@ -21,7 +21,7 @@ import {
   sweepProfile,
   type Profile,
 } from './geometry.ts';
-import { RIVIERA_TABLE, type RivieraTableLayout } from './layout.ts';
+import { RIVIERA_TABLE, TRAY_LIP_TOP_FRACTION, type RivieraTableLayout } from './layout.ts';
 import type { RivieraMaterials } from './materials.ts';
 
 const X = new Vector3(1, 0, 0);
@@ -30,14 +30,29 @@ const Z = new Vector3(0, 0, 1);
 
 /** The backboard sunburst, its frames and medallion were drawn for a board this tall. */
 const EMBLEM_DESIGN_HEIGHT = 0.36;
-/** Depth of the catch tray's front lip, and how far its top sits down the tray, as a fraction. */
+/** Depth of the catch tray's front lip. */
 const LIP_DEPTH = 0.026;
-const LIP_TOP_FRACTION = 0.3;
 /** Overlap that seats the tray box under the body so no seam opens at the payout edge. */
 const TRAY_SEAT = 0.03;
-/** The backboard crest: a lacquer moulding under a black marble cap rail. */
+/**
+ * The backboard ends in a lacquer string course trimmed in gold; the frieze rises behind it to
+ * the cornice, a lacquer moulding under a black marble cap rail.
+ */
 const CREST_CAP_BOTTOM = 0.014;
 const CREST_TOP = 0.026;
+const FRIEZE_SETBACK = 0.002;
+/** Margin of the frieze's framed panels inside the band between string course and cornice. */
+const FRIEZE_PANEL_INSET = 0.03;
+/**
+ * A gold trellis fills the cartouche over the cabinet, studded where its bars cross: that is the
+ * part of the frieze a portrait phone shows behind the Vault plaque, and it reads as marquetry
+ * rather than as a blank wall.
+ */
+const TRELLIS_PITCH = 0.056;
+const TRELLIS_SLOPE = 1.25;
+const TRELLIS_MARGIN = 0.024;
+const TRELLIS_BAR_RADIUS = 0.0022;
+const TRELLIS_STUD_RADIUS = 0.0042;
 /** The body front sits a hair behind the coin floor so the two never fight over one plane. */
 const BODY_FRONT_INSET = 0.002;
 const GLASS_THICKNESS = 0.006;
@@ -81,6 +96,7 @@ interface Dimensions {
   readonly fluteBottom: number;
   readonly boardBottom: number;
   readonly boardTop: number;
+  readonly friezeTop: number;
   readonly emblem: Vector3;
   readonly emblemScale: number;
   readonly glassTop: number;
@@ -93,7 +109,7 @@ function dimensions(t: RivieraTableLayout): Dimensions {
   const outerX = gutterX + t.wallThickness;
   const boardBottom = t.pusherHeight + 0.004;
   const trayFloor = -t.trayDepth;
-  const lipTop = trayFloor * LIP_TOP_FRACTION;
+  const lipTop = trayFloor * TRAY_LIP_TOP_FRACTION;
   const plinthTop = t.deckY + 0.07;
   return {
     t,
@@ -112,6 +128,7 @@ function dimensions(t: RivieraTableLayout): Dimensions {
     fluteBottom: plinthTop + FLUTE_FOOT,
     boardBottom,
     boardTop: boardBottom + t.backboardHeight,
+    friezeTop: boardBottom + t.backboardHeight + t.friezeHeight,
     emblem: new Vector3(0, boardBottom + t.backboardHeight * 0.52, t.backboardFrontZ),
     emblemScale: t.backboardHeight / EMBLEM_DESIGN_HEIGHT,
     glassTop: t.wallHeight + t.glassHeight,
@@ -236,10 +253,17 @@ function lacquerPieces(d: Dimensions): BufferGeometry[] {
       new Vector3(d.outerX, t.wallHeight, d.boardBackZ + 0.01),
       0.01,
     ),
+    ...[d.boardTop, d.friezeTop].map((y) =>
+      box(
+        new Vector3(-d.wingX - 0.01, y - 0.004, d.boardBackZ - 0.008),
+        new Vector3(d.wingX + 0.01, y + CREST_CAP_BOTTOM, t.backboardFrontZ + 0.013),
+        0.008,
+      ),
+    ),
     box(
-      new Vector3(-d.wingX - 0.01, d.boardTop - 0.004, d.boardBackZ - 0.008),
-      new Vector3(d.wingX + 0.01, d.boardTop + CREST_CAP_BOTTOM, t.backboardFrontZ + 0.013),
-      0.008,
+      new Vector3(-d.wingX, d.boardTop, d.boardBackZ),
+      new Vector3(d.wingX, d.friezeTop, t.backboardFrontZ - FRIEZE_SETBACK),
+      0.006,
     ),
   ];
 }
@@ -258,8 +282,8 @@ function floorPieces(d: Dimensions): BufferGeometry[] {
 function marblePieces(d: Dimensions): BufferGeometry[] {
   return [
     box(
-      new Vector3(-d.wingX - 0.004, d.boardTop + CREST_CAP_BOTTOM - 0.002, d.boardBackZ - 0.003),
-      new Vector3(d.wingX + 0.004, d.boardTop + CREST_TOP, d.t.backboardFrontZ + 0.008),
+      new Vector3(-d.wingX - 0.004, d.friezeTop + CREST_CAP_BOTTOM - 0.002, d.boardBackZ - 0.003),
+      new Vector3(d.wingX + 0.004, d.friezeTop + CREST_TOP, d.t.backboardFrontZ + 0.008),
       0.004,
       2,
     ),
@@ -370,18 +394,20 @@ function goldPieces(d: Dimensions): BufferGeometry[] {
       new Vector3(d.gutterX, -0.0078, t.fieldFrontZ + 0.005),
       0.007,
     ),
-    ...[t.backboardFrontZ + 0.013, d.boardBackZ - 0.008].map((z) =>
-      rod(
-        new Vector3(-d.wingX - 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
-        new Vector3(d.wingX + 0.01, d.boardTop + CREST_CAP_BOTTOM, z),
-        0.0055,
+    ...[d.boardTop, d.friezeTop].flatMap((y) => [
+      ...[t.backboardFrontZ + 0.013, d.boardBackZ - 0.008].map((z) =>
+        rod(
+          new Vector3(-d.wingX - 0.01, y + CREST_CAP_BOTTOM, z),
+          new Vector3(d.wingX + 0.01, y + CREST_CAP_BOTTOM, z),
+          0.0055,
+        ),
       ),
-    ),
-    rod(
-      new Vector3(-d.wingX - 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
-      new Vector3(d.wingX + 0.01, d.boardTop - 0.004, t.backboardFrontZ + 0.013),
-      0.004,
-    ),
+      rod(
+        new Vector3(-d.wingX - 0.01, y - 0.004, t.backboardFrontZ + 0.013),
+        new Vector3(d.wingX + 0.01, y - 0.004, t.backboardFrontZ + 0.013),
+        0.004,
+      ),
+    ]),
     sweepProfile(
       roundedRectPath(
         new Vector3(0, d.plinthTop + 0.004, (d.backZ + t.cabinetFrontZ) / 2),
@@ -424,8 +450,79 @@ function goldPieces(d: Dimensions): BufferGeometry[] {
       ),
     ),
     ...wingPanelFrames(d, beadAndCoveProfile(0.009, 0.0045), 0),
+    ...friezePanelFrames(d, beadAndCoveProfile(0.009, 0.0045), 0),
+    ...friezeTrellis(d).bars,
   );
   return pieces;
+}
+
+/**
+ * The frieze is panelled like the back wall under it: a long cartouche over the cabinet and one
+ * panel over each console, each moulded frame `inset` further in than the panel's own margin.
+ */
+function friezePanelFrames(d: Dimensions, profile: Profile, inset: number): BufferGeometry[] {
+  const bottom = d.boardTop + CREST_CAP_BOTTOM;
+  const top = d.friezeTop - 0.004;
+  const margin = FRIEZE_PANEL_INSET + inset;
+  const height = top - bottom - 2 * margin;
+  const z = d.t.backboardFrontZ - FRIEZE_SETBACK;
+  const centreY = (bottom + top) / 2;
+  const panel = (x: number, width: number): BufferGeometry =>
+    sweepProfile(roundedRectPath(new Vector3(x, centreY, z), X, Y, width, height, 0.014), profile, {
+      up: Z,
+      closed: true,
+    });
+  const sideWidth = d.wingX - d.outerX - 2 * margin;
+  return [
+    panel(0, d.outerX * 2 - 2 * inset),
+    ...[-1, 1].map((side) => panel((side * (d.wingX + d.outerX)) / 2, sideWidth)),
+  ];
+}
+
+/** The trellis inside the frieze cartouche: its bars, and a stud at every crossing. */
+function friezeTrellis(d: Dimensions): { bars: BufferGeometry[]; studs: BufferGeometry[] } {
+  const margin = FRIEZE_PANEL_INSET + TRELLIS_MARGIN;
+  const x1 = d.outerX - margin;
+  const x0 = -x1;
+  const y0 = d.boardTop + CREST_CAP_BOTTOM + margin;
+  const y1 = d.friezeTop - 0.004 - margin;
+  const cy = (y0 + y1) / 2;
+  const z = d.t.backboardFrontZ - FRIEZE_SETBACK;
+  const reach = Math.ceil((x1 + (y1 - cy) / TRELLIS_SLOPE) / TRELLIS_PITCH);
+  const offsets = Array.from({ length: 2 * reach + 1 }, (_, i) => (i - reach) * TRELLIS_PITCH);
+  const bars: BufferGeometry[] = [];
+  for (const slope of [TRELLIS_SLOPE, -TRELLIS_SLOPE]) {
+    for (const c of offsets) {
+      const ya = c + (y0 - cy) / slope;
+      const yb = c + (y1 - cy) / slope;
+      const from = Math.max(x0, Math.min(ya, yb));
+      const to = Math.min(x1, Math.max(ya, yb));
+      if (to - from < TRELLIS_PITCH * 0.15) continue;
+      bars.push(
+        sweepProfile(
+          line(
+            new Vector3(from, cy + slope * (from - c), z),
+            new Vector3(to, cy + slope * (to - c), z),
+          ),
+          halfRoundProfile(TRELLIS_BAR_RADIUS, 6),
+          { up: Z },
+        ),
+      );
+    }
+  }
+  const studs: BufferGeometry[] = [];
+  for (const rising of offsets) {
+    for (const falling of offsets) {
+      const x = (rising + falling) / 2;
+      const y = cy + (TRELLIS_SLOPE * (falling - rising)) / 2;
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      const stud = new SphereGeometry(TRELLIS_STUD_RADIUS, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+      stud.rotateX(Math.PI / 2);
+      stud.translate(x, y, z);
+      studs.push(stud);
+    }
+  }
+  return { bars, studs };
 }
 
 /** One moulded frame per back-wall panel, `inset` further in than the panel's own margin. */
@@ -511,6 +608,8 @@ function polishedGoldPieces(d: Dimensions): BufferGeometry[] {
       { up: Z, closed: true },
     ),
     ...wingPanelFrames(d, halfRoundProfile(0.0028, 8), 0.022),
+    ...friezePanelFrames(d, halfRoundProfile(0.0028, 8), 0.022),
+    ...friezeTrellis(d).studs,
     ...[-1, 1].map((side) =>
       rod(
         new Vector3(side * d.outerX, CONSOLE_TOP + CONSOLE_SLAB * 0.5, d.t.cabinetFrontZ + 0.007),
@@ -657,7 +756,7 @@ export const TABLE_BOUNDS = {
   halfWidth: RIVIERA.wingX + 0.012,
   frontZ: RIVIERA_TABLE.cabinetFrontZ + 0.03,
   backZ: RIVIERA.backZ,
-  top: RIVIERA.boardTop + CREST_TOP,
+  top: RIVIERA.friezeTop + CREST_TOP,
   trayFloor: RIVIERA.trayFloor,
   emblem: RIVIERA.emblem,
 } as const;
