@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { VENUE_IDS, VenueIdSchema, type VenueId } from '../../ids.ts';
-import { EpochMsSchema, FractionSchema } from '../../primitives.ts';
+import { EpochMsSchema, FractionSchema, type EpochMs } from '../../primitives.ts';
 import { TimeZoneSchema } from '../liveEvents/time.ts';
 import { checkNotAfter } from './refine.ts';
 
@@ -95,6 +95,12 @@ export const VenueConditionsSchema = z
     if (conditions.timeZone !== zone) {
       issue('timeZone', `${conditions.venue} keeps ${zone} time.`);
     }
+    if (zone === 'UTC') {
+      if (conditions.utcOffsetMinutes !== 0) issue('utcOffsetMinutes', 'Station time is UTC.');
+      if (conditions.sun !== null) issue('sun', `${conditions.venue} has no sun to rise or set.`);
+    } else if (conditions.sun === null) {
+      issue('sun', `${conditions.venue} follows the sun over ${zone}.`);
+    }
     if ((conditions.source === 'feed') !== (conditions.observedAt !== null)) {
       issue('observedAt', 'Feed weather has an observation time and the fallback has none.');
     }
@@ -106,6 +112,17 @@ export const VenueConditionsSchema = z
     }
   });
 export type VenueConditions = z.infer<typeof VenueConditionsSchema>;
+
+/** The offset from UTC, in minutes, that `timeZone` keeps at the instant `at`. */
+export function utcOffsetMinutesAt(timeZone: string, at: EpochMs): number {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' })
+    .formatToParts(at)
+    .find((part) => part.type === 'timeZoneName')?.value;
+  const match = /^GMT(?:([+-])(\d{2}):(\d{2}))?$/.exec(name ?? '');
+  if (match === null) throw new Error(`Cannot read the UTC offset of ${timeZone} from "${name}".`);
+  if (match[1] === undefined) return 0;
+  return (match[1] === '-' ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3]));
+}
 
 /**
  * Every venue's local time and weather, in unlock order. The request carries nothing, so no
@@ -131,6 +148,14 @@ export const ConditionsResponseSchema = z
           code: 'custom',
           path: ['venues', i, 'venue'],
           message: `Venues are listed once each, as ${VENUE_IDS.join(', ')}.`,
+        });
+      }
+      const offset = utcOffsetMinutesAt(conditions.timeZone, answer.serverTime);
+      if (conditions.utcOffsetMinutes !== offset) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['venues', i, 'utcOffsetMinutes'],
+          message: `${conditions.timeZone} is ${offset} minutes from UTC at the server time.`,
         });
       }
       checkNotAfter(

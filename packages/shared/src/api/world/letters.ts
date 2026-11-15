@@ -142,8 +142,20 @@ export const GuestArcSchema = z
     }
     arc.letters.forEach((letter, i) => {
       if (letter.index !== i + 1) issue(['letters', i, 'index'], 'Letters are listed in order.');
-      if (!isKeyedUnder(letter.id, arc.id)) {
-        issue(['letters', i, 'id'], `Letter ${letter.id} is keyed under its arc ${arc.id}.`);
+      if (letter.id !== `${arc.id}.${i + 1}`) {
+        issue(['letters', i, 'id'], `Letter ${i + 1} of arc ${arc.id} is "${arc.id}.${i + 1}".`);
+      }
+      if (letter.status === 'sealed') {
+        letter.conditions.forEach((condition, c) => {
+          if (condition.kind !== 'letter') return;
+          const target = arc.letters.find((other) => other.id === condition.letter);
+          if (target !== undefined && condition.met !== (target.status === 'opened')) {
+            issue(
+              ['letters', i, 'conditions', c, 'met'],
+              `Letter ${condition.letter} is met exactly when the arc shows it opened.`,
+            );
+          }
+        });
       }
       const previous = arc.letters[i - 1];
       if (previous === undefined || letter.status === 'sealed') return;
@@ -183,11 +195,15 @@ function checkArcsAt(
     arc.letters.forEach((letter, l) => {
       const at = [...path, a, 'letters', l];
       if (letter.status === 'sealed') {
-        if (letter.conditions.every((condition) => isLetterConditionMet(condition, serverTime))) {
+        const next = l === 0 || arc.letters[l - 1]?.status === 'opened';
+        if (
+          next &&
+          letter.conditions.every((condition) => isLetterConditionMet(condition, serverTime))
+        ) {
           ctx.addIssue({
             code: 'custom',
             path: [...at, 'conditions'],
-            message: 'A letter whose conditions are all met has been delivered.',
+            message: 'A next letter whose conditions are all met has been delivered.',
           });
         }
         return;

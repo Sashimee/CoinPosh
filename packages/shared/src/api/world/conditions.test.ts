@@ -9,6 +9,7 @@ import {
   VenueConditionsSchema,
   WEATHER_KINDS,
   WeatherSchema,
+  utcOffsetMinutesAt,
 } from './conditions.ts';
 import { worldFixtures, worldNow, worldVenueConditions } from './fixtures.ts';
 
@@ -39,6 +40,14 @@ describe('venue clocks', () => {
         match?.[1] === undefined ? 0 : sign * (Number(match[2]) * 60 + Number(match[3]));
       expect(offset, conditions.venue).toBe(conditions.utcOffsetMinutes);
     }
+  });
+
+  it('follows a city into summer time', () => {
+    const july = Date.UTC(2026, 6, 15, 9, 30);
+    expect(utcOffsetMinutesAt('Europe/Paris', july)).toBe(120);
+    expect(utcOffsetMinutesAt('Asia/Tokyo', july)).toBe(540);
+    expect(utcOffsetMinutesAt('UTC', july)).toBe(0);
+    expect(utcOffsetMinutesAt('America/St_Johns', july)).toBe(-150);
   });
 });
 
@@ -87,6 +96,14 @@ describe('VenueConditionsSchema', () => {
     ['a venue on another city clock', riviera, { timeZone: 'Europe/Paris' }, ['timeZone']],
     ['feed weather with no observation', paris, { observedAt: null }, ['observedAt']],
     ['a fallback with an observation', orbital, { observedAt: worldNow }, ['observedAt']],
+    ['station time off UTC', orbital, { utcOffsetMinutes: 60 }, ['utcOffsetMinutes']],
+    [
+      'a sun over the orbital casino',
+      orbital,
+      { sun: { riseAt: worldNow, setAt: worldNow + 1 } },
+      ['sun'],
+    ],
+    ['a city venue with no sun', paris, { sun: null }, ['sun']],
     [
       'a fallback that is not clear',
       { ...alpine, source: 'fallback', observedAt: null },
@@ -135,6 +152,11 @@ describe('ConditionsResponseSchema', () => {
       'venues out of order',
       { venues: [paris, riviera, ...answer.venues.slice(2)] },
       ['venues', 0, 'venue'],
+    ],
+    [
+      'an offset the city does not keep at the server time',
+      { venues: [{ ...riviera, utcOffsetMinutes: 120 }, ...answer.venues.slice(1)] },
+      ['venues', 0, 'utcOffsetMinutes'],
     ],
     [
       'an observation after the server time',

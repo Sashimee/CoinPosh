@@ -128,6 +128,25 @@ describe('GuestArcSchema', () => {
       ['letters', 3, 'id'],
     ],
     [
+      'a letter id that names another place in the arc',
+      withLetter(inProgress, 0, { id: 'countessVane.inheritance.9' }),
+      ['letters', 0, 'id'],
+    ],
+    [
+      'a letter condition unmet although the arc shows that letter opened',
+      withLetter(inProgress, 3, {
+        conditions: [{ kind: 'letter', letter: 'countessVane.inheritance.1', met: false }],
+      }),
+      ['letters', 3, 'conditions', 0, 'met'],
+    ],
+    [
+      'a letter condition met although the arc shows that letter in its seal',
+      withLetter(inProgress, 4, {
+        conditions: [{ kind: 'letter', letter: 'countessVane.inheritance.3', met: true }],
+      }),
+      ['letters', 4, 'conditions', 0, 'met'],
+    ],
+    [
       'two letters waiting at once',
       withLetter(inProgress, 3, {
         status: 'delivered',
@@ -208,6 +227,22 @@ describe('LettersResponseSchema', () => {
     expect(issuePaths(LettersResponseSchema.safeParse({ ...answer, ...change }))).toContainEqual(
       path,
     );
+  });
+
+  it('accepts progress met early while the previous letter waits in its seal', () => {
+    const early = withLetter(inProgress, 3, {
+      conditions: [{ kind: 'progress', key: 'ascensions', target: 1, progress: 1 }],
+    });
+    const arcs = [early, complete, teased];
+    expect(LettersResponseSchema.safeParse({ ...answer, arcs }).error).toBeUndefined();
+  });
+
+  it('accepts a letter condition on another arc as the server judged it', () => {
+    const crossArc = withLetter(teased, 1, {
+      conditions: [{ kind: 'letter', letter: 'baronVoss.regatta.5', met: true }],
+    });
+    const arcs = [inProgress, complete, crossArc];
+    expect(LettersResponseSchema.safeParse({ ...answer, arcs }).error).toBeUndefined();
   });
 
   it('keeps a letter sealed until its post arrives', () => {
