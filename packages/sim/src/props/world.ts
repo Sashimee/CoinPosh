@@ -32,7 +32,9 @@ import {
   boundingRadius,
   conjugate,
   distanceAt,
+  massShares,
   multiply,
+  type PrimitiveShape,
   type PropShape,
   type Vec3,
 } from './shape.ts';
@@ -75,7 +77,8 @@ export interface PropState {
 interface LiveProp {
   readonly prop: BoundProp;
   readonly body: RigidBody | null;
-  readonly collider: Collider | null;
+  /** One per part of a compound shape, in part order; none for a ghost. */
+  readonly colliders: readonly Collider[];
   clock: number;
   present: boolean;
   /** Where it left the table, once it has fallen. */
@@ -158,13 +161,13 @@ export class TableProps {
               rotation: dequantizeRotation(entry.pose.q),
             }
           : prop.poseAt(clock);
-      const [body, collider] = present
+      const [body, colliders] = present
         ? this.#build(prop, pose, entry?.pose?.rest === 'asleep')
-        : [null, null];
-      if (collider) {
+        : [null, []];
+      for (const collider of colliders) {
         this.#colliders.add(collider.handle);
       }
-      return { prop, body, collider, clock, present, lastPose: pose, inside: [] };
+      return { prop, body, colliders, clock, present, lastPose: pose, inside: [] };
     });
     this.#fields = this.#live.filter(({ prop }) => prop.fieldReach !== null);
     this.#enters = this.#live.filter(({ prop }) => prop.enterMargin !== null);
@@ -261,8 +264,8 @@ export class TableProps {
         live.present = false;
         live.lastPose = pose;
         live.inside = [];
-        if (live.collider) {
-          this.#colliders.delete(live.collider.handle);
+        for (const collider of live.colliders) {
+          this.#colliders.delete(collider.handle);
         }
         this.#world.removeRigidBody(body);
       }
@@ -389,9 +392,9 @@ export class TableProps {
     return prop.poseAt(live.clock);
   }
 
-  #build(prop: BoundProp, pose: PropPose, asleep: boolean): [RigidBody | null, Collider | null] {
+  #build(prop: BoundProp, pose: PropPose, asleep: boolean): [RigidBody | null, Collider[]] {
     if (prop.body === 'ghost') {
-      return [null, null];
+      return [null, []];
     }
     const { RigidBodyDesc, CoefficientCombineRule } = this.#rapier;
     const desc =
@@ -410,24 +413,39 @@ export class TableProps {
       desc.setTranslation(t.x, t.y, t.z).setRotation(pose.rotation),
     );
     const material = prop.material;
-    let collider = this.#shapeDesc(prop.shape);
-    if (material) {
-      collider = collider
-        .setFriction(material.friction)
-        .setRestitution(material.restitution)
-        .setRestitutionCombineRule(
-          material.restitutionCombine === 'max'
-            ? CoefficientCombineRule.Max
-            : CoefficientCombineRule.Min,
-        );
-    }
-    if (prop.body === 'dynamic') {
-      collider = collider.setMass(prop.mass);
-    }
-    return [body, this.#world.createCollider(collider, body)];
+    const shares = massShares(prop.shape);
+    const colliders = this.#partDescs(prop.shape).map((desc, i) => {
+      let collider = desc;
+      if (material) {
+        collider = collider
+          .setFriction(material.friction)
+          .setRestitution(material.restitution)
+          .setRestitutionCombineRule(
+            material.restitutionCombine === 'max'
+              ? CoefficientCombineRule.Max
+              : CoefficientCombineRule.Min,
+          );
+      }
+      if (prop.body === 'dynamic') {
+        collider = collider.setMass(prop.mass * (shares[i] ?? 0));
+      }
+      return this.#world.createCollider(collider, body);
+    });
+    return [body, colliders];
   }
 
-  #shapeDesc(shape: PropShape): ColliderDesc {
+  /** One collider for a primitive; one per part, placed in the body's frame, for a compound. */
+  #partDescs(shape: PropShape): ColliderDesc[] {
+    if (shape.kind !== 'compound') {
+      return [this.#shapeDesc(shape)];
+    }
+    return shape.parts.map(({ shape: part, translation, rotation }) => {
+      const t = scaled(translation);
+      return this.#shapeDesc(part).setTranslation(t.x, t.y, t.z).setRotation(rotation);
+    });
+  }
+
+  #shapeDesc(shape: PrimitiveShape): ColliderDesc {
     const { ColliderDesc } = this.#rapier;
     switch (shape.kind) {
       case 'box':

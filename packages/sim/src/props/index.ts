@@ -21,11 +21,18 @@ import { boundingRadius, parseShape, type PropShape, type Vec3 } from './shape.t
 export type * from './kind.ts';
 export {
   boundingRadius,
+  type CompoundPart,
   conjugate,
   distanceAt,
+  massShares,
+  MAX_COMPOUND_PARTS,
+  MAX_COMPOUND_RADIUS,
   MAX_PROP_EXTENT,
   MIN_PROP_EXTENT,
   multiply,
+  PRIMITIVE_SHAPE_KINDS,
+  type PrimitiveShape,
+  primitiveVolume,
   PROP_SHAPE_KINDS,
   type PropShape,
   type Quat,
