@@ -1,4 +1,11 @@
-import type { CrateRewardTable, CrateSpawnConfig, DropTableDef, PityConfig } from '../types.ts';
+import type {
+  CrateOpenHistory,
+  CrateRewardTable,
+  CrateSpawnConfig,
+  DropTableDef,
+  FirstTicketRule,
+  PityConfig,
+} from '../types.ts';
 
 /** Weights in basis points of a percent (10 000 = 100 %). Mirrors 02-ECONOMY.md "Drop tables". */
 export const dropTables = [
@@ -37,7 +44,27 @@ export const crateSpawn = {
   ftueScriptedDrop: 12,
   ftueScriptedRarity: 'fine',
   ftueScriptedCharm: true,
+  /**
+   * Tickets only come from Exquisite+ crates (4 % of vault crates), so the Capsule machine sat
+   * locked for a whole first session (P-737). The scripted first crate pays one, so the dock's
+   * Capsules entry opens on the player's first reward beat.
+   */
+  firstTicket: { byCrate: 1, amount: 1 },
 } as const satisfies CrateSpawnConfig;
+
+/**
+ * Tickets the first-Ticket guarantee adds to a crate open on top of its roll. It reads only the
+ * player's open count and what earlier opens paid, never the fair roll's stream, so every draw
+ * stays where it was and server and Demo pay the same.
+ */
+export function firstTicketBonus(
+  rule: FirstTicketRule,
+  history: CrateOpenHistory,
+  rolledTickets: number,
+): number {
+  if (history.ticketsBefore > 0 || rolledTickets > 0) return 0;
+  return history.opensBefore + 1 === rule.byCrate ? rule.amount : 0;
+}
 
 /**
  * Exquisite crates pay a 25 % Gold Safe instead of a Key: with a Key there, crates alone paid

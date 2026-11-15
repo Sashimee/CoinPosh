@@ -4,6 +4,7 @@ import {
   cascade,
   cascadeTierFor,
   coinTiers,
+  crateRewards,
   crateSpawn,
   crateSpawnInterval,
   dropBufferTarget,
@@ -35,6 +36,7 @@ import {
   UpgradeLineIdSchema,
   type Claim,
   type ClaimResult,
+  type CrateId,
   type CoinId,
   type MintedCoin,
   type QuestId,
@@ -1312,6 +1314,49 @@ describe('mock server: crates and provable fairness', () => {
     ).toEqual([{ status: 'rejected', reason: 'already_claimed' }]);
     await alice.client.call('cratesOpen', { body: { crateId: crate.id } });
     await claimFall(spawningCoin);
+    expectConserved();
+  });
+  it('pays the first vault crate exactly the crateSpawn.firstTicket Tickets and the second only its roll, as the server does', async () => {
+    const crates: CrateId[] = [];
+    for (let i = 0; i < crateSpawn.dropsPerCrate && crates.length < 2; i++) {
+      const coin = await bufferedCoin();
+      time.advance(100);
+      const response = await alice.client.call('tableDrop', {
+        body: { x: 0, tick: time.tick(), coinId: coin.id },
+      });
+      crates.push(...response.spawnedCrates.map((crate) => crate.id));
+      await claimFall(coin.id);
+    }
+    const [first, second] = crates;
+    if (first === undefined || second === undefined) throw new Error('Expected two vault crates.');
+    time.advance(100);
+    await claimAt([
+      { kind: 'crate', crateId: first, tick: time.tick(), edge: 'front' },
+      { kind: 'crate', crateId: second, tick: time.tick(), edge: 'front' },
+    ]);
+    const ticketLines = (rewards: readonly { kind: string }[]) =>
+      rewards.filter(
+        (reward) =>
+          reward.kind === 'currency' && 'currency' in reward && reward.currency === 'tickets',
+      );
+    const { byCrate, amount } = crateSpawn.firstTicket;
+    expect(byCrate).toBe(1);
+    expect(crateRewards[crateSpawn.ftueScriptedRarity].tickets).toBe(0);
+    expect((await state()).wallet.tickets).toBe(0);
+
+    const opened = await alice.client.call('cratesOpen', { body: { crateId: first } });
+    expect(opened.roll.rarity).toBe(crateSpawn.ftueScriptedRarity);
+    expect(ticketLines(opened.roll.rewards)).toEqual([
+      { kind: 'currency', currency: 'tickets', amount },
+    ]);
+    expect((await state()).wallet.tickets).toBe(amount);
+
+    const next = await alice.client.call('cratesOpen', { body: { crateId: second } });
+    const rolled = crateRewards[next.roll.rarity].tickets;
+    expect(ticketLines(next.roll.rewards)).toEqual(
+      rolled > 0 ? [{ kind: 'currency', currency: 'tickets', amount: rolled }] : [],
+    );
+    expect((await state()).wallet.tickets).toBe(amount + rolled);
     expectConserved();
   });
 });

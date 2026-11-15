@@ -264,6 +264,13 @@ function checkDrops(config: EconomyConfig, report: Report): void {
   if (!isPositiveInt(crateSpawn.ftueScriptedDrop)) {
     report('crateSpawn.ftueScriptedDrop', 'must be a positive integer');
   }
+  const { firstTicket } = crateSpawn;
+  if (!isPositiveInt(firstTicket.byCrate)) {
+    report('crateSpawn.firstTicket.byCrate', 'must be a positive integer (a crate open, from 1)');
+  }
+  if (!isPositiveInt(firstTicket.amount)) {
+    report('crateSpawn.firstTicket.amount', 'must be a positive integer of Tickets');
+  }
 
   checkIdsExactly(report, 'crateRewards', Object.keys(crateRewards), RARITY_IDS);
   let previousIncome = -1;

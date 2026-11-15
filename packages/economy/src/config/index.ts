@@ -2,7 +2,7 @@ import type { EconomyConfig } from '../types.ts';
 import { charms } from './charms.ts';
 import { cascade, coinTiers, fusion, openingHeap } from './coins.ts';
 import { currencies } from './currencies.ts';
-import { crateRewards, crateSpawn, dropTables, pity } from './drops.ts';
+import { crateRewards, crateSpawn, dropTables, firstTicketBonus, pity } from './drops.ts';
 import { ftueTargets, ladderTargets, pacing } from './pacing.ts';
 import { album, ascension, bullion, offline, season, venues } from './progression.ts';
 import { safes } from './safes.ts';
@@ -49,6 +49,7 @@ export {
   crateSpawn,
   currencies,
   dropTables,
+  firstTicketBonus,
   ftueTargets,
   fusion,
   ladderTargets,
