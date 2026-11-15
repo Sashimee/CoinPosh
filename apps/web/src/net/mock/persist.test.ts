@@ -373,10 +373,11 @@ describe('Demo persistence: the world survives a reload of the tab', () => {
 
   it('encodes the world once per burst of requests, not once per request', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const serialize = vi.spyOn(MockWorld.prototype, 'serialize');
+    const lifecycle = new EventTarget();
+    const tab = await Tab.open(page({ lifecycle, persistDelayMs: 250 }));
+    // Earlier tests leave real debounce timers behind; a prototype spy would count their saves.
+    const serialize = vi.spyOn(tab.server.world, 'serialize');
     try {
-      const lifecycle = new EventTarget();
-      const tab = await Tab.open(page({ lifecycle, persistDelayMs: 250 }));
       await tab.boot();
       vi.advanceTimersByTime(250);
       serialize.mockClear();
