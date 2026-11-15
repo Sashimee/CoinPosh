@@ -44,6 +44,7 @@
     "idle": "Push to cascade",
     "next": "{{count}} to {{tier}}",
     "peak": "Peak",
+    "best": "Best: {{tier}}",
     "multiplier": "×{{value}}",
     "aria": "Cascade {{tier}}, {{coins}}, multiplier {{multiplier}}",
     "ariaIdle": "No cascade running",

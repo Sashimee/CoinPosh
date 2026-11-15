@@ -1,4 +1,4 @@
-import { cascade } from '@coinposh/economy';
+import { cascade, type CascadeTierDef } from '@coinposh/economy';
 import { comboView, type ComboView } from '../../app/model.ts';
 import { watch } from '../../app/store.ts';
 import { formatDecimal, formatInteger } from '../../i18n/index.ts';
@@ -136,7 +136,7 @@ export function createComboLadder(ctx: UiContext): MeterRail {
       room,
       name: tierName.offsetWidth,
       multiplier: multiplier.offsetWidth,
-      gap: parseFloat(getComputedStyle(captionRow).columnGap) || 0,
+      gap: multiplier.textContent ? parseFloat(getComputedStyle(captionRow).columnGap) || 0 : 0,
     });
     captionRow.classList.toggle('is-stacked', stacked);
     if (scale < 1) {
@@ -160,31 +160,42 @@ export function createComboLadder(ctx: UiContext): MeterRail {
     document.fonts.removeEventListener('loadingdone', fit);
   });
 
-  let lastLive: ComboView | null = null;
-  const caption = (view: ComboView): void => {
-    const language = ctx.i18n.language;
-    tierName.textContent = view.tier ? tr(ctx, `combo.tier.${view.tier.id}`) : '—';
-    multiplier.textContent = view.tier
-      ? tr(ctx, 'combo.multiplier', { value: formatDecimal(view.multiplier, language) })
-      : '';
-    if (view.next && view.count > 0) {
-      hint.textContent = tr(ctx, 'combo.next', {
-        count: view.toNext,
-        tier: tr(ctx, `combo.tier.${view.next.id}`),
-      });
-    } else if (!view.next) {
-      hint.textContent = tr(ctx, 'combo.peak');
-    } else {
-      hint.textContent = tr(ctx, 'combo.idle');
-    }
+  const nextHint = (view: ComboView): string => {
+    if (!view.next) return tr(ctx, 'combo.peak');
+    if (view.count === 0) return tr(ctx, 'combo.idle');
+    return tr(ctx, 'combo.next', {
+      count: view.toNext,
+      tier: tr(ctx, `combo.tier.${view.next.id}`),
+    });
   };
+  const caption = (view: ComboView, best: CascadeTierDef | null): void => {
+    if (view.tier) {
+      tierName.textContent = tr(ctx, `combo.tier.${view.tier.id}`);
+      multiplier.textContent = tr(ctx, 'combo.multiplier', {
+        value: formatDecimal(view.multiplier, ctx.i18n.language),
+      });
+      hint.textContent = nextHint(view);
+      return;
+    }
+    // A spent cascade names the rank it reached as history: a live multiplier or a next-rank
+    // hint here would promise that the next coins still pay more.
+    tierName.textContent = best
+      ? tr(ctx, 'combo.best', { tier: tr(ctx, `combo.tier.${best.id}`) })
+      : '—';
+    multiplier.textContent = '';
+    hint.textContent = nextHint(view);
+  };
+  let best: CascadeTierDef | null = null;
+  let bestRank = 0;
   const describe = (view: ComboView): void => {
     const language = ctx.i18n.language;
-    if (view.tier) lastLive = view;
-    // A spent cascade's card folds away still naming the rank it reached, not an idle dash.
-    caption(view.tier ? view : (lastLive ?? view));
+    if (view.tier && view.rank > bestRank) {
+      best = view.tier;
+      bestRank = view.rank;
+    }
+    caption(view, best);
     refit();
-    root.classList.toggle('is-spent', !view.tier && lastLive !== null);
+    root.classList.toggle('is-spent', !view.tier && best !== null);
     const tier = view.tier ? tr(ctx, `combo.tier.${view.tier.id}`) : '';
     const mult = tr(ctx, 'combo.multiplier', { value: formatDecimal(view.multiplier, language) });
     spoken.textContent = view.tier

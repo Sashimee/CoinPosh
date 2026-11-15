@@ -1107,9 +1107,25 @@
   animation: cp-shimmer 1.6s linear infinite;
 }
 
+.cp-combo-mult:empty {
+  display: none;
+}
+
+/* The rank a spent cascade reached reads as a quiet record, not a live rank. */
 .cp-combo.is-spent .cp-combo-caption {
-  opacity: 0.6;
+  opacity: 0.72;
   transition: opacity 300ms ease;
+}
+
+.cp-combo.is-spent .cp-combo-tier {
+  font-size: 15px;
+  font-style: italic;
+  font-weight: 600;
+  color: var(--cp-ivory);
+}
+
+.cp-combo.is-spent .cp-combo-hint {
+  color: var(--cp-champagne);
 }
 
 .cp-combo.is-active {
