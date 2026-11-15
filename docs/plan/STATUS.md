@@ -224,7 +224,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-13.15 | todo | | Waits on T-13.04, T-13.07, T-13.09, T-13.11, T-13.12, T-13.13, T-13.14, T-12.13. Live events wiring |
 | T-13.16 | todo | | Waits on T-13.15. E2E: live events |
 | T-14.01 | todo | | Waits on T-11.01. World contracts |
-| T-14.02 | todo | | Waits on T-11.01. Concierge brain |
+| T-14.02 | done | task/T-14.02 (merge a4db477) | Concierge brain: rule table from bus events to lines and tips under apps/web/src/game/concierge (5b45155); pnpm check green after merge; game-feature wiring queued as P-720 |
 | T-14.03 | todo | | Waits on T-14.02. Concierge character and lines |
 | T-14.04 | todo | | Waits on T-14.02. Concierge voice |
 | T-14.05 | todo | | Waits on T-14.01, T-3.07. World numbers |
