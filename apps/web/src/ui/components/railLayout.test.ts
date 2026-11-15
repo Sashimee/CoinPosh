@@ -9,18 +9,22 @@ import {
   boxContains,
   boxesIntersect,
   CAPTION_MIN_SCALE,
-  cardReveal,
+  cardIsOpen,
+  cardWipe,
   coinFloorRect,
   fitCaption,
   planMeterRails,
   RAIL_MAX_WIDTH,
   railBox,
+  railOpens,
+  REVEAL_FADE_PX,
   swellOverhang,
   type Box,
   type Insets,
   type RailPlan,
   type RailPlanInput,
   type RailSlot,
+  wipeMask,
 } from './railLayout.ts';
 
 const NO_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -229,56 +233,81 @@ describe('railBox', () => {
   });
 });
 
-describe('cardReveal', () => {
-  /** Field-side insets of real captions, from a full-width "OBSCÈNE ×3" to a short "Chic ×1.1". */
-  const INSETS = [-4, 0, 1, 6, 12, 40, 90];
-
+describe('cardWipe', () => {
   for (const screen of SCREENS.filter((s) => ['390x844', '360x780', '360x640'].includes(s.name))) {
     for (const side of ['left', 'right'] as const) {
       const slot = planMeterRails(inputFor(screen))[side];
 
-      it(`${screen.name} ${side}: shows a card's contents only once the box has uncovered them`, () => {
+      it(`${screen.name} ${side}: shows the card only inside the morphing box`, () => {
         if (!slot?.card) throw new Error(`${screen.name} plan has no ${side} card`);
-        const card = slot.card;
-        for (const inset of INSETS.filter((i) => i > 0)) {
-          const reach = card.width - inset;
-          const leading = side === 'right' ? card.left + card.width - reach : card.left + reach;
-          for (const t of MORPH_SAMPLES) {
-            const box = railBox(slot, t);
-            if (cardReveal(box.width, card.width, inset) === 0) continue;
-            expect(leading).toBeGreaterThanOrEqual(box.left - 1e-6);
-            expect(leading).toBeLessThanOrEqual(box.left + box.width + 1e-6);
-          }
+        for (const t of MORPH_SAMPLES) {
+          const box = railBox(slot, t);
+          const depth = cardWipe(box.width, slot);
+          expect(depth).toBeGreaterThanOrEqual(0);
+          expect(slot.rail.width + depth).toBeLessThanOrEqual(box.width + 1e-6);
         }
       });
 
-      it(`${screen.name} ${side}: shows the contents in full once the card is open`, () => {
+      it(`${screen.name} ${side}: uncovers more of the card with every px the box widens`, () => {
         if (!slot?.card) throw new Error(`${screen.name} plan has no ${side} card`);
-        for (const inset of INSETS) {
-          expect(cardReveal(railBox(slot, 1).width, slot.card.width, inset)).toBe(1);
-          expect(cardReveal(slot.rail.width, slot.card.width, inset)).toBe(0);
+        expect(cardWipe(slot.rail.width, slot)).toBe(0);
+        for (let width = slot.rail.width + 1; width <= slot.card.width; width += 1) {
+          expect(cardWipe(width, slot)).toBeCloseTo(width - slot.rail.width);
         }
       });
 
-      it(`${screen.name} ${side}: holds back contents wider than the card until it is open`, () => {
+      it(`${screen.name} ${side}: drops the mask only once the box is the card`, () => {
         if (!slot?.card) throw new Error(`${screen.name} plan has no ${side} card`);
-        for (const t of MORPH_SAMPLES.filter((t) => t < 1)) {
-          expect(cardReveal(railBox(slot, t).width, slot.card.width, -4)).toBe(0);
-        }
+        expect(cardIsOpen(railBox(slot, 1).width, slot)).toBe(true);
+        expect(cardIsOpen(railBox(slot, 1.1).width, slot)).toBe(true);
+        expect(cardIsOpen(railBox(slot, 0.99).width, slot)).toBe(false);
+        expect(cardIsOpen(slot.rail.width, slot)).toBe(false);
       });
     }
   }
 
-  it('fades in rather than popping, and never runs backwards as the box grows', () => {
-    let previous = 0;
-    const seen = new Set<number>();
-    for (let width = 22; width <= 176; width += 0.5) {
-      const reveal = cardReveal(width, 176, 12);
-      expect(reveal).toBeGreaterThanOrEqual(previous);
-      previous = reveal;
-      seen.add(Math.round(reveal * 10));
-    }
-    expect(seen.size).toBeGreaterThan(5);
+  it('holds the edge back by a swell overhang, never past the rail', () => {
+    const slot = planMeterRails(inputFor(PHONE)).right;
+    if (!slot?.card) throw new Error('390x844 plan has no right card');
+    expect(cardWipe(slot.rail.width + 40, slot, 8)).toBeCloseTo(32);
+    expect(cardWipe(slot.rail.width + 4, slot, 8)).toBe(0);
+    expect(cardWipe(slot.rail.width + 40, slot, -5)).toBeCloseTo(40);
+  });
+
+  it('shows nothing on an edge rail that has no card', () => {
+    const slot: RailSlot = {
+      side: 'left',
+      rail: { left: 2, top: 300, width: 14, height: 100 },
+      card: null,
+    };
+    expect(cardWipe(14, slot)).toBe(0);
+    expect(cardIsOpen(14, slot)).toBe(false);
+  });
+
+  it('feathers the leading edge from the gauge outward on either side', () => {
+    expect(wipeMask('right', 60)).toBe('linear-gradient(to left, #000 46.0px, transparent 60.0px)');
+    expect(wipeMask('left', 60)).toBe('linear-gradient(to right, #000 46.0px, transparent 60.0px)');
+    expect(wipeMask('left', 5)).toBe('linear-gradient(to right, #000 0.0px, transparent 5.0px)');
+  });
+});
+
+describe('railOpens', () => {
+  const slot = planMeterRails(inputFor(PHONE)).right;
+
+  it('widens a rail only when it is wanted, has room for a card and has text in it', () => {
+    expect(railOpens(true, slot, 'CASCADE Lavish ×1.25')).toBe(true);
+    expect(railOpens(false, slot, 'CASCADE Lavish ×1.25')).toBe(false);
+    expect(railOpens(true, null, 'CASCADE Lavish ×1.25')).toBe(false);
+  });
+
+  it('never widens into an empty card', () => {
+    expect(railOpens(true, slot, '')).toBe(false);
+    expect(railOpens(true, slot, ' \n\t ')).toBe(false);
+  });
+
+  it('never widens an edge rail that has no card', () => {
+    if (!slot) throw new Error('390x844 plan has no right slot');
+    expect(railOpens(true, { ...slot, card: null }, 'CASCADE')).toBe(false);
   });
 });
 
@@ -456,15 +485,28 @@ describe('Cascade card with the real rank names', () => {
           const { slot: open, frame, fit, nameBox } = cascadeCard(slot, name, multiplier);
           // The stacked name swells about its gauge-side edge, an unstacked one about its centre.
           const reach = fit.stacked ? nameBox.width : nameBox.width / 2;
-          // The caption alone is the narrowest the contents get, so this is their largest inset.
-          const inset = RAIL_BORDER + nameBox.left - frame.left;
+          const gauge = frame.left + frame.width;
           for (let step = 0; step <= 8; step++) {
             const overhang = swellOverhang(1 + ((peak - 1) * step) / 8, reach);
             for (const t of MORPH_SAMPLES) {
               const box = railBox(open, t);
-              if (cardReveal(box.width, open.card.width, inset - overhang) === 0) continue;
-              expect(nameBox.left - overhang).toBeGreaterThanOrEqual(box.left - 1e-6);
+              const depth = cardWipe(box.width, open, overhang);
+              if (cardIsOpen(box.width, open) || depth === 0) continue;
+              const shownFrom = gauge - depth - overhang;
+              expect(shownFrom).toBeGreaterThanOrEqual(box.left - 1e-6);
             }
+          }
+        });
+
+        it(`${label}: shows its caption whenever the box is wider than the rail`, () => {
+          const { slot: open, frame, multBox } = cascadeCard(slot, name, multiplier);
+          const gauge = frame.left + frame.width;
+          const captionDepth = gauge - (multBox.left + multBox.width);
+          for (const t of MORPH_SAMPLES) {
+            const box = railBox(open, t);
+            if (box.width < open.rail.width + captionDepth + REVEAL_FADE_PX) continue;
+            const depth = cardIsOpen(box.width, open) ? frame.width : cardWipe(box.width, open);
+            expect(depth - REVEAL_FADE_PX).toBeGreaterThanOrEqual(captionDepth - 1e-6);
           }
         });
       }

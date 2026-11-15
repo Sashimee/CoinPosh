@@ -209,6 +209,10 @@
   gap: 8px;
 }
 
+.cp-plaque-wrap > .cp-chip-bars {
+  transform-origin: left center;
+}
+
 /* Out of flow, so the purse never moves the plaque or the HUD edge the side meters sit under. */
 .cp-wallet {
   position: absolute;
@@ -227,7 +231,9 @@
   display: none;
 }
 
+/* Chips pop from the edge away from the plaque, so a pop never reaches toward it. */
 .cp-wallet-chip {
+  transform-origin: right center;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -918,8 +924,9 @@
   padding: 7px 0;
 }
 
-/* The card's opacity follows the morph (meterRail), so its text never shows half-uncovered; it
-   clips to its own box so nothing it holds can stray over the spine's gauge. */
+/* The morphing box wipes the card's still text in and out through a feathered mask (meterRail),
+   so a widened rail is never an empty box; it clips to its own box so nothing it holds can stray
+   over the spine's gauge. */
 .cp-rail-card {
   flex: none;
   display: flex;
