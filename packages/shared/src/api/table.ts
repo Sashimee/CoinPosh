@@ -7,7 +7,7 @@ import {
   TableCrateSchema,
   WalletSchema,
 } from '../domain.ts';
-import { CoinIdSchema, CrateIdSchema, TableSessionIdSchema } from '../ids.ts';
+import { CoinIdSchema, CrateIdSchema, PrizeIdSchema, TableSessionIdSchema } from '../ids.ts';
 import {
   AmountSchema,
   EpochMsSchema,
@@ -15,6 +15,7 @@ import {
   SimHashSchema,
   TickSchema,
 } from '../primitives.ts';
+import { PrizeAwardSchema, TablePrizeSchema } from './collecting/prizes.ts';
 
 export const MAX_CLAIMS_PER_BATCH = 256;
 export const MAX_INPUT_EVENTS_PER_SEGMENT = 4096;
@@ -30,6 +31,7 @@ export type Aim = z.infer<typeof AimSchema>;
 
 export const MAX_SNAPSHOT_COINS = 320;
 export const MAX_SNAPSHOT_CRATES = 16;
+export const MAX_SNAPSHOT_PRIZES = 8;
 /** Transport bound on a quantized position, in 10 µm units: 1 m either side of the origin. */
 export const POSE_POSITION_LIMIT = 100_000;
 export const POSE_QUATERNION_MIN = -32_768;
@@ -75,6 +77,23 @@ export const CratePoseTupleSchema = z.tuple([
 ]);
 export type CratePoseTuple = z.infer<typeof CratePoseTupleSchema>;
 
+/**
+ * Where one prize rests: `[id, x, y, z, qx, qy, qz, qw, state]`, as a coin's pose. A prize is a
+ * free body that can tip and teeter, so it needs the full pose a crate on its ride does not.
+ */
+export const PrizePoseTupleSchema = z.tuple([
+  PrizeIdSchema,
+  PosePositionSchema,
+  PosePositionSchema,
+  PosePositionSchema,
+  PoseQuaternionSchema,
+  PoseQuaternionSchema,
+  PoseQuaternionSchema,
+  PoseQuaternionSchema,
+  CoinPoseStateSchema,
+]);
+export type PrizePoseTuple = z.infer<typeof PrizePoseTupleSchema>;
+
 const pusherPhaseShape = { tickInCycle: z.int().nonnegative() };
 
 function firstDuplicate(ids: readonly string[]): number {
@@ -98,10 +117,12 @@ export const TableSnapshotRequestSchema = z
     pusher: z.strictObject(pusherPhaseShape),
     coins: z.array(PoseTupleSchema).max(MAX_SNAPSHOT_COINS),
     crates: z.array(CratePoseTupleSchema).max(MAX_SNAPSHOT_CRATES),
+    // TODO(backend-engineer): make required once T-11.06 serves table prizes and posts them.
+    prizes: z.array(PrizePoseTupleSchema).max(MAX_SNAPSHOT_PRIZES).optional(),
   })
   .superRefine((snapshot, ctx) => {
-    for (const key of ['coins', 'crates'] as const) {
-      const duplicate = firstDuplicate(snapshot[key].map(([id]) => id));
+    for (const key of ['coins', 'crates', 'prizes'] as const) {
+      const duplicate = firstDuplicate((snapshot[key] ?? []).map(([id]) => id));
       if (duplicate !== -1) {
         ctx.addIssue({
           code: 'custom',
@@ -115,7 +136,7 @@ export type TableSnapshotRequest = z.infer<typeof TableSnapshotRequestSchema>;
 
 export const TableSnapshotResponseSchema = z.object({
   seq: z.int().positive(),
-  /** Coin and crate poses accepted. */
+  /** Coin, crate and prize poses accepted. */
   stored: AmountSchema,
   /** Poses dropped: unknown, gone or implausible. */
   ignored: AmountSchema,
@@ -136,19 +157,30 @@ export const CratePlacementSchema = z.discriminatedUnion('kind', [
 ]);
 export type CratePlacement = z.infer<typeof CratePlacementSchema>;
 
-/** `coins[i]` places `table.coins[i]` and `crates[i]` places `table.crates[i]`. */
+export const PrizePlacementSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('pose'), pose: PrizePoseTupleSchema }),
+  /** A prize without a valid pose is laid again at the prize spawn point. */
+  z.object({ kind: z.literal('spawn') }),
+]);
+export type PrizePlacement = z.infer<typeof PrizePlacementSchema>;
+
+/**
+ * `coins[i]` places `table.coins[i]`, `crates[i]` places `table.crates[i]` and `prizes[i]`
+ * places `table.prizes[i]`; an absent `prizes` places none.
+ */
 export const TableLayoutSchema = z.object({
   pusher: z.object(pusherPhaseShape),
   coins: z.array(CoinPlacementSchema),
   crates: z.array(CratePlacementSchema),
+  prizes: z.array(PrizePlacementSchema).optional(),
 });
 export type TableLayout = z.infer<typeof TableLayoutSchema>;
 
 function checkPlacements(
   ctx: z.RefinementCtx,
-  key: 'coins' | 'crates',
+  key: 'coins' | 'crates' | 'prizes',
   entities: readonly { id: string }[],
-  placements: readonly (CoinPlacement | CratePlacement)[],
+  placements: readonly (CoinPlacement | CratePlacement | PrizePlacement)[],
 ): void {
   if (placements.length !== entities.length) {
     ctx.addIssue({
@@ -176,6 +208,8 @@ export const TableSnapshotSchema = z
     session: TableSessionIdSchema.optional(),
     coins: z.array(MintedCoinSchema),
     crates: z.array(TableCrateSchema),
+    // TODO(backend-engineer): make required once T-11.06 serves table prizes; absent means none.
+    prizes: z.array(TablePrizeSchema).optional(),
     /** Pre-minted, already-paid coins the client may drop while offline. */
     buffer: z.array(MintedCoinSchema),
     decorum: FractionSchema,
@@ -184,9 +218,18 @@ export const TableSnapshotSchema = z
     layout: TableLayoutSchema.nullable().optional(),
   })
   .superRefine((table, ctx) => {
+    const duplicate = firstDuplicate((table.prizes ?? []).map(({ id }) => id));
+    if (duplicate !== -1) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['prizes', duplicate, 'id'],
+        message: 'Each prize rides the table once.',
+      });
+    }
     if (table.layout === null || table.layout === undefined) return;
     checkPlacements(ctx, 'coins', table.coins, table.layout.coins);
     checkPlacements(ctx, 'crates', table.crates, table.layout.crates);
+    checkPlacements(ctx, 'prizes', table.prizes ?? [], table.layout.prizes ?? []);
   });
 export type TableSnapshot = z.infer<typeof TableSnapshotSchema>;
 
@@ -206,6 +249,8 @@ export const DropResponseSchema = z.object({
   coin: MintedCoinSchema,
   buffer: z.array(MintedCoinSchema),
   spawnedCrates: z.array(TableCrateSchema),
+  // TODO(backend-engineer): make required once T-11.06 spawns prizes on drops.
+  spawnedPrizes: z.array(TablePrizeSchema).optional(),
   wallet: WalletSchema,
 });
 export type DropResponse = z.infer<typeof DropResponseSchema>;
@@ -214,8 +259,7 @@ const distinctCoinTriple = z
   .tuple([CoinIdSchema, CoinIdSchema, CoinIdSchema])
   .refine((ids) => new Set(ids).size === ids.length, 'A fusion needs three distinct coins.');
 
-/** What the client saw happen. It never states a value: the server credits what it stored. */
-export const ClaimSchema = z.discriminatedUnion('kind', [
+const coreClaims = [
   z.strictObject({
     kind: z.literal('fall'),
     coinId: CoinIdSchema,
@@ -233,7 +277,10 @@ export const ClaimSchema = z.discriminatedUnion('kind', [
     tick: TickSchema,
     edge: FallEdgeSchema,
   }),
-]);
+] as const;
+
+/** What the client saw happen. It never states a value: the server credits what it stored. */
+export const ClaimSchema = z.discriminatedUnion('kind', [...coreClaims]);
 export type Claim = z.infer<typeof ClaimSchema>;
 
 export const ClaimsRequestSchema = z.strictObject({
@@ -241,6 +288,32 @@ export const ClaimsRequestSchema = z.strictObject({
   claims: z.array(ClaimSchema).min(1).max(MAX_CLAIMS_PER_BATCH),
 });
 export type ClaimsRequest = z.infer<typeof ClaimsRequestSchema>;
+
+/**
+ * A prize over an edge, checked like a crate. A front fall adds it to the collection (the
+ * result's `prize`); a gutter fall sends it back to the spawn queue. The prize's kind, rarity
+ * and polish are the server's, so the claim names the prize id only.
+ */
+export const PrizeClaimSchema = z.strictObject({
+  kind: z.literal('prize'),
+  prizeId: PrizeIdSchema,
+  tick: TickSchema,
+  edge: FallEdgeSchema,
+});
+export type PrizeClaim = z.infer<typeof PrizeClaimSchema>;
+
+// TODO(backend-engineer): T-11.06 replaces `ClaimSchema` with this union in the same change that
+// gives `applyClaim` in PlayerDO.ts and `#claim` in net/mock/world.ts a `prize` case; both switch
+// over every claim kind, so widening the live schema first would accept claims nobody settles.
+/** Every claim kind once prizes ride the table: the core three plus {@link PrizeClaimSchema}. */
+export const ClaimWithPrizeSchema = z.discriminatedUnion('kind', [...coreClaims, PrizeClaimSchema]);
+export type ClaimWithPrize = z.infer<typeof ClaimWithPrizeSchema>;
+
+export const ClaimsWithPrizeRequestSchema = z.strictObject({
+  session: StagedSessionSchema,
+  claims: z.array(ClaimWithPrizeSchema).min(1).max(MAX_CLAIMS_PER_BATCH),
+});
+export type ClaimsWithPrizeRequest = z.infer<typeof ClaimsWithPrizeRequestSchema>;
 
 export const CLAIM_REJECTIONS = [
   'unknown_entity',
@@ -260,6 +333,8 @@ export const ClaimResultSchema = z.discriminatedUnion('status', [
     credited: AmountSchema,
     cascade: CascadeTierSchema.nullable(),
     minted: MintedCoinSchema.nullable(),
+    /** Set only when a front prize claim added the prize to the collection. */
+    prize: PrizeAwardSchema.optional(),
   }),
   z.object({
     status: z.literal('rejected'),
