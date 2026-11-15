@@ -375,7 +375,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-102 | done | folded into P-425 (merge 93c1169) | Display serif and UI sans now ship as self-hosted webfonts |
 | P-701 | done | task/P-701 (merge 1b496aa) | mountCrates takes an optional openFair hook and passes it to revealCard; the Certified Fair chip (crate-fair) calls it, with crates.test.ts coverage (a444400); wiring into main.ts requested as P-711; pnpm check green after merge |
 | P-674 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
-| P-640 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
+| P-640 | done | fd4d02c | dock press during a crate cinematic pauses it under the sheet, resumes on close |
 | P-684 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
 | T-3.05-p4 | blocked(design: Demo world lacks lifetime fusions, activeDays and coinsBanked counters for quest metrics; waits on P-498) | | |
 | P-707 | done | task/P-707 (merge 71f8e34) | bundle:check red since T-11.01-p3: i18n namespace row, one-locale loader, split boot-lazy group (48208cc, retry; folds P-702, P-682); pnpm check green after merge |
