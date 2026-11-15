@@ -32,6 +32,11 @@ function recordingAudio(steps: number[]): AudioEngine {
     setVolume: silent,
     getVolume: () => 1,
     setMono: silent,
+    setDropRate: silent,
+    setCascadeTier: silent,
+    playJackpotSting: () => false,
+    setMusicEnabled: silent,
+    setReducedMotion: silent,
     dispose: () => Promise.resolve(),
   };
 }

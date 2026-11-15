@@ -6,3 +6,4 @@ export type { DuckOptions, MixerBus, MixerVolumes } from './mixer.ts';
 export { IMPACT_MATERIALS } from './synth/materials.ts';
 export type { ImpactMaterial } from './synth/materials.ts';
 export type { ImpactEvent } from './synth/impactSpec.ts';
+export type { CascadeTier } from '@coinposh/shared';

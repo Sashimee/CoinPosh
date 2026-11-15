@@ -1,3 +1,4 @@
+import type { CascadeTier } from '@coinposh/shared';
 import { comboVoiceCost, startComboVoice } from './combo/comboVoice.ts';
 import {
   assertComboTier,
@@ -8,8 +9,7 @@ import {
   type ComboNote,
 } from './combo/ladder.ts';
 import { Mixer, type DuckOptions, type MixerBus, type MixerVolumes } from './mixer.ts';
-import { MusicDirector } from './music/director.ts';
-import { renderRivieraTrack, type MusicTrack } from './music/render.ts';
+import { AdaptiveMusic } from './music/adaptive/index.ts';
 import { RIVIERA_KEY, type VenueKey } from './music/theory.ts';
 import type { Rng } from './rng.ts';
 import { createNoiseBuffer } from './synth/buffers.ts';
@@ -38,12 +38,22 @@ export interface AudioEngine {
   comboStep(step: number): void;
   /** 0 ends the cascade; 1..5 is Chic..OBSCENE. A rise plays the tier flourish. */
   setComboTier(tier: number): void;
-  /** 0..1; brings music layers in and out. */
+  /** The adaptive bed follows setDropRate and setCascadeTier instead; this only validates. */
   setIntensity(intensity: number): void;
   duckMusic(options?: DuckOptions): void;
-  /** Renders the venue loop if needed and starts it as soon as audio is unlocked. */
+  /** Starts the adaptive venue band as soon as audio is unlocked. */
   startMusic(): Promise<void>;
   stopMusic(fadeSeconds?: number): void;
+  /** Drops per second over the last few seconds; the band's tempo follows from the next bar. */
+  setDropRate(dropsPerSecond: number): void;
+  /** Brings band parts in by Cascade tier; `null` when the cascade ends. */
+  setCascadeTier(tier: CascadeTier | null): void;
+  /** Returns false when no sting played (music off or stopped, or one is still ringing). */
+  playJackpotSting(): boolean;
+  /** Off mutes the bed and stops scheduling notes, so a silenced band costs no CPU. */
+  setMusicEnabled(enabled: boolean): void;
+  /** Narrows the band's tempo swing for players who asked for less motion. */
+  setReducedMotion(reduced: boolean): void;
   setVolume(bus: MixerBus, value: number): void;
   getVolume(bus: MixerBus): number;
   setMono(mono: boolean): void;
@@ -51,13 +61,13 @@ export interface AudioEngine {
 }
 
 export function isAudioSupported(): boolean {
-  return typeof AudioContext === 'function' && typeof OfflineAudioContext === 'function';
+  return typeof AudioContext === 'function';
 }
 
 export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine {
   if (!isAudioSupported()) {
     throw new Error(
-      'CoinPosh audio needs the Web Audio API (AudioContext + OfflineAudioContext); this browser has neither.',
+      'CoinPosh audio needs the Web Audio API (AudioContext); this browser has none. Check isAudioSupported() first.',
     );
   }
   const gestureTarget = options.gestureTarget ?? window;
@@ -66,7 +76,12 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
 
   const ctx = new AudioContext({ latencyHint: 'interactive' });
   const mixer = new Mixer(ctx, rng, options.volumes);
-  const director = new MusicDirector(ctx, mixer.music);
+  const music = new AdaptiveMusic(ctx, {
+    output: mixer.music,
+    stingOutput: mixer.sfx,
+    ducker: mixer,
+    rng,
+  });
   const noise = createNoiseBuffer(ctx, 1, rng);
   const pool = new VoicePool<SourceVoice>(MAX_VOICES);
   const burst = new BurstLimiter();
@@ -74,7 +89,6 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
 
   const lifecycle = manageAudioLifecycle(ctx, gestureTarget, document, window);
   let comboTier = 0;
-  let track: Promise<MusicTrack> | null = null;
   let musicRequest = 0;
   let disposed = false;
 
@@ -123,7 +137,9 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
     },
 
     setIntensity(intensity) {
-      director.setIntensity(intensity);
+      if (!Number.isFinite(intensity)) {
+        throw new RangeError(`Music intensity must be a finite number, got ${intensity}`);
+      }
     },
 
     duckMusic(duck) {
@@ -132,15 +148,33 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
 
     async startMusic() {
       const request = ++musicRequest;
-      track ??= renderRivieraTrack(ctx);
-      const rendered = await track;
       await lifecycle.whenUnlocked;
-      if (request === musicRequest && !disposed && !director.isPlaying) director.play(rendered);
+      if (request === musicRequest && !disposed) music.start();
     },
 
     stopMusic(fadeSeconds) {
       musicRequest++;
-      director.stop(fadeSeconds);
+      if (!disposed) music.stop(fadeSeconds);
+    },
+
+    setDropRate(dropsPerSecond) {
+      music.setDropRate(dropsPerSecond);
+    },
+
+    setCascadeTier(tier) {
+      music.setCascadeTier(tier);
+    },
+
+    playJackpotSting() {
+      return !disposed && running() && music.playJackpotSting();
+    },
+
+    setMusicEnabled(enabled) {
+      music.setEnabled(enabled);
+    },
+
+    setReducedMotion(reduced) {
+      music.setReducedMotion(reduced);
     },
 
     setVolume(bus, value) {
@@ -160,7 +194,7 @@ export function createAudioEngine(options: AudioEngineOptions = {}): AudioEngine
       disposed = true;
       lifecycle.dispose();
       pool.releaseAll(ctx.currentTime);
-      director.stop(0.05);
+      music.dispose();
       await ctx.close();
     },
   };
