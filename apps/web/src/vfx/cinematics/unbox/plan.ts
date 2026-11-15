@@ -10,6 +10,7 @@ import {
 import type { HapticPattern } from '../../haptics.ts';
 import type { JuiceItem } from '../../juice.ts';
 import { HEIRLOOM_PRISM, RARITY_COLORS } from '../../palette.ts';
+import { GLINT_FROM, GLINT_OFF, GLINT_REST, GLINT_STILL, GLINT_TO } from './vaultCrate.ts';
 
 /** Beats of the unbox, in ms from the crate entering the tray. */
 export interface UnboxTimeline {
@@ -119,13 +120,21 @@ export interface UnboxPose {
   readonly lidShake: number;
   /** 0..1, how hard the current shudder rumbles; drives the seam glow. */
   readonly rumble: number;
+  /**
+   * 0..1 rarity light pressing out of the shut crate: it rises from the first ray to the burst,
+   * filling the seam and charging the lacquer's flanks, and goes out as the lid blows clear.
+   */
+  readonly leak: number;
   /** 0..1 god-ray brightness. */
   readonly rays: number;
   /** 0..1 god-ray reach. */
   readonly rayReach: number;
   /** 0..1 burst flash envelope. */
   readonly burst: number;
-  /** Size of the burst flare over its rest size; pops past 1 unless motion is reduced. */
+  /**
+   * Size of the flare over its rest size. Before the burst it is the leak's halo, which draws in
+   * as the crate crouches; at the burst it pops past 1 unless motion is reduced.
+   */
   readonly flareScale: number;
   /** 0 shut, 1 blown clear. */
   readonly lidOpen: number;
@@ -141,6 +150,10 @@ export interface UnboxPose {
   readonly present: number;
   /** Vertical stretch of the hero over its rest shape: squashed in the dip, drawn out on launch. */
   readonly heroStretch: number;
+  /** Where the glint on the crate's gold trim is, in crate edges along its diagonal. */
+  readonly trimSweep: number;
+  /** Strength of that glint: one sweep as the crate settles, a still sheen when motion is reduced. */
+  readonly trimGlint: number;
   /** 0..1 highlight on the hero as it arrives in the band. */
   readonly glint: number;
   /** 0..1, the item's flight into the inventory after Collect. */
@@ -159,6 +172,13 @@ const CROUCH_MS = 170;
 const SPRING = 0.16;
 const SPRING_MS = 380;
 const flarePop = easeOutBack(2.2);
+/** The leak's halo: a soft glow over the lid that swells with the leak and draws in on the crouch. */
+const HALO_REST = 0.55;
+const HALO_SWELL = 0.45;
+const HALO_INHALE = 0.35;
+/** The trim glint runs corner to corner once, just after the crate settles from its landing. */
+const TRIM_SWEEP_DELAY_MS = 120;
+const TRIM_SWEEP_MS = 700;
 const SHUDDER_LIFT = 0.007;
 const SHUDDER_ROLL = 0.09;
 const SHUDDER_WIGGLES = 6;
@@ -233,7 +253,7 @@ export function unboxPose(
   const flareScale = reducedMotion
     ? 1
     : sinceBurst < 0
-      ? 0
+      ? HALO_REST + HALO_SWELL * leak - HALO_INHALE * crouch
       : 0.35 + 0.65 * flarePop(progress(sinceBurst, 0, BURST_ATTACK_MS * 3)) + 0.25 * afterBurst;
   const rays = sinceBurst < 0 ? leak * 0.8 : 1 - (1 - RAYS_AFTER_BURST) * afterBurst;
   const rayReach = sinceBurst < 0 ? 0.25 + 0.5 * leak : 0.75 + 0.25 * afterBurst;
@@ -257,6 +277,7 @@ export function unboxPose(
     flyMs === null ? 0 : reducedMotion ? 1 : easeInOutCubic(progress(flyMs, 0, timeline.flyMs));
   const dollyIn = reducedMotion ? 0 : easeInOutCubic(progress(t, 0, timeline.dollyMs));
   const { present, heroStretch } = presentation(t - timeline.revealAtMs, timeline, reducedMotion);
+  const { trimSweep, trimGlint } = trimShine(t, timeline, reducedMotion);
   const glinting = progress(t - timeline.revealAtMs, GLINT_AT_MS, GLINT_AT_MS + GLINT_MS);
   const glint = glinting <= 0 || glinting >= 1 ? 0 : Math.sin(Math.PI * glinting) * (1 - glinting);
   return {
@@ -266,6 +287,7 @@ export function unboxPose(
     lidLift,
     lidShake,
     rumble,
+    leak: sinceBurst < 0 ? leak : 1 - lidOpen,
     rays: rays * (1 - fly),
     rayReach,
     burst,
@@ -276,9 +298,24 @@ export function unboxPose(
     dolly: dollyIn * (1 - fly),
     present: present * (1 - fly),
     heroStretch: 1 + (heroStretch - 1) * (1 - fly),
+    trimSweep,
+    trimGlint,
     glint: glint * (1 - fly),
     fly,
   };
+}
+
+/** The glint on the crate's trim at `t`: one sweep after landing, or a still sheen. */
+function trimShine(
+  t: number,
+  timeline: UnboxTimeline,
+  reducedMotion: boolean,
+): { readonly trimSweep: number; readonly trimGlint: number } {
+  if (reducedMotion) return { trimSweep: GLINT_REST, trimGlint: GLINT_STILL };
+  const start = timeline.landMs + TRIM_SWEEP_DELAY_MS;
+  const u = progress(t, start, start + TRIM_SWEEP_MS);
+  if (u <= 0 || u >= 1) return { trimSweep: GLINT_OFF, trimGlint: 0 };
+  return { trimSweep: GLINT_FROM + (GLINT_TO - GLINT_FROM) * easeInOutCubic(u), trimGlint: 1 };
 }
 
 /** The hero's lift once the card is up, `sinceReveal` ms after it; reduced motion cuts to it. */
@@ -365,7 +402,7 @@ export const UNBOX_JUICE: {
     'camera',
   ],
   reduced:
-    'No hop, spin, squash, dolly, lid shake or flight: the crate rests centre stage from the first frame, the shudders stay as rumbles and seam glow, the rays fade up, the burst is a flare of light without a pop, and the item appears on its pedestal with its rewards.',
+    'No hop, spin, squash, dolly, lid shake or flight: the crate rests centre stage from the first frame, the shudders stay as rumbles and seam glow, the rarity light still rises through the seam and flanks, the trim keeps a still sheen instead of its sweep, the rays fade up, the burst is a flare of light without a pop, and the item appears on its pedestal with its rewards.',
 };
 
 /**

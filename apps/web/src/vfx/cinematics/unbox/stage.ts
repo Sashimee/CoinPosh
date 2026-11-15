@@ -2,7 +2,6 @@ import type { Rarity } from '@coinposh/shared';
 import { abs, dot, exp, float, uniform, uv, vec4 } from 'three/tsl';
 import {
   AdditiveBlending,
-  BoxGeometry,
   Color,
   CylinderGeometry,
   DoubleSide,
@@ -40,14 +39,24 @@ import {
 } from './hero.ts';
 import { rayStyle, type RayStyle, type UnboxPose } from './plan.ts';
 import { warmUnboxShots } from './shot.ts';
+import {
+  createVaultCrateMaterials,
+  GLINT_OFF,
+  RIM_TINT,
+  SEAM_LINE,
+  STATIC_GLOW,
+  vaultCrateGeometries,
+  vaultCrateParts,
+  type VaultCrateParts,
+} from './vaultCrate.ts';
 
 export type { UnboxHero } from './hero.ts';
 
 /** Crate edge in metres: a chunky lacquer box a little wider than two coins. */
 export const CRATE_SIZE = 0.042;
-/** The lid is this much wider than the body, so its rim reads as a lip. */
-export const LID_OVERHANG = 1.04;
-const LID_HEIGHT = 0.011;
+/** The crate splits at the lid line it wears on the table, where its seam glows. */
+const BODY_HEIGHT = CRATE_SIZE * SEAM_LINE;
+const LID_HEIGHT = CRATE_SIZE - BODY_HEIGHT;
 /**
  * How far the lid blows up, back and down in size as it clears: kept inside the shot's headroom
  * so the burst reads even on a short landscape screen.
@@ -55,7 +64,6 @@ const LID_HEIGHT = 0.011;
 const LID_RISE = CRATE_SIZE * 0.5;
 const LID_BACK = CRATE_SIZE * 1.3;
 const LID_SHRINK = 0.45;
-const BAND_INSET = 0.0015;
 /** The hop the crate drops in from; small, so the whole crate stays in frame. */
 const DROP_HEIGHT = CRATE_SIZE * 0.45;
 /**
@@ -66,8 +74,12 @@ const RAY_LENGTH = CRATE_SIZE * 2.6;
 const RAY_WIDTH = CRATE_SIZE * 0.3;
 const PEDESTAL_RADIUS = 0.016;
 const PEDESTAL_HEIGHT = 0.03;
-/** Light levels as irradiance on the crate faces; the venue key alone gives about 3. */
-const LIGHT = { rest: 2.2, rumble: 3, rays: 7, burst: 16 } as const;
+/**
+ * Light levels as irradiance on the crate faces; the venue key alone gives about 3. The crate
+ * lights its own lacquer and gold as it does on the table, so before the burst the key only
+ * lifts it a little: brighter, it washed the navy grey and the brushed gold to cream.
+ */
+const LIGHT = { rest: 1.2, rumble: 2, rays: 4, burst: 16 } as const;
 const LIGHT_RANGE = CRATE_SIZE * 12;
 /** The key sits in front of and above the crate, so its faces read rather than its silhouette. */
 const LIGHT_OFFSET = CRATE_SIZE * 1.6;
@@ -75,6 +87,22 @@ const LIGHT_LIFT = CRATE_SIZE * 1.1;
 /** A round bloom-hot flare over the lid at the burst, a crate and a half across at its peak. */
 const FLARE_SIZE = CRATE_SIZE * 1.6;
 const FLARE_PEAK = 2.6;
+/**
+ * The leak's halo over the shut lid, kept well under the burst: a near-white Common halo any
+ * brighter washed the lacquer and the gold out to a grey block.
+ */
+const HALO_PEAK = 0.4;
+/**
+ * The seam's light as the crate's colour presses out of it: lit like the table crate while it
+ * hops in, brighter on each shudder, and hottest as the leak peaks just before the burst.
+ */
+const SEAM_DROP = 0.4;
+const SEAM_RUMBLE = 0.9;
+const SEAM_LEAK = 1.4;
+const SEAM_MAX = 2.6;
+/** The leak charges the lacquer's flanks with the crate's colour, up from the table's hint. */
+const RIM_CHARGE = 0.6;
+const RIM_TINT_LEAK = 0.55;
 /**
  * How far the god-rays slide back from the camera as the pedestal rises, so the hero stands in
  * front of the shaft instead of inside its haze.
@@ -108,6 +136,15 @@ export interface UnboxAssetsOptions {
   readonly faces?: ((tier: CoinTierId) => Texture | null) | null;
 }
 
+export interface CrateLight {
+  readonly tint: Color;
+  readonly glow: number;
+  readonly rim: number;
+  readonly rimTint: number;
+  readonly sweep: number;
+  readonly glint: number;
+}
+
 interface RaySlot {
   readonly mesh: Mesh;
   readonly tint: Color;
@@ -123,11 +160,7 @@ interface RaySlot {
  * Its materials compile only once `prime` is called, ahead of the first crate, not at mount.
  */
 export class UnboxAssets {
-  readonly body: BoxGeometry;
-  readonly band: BoxGeometry;
-  readonly seam: BoxGeometry;
-  readonly lid: BoxGeometry;
-  readonly clasp: BoxGeometry;
+  readonly crate: VaultCrateParts;
   readonly column: CylinderGeometry;
   readonly cap: BufferGeometry;
   readonly ray: PlaneGeometry;
@@ -144,6 +177,12 @@ export class UnboxAssets {
   private readonly heroLook: HeroMaterial;
   private readonly flareTint = uniform(new Color());
   private readonly flareStrength = uniform(0);
+  private readonly crateTint = uniform(new Color());
+  private readonly crateGlow = uniform(STATIC_GLOW);
+  private readonly crateRim = uniform(STATIC_GLOW);
+  private readonly crateRimTint = uniform(RIM_TINT);
+  private readonly crateSweep = uniform(GLINT_OFF);
+  private readonly crateGlint = uniform(0);
   private readonly heroes = new Map<UnboxHero, BufferGeometry>();
   private readonly faces: (tier: CoinTierId) => Texture | null;
   private faceTier: CoinTierId = HERO_FACE_TIERS.common;
@@ -156,29 +195,23 @@ export class UnboxAssets {
 
   constructor(parent: Object3D, options: UnboxAssetsOptions = {}) {
     this.faces = options.faces ?? (() => null);
-    const parts = crateGeometry();
-    this.body = parts.body;
-    this.band = parts.band;
-    this.seam = parts.seam;
-    this.lid = parts.lid;
-    this.clasp = parts.clasp;
+    this.crate = crateGeometry();
     this.column = new CylinderGeometry(PEDESTAL_RADIUS * 0.8, PEDESTAL_RADIUS, PEDESTAL_HEIGHT, 28);
     this.cap = pedestalCapGeometry();
     this.ray = new PlaneGeometry(RAY_WIDTH, RAY_LENGTH);
     this.ray.translate(0, RAY_LENGTH / 2, 0);
     for (const hero of UNBOX_HEROES) this.heroes.set(hero, heroGeometry(hero));
 
-    this.lacquer = new MeshPhysicalNodeMaterial({
-      color: rivieraTokens['navy-lacquer'],
-      roughness: 0.28,
-      clearcoat: 1,
-      clearcoatRoughness: 0.08,
+    const crate = createVaultCrateMaterials(CRATE_SIZE, {
+      tint: this.crateTint,
+      glow: this.crateGlow,
+      rim: this.crateRim,
+      rimTint: this.crateRimTint,
+      sweep: this.crateSweep,
+      glint: this.crateGlint,
     });
-    this.gold = new MeshPhysicalNodeMaterial({
-      color: rivieraTokens['gold-brushed'],
-      metalness: 1,
-      roughness: 0.3,
-    });
+    this.lacquer = crate.lacquer;
+    this.gold = crate.gold;
     this.velvet = new MeshPhysicalNodeMaterial({
       color: rivieraTokens['coral-sunset'],
       roughness: 0.9,
@@ -186,11 +219,7 @@ export class UnboxAssets {
       sheenRoughness: 0.4,
       sheenColor: new Color(rivieraTokens.champagne),
     });
-    this.seamMaterial = new MeshBasicNodeMaterial({
-      transparent: true,
-      blending: AdditiveBlending,
-      depthWrite: false,
-    });
+    this.seamMaterial = crate.glow;
     this.heroLook = createHeroMaterial();
     this.heroMaterial = this.heroLook.material;
     this.rayMaterial = this.createRayMaterial();
@@ -272,6 +301,36 @@ export class UnboxAssets {
     return this.heroLook.accent;
   }
 
+  /** The colour the crate's seam and flanks glow, the rolled rarity's while an unbox plays. */
+  get crateAccent(): Color {
+    return this.crateTint.value;
+  }
+
+  /** How the crate is lit now, for tests and the frame budget. */
+  get crateLight(): CrateLight {
+    return {
+      tint: this.crateTint.value.clone(),
+      glow: this.crateGlow.value,
+      rim: this.crateRim.value,
+      rimTint: this.crateRimTint.value,
+      sweep: this.crateSweep.value,
+      glint: this.crateGlint.value,
+    };
+  }
+
+  /**
+   * Lights the crate: `tint` its seam colour, `glow` the seam's brightness, `rim` and `rimTint`
+   * how much of it the lacquer's flanks pick up, `sweep` and `glint` the gold trim's glint.
+   */
+  setCrate(look: CrateLight): void {
+    this.crateTint.value.copy(look.tint);
+    this.crateGlow.value = look.glow;
+    this.crateRim.value = look.rim;
+    this.crateRimTint.value = look.rimTint;
+    this.crateSweep.value = look.sweep;
+    this.crateGlint.value = look.glint;
+  }
+
   /** Tints and lights the burst flare; strength 0 draws nothing. */
   setFlare(color: Color, strength: number): void {
     this.flareTint.value.copy(color);
@@ -294,11 +353,7 @@ export class UnboxAssets {
     this.light.dispose();
     this.unmountPrimer();
     const geometries = new Set<BufferGeometry>([
-      this.body,
-      this.band,
-      this.seam,
-      this.lid,
-      this.clasp,
+      ...vaultCrateGeometries(this.crate),
       this.column,
       this.cap,
       this.ray,
@@ -335,10 +390,10 @@ export class UnboxAssets {
     this.primerSlot = slot;
     this.bindRay(slot);
     const parts: Object3D[] = [
-      new Mesh(this.body, this.lacquer),
-      new Mesh(this.band, this.gold),
+      new Mesh(this.crate.body, this.lacquer),
+      new Mesh(this.crate.bodyTrim, this.gold),
       new Mesh(this.column, this.velvet),
-      new Mesh(this.seam, this.seamMaterial),
+      new Mesh(this.crate.seam, this.seamMaterial),
       new Mesh(this.hero('card'), this.heroMaterial),
       ray,
       new Sprite(this.flareMaterial),
@@ -433,7 +488,6 @@ export class UnboxStage {
   private readonly rig: CrateRig;
   private readonly crate: Group;
   private readonly lid: Group;
-  private readonly seam: Mesh;
   private readonly fan = new Group();
   private readonly rays: RaySlot[] = [];
   private readonly pedestal = new Group();
@@ -460,14 +514,19 @@ export class UnboxStage {
     this.root.name = 'unbox';
     this.accent = new Color(rarity === 'heirloom' ? HEIRLOOM_PRISM[0] : RARITY_COLORS[rarity]);
     const { lacquer, gold, velvet } = assets;
-    assets.seamMaterial.color.copy(this.accent);
+    assets.setCrate({
+      tint: this.accent,
+      glow: STATIC_GLOW,
+      rim: STATIC_GLOW,
+      rimTint: RIM_TINT,
+      sweep: GLINT_OFF,
+      glint: 0,
+    });
 
-    const bodyHeight = CRATE_SIZE - LID_HEIGHT;
-    const rig = buildCrate(assets, { lacquer, gold, seam: assets.seamMaterial });
+    const rig = buildCrate(assets.crate, { lacquer, gold, seam: assets.seamMaterial });
     this.rig = rig;
     this.crate = rig.crate;
     this.lid = rig.lid;
-    this.seam = rig.seam;
 
     const column = new Mesh(assets.column, velvet);
     column.position.y = PEDESTAL_HEIGHT / 2;
@@ -498,7 +557,7 @@ export class UnboxStage {
       assets.bindRay(slot);
       this.fan.add(mesh);
     }
-    this.fan.position.y = bodyHeight;
+    this.fan.position.y = BODY_HEIGHT;
 
     assets.setFlare(this.accent, 0);
     assets.flare.scale.setScalar(FLARE_SIZE);
@@ -617,18 +676,32 @@ export class UnboxStage {
   apply(pose: UnboxPose, dt = 0): void {
     if (this.disposed) return;
     this.assets.strikeFace();
-    const bodyHeight = CRATE_SIZE - LID_HEIGHT;
     this.root.rotation.y = this.restYaw + pose.spin;
     const shrink = 1 - (1 - FLY_SCALE) * pose.fly;
     this.root.scale.setScalar(shrink);
     const facing = Math.atan2(this.toCamera.x, this.toCamera.z);
     poseCrate(this.rig, pose, facing - this.root.rotation.y);
 
-    const seamGlow = Math.max(0.22 * pose.drop, pose.rumble * 0.6, pose.rays) * (1 - pose.lidOpen);
-    this.assets.seamMaterial.opacity = Math.min(1, seamGlow);
-    this.seam.visible = seamGlow > 0.001;
+    const shut = 1 - pose.lidOpen;
+    const seamGlow =
+      Math.min(
+        SEAM_MAX,
+        STATIC_GLOW * (1 - SEAM_DROP + SEAM_DROP * pose.drop) +
+          SEAM_RUMBLE * pose.rumble +
+          SEAM_LEAK * pose.leak,
+      ) * shut;
+    const charge = Math.max(pose.leak, pose.rumble * 0.5);
+    this.assets.setCrate({
+      tint: this.accent,
+      glow: seamGlow,
+      rim: STATIC_GLOW + RIM_CHARGE * charge,
+      rimTint: RIM_TINT + (RIM_TINT_LEAK - RIM_TINT) * charge,
+      sweep: pose.trimSweep,
+      glint: pose.trimGlint,
+    });
+    this.rig.seam.visible = seamGlow > 0.001;
 
-    const top = this.crate.position.y + bodyHeight * pose.squash;
+    const top = this.crate.position.y + BODY_HEIGHT * pose.squash;
     this.swirl += Math.max(0, dt) * this.style.swirl;
     const view = facing - this.root.rotation.y;
     const risen = Math.min(1, Math.max(0, pose.pedestal));
@@ -649,13 +722,14 @@ export class UnboxStage {
     const shielded = 1 - (1 - BURST_ON_HERO) * risen;
     flare.position.set(awayX, top + LID_HEIGHT, awayZ);
     flare.scale.setScalar(FLARE_SIZE * Math.max(0.001, pose.flareScale));
-    this.flareStrength = FLARE_PEAK * pose.burst * shielded;
+    this.flareStrength =
+      pose.burst > 0 ? FLARE_PEAK * pose.burst * shielded : HALO_PEAK * pose.leak * shut;
     this.assets.setFlare(this.accent, this.flareStrength);
 
     const rise = Math.max(0, pose.pedestal);
     this.pedestal.visible = rise > 0.001 && pose.fly < 1;
     this.pedestal.scale.setScalar(Math.max(0.001, rise));
-    this.pedestal.position.y = this.crate.position.y + bodyHeight * (1 - Math.min(1, rise)) * 0.5;
+    this.pedestal.position.y = this.crate.position.y + BODY_HEIGHT * (1 - Math.min(1, rise)) * 0.5;
     this.item.rotation.set(heroPitch(this.hero, this.toCamera.y), view + heroYaw(pose.itemSpin), 0);
     this.presentItem(pose);
 
@@ -716,54 +790,44 @@ export class UnboxStage {
   }
 }
 
-/** One crate's body, band, seam and lid; the lid group sits in the crate group. */
+/**
+ * One crate: the lacquer body with its lower trim, and the lid group, pivoting at the lid line,
+ * with the lid's lacquer, its upper trim and the seam that glows round and under it.
+ */
 export interface CrateRig {
   readonly crate: Group;
   readonly lid: Group;
+  /** Shown only while the seam is lit. */
   readonly seam: Mesh;
 }
 
-export interface CrateGeometry {
-  readonly body: BoxGeometry;
-  readonly band: BoxGeometry;
-  readonly seam: BoxGeometry;
-  readonly lid: BoxGeometry;
-  readonly clasp: BoxGeometry;
-}
-
-export function crateGeometry(): CrateGeometry {
-  const bodyHeight = CRATE_SIZE - LID_HEIGHT;
-  return {
-    body: new BoxGeometry(CRATE_SIZE, bodyHeight, CRATE_SIZE),
-    band: new BoxGeometry(CRATE_SIZE + BAND_INSET, bodyHeight * 0.18, CRATE_SIZE + BAND_INSET),
-    seam: new BoxGeometry(CRATE_SIZE * 1.01, 0.0018, CRATE_SIZE * 1.01),
-    lid: new BoxGeometry(CRATE_SIZE * LID_OVERHANG, LID_HEIGHT, CRATE_SIZE * LID_OVERHANG),
-    clasp: new BoxGeometry(CRATE_SIZE * 0.3, LID_HEIGHT * 0.5, 0.002),
-  };
+/** The vault crate split at its lid line, at the unbox's size. */
+export function crateGeometry(): VaultCrateParts {
+  return vaultCrateParts(CRATE_SIZE);
 }
 
 /** Assembles the crate from `parts`; the shot's fit builds an undrawn one to measure the stage. */
 export function buildCrate(
-  parts: CrateGeometry,
+  parts: VaultCrateParts,
   materials: { readonly lacquer: Material; readonly gold: Material; readonly seam: Material },
 ): CrateRig {
-  const bodyHeight = CRATE_SIZE - LID_HEIGHT;
   const crate = new Group();
   const lid = new Group();
   const body = new Mesh(parts.body, materials.lacquer);
   body.name = 'unbox-body';
-  body.position.y = bodyHeight / 2;
-  const band = new Mesh(parts.band, materials.gold);
-  band.position.y = bodyHeight * 0.5;
+  const bodyTrim = new Mesh(parts.bodyTrim, materials.gold);
+  // The lid's parts keep the crate's own space, so its sheen and glint fall as on the table.
+  const lidParts = new Group();
+  lidParts.position.y = -BODY_HEIGHT;
   const seam = new Mesh(parts.seam, materials.seam);
-  seam.position.y = bodyHeight;
-  const lidMesh = new Mesh(parts.lid, materials.lacquer);
-  lidMesh.position.y = LID_HEIGHT / 2;
-  const clasp = new Mesh(parts.clasp, materials.gold);
-  clasp.position.set(0, 0, CRATE_SIZE * 0.52);
-  lid.add(lidMesh, clasp);
-  lid.position.y = bodyHeight;
-  crate.add(body, band, seam, lid);
+  lidParts.add(
+    new Mesh(parts.lid, materials.lacquer),
+    new Mesh(parts.lidTrim, materials.gold),
+    seam,
+  );
+  lid.add(lidParts);
+  lid.position.y = BODY_HEIGHT;
+  crate.add(body, bodyTrim, lid);
   return { crate, lid, seam };
 }
 
@@ -773,13 +837,12 @@ export function buildCrate(
  */
 export function poseCrate(rig: CrateRig, pose: UnboxPose, view: number): void {
   const { crate, lid } = rig;
-  const bodyHeight = CRATE_SIZE - LID_HEIGHT;
   crate.position.y = (1 - pose.drop) * DROP_HEIGHT;
   const widen = 1 + (1 - pose.squash) * 0.6;
   crate.scale.set(widen, pose.squash, widen);
   crate.visible = pose.fly < 1;
   awayFromCamera.set(-Math.sin(view), 0, -Math.cos(view));
-  lid.position.set(0, bodyHeight + pose.lidLift + pose.lidOpen * LID_RISE, 0);
+  lid.position.set(0, BODY_HEIGHT + pose.lidLift + pose.lidOpen * LID_RISE, 0);
   lid.position.addScaledVector(awayFromCamera, pose.lidOpen * LID_BACK);
   lid.scale.setScalar(1 - LID_SHRINK * pose.lidOpen);
   hinge.set(-awayFromCamera.z, 0, awayFromCamera.x);

@@ -1,9 +1,17 @@
 import { RARITIES, type Rarity } from '@coinposh/shared';
-import { Group, PerspectiveCamera, Vector3 } from 'three/webgpu';
+import {
+  AdditiveBlending,
+  Group,
+  Mesh,
+  PerspectiveCamera,
+  Quaternion,
+  Vector3,
+} from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
 import type { CameraKickOptions } from '../../camera/cameraKick.ts';
 import type { HapticPattern } from '../../haptics.ts';
 import type { ContactOptions } from '../../index.ts';
+import { RARITY_COLORS } from '../../palette.ts';
 import { UnboxCinematic, type UnboxVfx } from './cinematic.ts';
 import {
   burstFrameMs,
@@ -17,6 +25,7 @@ import {
   type UnboxBeat,
 } from './plan.ts';
 import { UnboxAssets, UnboxStage } from './stage.ts';
+import { GLINT_OFF, GLINT_REST, GLINT_STILL, RIM_TINT } from './vaultCrate.ts';
 
 const FRAMING = {
   position: new Vector3(0, 0.5, 0.6),
@@ -118,6 +127,53 @@ describe('unbox timeline', () => {
     expect(unboxPose(REDUCED_UNBOX.revealAtMs, REDUCED_UNBOX, true).pedestal).toBe(1);
   });
 
+  it('leaks the rarity light through the shut lid up to the burst, then lets it out with the lid', () => {
+    const at = (ms: number) => unboxPose(ms, FULL_UNBOX, false);
+    expect(at(FULL_UNBOX.raysAtMs - 1).leak).toBe(0);
+    let last = 0;
+    for (let ms = FULL_UNBOX.raysAtMs; ms < FULL_UNBOX.burstAtMs; ms += 20) {
+      expect(at(ms).leak).toBeGreaterThanOrEqual(last);
+      last = at(ms).leak;
+    }
+    expect(last).toBeGreaterThan(0.9);
+    expect(at(FULL_UNBOX.burstAtMs + 600).leak).toBe(0);
+    const reduced = unboxPose(REDUCED_UNBOX.burstAtMs - 10, REDUCED_UNBOX, true);
+    expect(reduced.leak).toBeGreaterThan(0.9);
+  });
+
+  it('draws the leak halo in as the crate crouches, so the burst pops out of an inhale', () => {
+    const at = (ms: number) => unboxPose(ms, FULL_UNBOX, false).flareScale;
+    const swollen = at(FULL_UNBOX.burstAtMs - 180);
+    const inhaled = at(FULL_UNBOX.burstAtMs - 1);
+    expect(inhaled).toBeLessThan(swollen);
+    expect(at(FULL_UNBOX.burstAtMs + 120)).toBeGreaterThan(swollen);
+    for (let ms = 0; ms <= REDUCED_UNBOX.revealAtMs; ms += 20) {
+      expect(unboxPose(ms, REDUCED_UNBOX, true).flareScale).toBe(1);
+    }
+  });
+
+  it('runs one glint along the gold trim as the crate settles, and holds a still sheen when reduced', () => {
+    const at = (ms: number) => unboxPose(ms, FULL_UNBOX, false);
+    expect(at(0).trimGlint).toBe(0);
+    expect(at(0).trimSweep).toBe(GLINT_OFF);
+    let last = -Infinity;
+    let lit = 0;
+    for (let ms = FULL_UNBOX.landMs; ms <= FULL_UNBOX.burstAtMs; ms += 20) {
+      const pose = at(ms);
+      if (pose.trimGlint === 0) continue;
+      lit++;
+      expect(pose.trimSweep).toBeGreaterThanOrEqual(last);
+      last = pose.trimSweep;
+    }
+    expect(lit).toBeGreaterThan(10);
+    expect(at(FULL_UNBOX.burstAtMs).trimGlint).toBe(0);
+    for (let ms = 0; ms <= REDUCED_UNBOX.revealAtMs; ms += 20) {
+      const pose = unboxPose(ms, REDUCED_UNBOX, true);
+      expect(pose.trimSweep).toBe(GLINT_REST);
+      expect(pose.trimGlint).toBe(GLINT_STILL);
+    }
+  });
+
   it('flies the item out and hands the camera back after Collect', () => {
     const held = unboxPose(5_000, FULL_UNBOX, false);
     expect(held.dolly).toBe(1);
@@ -167,6 +223,75 @@ describe('UnboxStage', () => {
     expect(stage.lightIntensity).toBeGreaterThan(0);
     expect(stage.lidHeight).toBeGreaterThan(0.02);
     stage.dispose();
+  });
+
+  it("dresses the crate in the table crate's lacquer, brushed gold and seam, in the rarity colour", () => {
+    for (const rarity of ['common', 'fine', 'rare'] as const) {
+      const assets = new UnboxAssets(new Group());
+      const stage = new UnboxStage(rarity, 'coins', assets);
+      const used = new Set<unknown>();
+      let meshes = 0;
+      stage.crateObject.traverse((object) => {
+        if (!(object instanceof Mesh)) return;
+        meshes++;
+        used.add((object as Mesh).material);
+      });
+      expect(meshes).toBe(5);
+      expect(used).toEqual(new Set([assets.lacquer, assets.gold, assets.seamMaterial]));
+      expect(assets.lacquer.specularIntensity).toBe(0);
+      expect(assets.lacquer.clearcoat).toBe(0);
+      expect(assets.lacquer.emissiveNode).not.toBeNull();
+      expect(assets.gold.metalness).toBe(1);
+      expect(assets.gold.emissiveNode).not.toBeNull();
+      expect(assets.seamMaterial.blending).toBe(AdditiveBlending);
+      expect(`#${assets.crateAccent.getHexString().toUpperCase()}`).toBe(RARITY_COLORS[rarity]);
+      stage.dispose();
+      assets.dispose();
+    }
+  });
+
+  it('brightens the seam and charges the flanks in the rarity colour as the light leaks', () => {
+    const assets = new UnboxAssets(new Group());
+    const stage = new UnboxStage('rare', 'coins', assets);
+    stage.apply(unboxPose(FULL_UNBOX.landMs + 20, FULL_UNBOX, false));
+    const settled = assets.crateLight;
+    expect(stage.flareLevel).toBe(0);
+    stage.apply(unboxPose(FULL_UNBOX.burstAtMs - 200, FULL_UNBOX, false));
+    const leaking = assets.crateLight;
+    expect(leaking.glow).toBeGreaterThan(settled.glow * 1.5);
+    expect(leaking.rim).toBeGreaterThan(settled.rim);
+    expect(leaking.rimTint).toBeGreaterThan(RIM_TINT);
+    expect(stage.flareLevel).toBeGreaterThan(0);
+    const halo = stage.flareLevel;
+    stage.apply(unboxPose(FULL_UNBOX.burstAtMs + 40, FULL_UNBOX, false));
+    expect(stage.flareLevel).toBeGreaterThan(halo * 3);
+    stage.apply(unboxPose(FULL_UNBOX.revealAtMs, FULL_UNBOX, false));
+    expect(assets.crateLight.glow).toBe(0);
+    stage.dispose();
+    assets.dispose();
+  });
+
+  it('keeps the same crate when motion is reduced, with the lid never shaken or tipped before it goes', () => {
+    const assets = new UnboxAssets(new Group());
+    const stage = new UnboxStage('fine', 'coins', assets);
+    let meshes = 0;
+    stage.crateObject.traverse((object) => {
+      if (object instanceof Mesh) meshes++;
+    });
+    expect(meshes).toBe(5);
+    const still = new Quaternion();
+    for (let ms = 0; ms < REDUCED_UNBOX.burstAtMs; ms += 20) {
+      stage.apply(unboxPose(ms, REDUCED_UNBOX, true));
+      stage.crateObject.traverse((object) => {
+        expect(object.quaternion.angleTo(still)).toBe(0);
+      });
+    }
+    const leaking = unboxPose(REDUCED_UNBOX.burstAtMs - 20, REDUCED_UNBOX, true);
+    stage.apply(leaking);
+    expect(assets.crateLight.glow).toBeGreaterThan(1.5);
+    expect(assets.crateLight.glint).toBe(GLINT_STILL);
+    stage.dispose();
+    assets.dispose();
   });
 
   it('squashes the crate on the landing and raises the pedestal after the burst', () => {

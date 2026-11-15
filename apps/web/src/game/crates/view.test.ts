@@ -103,7 +103,7 @@ function reaches(root: Node, targets: readonly Node[]): boolean {
 function unboxAccent(rarity: (typeof RARITIES)[number]): string {
   const assets = new UnboxAssets(new Group());
   const stage = new UnboxStage(rarity, 'coins', assets);
-  const hex = `#${assets.seamMaterial.color.getHexString().toUpperCase()}`;
+  const hex = `#${assets.crateAccent.getHexString().toUpperCase()}`;
   stage.dispose();
   assets.dispose();
   return hex;

@@ -1,8 +1,16 @@
 import { ConvexHull } from 'three/addons/math/ConvexHull.js';
-import { Group, Mesh, MeshBasicNodeMaterial, PerspectiveCamera, Vector3 } from 'three/webgpu';
+import {
+  Group,
+  Mesh,
+  MeshBasicNodeMaterial,
+  PerspectiveCamera,
+  Vector3,
+  type BufferGeometry,
+} from 'three/webgpu';
 import type { CameraPreset } from '../../../scene/venues/riviera/layout.ts';
 import { REDUCED_UNBOX, unboxPose, unboxTimeline, type UnboxPose } from './plan.ts';
 import { buildCrate, CRATE_SIZE, crateGeometry, poseCrate } from './stage.ts';
+import { vaultCrateGeometries } from './vaultCrate.ts';
 
 /** Where the crate's centre sits on screen at the venue framing, in NDC (centre is 0, 0). */
 const SHOT_NDC_Y = -0.12;
@@ -255,18 +263,13 @@ function sweptFrames(reducedMotion: boolean): Swept {
     rig.crate.traverseVisible((object) => {
       if (!(object instanceof Mesh)) return;
       const mesh = object as Mesh;
-      mesh.geometry.computeBoundingBox();
-      const box = mesh.geometry.boundingBox;
-      if (!box) throw new Error(`Unbox shot could not bound the crate part ${mesh.name}`);
-      for (const x of [box.min.x, box.max.x])
-        for (const y of [box.min.y, box.max.y])
-          for (const z of [box.min.z, box.max.z]) {
-            const point = new Vector3(x, y, z).applyMatrix4(mesh.matrixWorld);
-            point.y -= half;
-            point.multiplyScalar(scale);
-            point.y += half;
-            into.push(point);
-          }
+      for (const corner of extremesOf(mesh.geometry)) {
+        const point = corner.clone().applyMatrix4(mesh.matrixWorld);
+        point.y -= half;
+        point.multiplyScalar(scale);
+        point.y += half;
+        into.push(point);
+      }
     });
     return into;
   };
@@ -277,13 +280,49 @@ function sweptFrames(reducedMotion: boolean): Swept {
     measure(pose, 1 / (1 - SHOT_PUSH * pose.dolly), points);
   }
   const rest = measure(unboxPose(0, REDUCED_UNBOX, true), 1, []);
-  for (const part of [geometry.body, geometry.band, geometry.seam, geometry.lid, geometry.clasp])
-    part.dispose();
+  for (const part of vaultCrateGeometries(geometry)) part.dispose();
   material.dispose();
   const variant = { rest, hull: hullOf(points) };
   swept.set(reducedMotion, variant);
   return variant;
 }
+
+/** The 26 axis, edge and corner directions a bevelled crate part reaches furthest along. */
+const REACH = [-1, 0, 1]
+  .flatMap((x) => [-1, 0, 1].flatMap((y) => [-1, 0, 1].map((z) => new Vector3(x, y, z))))
+  .filter((direction) => direction.lengthSq() > 0);
+
+/**
+ * The vertices of `geometry` that reach furthest along each `REACH` direction. Their hull hugs
+ * a rounded, trimmed crate part; the corners of its bounding box stood proud of it, more so once
+ * the crate turns corner on, and framed the crate smaller than the screen allows.
+ */
+function extremesOf(geometry: BufferGeometry): readonly Vector3[] {
+  const cached = extremes.get(geometry);
+  if (cached) return cached;
+  const positions = geometry.getAttribute('position');
+  if (positions.count === 0)
+    throw new Error(`Unbox shot cannot bound the empty crate part ${geometry.name}`);
+  const best = REACH.map(() => ({ reach: -Infinity, index: 0 }));
+  const vertex = new Vector3();
+  for (let i = 0; i < positions.count; i++) {
+    vertex.fromBufferAttribute(positions, i);
+    REACH.forEach((direction, k) => {
+      const reach = vertex.dot(direction);
+      const slot = best[k];
+      if (slot && reach > slot.reach) {
+        slot.reach = reach;
+        slot.index = i;
+      }
+    });
+  }
+  const indices = [...new Set(best.map((slot) => slot.index))];
+  const points = indices.map((i) => new Vector3().fromBufferAttribute(positions, i));
+  extremes.set(geometry, points);
+  return points;
+}
+
+const extremes = new WeakMap<BufferGeometry, readonly Vector3[]>();
 
 function hullOf(points: readonly Vector3[]): Vector3[] {
   const hull = new ConvexHull().setFromPoints([...points]);
