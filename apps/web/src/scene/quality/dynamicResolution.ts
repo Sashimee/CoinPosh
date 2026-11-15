@@ -67,6 +67,12 @@ const CPU_BOUND_SHARE = 0.8;
  * random lengths stop a cap with a steady period from lining up with them.
  */
 const TRIAL_SEGMENTS = 8;
+/**
+ * Segment pairs of the retry one span lower. Both of its scales sit below the one the episode
+ * started at, so a full-length retry would keep a capped device off full resolution for longer
+ * than the single wide test it replaces did.
+ */
+const RETRY_PAIRS = 2;
 const SEGMENT_MIN_MS = 150;
 const SEGMENT_SPAN_MS = 200;
 const SEGMENT_SEED = 0x9e3779b9;
@@ -82,8 +88,12 @@ const INSENSITIVE_GROWTH = 3;
 const INSENSITIVE_MAX_MS = 10 * 60_000;
 /** A confirmation is trusted for this long after its A/B test, then has to be re-verified. */
 const CONFIRMED_FOR_MS = 15_000;
-/** How far above the floor the A/B test at the floor scale raises resolution. */
-const FLOOR_RETEST_RAISE = 0.3;
+/**
+ * The widest gap between the two scales of an A/B test. Every segment switches between them,
+ * and a wider switch visibly changes how small coins draw several times a second, so a drop
+ * the first test cannot confirm is retried one span lower instead of against the floor.
+ */
+export const TRIAL_SPAN = 0.15;
 /** Timer readings older than this mean the timer stalled; fall back to frame intervals. */
 const GPU_STALE_MS = 500;
 
@@ -91,6 +101,10 @@ interface Trial {
   readonly high: number;
   readonly low: number;
   readonly floorTried: boolean;
+  /** Segments at each scale before the verdict. */
+  readonly pairs: number;
+  /** Whether segments start at the higher scale; the retry does, coming down from the first test. */
+  readonly highFirst: boolean;
   /** Where a failed test leaves the scale. */
   readonly restoreTo: number;
   /** Median interval of each finished segment at each scale, in order. */
@@ -315,9 +329,10 @@ export class DynamicResolution {
       const bounded = Math.max(ideal, this.current - MAX_DROP);
       return this.apply(Math.min(bounded, this.current - STEP));
     }
-    // Unverified: the interval is quantised to vsync, so the drop goes straight to the scale
-    // the overshoot asks for; a small step could hide a real GPU win behind the same vsync.
-    const low = this.clamp(Math.round(Math.min(ideal, this.current - STEP) / STEP) * STEP);
+    // Unverified: the interval is quantised to vsync, so the drop goes as far towards the scale
+    // the overshoot asks for as one span allows.
+    const target = Math.max(Math.min(ideal, this.current - STEP), this.current - TRIAL_SPAN);
+    const low = this.clamp(Math.round(target / STEP) * STEP);
     return this.startTrial(this.current, low, low <= this.minScale, this.current);
   }
 
@@ -327,7 +342,7 @@ export class DynamicResolution {
    */
   private retestAtFloor(): ResolutionEvent | null {
     if (this.clockMs < this.insensitiveUntilMs) return null;
-    const high = this.clamp(this.current + FLOOR_RETEST_RAISE);
+    const high = this.clamp(this.current + TRIAL_SPAN);
     if (high === this.current) return null;
     return this.startTrial(high, this.current, true, this.maxScale);
   }
@@ -337,11 +352,15 @@ export class DynamicResolution {
     low: number,
     floorTried: boolean,
     restoreTo: number,
+    pairs = TRIAL_SEGMENTS / 2,
+    highFirst = false,
   ): ResolutionEvent | null {
     this.trial = {
       high,
       low,
       floorTried,
+      pairs,
+      highFirst,
       restoreTo,
       lowMs: [],
       highMs: [],
@@ -350,7 +369,7 @@ export class DynamicResolution {
       ageMs: 0,
       segmentMs: this.nextSegmentMs(),
     };
-    return this.apply(low);
+    return this.apply(highFirst ? high : low);
   }
 
   private runTrial(
@@ -375,13 +394,15 @@ export class DynamicResolution {
     ) {
       return trial.ageMs >= SEGMENT_TIMEOUT_MS ? this.rejectTrial(trial) : null;
     }
-    const atLow = trial.lowMs.length === trial.highMs.length;
+    const atLow = trial.highFirst
+      ? trial.highMs.length > trial.lowMs.length
+      : trial.lowMs.length === trial.highMs.length;
     (atLow ? trial.lowMs : trial.highMs).push(segmentMs);
     trial.samples = [];
     trial.skipped = 0;
     trial.ageMs = 0;
     trial.segmentMs = this.nextSegmentMs();
-    if (atLow || trial.highMs.length < TRIAL_SEGMENTS / 2) {
+    if (trial.lowMs.length < trial.pairs || trial.highMs.length < trial.pairs) {
       return this.apply(atLow ? trial.high : trial.low);
     }
     this.trial = null;
@@ -393,7 +414,14 @@ export class DynamicResolution {
     }
     const lowNeverFast = trial.lowMs.every((ms) => ms > this.frameSlowMs);
     if (!trial.floorTried && lowNeverFast && trial.low > this.minScale) {
-      return this.startTrial(trial.high, this.minScale, true, trial.restoreTo);
+      return this.startTrial(
+        trial.low,
+        this.clamp(trial.low - TRIAL_SPAN),
+        true,
+        trial.restoreTo,
+        RETRY_PAIRS,
+        true,
+      );
     }
     return this.rejectTrial(trial);
   }
@@ -401,7 +429,9 @@ export class DynamicResolution {
   /** Every higher-scale segment is slow and slower than the lower-scale segments around it. */
   private followsResolution(trial: Trial): boolean {
     return trial.highMs.every((highMs, i) => {
-      const neighbours = [trial.lowMs[i], trial.lowMs[i + 1]];
+      const neighbours = trial.highFirst
+        ? [trial.lowMs[i - 1], trial.lowMs[i]]
+        : [trial.lowMs[i], trial.lowMs[i + 1]];
       return (
         highMs > this.frameSlowMs &&
         neighbours.every((lowMs) => lowMs === undefined || lowMs <= highMs * IMPROVED_RATIO)

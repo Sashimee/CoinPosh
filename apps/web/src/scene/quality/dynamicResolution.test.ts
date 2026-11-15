@@ -3,6 +3,7 @@ import {
   DynamicResolution,
   PAUSE_MS,
   RESUME_GRACE_MS,
+  TRIAL_SPAN,
   type ResolutionEvent,
 } from './dynamicResolution.ts';
 
@@ -537,6 +538,83 @@ describe('DynamicResolution', () => {
       expect(paused.events).not.toContainEqual({ kind: 'exhausted' });
       const resumed = simulate(controller, overload, 10_000, sensors);
       expect(resumed.events).toContainEqual({ kind: 'exhausted' });
+    });
+  });
+
+  describe('A/B tests switch between nearby scales', () => {
+    const SPAN = TRIAL_SPAN + 1e-9;
+
+    /** Scale changes grouped into bursts, as `changeBursts` counts them. */
+    function changes(frames: readonly Frame[], gapMs = 5000): number[][] {
+      const bursts: number[][] = [];
+      let lastChangeAt = Number.NEGATIVE_INFINITY;
+      frames.forEach((frame, i) => {
+        const previous = frames[i - 1]?.scale;
+        if (previous === undefined || frame.scale === previous) return;
+        if (frame.at - lastChangeAt > gapMs) bursts.push([]);
+        bursts[bursts.length - 1]?.push(frame.scale - previous);
+        lastChangeAt = frame.at;
+      });
+      return bursts;
+    }
+
+    it.each([
+      ['capped at 30 Hz', controllerAt, () => ({ cpuMs: 3, gpuFullMs: 6, refreshHz: 30 })],
+      ['pinned at 30 fps by the GPU', controllerAt, () => ({ cpuMs: 2, gpuFullMs: 25 })],
+      ['too slow even at the floor', controllerAt, () => ({ cpuMs: 2, gpuFullMs: 200 })],
+      [
+        'capped on and off',
+        controllerAt,
+        (at: number) => ({ cpuMs: 4, gpuFullMs: 6, refreshHz: at % 3000 < 1500 ? 30 : 60 }),
+      ],
+      [
+        'capped while parked at the floor',
+        () => controllerAt(0.5),
+        () => ({ cpuMs: 4, gpuFullMs: 6, refreshHz: 30 }),
+      ],
+    ] as const)('never drops by more than one span (%s)', (_name, create, device) => {
+      const controller = create();
+      const { frames } = simulate(controller, device, 3 * 60_000);
+      const drops = changes(frames)
+        .flat()
+        .filter((change) => change < 0);
+
+      expect(drops.length).toBeGreaterThan(0);
+      expect(Math.min(...drops)).toBeGreaterThanOrEqual(-SPAN);
+    });
+
+    it.each([
+      ['capped at 30 Hz', controllerAt(), { cpuMs: 3, gpuFullMs: 6, refreshHz: 30 }],
+      [
+        'capped while parked at the floor',
+        controllerAt(0.5),
+        { cpuMs: 4, gpuFullMs: 6, refreshHz: 30 },
+      ],
+    ] as const)(
+      'only leaves a span once per test, to restore the scale it rejected (%s)',
+      (_name, controller, device) => {
+        const { frames } = simulate(controller, () => device, 3 * 60_000);
+        const bursts = changes(frames);
+
+        expect(bursts.length).toBeGreaterThan(0);
+        for (const burst of bursts) {
+          const wide = burst.filter((change) => Math.abs(change) > SPAN);
+          expect(wide.length).toBeLessThanOrEqual(1);
+          if (wide.length === 1) expect(burst.at(-1)).toBe(wide[0]);
+          expect(burst.slice(0, -1).every((change) => Math.abs(change) <= SPAN)).toBe(true);
+        }
+        expect(controller.scale).toBe(1);
+      },
+    );
+
+    it('raises the floor scale by one span, not to full resolution, to test it', () => {
+      const controller = new DynamicResolution({ minScale: 0.5, maxScale: 1, initialScale: 0.5 });
+      const capped: Device = { cpuMs: 4, gpuFullMs: 6, refreshHz: 30 };
+      const { frames } = simulate(controller, () => capped, 4000);
+      const tested = new Set(frames.map((frame) => frame.scale));
+
+      expect(tested).toContain(0.5 + TRIAL_SPAN);
+      expect([...tested].filter((scale) => scale > 0.5 && scale < 1)).toEqual([0.5 + TRIAL_SPAN]);
     });
   });
 

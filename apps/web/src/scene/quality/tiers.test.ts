@@ -6,7 +6,9 @@ import {
   pixelRatioFor,
   QUALITY_PROFILES,
   QUALITY_TIERS,
+  pinnedSceneScale,
   qualityOverrideFrom,
+  sceneScalePinFrom,
 } from './tiers.ts';
 
 describe('quality tiers', () => {
@@ -78,6 +80,35 @@ describe('quality tiers', () => {
     expect(qualityOverrideFrom('?quality=ultra')).toBeUndefined();
     expect(qualityOverrideFrom('?quality=')).toBeUndefined();
     expect(qualityOverrideFrom('?quality=HIGH')).toBeUndefined();
+  });
+});
+
+describe('scene scale pins', () => {
+  it('reads a tier bound by name or a fraction of the pixel ratio', () => {
+    expect(sceneScalePinFrom('?scene-scale=min')).toBe('min');
+    expect(sceneScalePinFrom('?quality=low&scene-scale=max')).toBe('max');
+    expect(sceneScalePinFrom('?scene-scale=0.75')).toBe(0.75);
+    expect(sceneScalePinFrom('?scene-scale=1')).toBe(1);
+  });
+
+  it('means no pin for anything else', () => {
+    expect(sceneScalePinFrom('')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=%20')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=MIN')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=0')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=-0.5')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=1.5')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=half')).toBeUndefined();
+    expect(sceneScalePinFrom('?scene-scale=Infinity')).toBeUndefined();
+  });
+
+  it.each(QUALITY_TIERS)('holds a pin inside the %s tier bounds', (tier) => {
+    const profile = QUALITY_PROFILES[tier];
+    expect(pinnedSceneScale('min', profile)).toBe(profile.minResolutionScale);
+    expect(pinnedSceneScale('max', profile)).toBe(profile.maxResolutionScale);
+    expect(pinnedSceneScale(0.1, profile)).toBe(profile.minResolutionScale);
+    expect(pinnedSceneScale(0.8, profile)).toBe(0.8);
   });
 });
 

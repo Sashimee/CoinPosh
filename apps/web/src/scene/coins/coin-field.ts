@@ -78,8 +78,11 @@ function createContactOcclusion(capacity: number): InstancedMesh {
     name: 'coins/contact-occlusion',
     transparent: true,
     depthWrite: false,
+    // Units only: a slope factor scales with the depth change per pixel, so at a below-full
+    // scene scale it doubled and pulled the disc in front of the coin's own face and rim,
+    // which turned small coins grey with a dark notched outline.
     polygonOffset: true,
-    polygonOffsetFactor: -2,
+    polygonOffsetFactor: 0,
     polygonOffsetUnits: -2,
   });
   const r = uv()

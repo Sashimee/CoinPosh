@@ -476,6 +476,73 @@ describe('createQualityGovernor', () => {
     expect(governor.scale).toBe(QUALITY_PROFILES.low.minResolutionScale);
   });
 
+  it.each(['min', 'max', 0.7] as const)(
+    'holds a %s scene scale pin through an overload: no resolution or tier change',
+    (pin) => {
+      const post = fakePipeline(QUALITY_PROFILES.medium);
+      const onTierChange = vi.fn<(profile: QualityProfile) => void>();
+      const governor = createQualityGovernor(post, {
+        backend: 'webgpu',
+        store: null,
+        source: 'benchmark',
+        pinnedScale: pin,
+        onTierChange,
+        logger: quietLogger(),
+      });
+      const expected = pin === 'min' ? 0.55 : pin === 'max' ? 1 : 0.7;
+      expect(post.dynamicScale).toBe(expected);
+      expect(governor.scale).toBe(expected);
+
+      play(post, governor, GPU_OVERLOAD, 60_000);
+
+      expect(post.dynamicScale).toBe(expected);
+      expect(post.profile.tier).toBe('medium');
+      expect(post.history.filter((entry) => entry.startsWith('tier:'))).toEqual([]);
+      expect(post.history.filter((entry) => entry.startsWith('scale:'))).toHaveLength(1);
+      expect(onTierChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the scale through a hold and adapts only after it ends', () => {
+    const post = fakePipeline(QUALITY_PROFILES.medium);
+    const governor = createQualityGovernor(post, {
+      backend: 'webgpu',
+      store: null,
+      source: 'benchmark',
+      logger: quietLogger(),
+    });
+    governor.hold(5_000);
+    governor.hold(11_000);
+    governor.hold(3_000);
+    let firstChangeAt: number | null = null;
+    play(
+      post,
+      governor,
+      (elapsedMs) => {
+        if (firstChangeAt === null && post.history.length > 0) firstChangeAt = elapsedMs;
+        return GPU_OVERLOAD;
+      },
+      30_000,
+    );
+
+    expect(firstChangeAt).not.toBeNull();
+    expect(firstChangeAt).toBeGreaterThanOrEqual(10_000);
+    expect(post.dynamicScale).toBeLessThan(1);
+  });
+
+  it('does nothing while held, even for a long overload', () => {
+    const post = fakePipeline(QUALITY_PROFILES.medium);
+    const governor = createQualityGovernor(post, {
+      backend: 'webgpu',
+      store: null,
+      source: 'benchmark',
+      logger: quietLogger(),
+    });
+    governor.hold(Number.POSITIVE_INFINITY);
+    play(post, governor, GPU_OVERLOAD, 120_000);
+    expect(post.history).toEqual([]);
+  });
+
   it('leaves a healthy 60 fps game untouched', () => {
     const post = fakePipeline(QUALITY_PROFILES.high);
     const governor = createQualityGovernor(post, {
