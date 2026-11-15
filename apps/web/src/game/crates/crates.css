@@ -45,6 +45,21 @@
   opacity: 0;
 }
 
+/*
+ * Until the reveal, only the screen above the dock is the skip veil: a dock press reaches its
+ * button and opens the sheet, which holds the unbox, instead of landing as a tap to skip.
+ */
+.cp-crate:not(.is-revealed) {
+  pointer-events: none;
+}
+
+.cp-crate:not(.is-revealed)::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 calc(100% - var(--cp-crate-dock-top, calc(100% - 96px)));
+  pointer-events: auto;
+}
+
 .cp-crate-skip {
   position: relative;
   margin: 0;
