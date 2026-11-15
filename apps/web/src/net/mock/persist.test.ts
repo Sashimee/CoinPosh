@@ -568,6 +568,26 @@ describe('Demo persistence: claimed-but-unopened crates', () => {
     second.expectConserved();
   });
 
+  it('refuses to open a restored crate before this page life claims it again, booking nothing', async () => {
+    const first = await Tab.open(page());
+    const { crate } = await winFtueCrate(first);
+    first.server.flush();
+
+    const second = await Tab.open(page());
+    const booted = await second.boot();
+    const entries = second.server.ledger().length;
+    await expect(
+      second.player.client.call('cratesOpen', { body: { crateId: crate.id } }),
+    ).rejects.toMatchObject({ code: 'not_ready' });
+    expect(second.server.ledger(), 'an early open books no roll').toHaveLength(entries);
+    expect(await second.claimCrate(booted, crate.id)).toEqual([
+      { status: 'accepted', credited: 0, cascade: null, minted: null },
+    ]);
+    const opened = await second.player.client.call('cratesOpen', { body: { crateId: crate.id } });
+    expect(opened.roll.rarity).toBe(crateSpawn.ftueScriptedRarity);
+    second.expectConserved();
+  });
+
   it('refuses a re-claim of a won crate in the session it was won in', async () => {
     const tab = await Tab.open(page());
     const { state, crate } = await winFtueCrate(tab);

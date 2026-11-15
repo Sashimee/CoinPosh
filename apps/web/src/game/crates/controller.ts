@@ -34,10 +34,14 @@ export interface CrateControllerOptions {
   readonly unseen?: UnseenCrates | null;
 }
 
-/** The server holds no roll this page can show for the crate: already shown, or never opened. */
+/**
+ * The server holds no roll this page can show for the crate: already shown, never opened, or
+ * claimed but never opened (`not_ready`), which the table lays again for a fresh claim.
+ */
 function noRollToShow(error: unknown): boolean {
   return (
-    error instanceof ApiRequestError && (error.code === 'conflict' || error.code === 'not_found')
+    error instanceof ApiRequestError &&
+    (error.code === 'conflict' || error.code === 'not_found' || error.code === 'not_ready')
   );
 }
 

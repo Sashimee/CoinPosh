@@ -1783,6 +1783,10 @@ export class MockWorld {
       }
       if (record.state !== 'openable')
         throw new MockFailure('not_ready', 'Push the crate off the ledge first.');
+      // A crate won in an earlier page life is laid at the lip again and must be claimed in this
+      // one first; otherwise a replay sent before that re-lay would book a fresh roll.
+      if (!this.#claimedThisPage.has(body.crateId))
+        throw new MockFailure('not_ready', 'Claim the crate at the lip first.');
       player.crates.delete(body.crateId);
       player.openedCrates.add(body.crateId);
       this.#claimedThisPage.delete(body.crateId);

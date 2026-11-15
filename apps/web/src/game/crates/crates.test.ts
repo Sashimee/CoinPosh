@@ -1894,6 +1894,34 @@ describe('crates against the Demo Mode server', () => {
       expectConserved();
     });
 
+    it('books nothing when the replay beats the re-lay of a crate claimed but never opened', async () => {
+      const unseen = unseenCrates(storage, noWarnings);
+      const openLost: Pick<ApiClient, 'call'> = {
+        call: ((...args: Parameters<ApiClient['call']>) =>
+          args[0] === 'cratesOpen'
+            ? Promise.reject(new Error('the page died with the open in flight'))
+            : player.client.call(...args)) as ApiClient['call'],
+      };
+      const page = await setup(openLost, unseen);
+      while (page.controller.riding.length === 0) await page.drop();
+      const [ride] = page.controller.riding;
+      if (!ride) throw new Error('Expected a crate on the table.');
+      await page.play(CRATE_RIDE_SECONDS.max + 1);
+      expect(page.opened).toEqual([]);
+      expect(unseen.list()).toEqual([ride.crate.id]);
+
+      const { game, replayed } = await reload(unseenCrates(storage, noWarnings));
+      const entries = server.ledger().length;
+      game.controller.replayUnseen();
+      await game.controller.settled();
+      expect(replayed).toEqual([]);
+      expect(game.log.some((entry) => entry.type === 'crate:failed')).toBe(false);
+      expect(server.ledger(), 'a replay never books a fresh roll').toHaveLength(entries);
+      expect(lootFor(ride.crate.id)).toEqual([]);
+      expect(unseenCrates(storage, noWarnings).list()).toEqual([]);
+      expectConserved();
+    });
+
     it('leaves a crate the table laid again to its ride instead of replaying it', async () => {
       const unseen = unseenCrates(storage, noWarnings);
       const game = await setup(player.client, unseen);
