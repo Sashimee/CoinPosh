@@ -79,7 +79,12 @@ const PEDESTAL_HEIGHT = 0.03;
  * lights its own lacquer and gold as it does on the table, so before the burst the key only
  * lifts it a little: brighter, it washed the navy grey and the brushed gold to cream.
  */
-const LIGHT = { rest: 1.2, rumble: 2, rays: 4, burst: 16 } as const;
+const LIGHT = { rest: 1.2, rumble: 2, rays: 2.4, burst: 16 } as const;
+/**
+ * How far the key turns to the rarity colour before the burst. The leak comes out of the lid
+ * line; a key gone fully to the rarity colour lit the whole front of the crate in it instead.
+ */
+const KEY_TINT_SEALED = 0.35;
 const LIGHT_RANGE = CRATE_SIZE * 12;
 /** The key sits in front of and above the crate, so its faces read rather than its silhouette. */
 const LIGHT_OFFSET = CRATE_SIZE * 1.6;
@@ -88,21 +93,33 @@ const LIGHT_LIFT = CRATE_SIZE * 1.1;
 const FLARE_SIZE = CRATE_SIZE * 1.6;
 const FLARE_PEAK = 2.6;
 /**
- * The leak's halo over the shut lid, kept well under the burst: a near-white Common halo any
- * brighter washed the lacquer and the gold out to a grey block.
+ * The leak's halo over the shut lid, kept well under the burst: it draws over the crate, and a
+ * near-white Common halo any brighter washed the lacquer and the gold out to a grey block.
  */
-const HALO_PEAK = 0.4;
+const HALO_PEAK = 0.2;
 /**
- * The seam's light as the crate's colour presses out of it: lit like the table crate while it
- * hops in, brighter on each shudder, and hottest as the leak peaks just before the burst.
+ * The seam's light as the crate's colour presses out of it: lit a little under the table crate
+ * while it hops in and sits, brighter on each shudder, and hottest as the leak peaks just before
+ * the burst. Close up, the table's resting seam bloomed over the lacquer and greyed the faces.
  */
+const SEAM_REST = 0.72;
 const SEAM_DROP = 0.4;
-const SEAM_RUMBLE = 0.9;
+const SEAM_RUMBLE = 0.6;
 const SEAM_LEAK = 1.4;
-const SEAM_MAX = 2.6;
-/** The leak charges the lacquer's flanks with the crate's colour, up from the table's hint. */
-const RIM_CHARGE = 0.6;
-const RIM_TINT_LEAK = 0.55;
+const SEAM_MAX = 2.2;
+/**
+ * The flanks' share of the seam colour, at rest and as the leak charges them. Close up, the
+ * table's flank light repainted whole faces in the rarity colour, so the unbox keeps a hint of it
+ * and lets the bleed at the lid line carry the leak.
+ */
+const RIM_REST = 0.3;
+const RIM_CHARGE = 0.3;
+const RIM_TINT_LEAK = 0.45;
+/**
+ * Share of the table crate's self-light the unbox crate keeps. The stage's key lights it here, and
+ * a crate this close to the camera at full self-light bloomed its gold to cream and the navy grey.
+ */
+const SELF_LIGHT = 0.4;
 /**
  * How far the god-rays slide back from the camera as the pedestal rises, so the hero stands in
  * front of the shaft instead of inside its haze.
@@ -143,6 +160,7 @@ export interface CrateLight {
   readonly rimTint: number;
   readonly sweep: number;
   readonly glint: number;
+  readonly bleed: number;
 }
 
 interface RaySlot {
@@ -183,6 +201,7 @@ export class UnboxAssets {
   private readonly crateRimTint = uniform(RIM_TINT);
   private readonly crateSweep = uniform(GLINT_OFF);
   private readonly crateGlint = uniform(0);
+  private readonly crateBleed = uniform(0);
   private readonly heroes = new Map<UnboxHero, BufferGeometry>();
   private readonly faces: (tier: CoinTierId) => Texture | null;
   private faceTier: CoinTierId = HERO_FACE_TIERS.common;
@@ -209,6 +228,8 @@ export class UnboxAssets {
       rimTint: this.crateRimTint,
       sweep: this.crateSweep,
       glint: this.crateGlint,
+      selfLight: SELF_LIGHT,
+      bleed: this.crateBleed,
     });
     this.lacquer = crate.lacquer;
     this.gold = crate.gold;
@@ -315,12 +336,14 @@ export class UnboxAssets {
       rimTint: this.crateRimTint.value,
       sweep: this.crateSweep.value,
       glint: this.crateGlint.value,
+      bleed: this.crateBleed.value,
     };
   }
 
   /**
    * Lights the crate: `tint` its seam colour, `glow` the seam's brightness, `rim` and `rimTint`
-   * how much of it the lacquer's flanks pick up, `sweep` and `glint` the gold trim's glint.
+   * how much of it the lacquer's flanks pick up, `sweep` and `glint` the gold trim's glint,
+   * `bleed` how much of it spills out of the lid line onto the lacquer.
    */
   setCrate(look: CrateLight): void {
     this.crateTint.value.copy(look.tint);
@@ -329,6 +352,7 @@ export class UnboxAssets {
     this.crateRimTint.value = look.rimTint;
     this.crateSweep.value = look.sweep;
     this.crateGlint.value = look.glint;
+    this.crateBleed.value = look.bleed;
   }
 
   /** Tints and lights the burst flare; strength 0 draws nothing. */
@@ -517,10 +541,11 @@ export class UnboxStage {
     assets.setCrate({
       tint: this.accent,
       glow: STATIC_GLOW,
-      rim: STATIC_GLOW,
+      rim: RIM_REST,
       rimTint: RIM_TINT,
       sweep: GLINT_OFF,
       glint: 0,
+      bleed: 0,
     });
 
     const rig = buildCrate(assets.crate, { lacquer, gold, seam: assets.seamMaterial });
@@ -686,7 +711,7 @@ export class UnboxStage {
     const seamGlow =
       Math.min(
         SEAM_MAX,
-        STATIC_GLOW * (1 - SEAM_DROP + SEAM_DROP * pose.drop) +
+        SEAM_REST * STATIC_GLOW * (1 - SEAM_DROP + SEAM_DROP * pose.drop) +
           SEAM_RUMBLE * pose.rumble +
           SEAM_LEAK * pose.leak,
       ) * shut;
@@ -694,10 +719,11 @@ export class UnboxStage {
     this.assets.setCrate({
       tint: this.accent,
       glow: seamGlow,
-      rim: STATIC_GLOW + RIM_CHARGE * charge,
+      rim: RIM_REST + RIM_CHARGE * charge,
       rimTint: RIM_TINT + (RIM_TINT_LEAK - RIM_TINT) * charge,
       sweep: pose.trimSweep,
       glint: pose.trimGlint,
+      bleed: pose.bleed * shut,
     });
     this.rig.seam.visible = seamGlow > 0.001;
 
@@ -733,7 +759,7 @@ export class UnboxStage {
     this.item.rotation.set(heroPitch(this.hero, this.toCamera.y), view + heroYaw(pose.itemSpin), 0);
     this.presentItem(pose);
 
-    const glow = Math.max(pose.burst, pose.rays, pose.rumble * 0.5);
+    const glow = Math.max(pose.burst, KEY_TINT_SEALED * Math.max(pose.rays, pose.rumble * 0.5));
     const irradiance =
       Math.max(
         LIGHT.rest,

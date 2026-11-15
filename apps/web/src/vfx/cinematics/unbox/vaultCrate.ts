@@ -1,4 +1,4 @@
-import { abs, dot, exp, mix, normalLocal, positionLocal, uniform, vec3, vec4 } from 'three/tsl';
+import { abs, dot, exp, float, mix, normalLocal, positionLocal, uniform, vec3, vec4 } from 'three/tsl';
 import {
   AdditiveBlending,
   Color,
@@ -73,6 +73,12 @@ const STREAK_PEAK = 0.16;
 const STREAK_AT = 0.12;
 const STREAK_SHARPNESS = 30;
 const GLINT_PEAK = 3.2;
+/**
+ * The bleed: how tightly the light hugs the lid line, in crate edges, and how bright it gets at
+ * the line. Above the bloom threshold only right at the seam, so the flanks stay lacquer.
+ */
+const BLEED_SHARPNESS = 120;
+const BLEED_PEAK = 1.8;
 const GLINT_SHARPNESS = 110;
 /** Sweep position along the crate's diagonal, in crate edges: it starts and ends off the trim. */
 export const GLINT_FROM = -0.75;
@@ -102,6 +108,13 @@ export interface VaultCrateInputs {
   readonly sweep: F;
   /** Glint strength. */
   readonly glint: F;
+  /**
+   * Share of the table's self-light the lacquer lift and the gold floor keep, 1 by default. Close
+   * up under the unbox key, full self-light bloomed the gold to cream and hazed the navy grey.
+   */
+  readonly selfLight?: number;
+  /** 0..1 rarity light bleeding out of the lid line onto the lacquer flanks; none when omitted. */
+  readonly bleed?: F;
 }
 
 export interface VaultCrateMaterials {
@@ -115,23 +128,33 @@ export function createVaultCrateMaterials(
   size: number,
   inputs: VaultCrateInputs,
 ): VaultCrateMaterials {
-  const { tint, glow, rim, rimTint, sweep, glint } = inputs;
+  const { tint, glow, rim, rimTint, sweep, glint, bleed } = inputs;
+  const self = inputs.selfLight ?? 1;
   const lacquer = new MeshPhysicalNodeMaterial({
     color: new Color(rivieraTokens['navy-lacquer']).multiplyScalar(LACQUER_ALBEDO),
     roughness: 1,
     specularIntensity: 0,
   });
   const navy = uniform(new Color(LACQUER_LIFT));
-  const up = normalLocal.y;
-  const lift = navy.mul(up.max(0).mul(LIFT_KEY).add(LIFT_FLOOR));
-  const rimLight = mix(navy, tint, rimTint).mul(abs(normalLocal.x).mul(rim).mul(RIM_GLOW));
-  const edge = dot(normalLocal, vec3(SHEEN_KEY.x, SHEEN_KEY.y, SHEEN_KEY.z)).max(0);
+  // Renormalised: on the bevels' slivers a multisampled varying is extrapolated past unit length,
+  // and the sheen's 28th power turned those pixels into bloom blobs and a full-frame haze.
+  const normal = normalLocal.normalize();
+  const up = normal.y;
+  const lift = navy.mul(up.max(0).mul(LIFT_KEY).add(LIFT_FLOOR).mul(self));
+  const rimLight = mix(navy, tint, rimTint).mul(abs(normal.x).mul(rim).mul(RIM_GLOW));
+  const edge = dot(normal, vec3(SHEEN_KEY.x, SHEEN_KEY.y, SHEEN_KEY.z)).max(0);
   const diagonal = positionLocal.x.add(positionLocal.z).div(size).sub(STREAK_AT);
   const streak = exp(diagonal.pow2().mul(-STREAK_SHARPNESS)).mul(up.max(0).pow(8));
   const sheen = edge.pow(SHEEN_POWER).mul(SHEEN_PEAK).add(streak.mul(STREAK_PEAK));
-  lacquer.emissiveNode = lift
-    .add(rimLight)
-    .add(uniform(new Color(rivieraTokens.champagne)).mul(sheen));
+  const lit = lift.add(rimLight).add(uniform(new Color(rivieraTokens.champagne)).mul(sheen));
+  if (bleed) {
+    const fromSeam = positionLocal.y.div(size).sub(SEAM_LINE);
+    const band = exp(fromSeam.pow2().mul(-BLEED_SHARPNESS));
+    const flank = float(1).sub(abs(up));
+    lacquer.emissiveNode = lit.add(tint.mul(band.mul(flank).mul(bleed).mul(BLEED_PEAK)));
+  } else {
+    lacquer.emissiveNode = lit;
+  }
 
   const brushed = new Color(rivieraTokens['gold-brushed']);
   const gold = new MeshPhysicalNodeMaterial({
@@ -141,7 +164,7 @@ export function createVaultCrateMaterials(
   });
   const along = dot(positionLocal, vec3(1, 1, 1).normalize()).div(size);
   const shine = exp(along.sub(sweep).pow2().mul(-GLINT_SHARPNESS));
-  gold.emissiveNode = uniform(brushed).mul(shine.mul(glint).mul(GLINT_PEAK).add(TRIM_FLOOR));
+  gold.emissiveNode = uniform(brushed).mul(shine.mul(glint).mul(GLINT_PEAK).add(TRIM_FLOOR * self));
 
   const seam = new MeshBasicNodeMaterial({
     transparent: true,

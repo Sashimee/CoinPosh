@@ -125,6 +125,12 @@ export interface UnboxPose {
    * filling the seam and charging the lacquer's flanks, and goes out as the lid blows clear.
    */
   readonly leak: number;
+  /**
+   * 0..1 rarity light bleeding out of the lid line onto the lacquer: it swells over the
+   * `LEAK_LEAD_MS` before the burst, the crate's tell that it is about to blow, and goes out with
+   * the lid. Light, not motion, so reduced motion keeps it.
+   */
+  readonly bleed: number;
   /** 0..1 god-ray brightness. */
   readonly rays: number;
   /** 0..1 god-ray reach. */
@@ -172,6 +178,8 @@ const CROUCH_MS = 170;
 const SPRING = 0.16;
 const SPRING_MS = 380;
 const flarePop = easeOutBack(2.2);
+/** How long before the burst the lid line starts to bleed the rarity light. */
+export const LEAK_LEAD_MS = 400;
 /** The leak's halo: a soft glow over the lid that swells with the leak and draws in on the crouch. */
 const HALO_REST = 0.55;
 const HALO_SWELL = 0.45;
@@ -180,6 +188,13 @@ const HALO_INHALE = 0.35;
 const TRIM_SWEEP_DELAY_MS = 120;
 const TRIM_SWEEP_MS = 700;
 const SHUDDER_LIFT = 0.007;
+/**
+ * As the bleed swells the lid strains open a sliver, trembling, so the light visibly pours out of
+ * the gap before the burst blows it clear: metres of lift, and the tremble's size and rate.
+ */
+const LEAK_CRACK = 0.0035;
+const LEAK_TREMBLE = 0.0007;
+const LEAK_TREMBLE_HZ = 24;
 const SHUDDER_ROLL = 0.09;
 const SHUDDER_WIGGLES = 6;
 const BURST_ATTACK_MS = 60;
@@ -242,6 +257,12 @@ export function unboxPose(
   });
 
   const leak = easeInCubic(progress(t, timeline.raysAtMs, timeline.burstAtMs));
+  const lead = Math.min(LEAK_LEAD_MS, timeline.burstAtMs - timeline.raysAtMs);
+  const bleedRise = easeInOutCubic(progress(t, timeline.burstAtMs - lead, timeline.burstAtMs));
+  if (!reducedMotion && t < timeline.burstAtMs) {
+    const tremble = Math.sin((t / 1000) * Math.PI * 2 * LEAK_TREMBLE_HZ);
+    lidLift = Math.max(lidLift, bleedRise * (LEAK_CRACK + LEAK_TREMBLE * tremble));
+  }
   const sinceBurst = t - timeline.burstAtMs;
   const burst =
     sinceBurst < 0
@@ -288,6 +309,7 @@ export function unboxPose(
     lidShake,
     rumble,
     leak: sinceBurst < 0 ? leak : 1 - lidOpen,
+    bleed: sinceBurst < 0 ? bleedRise : 1 - lidOpen,
     rays: rays * (1 - fly),
     rayReach,
     burst,
