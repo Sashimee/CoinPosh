@@ -180,41 +180,57 @@ function pityCounters(state: PityState): PityCounters {
   };
 }
 
+/**
+ * Earlier crate opens, counted only up to `crateSpawn.firstTicket.byCrate`: the rule never
+ * tells a later open from that one, so the probe reads at most `byCrate` index rows however
+ * many crates the player has opened.
+ */
 function crateOpensBefore(sql: SqlStorage): number {
-  return sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n;
+  return sql
+    .exec<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM (SELECT 1 FROM crate_opens LIMIT ?)',
+      crateSpawn.firstTicket.byCrate,
+    )
+    .one().n;
 }
 
 /**
- * Tickets earlier crate opens paid. The ledger is append-only and has no index on kind, account
- * or unit, so it is reached through `crate_opens` and the indexed `ref` column, never scanned.
+ * Tickets the first `byCrate` crate opens paid, the only ones the rule reads. The ledger is
+ * append-only and has no index on kind, account or unit, so it is reached through those few
+ * `crate_opens` rows and the indexed `ref` column, never scanned.
  */
 function crateTicketsBefore(sql: SqlStorage): number {
   return sql
     .exec<{ n: number }>(
-      `SELECT COALESCE(SUM(l.delta), 0) AS n FROM crate_opens o
+      `SELECT COALESCE(SUM(l.delta), 0) AS n
+       FROM (SELECT crate_id FROM crate_opens LIMIT ?) o
        JOIN ledger l ON l.ref = o.crate_id
        WHERE l.kind = ? AND l.account = 'wallet' AND l.unit = 'tickets'`,
+      crateSpawn.firstTicket.byCrate,
       CRATE_OPEN_TX_KIND,
     )
     .one().n;
 }
 
 /**
- * What the player's earlier crate opens paid, for `crateSpawn.firstTicket`: read before this
- * open's ledger legs and `crate_opens` row are written.
+ * What the player's earlier crate opens paid, as `crateSpawn.firstTicket` reads it: both counts
+ * stop at the first `byCrate` opens. Read before this open's ledger legs and `crate_opens` row
+ * are written.
  */
 export function crateOpenHistory(sql: SqlStorage): CrateOpenHistory {
   return { opensBefore: crateOpensBefore(sql), ticketsBefore: crateTicketsBefore(sql) };
 }
 
 /**
- * The `crateSpawn.firstTicket` top-up for this open. Only the `byCrate`-th open with no rolled
- * Tickets can pay, so every other open skips the Tickets read.
+ * The `crateSpawn.firstTicket` top-up for this open, in bounded reads. Only the `byCrate`-th
+ * open with no rolled Tickets can pay, and `crate_opens` keeps every open final, so a player is
+ * granted it at most once; every other open skips the Tickets read.
  */
-function firstTicketFor(sql: SqlStorage, rolledTickets: number): number {
+export function firstTicketFor(sql: SqlStorage, rolledTickets: number): number {
   const rule = crateSpawn.firstTicket;
+  if (rolledTickets > 0) return 0;
   const opensBefore = crateOpensBefore(sql);
-  if (rolledTickets > 0 || opensBefore + 1 !== rule.byCrate) return 0;
+  if (opensBefore + 1 !== rule.byCrate) return 0;
   return firstTicketBonus(
     rule,
     { opensBefore, ticketsBefore: crateTicketsBefore(sql) },

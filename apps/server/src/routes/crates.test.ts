@@ -65,6 +65,7 @@ import {
   createCrateRoutes,
   crateOpenHistory,
   drawCrate,
+  firstTicketFor,
   type CrateHost,
 } from './crates.ts';
 import { measuredActiveRate } from './offline.ts';
@@ -758,6 +759,96 @@ describe('the first-Ticket guarantee (crateSpawn.firstTicket)', () => {
       opensBefore: 1,
       ticketsBefore: ticketsPaid(opened.roll.rewards),
     });
+  });
+
+  it('grants once under a replayed Idempotency-Key and never again on later opens', async () => {
+    const session = await newSession();
+    const before = await state(session);
+    for (let open = 1; open < byCrate; open++) {
+      await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+    }
+    const crateId = await giveCrate(session);
+    const key = newIdempotencyKey();
+    const first = await openOk(await postOpen(session, { crateId }, key));
+    const afterFirst = await state(session);
+    for (let retry = 0; retry < 3; retry++) {
+      const replay = await postOpen(session, { crateId }, key);
+      expect(replay.headers.get(IDEMPOTENT_REPLAYED_HEADER)).toBe('true');
+      expect(await openOk(replay)).toEqual(first);
+    }
+    await expectError(await postOpen(session, { crateId }), 409, 'conflict');
+    expect((await state(session)).wallet).toEqual(afterFirst.wallet);
+
+    for (let open = 0; open < 3; open++) {
+      await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+    }
+    const ticketLegs = (await ledgerOf(session, CRATE_OPEN_TX_KIND)).filter(
+      (leg) => leg.unit === 'tickets' && leg.account === 'wallet',
+    );
+    const rolled = (
+      await inPlayer(session, (sql) =>
+        sql.exec<{ rarity: RarityId }>('SELECT rarity FROM crate_opens').toArray(),
+      )
+    ).reduce((sum, row) => sum + crateRewards[row.rarity].tickets, 0);
+    const paid = ticketLegs.reduce((sum, leg) => sum + leg.delta, 0);
+    expect(paid - rolled === 0 || paid - rolled === amount).toBe(true);
+    expect((await state(session)).wallet.tickets - before.wallet.tickets).toBe(paid);
+    await expectConserved(session);
+  });
+
+  it('grants once when the opens around crate byCrate race', async () => {
+    const session = await newSession();
+    const crates: CrateId[] = [];
+    for (let open = 0; open < byCrate + 3; open++) crates.push(await giveCrate(session));
+    const responses = await Promise.all(crates.map((crateId) => postOpen(session, { crateId })));
+    const opened = await Promise.all(responses.map(openOk));
+    const rolled = opened.reduce((sum, o) => sum + crateRewards[o.roll.rarity].tickets, 0);
+    const paid = opened.reduce((sum, o) => sum + ticketsPaid(o.roll.rewards), 0);
+    expect(paid - rolled === 0 || paid - rolled === amount).toBe(true);
+    expect(paid).toBeGreaterThanOrEqual(1);
+    await expectConserved(session);
+  });
+
+  it('decides each open in bounded reads, however many crates the player has opened', async () => {
+    const session = await newSession();
+    const probe = (sql: SqlStorage): { rowsRead: number; queries: string[] } => {
+      const cursors: SqlStorageCursor<Record<string, SqlStorageValue>>[] = [];
+      const queries: string[] = [];
+      const traced = new Proxy(sql, {
+        get(target, prop): unknown {
+          if (prop !== 'exec') {
+            const value: unknown = Reflect.get(target, prop);
+            return value;
+          }
+          return (query: string, ...bindings: unknown[]) => {
+            const cursor = target.exec(query, ...bindings);
+            queries.push(query);
+            cursors.push(cursor);
+            return cursor;
+          };
+        },
+      });
+      expect(firstTicketFor(traced, 0)).toBeGreaterThanOrEqual(0);
+      return { rowsRead: cursors.reduce((sum, c) => sum + c.rowsRead, 0), queries };
+    };
+    const readsAfter = async (opens: number): Promise<{ rowsRead: number; queries: string[] }> => {
+      const opened = await inPlayer(
+        session,
+        (sql) => sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n,
+      );
+      for (let open = opened; open < opens; open++) {
+        await openOk(await postOpen(session, { crateId: await giveCrate(session) }));
+      }
+      return inPlayer(session, probe);
+    };
+
+    const few = await readsAfter(byCrate + 1);
+    const many = await readsAfter(byCrate + 24);
+    expect(many.rowsRead).toBe(few.rowsRead);
+    expect(many.rowsRead).toBeLessThanOrEqual(byCrate + 1);
+    for (const query of [...few.queries, ...many.queries]) {
+      if (query.includes('crate_opens')) expect(query).toMatch(/FROM crate_opens LIMIT \?/);
+    }
   });
 });
 
