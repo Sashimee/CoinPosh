@@ -6,7 +6,7 @@ import {
 } from '@coinposh/shared';
 import { describe, expect, it } from 'vitest';
 import { ApiRequestError } from '../../net/errors.ts';
-import { isAlreadyClaimed, QuestClaims } from './claim.ts';
+import { HeldSettlements, isAlreadyClaimed, QuestClaims } from './claim.ts';
 import { claimResponse, fixtureQuest } from './fixture.ts';
 
 const quest = fixtureQuest({ template: 'dailyDropsEasy', done: 1 }, 0);
@@ -113,5 +113,42 @@ describe('QuestClaims', () => {
       return Promise.resolve({ ...response, quest: { ...response.quest, claimed: false } });
     }, keys());
     expect((await unclaimed.claim(quest.id)).kind).toBe('failed');
+  });
+});
+
+describe('HeldSettlements', () => {
+  it('settles a held claim once, when its hit-stop ends', () => {
+    const held = new HeldSettlements();
+    const settled: string[] = [];
+    held.hold('a', () => settled.push('a'));
+    expect(held.run('a')).toBe(true);
+    expect(held.run('a')).toBe(false);
+    expect(settled).toEqual(['a']);
+  });
+
+  it('flushes every held claim on close, so the hit-stop timer then finds nothing to do', () => {
+    const held = new HeldSettlements();
+    const settled: string[] = [];
+    held.hold('a', () => settled.push('a'));
+    held.hold('b', () => settled.push('b'));
+    held.flush();
+    expect(settled).toEqual(['a', 'b']);
+    expect(held.run('a')).toBe(false);
+    expect(held.run('b')).toBe(false);
+    held.flush();
+    expect(settled).toEqual(['a', 'b']);
+  });
+
+  it('drops held claims without settling them once the panel is disposed', () => {
+    const held = new HeldSettlements();
+    const settled: string[] = [];
+    held.hold('a', () => settled.push('a'));
+    held.clear();
+    held.flush();
+    expect(settled).toEqual([]);
+  });
+
+  it('runs nothing for an id it never held', () => {
+    expect(new HeldSettlements().run('missing')).toBe(false);
   });
 });

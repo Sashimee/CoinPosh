@@ -532,12 +532,34 @@
   scale: 0.97;
   filter: brightness(1.2);
   transition:
-    scale 100ms ease-out,
-    filter 100ms ease-out;
+    scale 80ms ease-out,
+    filter 80ms ease-out;
 }
 
 .cp-season-quest.is-denied .cp-season-quest-card {
   animation: cp-season-deny 360ms ease both;
+}
+
+.cp-season-quest.is-deny-glowing .cp-season-quest-card {
+  animation: cp-season-deny-glow 900ms ease both;
+}
+
+.cp-season-quest.is-denied.is-deny-glowing .cp-season-quest-card {
+  animation:
+    cp-season-deny 360ms ease both,
+    cp-season-deny-glow 900ms ease both;
+}
+
+@keyframes cp-season-deny-glow {
+  25% {
+    box-shadow:
+      0 0 0 1px rgb(var(--cp-coral-sunset-rgb) / 0.8),
+      0 0 26px rgb(var(--cp-coral-sunset-rgb) / 0.5);
+  }
+}
+
+.cp-season-action.is-retry.is-popping {
+  animation: cp-season-pop 520ms cubic-bezier(0.3, 1.8, 0.4, 1) both;
 }
 
 @keyframes cp-season-deny {
@@ -676,8 +698,21 @@ button.cp-season-action:focus-visible {
 
 .cp-season-quest-note {
   margin: 0;
+  border-radius: 6px;
   color: var(--cp-coral-sunset);
   font-size: 12.5px;
+}
+
+.cp-season-quest-note.is-flashing {
+  animation: cp-season-note-flash 700ms ease both;
+}
+
+@keyframes cp-season-note-flash {
+  20% {
+    background: rgb(var(--cp-coral-sunset-rgb) / 0.22);
+    color: var(--cp-ivory);
+    text-shadow: 0 0 10px rgb(var(--cp-coral-sunset-rgb) / 0.9);
+  }
 }
 
 .cp-season-stamp {
@@ -1209,6 +1244,21 @@ button.cp-season-action:focus-visible {
 .cp-season-root.is-reduced .cp-season-sheen::before,
 .cp-season-root.is-reduced .cp-season-quest.is-denied .cp-season-quest-card {
   animation: none !important;
+}
+
+.cp-season-root.is-reduced .cp-season-quest.is-denied.is-deny-glowing .cp-season-quest-card {
+  animation: cp-season-deny-glow 900ms ease both !important;
+}
+
+.cp-season-root.is-reduced .cp-season-action.is-retry.is-popping {
+  animation: cp-season-flare 520ms ease both;
+}
+
+@keyframes cp-season-flare {
+  35% {
+    filter: brightness(1.45);
+    box-shadow: 0 0 16px rgb(var(--cp-coral-sunset-rgb) / 0.6);
+  }
 }
 
 .cp-season-root.is-reduced .cp-season-quest.is-holding .cp-season-quest-card {

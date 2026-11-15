@@ -77,3 +77,32 @@ export class QuestClaims {
     this.#keys.delete(questId);
   }
 }
+
+/**
+ * Claim settlements waiting out the hit-stop. Closing the panel flushes them, so a claim the
+ * server paid is never left painted as pending or missing from the live status line.
+ */
+export class HeldSettlements {
+  readonly #held = new Map<string, () => void>();
+
+  hold(id: string, settle: () => void): void {
+    this.#held.set(id, settle);
+  }
+
+  /** Settles `id` if it is still held; false when a flush already did. */
+  run(id: string): boolean {
+    const settle = this.#held.get(id);
+    if (settle === undefined) return false;
+    this.#held.delete(id);
+    settle();
+    return true;
+  }
+
+  flush(): void {
+    for (const id of [...this.#held.keys()]) this.run(id);
+  }
+
+  clear(): void {
+    this.#held.clear();
+  }
+}

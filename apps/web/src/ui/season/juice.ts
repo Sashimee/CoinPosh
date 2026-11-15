@@ -22,6 +22,9 @@ export interface SeasonCuePlan {
   readonly channels: readonly JuiceChannel[];
 }
 
+/** Hit-stop before the claim stamp lands: the 40–80 ms band of 03-ART-AUDIO-JUICE item 7. */
+export const CLAIM_HOLD_MS = 80;
+
 /** The claim: a brass stamp, then a rising run of coin strikes, then a bright brass close. */
 const CLAIM_CHIME: readonly ChimeStep[] = [
   { at: 0, impact: { material: 'metal', velocity: 1.4 } },
@@ -32,10 +35,6 @@ const CLAIM_CHIME: readonly ChimeStep[] = [
   { at: 430, impact: { material: 'metal', velocity: 2 } },
 ];
 
-const TAB_CHIME: readonly ChimeStep[] = [
-  { at: 0, impact: { material: 'coin', velocity: 0.4, pan: 0 } },
-];
-
 /** One soft strike: the stamp was already there. */
 const ALREADY_CHIME: readonly ChimeStep[] = [
   { at: 0, impact: { material: 'metal', velocity: 0.7 } },
@@ -44,7 +43,8 @@ const ALREADY_CHIME: readonly ChimeStep[] = [
 /**
  * What each season moment plays. Reduced motion keeps sound, haptics, light (the sheen glows
  * in place instead of sweeping) and the number pop, and drops particles, squash and hit-stop,
- * still clearing the four-channel bar of 03-ART-AUDIO-JUICE.
+ * still clearing the four-channel bar of 03-ART-AUDIO-JUICE. A tab's only sound is its press
+ * cue on the bus, so one press is one cue.
  */
 export function seasonCuePlan(cue: SeasonCue, reduced: boolean): SeasonCuePlan {
   const calm: readonly JuiceChannel[] = ['sound', 'haptic', 'light', 'numberPop'];
@@ -64,7 +64,7 @@ export function seasonCuePlan(cue: SeasonCue, reduced: boolean): SeasonCuePlan {
       return {
         feedback: 'toggle',
         haptic: null,
-        chime: TAB_CHIME,
+        chime: [],
         sparks: 0,
         hold: 0,
         light: 'glow',
@@ -77,7 +77,7 @@ export function seasonCuePlan(cue: SeasonCue, reduced: boolean): SeasonCuePlan {
         haptic: 'fanfare',
         chime: CLAIM_CHIME,
         sparks: reduced ? 0 : 16,
-        hold: reduced ? 0 : 120,
+        hold: reduced ? 0 : CLAIM_HOLD_MS,
         light: reduced ? 'glow' : 'sweep',
         pop: reduced ? 'pulse' : 'float',
         channels: reduced
@@ -103,8 +103,8 @@ export function seasonCuePlan(cue: SeasonCue, reduced: boolean): SeasonCuePlan {
         sparks: 0,
         hold: 0,
         light: 'glow',
-        pop: null,
-        channels: reduced ? ['sound', 'haptic', 'light'] : ['sound', 'haptic', 'squash', 'light'],
+        pop: 'pulse',
+        channels: reduced ? calm : ['sound', 'haptic', 'squash', 'light', 'numberPop'],
       };
   }
 }
@@ -135,4 +135,27 @@ export function playSeasonCue(
       audio.playImpact(step.impact);
     });
   }
+}
+
+export interface SeasonFailureTargets<T> {
+  /** The quest card: the deny glow, and the shake when motion is allowed. */
+  readonly card: T;
+  /** The "Try again" button, which pops in place. */
+  readonly action: T;
+  /** The inline error note under the card, which flashes. */
+  readonly note: T | null;
+}
+
+/** Paints a failed claim's light, pop and squash, exactly the channels its plan declares. */
+export function paintSeasonFailure<T>(
+  targets: SeasonFailureTargets<T>,
+  plan: SeasonCuePlan,
+  restart: (el: T, className: string) => void,
+): void {
+  if (plan.light) {
+    restart(targets.card, 'is-deny-glowing');
+    if (targets.note) restart(targets.note, 'is-flashing');
+  }
+  if (plan.pop) restart(targets.action, 'is-popping');
+  if (plan.channels.includes('squash')) restart(targets.card, 'is-denied');
 }

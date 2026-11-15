@@ -20,10 +20,16 @@ import { h, restartAnimation } from '../dom.ts';
 import { Localizer } from '../localize.ts';
 import { isReducedMotion, onReducedMotionChange } from '../motion/reduced.ts';
 import { createSheet } from '../panels/sheet.ts';
-import { QuestClaims } from './claim.ts';
+import { HeldSettlements, QuestClaims } from './claim.ts';
 import { loadSeasonStrings, seasonT } from './i18n.ts';
 import { seasonIcon } from './icons.ts';
-import { playSeasonCue, seasonCuePlan, type SeasonCue, type SeasonCuePlan } from './juice.ts';
+import {
+  paintSeasonFailure,
+  playSeasonCue,
+  seasonCuePlan,
+  type SeasonCue,
+  type SeasonCuePlan,
+} from './juice.ts';
 import {
   questsView,
   seasonView,
@@ -90,6 +96,7 @@ interface CardRefs {
   readonly sparks: HTMLElement;
   readonly pops: HTMLElement;
   readonly stamp: HTMLElement | null;
+  readonly note: HTMLElement | null;
   readonly action: HTMLElement;
 }
 
@@ -139,6 +146,7 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
   let expiredAt: number | null = null;
   const cards = new Map<string, CardRefs>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
+  const settlements = new HeldSettlements();
 
   const later = (ms: number, run: () => void): void => {
     const id = setTimeout(() => {
@@ -610,6 +618,14 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       });
     }
     const sparks = h('span', { class: 'cp-season-sparks', attrs: { 'aria-hidden': 'true' } });
+    const note =
+      claimStatus === 'failed'
+        ? h('p', {
+            class: 'cp-season-quest-note',
+            attrs: { 'data-testid': 'season-claim-error' },
+            text: t('quest.failed'),
+          })
+        : null;
     const pops = h('span', { class: 'cp-season-pops', attrs: { 'aria-hidden': 'true' } });
     const el = h(
       'li',
@@ -687,18 +703,12 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
           ),
           actionEl,
         ),
-        claimStatus === 'failed'
-          ? h('p', {
-              class: 'cp-season-quest-note',
-              attrs: { 'data-testid': 'season-claim-error' },
-              text: t('quest.failed'),
-            })
-          : null,
+        note,
         sparks,
         pops,
       ),
     );
-    return { card, el, sparks, pops, stamp, action: actionEl };
+    return { card, el, sparks, pops, stamp, note, action: actionEl };
   }
 
   function disposeCard(id: string): void {
@@ -913,21 +923,24 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       const refs = cards.get(id);
       if (refs && cue.hold > 0) refs.el.classList.add('is-holding');
       options.onClaimed?.(response);
+      settlements.hold(id, () => {
+        repaintCard(id);
+        paintBadge();
+        status.textContent = t('quest.claimedStatus', {
+          rewards: rewardsText(t, rewardPreviews(response.rewards), i18n.language),
+        });
+      });
       later(cue.hold, () => {
-        const next = repaintCard(id);
+        if (!settlements.run(id)) return;
+        const next = cards.get(id);
         if (next) {
-          next.el.classList.remove('is-holding');
           restartAnimation(next.el, cue.light === 'sweep' ? 'is-sweeping' : 'is-glowing');
           if (next.stamp) restartAnimation(next.stamp, 'is-stamping');
           burst(next, cue.sparks);
           popRewards(next, rewardPreviews(response.rewards), cue.pop ?? 'pulse');
         }
         play(cue, true);
-        paintBadge();
         restartAnimation(readyBadge, 'is-popping');
-        status.textContent = t('quest.claimedStatus', {
-          rewards: rewardsText(t, rewardPreviews(response.rewards), i18n.language),
-        });
       });
       if (starsIn(response.rewards) > 0 || season === null) void loadSeason(true);
       return;
@@ -947,8 +960,15 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
     }
     console.warn('[CoinPosh] a quest claim did not go through', outcome.error);
     const next = repaintCard(id);
-    play(plan('failed'), true);
-    if (next) restartAnimation(next.el, 'is-denied');
+    const cue = plan('failed');
+    play(cue, true);
+    if (next) {
+      paintSeasonFailure(
+        { card: next.el, action: next.action, note: next.note },
+        cue,
+        restartAnimation,
+      );
+    }
     status.textContent = t('quest.failedStatus', { title });
   }
 
@@ -1078,15 +1098,16 @@ export async function mountSeason(options: SeasonMountOptions): Promise<SeasonPa
       void loadSeason(true);
     },
     close() {
+      settlements.flush();
       clearTimers();
       stopTick();
-      for (const refs of cards.values()) refs.el.classList.remove('is-holding');
       sheet.close();
     },
     refresh,
     dispose() {
       if (disposed) return;
       disposed = true;
+      settlements.clear();
       clearTimers();
       stopTick();
       for (const id of [...cardDisposers.keys()]) disposeCard(id);

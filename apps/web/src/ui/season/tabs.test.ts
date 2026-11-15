@@ -34,7 +34,7 @@ function key(name: string): Event {
   return Object.assign(new Event('keydown', { cancelable: true }), { key: name });
 }
 
-function mountTabs() {
+function mountTabs(reduced = true) {
   const i18n = createI18n({ language: 'en', resources: BUNDLED_RESOURCES });
   const bus = createBus<UiEvents>();
   const emits: FeedbackKind[] = [];
@@ -58,7 +58,7 @@ function mountTabs() {
     select: (next, withBus) => {
       if (next === tab) return;
       tab = next;
-      playSeasonCue(ctx, seasonCuePlan('tab', true), withBus, {
+      playSeasonCue(ctx, seasonCuePlan('tab', reduced), withBus, {
         audio: { playImpact: (impact) => chimes.push(impact) },
         later: (_ms, run) => {
           run();
@@ -66,7 +66,7 @@ function mountTabs() {
       });
     },
   });
-  return { buttons, list, emits, chimes, tab: () => tab };
+  return { buttons, list, emits, chimes, cues: () => emits.length + chimes.length, tab: () => tab };
 }
 
 describe('season tabs send one press cue per switch', () => {
@@ -77,20 +77,29 @@ describe('season tabs send one press cue per switch', () => {
     setMotionPreference('system');
   });
 
-  it('a pointer press emits the toggle once, from the pressable only', () => {
-    const tabs = mountTabs();
+  it.each([true, false])('one pointer press is exactly one cue (reduced=%s)', (reduced) => {
+    const tabs = mountTabs(reduced);
     tabs.buttons.season.dispatchEvent(pointer('pointerdown'));
     tabs.buttons.season.dispatchEvent(pointer('pointerup'));
     tabs.buttons.season.dispatchEvent(new Event('click'));
     expect(tabs.tab()).toBe('season');
     expect(tabs.emits).toEqual(['toggle']);
-    expect(tabs.chimes).toHaveLength(1);
+    expect(tabs.cues()).toBe(1);
+  });
+
+  it.each([true, false])('one arrow key press is exactly one cue (reduced=%s)', (reduced) => {
+    const tabs = mountTabs(reduced);
+    tabs.list.dispatchEvent(key('ArrowRight'));
+    expect(tabs.tab()).toBe('season');
+    expect(tabs.emits).toEqual(['toggle']);
+    expect(tabs.cues()).toBe(1);
   });
 
   it('a click with no pointer (Enter or Space) also emits once', () => {
     const tabs = mountTabs();
     tabs.buttons.season.dispatchEvent(new Event('click'));
     expect(tabs.emits).toEqual(['toggle']);
+    expect(tabs.cues()).toBe(1);
   });
 
   it('each arrow key switch emits once, from the tab cue', () => {
@@ -103,7 +112,7 @@ describe('season tabs send one press cue per switch', () => {
     tabs.list.dispatchEvent(key('Home'));
     expect(tabs.tab()).toBe('quests');
     expect(tabs.emits).toEqual(['toggle', 'toggle']);
-    expect(tabs.chimes).toHaveLength(2);
+    expect(tabs.cues()).toBe(2);
   });
 
   it('pressing the tab already shown plays only the press cue', () => {
@@ -111,7 +120,7 @@ describe('season tabs send one press cue per switch', () => {
     tabs.buttons.quests.dispatchEvent(pointer('pointerdown'));
     tabs.buttons.quests.dispatchEvent(new Event('click'));
     expect(tabs.emits).toEqual(['toggle']);
-    expect(tabs.chimes).toHaveLength(0);
+    expect(tabs.cues()).toBe(1);
   });
 
   it('ignores keys that do not move between tabs', () => {
