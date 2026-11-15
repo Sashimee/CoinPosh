@@ -183,7 +183,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-11.04 | todo | | Waits on T-11.03, T-3.07. Collecting numbers |
 | T-11.05 | done | task/T-11.05 (merge 0cc6829) | Sim: prize bodies (packages/sim/src/props: prizes/index, prizes tests + bench, shape, world, props index + test) (af1df27); pnpm check green after merge |
 | T-11.06 | todo | | Waits on T-11.04. Server: prizes and coin variants |
-| T-11.07 | todo | | Waits on T-11.03. Prize and variant looks |
+| T-11.07 | done | task/T-11.07 (merge 86094f3) | Procedural PBR prizes and collectible coin variant looks; review follow-up WIP on wip/T-11.07-review |
 | T-11.08 | todo | | Waits on T-11.05, T-11.06, T-11.07. Prize flow and juice |
 | T-11.09 | todo | | Waits on T-11.06, T-3.03. Collection book UI |
 | T-11.10 | todo | | Waits on T-11.07, T-3.03. Trophy lounge scene |
@@ -453,3 +453,4 @@ Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 - wave 41 · 2026-11-15 · P-701 T-11.01-p2 T-3.03-p1 P-708 P-657 P-670 T-3.05-p4 P-707 P-642 T-3.06-p2 P-684 T-3.05-p3 P-640 P-674 · merged P-701 (1b496aa), T-11.01-p2 (59d4859), T-3.03-p1 (9dcf7ef), P-708 (3839822), P-670 (f49bf57, lead salvage); rejected P-657, T-3.05-p4, P-707, P-642, T-3.06-p2; P-684, T-3.05-p3, P-640, P-674 cut by the usage limit
 - wave 42 · 2026-11-15 · merged T-3.06-p2, P-707, P-640, P-674, T-11.03, T-14.02, P-684, P-657-p1, P-730, P-703, T-11.14, P-732, P-657-p2, T-12.01, T-14.04, P-721, P-728; rejected T-3.05-p3 (juice), P-602 (console.warn downgrade, focus target), T-2.03-p2b (superseded by lead build 01178fe), P-681 (idle frames cut to 4), P-704 (FR copy), P-641 (Collection wiring, budget); P-609, T-11.05, P-643 not delivered; T-11.07, P-722, P-734, T-14.03 cut by the usage limit
 - wave 43 · 2026-11-15 · merged P-752, P-740, T-3.05-p3, P-722, P-746, P-737-p1, P-738, P-735, P-747, T-13.01, T-14.03, P-757, T-16.01; rejected P-745 (falls envelope loosened to 445, bot bound test weakened), P-737-p2 (unbounded COUNT on crate_opens per open), P-749 (in-hand chip skips a step-down during a refill flight; styles.css outside owns), P-748 (fix round cut by the limit); P-755-p1, P-769, T-13.09, T-11.07, T-12.08 cut by the usage limit
+- wave 44 · 2026-11-15 · stopped early by the founder (pause before moving to a new machine) · merged P-749, P-737-p2, T-12.08, T-14.01, T-11.05, T-11.07; unfinished work pushed as wip/T-13.09, wip/P-764, wip/P-769, wip/T-12.12, wip/P-766 (T-13.09 rejected in review: fixed boss stand spot ignores aspect; others not reviewed yet); P-767, P-755 builds interrupted with nothing to save; P-745, P-756 not started
