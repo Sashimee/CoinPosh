@@ -78,6 +78,7 @@ export function mountGacha(options: GachaMountOptions): GachaModule {
   let unpaid: Unpaid | null = null;
   let revealing = false;
   let fair: FairPanel | null = null;
+  let fairLoading: Promise<FairPanel> | null = null;
   let reopenAfterFair = false;
   let pulls = 0;
   let disposed = false;
@@ -198,24 +199,31 @@ export function mountGacha(options: GachaMountOptions): GachaModule {
     );
     closePanel();
     reopenAfterFair = true;
-    void import('./gachaOdds.ts').then(
-      ({ mountFair }) => {
-        if (disposed) return;
-        fair ??= mountFair({
-          ui,
-          host: options.host,
-          data: apiFairData(options.fair, () => pity.read()),
-          audio: options.audio ?? null,
-          onClose: () => {
-            if (reopenAfterFair) {
-              reopenAfterFair = false;
-              openPanel();
-            }
-          },
-        });
-        fair.open(dockTrigger ?? options.host, { tab: 'odds', source: 'gacha' });
+    fairLoading ??= import('./gachaOdds.ts').then(({ mountFair }) =>
+      mountFair({
+        ui,
+        host: options.host,
+        data: apiFairData(options.fair, () => pity.read()),
+        audio: options.audio ?? null,
+        onClose: () => {
+          if (reopenAfterFair) {
+            reopenAfterFair = false;
+            openPanel();
+          }
+        },
+      }),
+    );
+    void fairLoading.then(
+      (loaded) => {
+        if (disposed) {
+          loaded.dispose();
+          return;
+        }
+        fair = loaded;
+        loaded.open(dockTrigger ?? options.host, { tab: 'odds', source: 'gacha' });
       },
       (error: unknown) => {
+        fairLoading = null;
         reopenAfterFair = false;
         console.error(
           'CoinPosh gacha: the odds panel did not load (network or a stale deploy); press the odds link again to retry.',

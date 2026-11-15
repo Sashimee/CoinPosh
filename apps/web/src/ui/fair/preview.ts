@@ -111,7 +111,7 @@ async function boot(): Promise<void> {
     'position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);padding:12px 22px;pointer-events:auto';
   host.append(trigger);
   const data = await previewData();
-  const panel = mountFair({ ui: app, host, data, onClose: () => undefined });
+  const panel = await mountFair({ ui: app, host, data, onClose: () => undefined });
   trigger.textContent = app.i18n.t(fairKey('open'));
   const tab = params.get('tab');
   const first = (await data.seeds().catch(() => null))?.revealed[0] ?? null;
