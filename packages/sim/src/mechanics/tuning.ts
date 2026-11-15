@@ -103,6 +103,21 @@ export const FUSION_TUNING = {
   streamBurst: 4,
 } as const;
 
+/**
+ * Unfusing a refused fusion (Sim.unfuse, P-657). Kept apart from FUSION_TUNING, which the
+ * economy's physics ladder fixture measures: none of this changes how coins fuse.
+ *
+ * - memoryTicks 1800 (30 s): a fusion's input poses are kept this long after it fires, so
+ *   a refusal that comes back after a slow or retried claim still lays each coin back
+ *   where it lay. Past it the coins are spread around the fusion site instead.
+ * - memoryCount 64: at most this many fusions are remembered, the oldest dropped first;
+ *   a held pour fuses about one a second, so this is the 30 s window with room to spare.
+ */
+export const UNFUSE_TUNING = {
+  memoryTicks: 1800,
+  memoryCount: 64,
+} as const;
+
 /** Where the Champagne Tower pedestal stands on the upper tier, in metres. */
 export interface TowerPlacement {
   readonly x: number;

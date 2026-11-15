@@ -1,4 +1,4 @@
-import type { Vector, World } from '@dimforge/rapier3d-deterministic-compat';
+import type { Rotation, Vector, World } from '@dimforge/rapier3d-deterministic-compat';
 import type { StateHasher } from '../hash.ts';
 import type { Rapier } from '../rapier.ts';
 import type { TableCoin } from '../table/table.ts';
@@ -6,7 +6,7 @@ import { type CoinPair, CoinContactFinder, NO_GROUP } from './contacts.ts';
 import { ContactFusion, type ContactProgress, freshTicks, type FusionRules } from './fusion.ts';
 import type { MechanicTable } from './table.ts';
 import { ChampagneTower, type TowerState } from './tower.ts';
-import { FUSION_TUNING, type TowerPlacement } from './tuning.ts';
+import { FUSION_TUNING, type TowerPlacement, UNFUSE_TUNING } from './tuning.ts';
 
 export interface MechanicsConfig<Tier extends string> {
   /** The coin tier ladder, lowest first (COIN_TIERS from packages/shared). The top tier never fuses. */
@@ -47,8 +47,34 @@ export interface TowerToppleEvent {
   readonly height: number;
 }
 
+/** A refused fusion's coins laid back on the table by Sim.unfuse, before the tick's physics. */
+export interface UnfuseEvent {
+  readonly kind: 'unfused';
+  readonly tick: number;
+  readonly fusedId: number;
+  /**
+   * Whether the fused coin was on the table and has been taken off. False when it had
+   * already left (fallen, fused again, stacked) or never existed; the coins are laid all
+   * the same.
+   */
+  readonly removed: boolean;
+  /** The laid coins' new ids, in the order of the unfuse's inputs. */
+  readonly coinIds: readonly number[];
+}
+
 export type MechanicEvent<Tier extends string> =
-  FusionEvent<Tier> | TowerCaptureEvent<Tier> | TowerToppleEvent;
+  FusionEvent<Tier> | TowerCaptureEvent<Tier> | TowerToppleEvent | UnfuseEvent;
+
+/**
+ * What a fusion leaves behind for Sim.unfuse, kept for UNFUSE_TUNING.memoryTicks: where it
+ * fired, and each input's pose, in metres, in the order of FusionEvent.ids.
+ */
+export interface FusionRecord {
+  readonly tick: number;
+  readonly position: Readonly<Vector>;
+  readonly rotation: Readonly<Rotation>;
+  readonly inputs: readonly Readonly<{ translation: Vector; rotation: Rotation }>[];
+}
 
 /** A coin laid on the table before the first tick, for TableMechanics.layCoins. */
 export interface LaidCoin<Tier extends string> {
@@ -95,6 +121,14 @@ export class TableMechanics<Tier extends string> {
   /** When the chute's stream allowance is next spent (FUSION_TUNING.streamTicks), as a tick. */
   #streamDue = 0;
   #lastTick = -1;
+  /**
+   * Recent fusions by fused id, oldest first, for Sim.unfuse. Not hashed: they are what
+   * the fusion events already reported, derived from the replayed inputs, and they move
+   * no body until an unfuse (itself hashed while queued) reads them. Hashing them would
+   * move every pinned hash of a table that fuses for nothing a replay can tell.
+   */
+  readonly #records = new Map<number, FusionRecord>();
+  #lastSite: Readonly<Vector> | null = null;
 
   constructor(rapier: Rapier, world: World, table: MechanicTable, config: MechanicsConfig<Tier>) {
     if (config.tiers.length < 2) {
@@ -177,6 +211,36 @@ export class TableMechanics<Tier extends string> {
     return this.#tier(this.#index(id));
   }
 
+  /** The poses fusion `fusedId` consumed, while UNFUSE_TUNING keeps them. */
+  fusionRecord(fusedId: number): FusionRecord | undefined {
+    return this.#records.get(fusedId);
+  }
+
+  /** Where the latest fusion fired, in metres; null before the first. */
+  get lastFusionSite(): Readonly<Vector> | null {
+    return this.#lastSite;
+  }
+
+  /**
+   * Records an unfuse laid before the step for the tick after the last: the fused coin,
+   * when `removed`, is gone from the table and forgotten, and each laid coin keeps its
+   * tier and starts idle, as the opening heap does. A grace like a fresh drop's would
+   * end in a fresh window in which the same coins, still touching, ripen again and send
+   * the server the claim it just refused; idle, they never fuse among themselves, and a
+   * silver or above rejoins the ladder only once a fresh coin of its tier wakes it
+   * (FUSION_TUNING.wakeFromTier).
+   */
+  unfuse(fusedId: number, removed: boolean, laid: Iterable<LaidCoin<Tier>>): void {
+    if (removed) {
+      this.#forgetCoin(fusedId);
+      this.#fusion?.forget([fusedId]);
+    }
+    this.#records.delete(fusedId);
+    for (const { id, tier } of laid) {
+      this.#setTier(id, tier, 'unfuse');
+    }
+  }
+
   /** Contact progress of the same-tier pairs touching on the last step, for the charge-up. */
   fusionProgress(): ContactProgress[] {
     return this.#fusion?.progress(this.#lastTick) ?? [];
@@ -193,6 +257,7 @@ export class TableMechanics<Tier extends string> {
       throw new RangeError(`TableMechanics.step: tick ${tick} is not after ${this.#lastTick}`);
     }
     this.#lastTick = tick;
+    this.#forgetRecords(tick);
     const gone: number[] = [];
     for (const id of fallen) {
       this.#forgetCoin(id);
@@ -322,6 +387,7 @@ export class TableMechanics<Tier extends string> {
         z: z / inputs.length,
       };
       const index = this.#index(first.id);
+      const poses = inputs.map(({ translation, rotation }) => ({ translation, rotation }));
       for (const id of ids) {
         this.#table.removeCoin(id);
         this.#forgetCoin(id);
@@ -330,6 +396,7 @@ export class TableMechanics<Tier extends string> {
       const fusedId = this.#table.addCoin(position, first.rotation);
       this.#tierOf.set(fusedId, index + 1);
       this.#startGrace(fusedId, tick);
+      this.#remember(fusedId, { tick, position, rotation: first.rotation, inputs: poses });
       events.push({
         kind: 'fusion',
         tick,
@@ -403,6 +470,27 @@ export class TableMechanics<Tier extends string> {
       throw new RangeError(`TableMechanics.${caller}: coin ${id} is already registered`);
     }
     this.#tierOf.set(id, index);
+  }
+
+  #remember(fusedId: number, record: FusionRecord): void {
+    this.#records.set(fusedId, record);
+    this.#lastSite = record.position;
+    for (const id of this.#records.keys()) {
+      if (this.#records.size <= UNFUSE_TUNING.memoryCount) {
+        break;
+      }
+      this.#records.delete(id);
+    }
+  }
+
+  /** Drops the records UNFUSE_TUNING no longer keeps at `tick`; they are oldest first. */
+  #forgetRecords(tick: number): void {
+    for (const [id, record] of this.#records) {
+      if (tick - record.tick < UNFUSE_TUNING.memoryTicks) {
+        break;
+      }
+      this.#records.delete(id);
+    }
   }
 
   /** Drops a coin that left the table for good. */

@@ -307,6 +307,24 @@ export const COIN_RESTORE = {
 } as const;
 
 /**
+ * Laying a refused fusion's coins back down where no pose was kept for them
+ * (PusherTable.spreadPoses, Sim.unfuse), in metres:
+ *
+ * - spacing 1.08: the coins stand on a ring around the fusion site with their centres
+ *   2.16 radii apart, a 1 mm gap between rims, so they land side by side as the three
+ *   coins they were, with a soft clack and no shove into each other.
+ * - wallMargin 2 mm: spots stay this far inside the floor's edge and the backboard, so
+ *   no coin is laid over a gutter, where it would be lost to the house.
+ * - brinkMargin 27 mm: spots stay a coin's width behind the front edge, so laying coins
+ *   back never pays one out; the pusher earns that.
+ */
+export const UNFUSE_SPREAD = {
+  spacing: 1.08,
+  wallMargin: 0.002,
+  brinkMargin: 0.027,
+} as const;
+
+/**
  * Contact events for the renderer and audio: a coin striking something at or above
  * COIN_MATERIAL.impactSpeed (0.3 m/s) is braked by the impact brake (PusherTable),
  * which knows the closing speed and what was struck, so that is where the event comes
