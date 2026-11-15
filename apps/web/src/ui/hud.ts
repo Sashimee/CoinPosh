@@ -588,6 +588,15 @@ export interface InHandCopy {
   readonly value: string;
   /** The whole readout in words, for screen readers. */
   readonly spoken: string;
+  /** The hand is down to its last few coins and the readout pulses for attention. */
+  readonly low: boolean;
+}
+
+/** At or below this many coins the hand reads "Last coins" and pulses. */
+export const IN_HAND_LOW_AT = 3;
+
+function isLowHand(coins: number): boolean {
+  return coins > 0 && coins <= IN_HAND_LOW_AT;
 }
 
 export function inHandCopy(
@@ -596,23 +605,39 @@ export function inHandCopy(
   language: Language,
 ): InHandCopy {
   const value = formatInteger(coins, language);
+  const low = isLowHand(coins);
   return {
-    label: t('hud.inHand.label'),
+    label: t(low ? 'hud.inHand.low' : 'hud.inHand.label'),
     value,
-    spoken: t('hud.inHand.aria', { count: coins, value }),
+    spoken: t(low ? 'hud.inHand.lowAria' : 'hud.inHand.aria', { count: coins, value }),
+    low,
   };
 }
 
 /** A refill landing in hand springs the readout; a drop leaving it dips the coin. */
 const IN_HAND_POP_VELOCITY = 3;
+/** A refill after every drop springs softer than a payout's handover, so taps don't jitter it. */
+const IN_HAND_REFILL_POP_VELOCITY = 1.6;
 const IN_HAND_DIP: Keyframe[] = [
   { translate: '0 0', opacity: 1 },
   { offset: 0.45, translate: '0 5px', opacity: 0.25 },
   { translate: '0 0', opacity: 1 },
 ];
 const IN_HAND_DIP_MS = 320;
-/** One coin glyph's hop from the plaque into the hand during a handover. */
+/** The count rolls like an odometer wheel: down as a coin leaves, up as one lands. */
+const IN_HAND_ROLL_MS = 220;
+const rollFrames = (from: string): Keyframe[] => [
+  // Never fully transparent: a long frame on a slow phone must not blank the count.
+  { translate: `0 ${from}`, opacity: 0.4 },
+  { translate: '0 0', opacity: 1 },
+];
+/** How long the chip keeps its static gold rim for a refill under reduced motion. */
+const IN_HAND_STILL_RIM_MS = 360;
+const IN_HAND_REACH_MS = 200;
+/** One coin glyph's hop from the plaque into the hand, for a refill or a handover step. */
 const HANDOVER_FLIGHT_MS = 460;
+/** A refill after a drop lands before a brisk next tap, so the count is back up between drops. */
+const REFILL_FLIGHT_MS = 300;
 const HANDOVER_FLIGHT_SAMPLES = 10;
 const HANDOVER_FADE_MS = 320;
 const HANDOVER_FADE: Keyframe[] = [{ opacity: 0.2 }, { opacity: 1 }];
@@ -647,25 +672,30 @@ function handoverFrames(from: Element, to: Element, lean: number): Keyframe[] {
 /**
  * The drop buffer as a small tab tucked under the Vault plaque: coin, count and "In hand". It
  * stays out of sight until the buffer first holds coins, then keeps its place and dims when
- * the buffer runs dry, so a refill never shifts the HUD.
+ * the buffer runs dry, so a refill never shifts the HUD. Every drop moves it: the count rolls
+ * down as the coin leaves, and the refill the server buys from the Vault flies in as a coin
+ * glyph from the plaque that rolls the count back up as it lands. At IN_HAND_LOW_AT coins or
+ * fewer it reads "Last coins" and pulses.
  */
 function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   const coin = icon('coin');
   coin.setAttribute('style', 'width: 12px; height: 12px');
-  const value = h('span', { attrs: { 'aria-hidden': 'true' } });
-  const label = h('span', { attrs: { 'aria-hidden': 'true' } });
+  const value = h('span', { class: 'cp-in-hand-value', attrs: { 'aria-hidden': 'true' } });
+  const label = h('span', { class: 'cp-in-hand-label', attrs: { 'aria-hidden': 'true' } });
   Object.assign(label.style, {
     fontFamily: 'var(--cp-font-ui)',
     fontSize: '9px',
     fontWeight: '700',
     letterSpacing: '0.24em',
     textTransform: 'uppercase',
-    color: 'var(--cp-gold-brushed)',
   });
   const spoken = h('span', { class: 'cp-sr-only' });
   const readout = h(
     'div',
-    { class: 'cp-chip', attrs: { 'data-testid': 'hud-in-hand', role: 'group', hidden: '' } },
+    {
+      class: 'cp-chip cp-in-hand',
+      attrs: { 'data-testid': 'hud-in-hand', role: 'group', hidden: '' },
+    },
     coin,
     value,
     label,
@@ -677,27 +707,36 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
     marginTop: '-4px',
     padding: '3px 11px 4px 9px',
     fontSize: '13px',
-    borderColor: 'var(--cp-hairline-soft)',
-    transition: 'opacity 240ms ease',
   });
   const pop = new SpringValue(1, SPRINGS.pop, (scale) => {
     readout.style.scale = scale === 1 ? '' : String(scale);
   });
   const inHand = inHandStore(ctx.store);
 
+  const copyFor = (coins: number): InHandCopy =>
+    inHandCopy((key, values) => tr(ctx, key, values), coins, ctx.i18n.language);
+
   /** Digits wait for the glyph that carries them; any other change paints them at once. */
   let digitsFor = 0;
-  const paintDigits = (coins: number): void => {
-    value.textContent = formatInteger(coins, ctx.i18n.language);
-    readout.style.opacity = coins > 0 ? '' : '0.45';
-  };
-  const paint = (coins: number, digits: boolean): void => {
-    const copy = inHandCopy((key, values) => tr(ctx, key, values), coins, ctx.i18n.language);
+  const paintDigits = (coins: number, roll?: 'up' | 'down'): void => {
+    const copy = copyFor(coins);
+    const changed = value.textContent !== copy.value;
+    value.textContent = copy.value;
     label.textContent = copy.label;
-    spoken.textContent = copy.spoken;
+    readout.classList.toggle('is-low', copy.low);
+    readout.style.opacity = coins > 0 ? '' : '0.45';
+    if (roll && changed && !isReducedMotion()) {
+      value.animate(rollFrames(roll === 'up' ? '0.45em' : '-0.45em'), {
+        duration: IN_HAND_ROLL_MS,
+        easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)',
+      });
+    }
+  };
+  const paint = (coins: number, digits: boolean, roll?: 'up' | 'down'): void => {
+    spoken.textContent = copyFor(coins).spoken;
     if (digits) {
       digitsFor += 1;
-      paintDigits(coins);
+      paintDigits(coins, roll);
     }
   };
 
@@ -713,7 +752,7 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   const flights = new Set<() => void>();
   let lean = 1;
   /** Flies one coin glyph from the plaque into the hand; false when there is nowhere to fly. */
-  const fly = (landed: () => void): boolean => {
+  const fly = (ms: number, landed: () => void): boolean => {
     const into = flightLayer();
     if (!into) return false;
     const from = plaque.querySelector('.cp-plaque-amount .cp-icon') ?? plaque;
@@ -725,14 +764,14 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
     into.append(glyph);
     lean = -lean;
     glyph.animate(handoverFrames(from, coin, lean * 26), {
-      duration: HANDOVER_FLIGHT_MS,
+      duration: ms,
       easing: 'linear',
       fill: 'both',
     });
     const timer = setTimeout(() => {
       finish();
       landed();
-    }, HANDOVER_FLIGHT_MS);
+    }, ms);
     const finish = (): void => {
       clearTimeout(timer);
       glyph.remove();
@@ -742,27 +781,66 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
     return true;
   };
 
-  const handOver = (coins: number): void => {
+  let dropped = false;
+  let stillRim: ReturnType<typeof setTimeout> | undefined;
+  /** Reduced motion: no flight, the chip's rim lights gold and holds still for a moment. */
+  const lightStillRim = (): void => {
+    clearTimeout(stillRim);
+    readout.classList.add('is-received-still');
+    stillRim = setTimeout(() => {
+      readout.classList.remove('is-received-still');
+    }, IN_HAND_STILL_RIM_MS);
+  };
+
+  /**
+   * Coins the server moved from the Vault into the hand: a drop-buffer refill after a drop, or
+   * one step of a payout's handover, which lands with a bigger spring.
+   */
+  const receive = (coins: number, handover: boolean): void => {
+    const velocity = handover ? IN_HAND_POP_VELOCITY : IN_HAND_REFILL_POP_VELOCITY;
+    // The buffer fills before the first tap, and the browser refuses haptics until one.
+    const tick = (): void => {
+      if (handover || dropped) feedback(ctx, 'tick');
+    };
     if (isReducedMotion()) {
       paint(coins, true);
       value.animate(HANDOVER_FADE, { duration: HANDOVER_FADE_MS, easing: 'ease-out' });
-      plaque
-        .querySelector('.cp-plaque-amount')
-        ?.animate(HANDOVER_FADE, { duration: HANDOVER_FADE_MS, easing: 'ease-out' });
-      feedback(ctx, 'tick');
+      if (handover) {
+        plaque
+          .querySelector('.cp-plaque-amount')
+          ?.animate(HANDOVER_FADE, { duration: HANDOVER_FADE_MS, easing: 'ease-out' });
+      }
+      lightStillRim();
+      tick();
       return;
     }
     paint(coins, false);
+    readout.classList.add('is-refilling');
     const carried = digitsFor;
-    const flown = fly(() => {
-      if (carried === digitsFor) paintDigits(Math.min(coins, inHand.getState().coins));
-      pop.kick(IN_HAND_POP_VELOCITY);
+    const flown = fly(handover ? HANDOVER_FLIGHT_MS : REFILL_FLIGHT_MS, () => {
+      if (carried === digitsFor) {
+        readout.classList.remove('is-refilling');
+        paintDigits(Math.min(coins, inHand.getState().coins), 'up');
+      }
+      pop.kick(velocity);
       restartAnimation(readout, 'is-receiving');
-      feedback(ctx, 'tick');
+      tick();
     });
     if (!flown) {
-      paint(coins, true);
-      pop.kick(IN_HAND_POP_VELOCITY);
+      readout.classList.remove('is-refilling');
+      paint(coins, true, 'up');
+      pop.kick(velocity);
+    }
+  };
+
+  /** A drop took a coin from the hand: the count rolls down and the coin dips away. */
+  const drain = (coins: number): void => {
+    dropped = true;
+    readout.classList.remove('is-refilling');
+    paint(coins, true, 'down');
+    restartAnimation(readout, 'is-draining');
+    if (!isReducedMotion()) {
+      coin.animate(IN_HAND_DIP, { duration: IN_HAND_DIP_MS, easing: 'ease-out' });
     }
   };
 
@@ -772,21 +850,36 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
       (s) => s.coins,
       (coins, previous) => {
         if (coins > 0) readout.hidden = false;
-        if (previous !== undefined && !readout.hidden && coins > previous) {
-          if (inHand.getState().handover) {
-            handOver(coins);
-            return;
-          }
+        if (previous === undefined || readout.hidden) {
           paint(coins, true);
-          pop.kick(IN_HAND_POP_VELOCITY);
           return;
         }
-        paint(coins, true);
-        if (previous === undefined || readout.hidden) return;
-        if (coins < previous && !isReducedMotion()) {
-          coin.animate(IN_HAND_DIP, { duration: IN_HAND_DIP_MS, easing: 'ease-out' });
-        }
+        if (coins > previous) receive(coins, inHand.getState().handover);
+        else drain(coins);
       },
+    ),
+  );
+  let reaching: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * The hand reaches for a coin the moment the table is pressed, before the drop it asks for is
+   * settled; the count itself waits for the coin to leave.
+   */
+  const reach = (): void => {
+    if (readout.hidden || inHand.getState().coins === 0) return;
+    clearTimeout(reaching);
+    restartAnimation(readout, 'is-reaching');
+    reaching = setTimeout(() => {
+      readout.classList.remove('is-reaching');
+    }, IN_HAND_REACH_MS);
+  };
+  ctx.own(
+    listen(
+      window,
+      'pointerdown',
+      (event) => {
+        if (isTableTap(event)) reach();
+      },
+      { capture: true, passive: true },
     ),
   );
   ctx.own(
@@ -796,6 +889,8 @@ function createInHandReadout(ctx: UiContext, plaque: HTMLElement): HTMLElement {
   );
   ctx.own(() => {
     pop.stop();
+    clearTimeout(stillRim);
+    clearTimeout(reaching);
     for (const finish of [...flights]) finish();
     layer?.remove();
   });

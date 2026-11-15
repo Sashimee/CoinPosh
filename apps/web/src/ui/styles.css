@@ -332,8 +332,104 @@
   height: 16px;
 }
 
+.cp-chip.cp-in-hand {
+  position: relative;
+  border-color: var(--cp-hairline-soft);
+  transition:
+    opacity 240ms ease,
+    border-color 200ms ease;
+}
+
+.cp-in-hand-value {
+  display: inline-block;
+  min-width: 2ch;
+  text-align: center;
+}
+
+.cp-in-hand-label {
+  color: var(--cp-gold-brushed);
+  transition: color 200ms ease;
+}
+
+.cp-in-hand .cp-icon {
+  transition:
+    color 200ms ease,
+    filter 200ms ease;
+}
+
+.cp-in-hand.is-refilling .cp-icon {
+  color: var(--cp-champagne);
+  filter: drop-shadow(0 0 4px rgb(var(--cp-gold-brushed-rgb) / 0.8));
+}
+
+.cp-in-hand.is-reaching .cp-icon {
+  color: var(--cp-ivory);
+  animation: cp-in-hand-reach 200ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+
+@keyframes cp-in-hand-reach {
+  40% {
+    translate: 0 -2px;
+    scale: 1.18;
+  }
+}
+
+.cp-in-hand.is-draining {
+  animation: cp-in-hand-drain 300ms ease-out;
+}
+
+@keyframes cp-in-hand-drain {
+  0% {
+    border-color: rgb(var(--cp-ivory-rgb) / 0.7);
+  }
+}
+
 [data-testid='hud-in-hand'].is-receiving {
   animation: cp-in-hand-receive 520ms ease-out;
+}
+
+.cp-in-hand.is-received-still {
+  border-color: var(--cp-gold-brushed);
+}
+
+.cp-in-hand.is-low {
+  border-color: rgb(var(--cp-coral-sunset-rgb) / 0.75);
+}
+
+.cp-in-hand.is-low .cp-in-hand-label {
+  color: var(--cp-coral-sunset);
+}
+
+.cp-in-hand::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.cp-in-hand.is-low::after {
+  animation: cp-in-hand-low 1400ms ease-in-out infinite;
+}
+
+@keyframes cp-in-hand-low {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgb(var(--cp-coral-sunset-rgb) / 0.65);
+  }
+
+  70%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 7px rgb(var(--cp-coral-sunset-rgb) / 0);
+  }
+}
+
+.cp-ui-host[data-motion='reduced'] .cp-in-hand.is-low::after {
+  animation: none;
+  opacity: 1;
+  box-shadow: 0 0 0 2px rgb(var(--cp-coral-sunset-rgb) / 0.35);
 }
 
 @keyframes cp-in-hand-receive {

@@ -22,6 +22,7 @@ import {
   HANDOVER_DWELL_MS,
   HANDOVER_MAX_STEPS,
   HANDOVER_STEP_MS,
+  IN_HAND_LOW_AT,
   InHandHandover,
   type InHandView,
   inHandCopy,
@@ -240,9 +241,40 @@ describe('inHandCopy', () => {
     const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
     const t = i18n.t.bind(i18n);
     expect(inHandCopy(t, 12, language)).toMatchObject({ label, value: '12' });
-    expect(inHandCopy(t, 1, language).spoken).toContain(one);
+    expect(t('hud.inHand.aria', { count: 1, value: '1' })).toContain(one);
     expect(inHandCopy(t, 12, language).spoken).toContain(many);
     expect(inHandCopy(t, 0, language).value).toBe('0');
+  });
+
+  it.each([
+    ['en', 'Last coins', 'Only 1 coin left in hand', 'Only 3 coins left in hand'],
+    ['fr', 'Dernières pièces', 'Plus que 1 pièce en main', 'Plus que 3 pièces en main'],
+    ['de', 'Letzte Münzen', 'Nur noch 1 Münze in der Hand', 'Nur noch 3 Münzen in der Hand'],
+  ] as const)('calls out the last coins in %s', (language, label, one, three) => {
+    const i18n = createI18n({ language, resources: BUNDLED_RESOURCES });
+    const t = i18n.t.bind(i18n);
+    expect(inHandCopy(t, 1, language)).toMatchObject({ label, low: true, spoken: one });
+    expect(inHandCopy(t, IN_HAND_LOW_AT, language)).toMatchObject({
+      label,
+      low: true,
+      spoken: three,
+    });
+  });
+
+  it('pulses only from IN_HAND_LOW_AT coins down to 1, not on an empty or a fuller hand', () => {
+    const i18n = createI18n({ language: 'en', resources: BUNDLED_RESOURCES });
+    const t = i18n.t.bind(i18n);
+    expect(IN_HAND_LOW_AT).toBe(3);
+    expect([0, 1, 2, 3, 4, 12].map((coins) => inHandCopy(t, coins, 'en').low)).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+    ]);
+    expect(inHandCopy(t, 4, 'en').label).toBe('In hand');
+    expect(inHandCopy(t, 0, 'en').label).toBe('In hand');
   });
 });
 
