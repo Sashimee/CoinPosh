@@ -376,42 +376,97 @@ function freshResources(): typeof resources {
   return structuredClone(resources);
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function settled(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe('createNamespaceLoader', () => {
-  it('loads a feature namespace in EN, FR and DE, once', async () => {
+  it('fetches only the active language and the fallback, once', async () => {
     const i18n = createI18n({ language: 'fr', resources: freshResources() });
     const { calls, loaders } = sampleLoaders();
     const load = createNamespaceLoader(i18n, loaders);
     expect(i18n.exists('sample:greeting')).toBe(false);
     await Promise.all([load('sample'), load('sample')]);
     await load('sample');
-    expect(calls.sort()).toEqual(['de', 'en', 'fr']);
+    expect(calls.sort()).toEqual(['en', 'fr']);
     expect(i18n.t('sample:greeting', { room: 'Salon' })).toBe('Bienvenue au Salon');
     expect(i18n.t('sample:chips', { count: 1 })).toBe('1 jeton');
-    i18n.changeLanguage('de');
-    expect(i18n.t('sample:chips', { count: 3 })).toBe('3 Chips');
     expect(i18n.t('sample:greeting', { room: 'Salon', lng: 'en' })).toBe('Welcome to the Salon');
-    expect(i18n.t('hello', { name: 'Jo' })).toBe('Hallo Jo');
+    expect(i18n.instance.hasResourceBundle('de', 'sample')).toBe(false);
   });
 
-  it('adds nothing until every language has arrived', async () => {
+  it('fetches a single file for a player who reads the fallback language', async () => {
     const i18n = createI18n({ language: 'en', resources: freshResources() });
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { calls, loaders } = sampleLoaders();
+    await createNamespaceLoader(i18n, loaders)('sample');
+    expect(calls).toEqual(['en']);
+    expect(i18n.t('sample:chips', { count: 2 })).toBe('2 chips');
+  });
+
+  it('fetches the new language of every loaded namespace on a switch, reading the fallback until it lands', async () => {
+    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    const german = deferred<ResourceTree>();
+    const { calls, loaders } = sampleLoaders();
     const load = createNamespaceLoader(i18n, {
-      ...sampleLoaders().loaders,
-      './locales/de/sample.json': async () => {
-        await gate;
-        return SAMPLE_STRINGS.de;
+      ...loaders,
+      './locales/de/sample.json': () => {
+        calls.push('de');
+        return german.promise;
       },
     });
-    const loading = load('sample');
-    await Promise.resolve();
-    expect(i18n.exists('sample:greeting')).toBe(false);
-    release();
+    await load('sample');
+    const listener = vi.fn();
+    i18n.onLanguageChanged(listener);
+    i18n.changeLanguage('de');
+    expect(calls).toEqual(['en', 'de']);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(i18n.t('sample:chips', { count: 3 })).toBe('3 chips');
+    expect(i18n.t('hello', { name: 'Jo' })).toBe('Hallo Jo');
+    german.resolve(SAMPLE_STRINGS.de);
+    await load('sample');
+    expect(i18n.t('sample:chips', { count: 3 })).toBe('3 Chips');
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenLastCalledWith('de');
+    i18n.changeLanguage('en');
+    i18n.changeLanguage('de');
+    await load('sample');
+    expect(calls).toEqual(['en', 'de']);
+    expect(i18n.instance.hasResourceBundle('fr', 'sample')).toBe(false);
+  });
+
+  it('leaves a namespace nobody asked for alone on a switch', async () => {
+    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    const { calls, loaders } = sampleLoaders();
+    createNamespaceLoader(i18n, loaders);
+    i18n.changeLanguage('fr');
+    await settled();
+    expect(calls).toEqual([]);
+  });
+
+  it('awaits the active language before resolving', async () => {
+    const i18n = createI18n({ language: 'de', resources: freshResources() });
+    const german = deferred<ResourceTree>();
+    const load = createNamespaceLoader(i18n, {
+      ...sampleLoaders().loaders,
+      './locales/de/sample.json': () => german.promise,
+    });
+    let done = false;
+    const loading = load('sample').then(() => {
+      done = true;
+    });
+    await settled();
+    expect(done).toBe(false);
+    german.resolve(SAMPLE_STRINGS.de);
     await loading;
-    expect(i18n.exists('sample:greeting')).toBe(true);
+    expect(i18n.t('sample:greeting', { room: 'Salon' })).toBe('Willkommen im Salon');
   });
 
   it('resolves at once for a namespace every language already holds', async () => {
@@ -421,16 +476,18 @@ describe('createNamespaceLoader', () => {
     expect(calls).toEqual([]);
   });
 
-  it('rejects a namespace with no files, or missing a language, naming the file to add', async () => {
+  it('rejects a namespace with no files, or missing any language, naming the file to add', async () => {
     const i18n = createI18n({ language: 'en', resources: freshResources() });
-    const load = createNamespaceLoader(i18n, sampleLoaders(['en', 'fr']).loaders);
+    const { calls, loaders } = sampleLoaders(['en', 'fr']);
+    const load = createNamespaceLoader(i18n, loaders);
     await expect(load('nowhere')).rejects.toThrow(/No locale files for namespace "nowhere"/);
     await expect(load('sample')).rejects.toThrow(/add locales\/de\/sample\.json/);
+    expect(calls).toEqual([]);
     expect(i18n.exists('sample:greeting')).toBe(false);
   });
 
   it('tries a failed load again on the next call', async () => {
-    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    const i18n = createI18n({ language: 'fr', resources: freshResources() });
     let failures = 1;
     const load = createNamespaceLoader(i18n, {
       ...sampleLoaders().loaders,
@@ -441,7 +498,31 @@ describe('createNamespaceLoader', () => {
     });
     await expect(load('sample')).rejects.toThrow('chunk failed to load');
     await load('sample');
-    expect(i18n.t('sample:greeting', { room: 'bar', lng: 'fr' })).toBe('Bienvenue au bar');
+    expect(i18n.t('sample:greeting', { room: 'bar' })).toBe('Bienvenue au bar');
+  });
+
+  it('reports a failed fetch after a switch and retries it on the next call', async () => {
+    const i18n = createI18n({ language: 'en', resources: freshResources() });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let failures = 1;
+    const load = createNamespaceLoader(i18n, {
+      ...sampleLoaders().loaders,
+      './locales/de/sample.json': () => {
+        if (failures-- > 0) return Promise.reject(new Error('chunk failed to load'));
+        return Promise.resolve(SAMPLE_STRINGS.de);
+      },
+    });
+    await load('sample');
+    i18n.changeLanguage('de');
+    await settled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('The de strings for "sample" did not load'),
+      expect.any(Error),
+    );
+    error.mockRestore();
+    expect(i18n.t('sample:chips', { count: 1 })).toBe('1 chip');
+    await load('sample');
+    expect(i18n.t('sample:chips', { count: 1 })).toBe('1 Chip');
   });
 
   it('refuses a locale file for an unsupported language when it is set up', () => {
@@ -454,15 +535,20 @@ describe('createNamespaceLoader', () => {
 
 describe('loadNamespace', () => {
   it.each(['account', 'fair'])(
-    'loads the %s files from locales/<language>/ into the app instance',
+    'loads the %s files from locales/<language>/ for the active language',
     async (namespace) => {
-      await loadNamespace(namespace);
       const [key] = leafKeys(namespaceTree('en', namespace));
       if (key === undefined) throw new Error(`${namespace} has no strings`);
-      for (const language of LANGUAGES) {
-        expect(appI18n.t(`${namespace}:${key}`, { lng: language })).toBe(
-          stringAt(namespaceTree(language, namespace), key),
-        );
+      try {
+        for (const language of LANGUAGES) {
+          appI18n.changeLanguage(language);
+          await loadNamespace(namespace);
+          expect(appI18n.t(`${namespace}:${key}`)).toBe(
+            stringAt(namespaceTree(language, namespace), key),
+          );
+        }
+      } finally {
+        appI18n.changeLanguage('en');
       }
     },
   );
