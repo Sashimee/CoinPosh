@@ -242,7 +242,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-15.04 | todo | | Waits on T-15.02, T-12.04. Server: weekly chest and goals |
 | T-15.05 | todo | | Waits on T-15.03, T-15.04. Retention UI |
 | T-15.06 | todo | | Waits on T-15.05, T-14.12. Retention wiring and e2e |
-| T-16.01 | todo | | Waits on T-11.01. Table mechanics contracts |
+| T-16.01 | done | task/T-16.01 (merge a22d975) | Table mechanics contracts: layout ids, target/jackpotBall claims, prop rewards (packages/shared/src/api/props/{ids,claims,rewards,fixtures,index}.ts + props.test.ts, api/index.ts) (6046891); pnpm check green after merge; follow-up P-775 |
 | T-16.02 | todo | | Waits on T-16.01, T-3.07. Table mechanics numbers |
 | T-16.03 | todo | | Waits on T-11.02. Sim: bonus targets |
 | T-16.04 | todo | | Waits on T-11.02. Sim: peg field |
