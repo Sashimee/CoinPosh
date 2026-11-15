@@ -133,6 +133,11 @@ describe('Concierge copy', () => {
       }
     }
   });
+
+  it('keeps French high punctuation and guillemets on the word they belong to', () => {
+    const breaking = [...leaves(FILES.fr)].filter(([, text]) => / [;:!?»]|« /.test(text));
+    expect(breaking.map(([key]) => key)).toEqual([]);
+  });
 });
 
 describe('Concierge lines as rendered', () => {

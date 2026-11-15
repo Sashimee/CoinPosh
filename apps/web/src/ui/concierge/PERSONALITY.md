@@ -28,8 +28,9 @@ The voice of the house. Read this before you write or change a line in
   rendered lines at 90 and 140.
 - **No emojis, no slang, no internet speak.** Proper punctuation and real typography:
   - EN: curly apostrophes (’).
-  - FR: a space before `: ! ? ;`, guillemets « » around quoted names, and **vouvoiement**
-    (always `vous`).
+  - FR: a narrow no-break space (U+202F, never a plain space) before `: ! ? ;` and inside
+    the guillemets « » around quoted names, so the card never wraps a mark onto its own
+    line; and **vouvoiement** (always `vous`).
   - DE: „…“ quotes and the **Sie** form, always.
 
 ## His three faces
