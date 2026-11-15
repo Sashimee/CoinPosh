@@ -174,6 +174,8 @@ interface ProbeCounts {
   cratesCollected: number;
   safesOpened: number;
   safesCollected: number;
+  gachaPulls: number;
+  gachaCollected: number;
 }
 
 declare global {
@@ -208,6 +210,8 @@ const probe: {
     cratesCollected: 0,
     safesOpened: 0,
     safesCollected: 0,
+    gachaPulls: 0,
+    gachaCollected: 0,
   },
 };
 window.__coinposh = {
@@ -282,10 +286,17 @@ const hydrated = netReady
 
 void bootScene(canvas, hydrated);
 
-void hydrated
+const safesMounted = hydrated
   .then((boot) => (boot ? mountSafesSheet(boot) : undefined))
   .catch((error: unknown) => {
     console.error('CoinPosh safes failed to mount; the game continues without Safes.', error);
+  });
+
+// After the safes, so the Capsules door sits beside the Safes door in the dock.
+void Promise.all([hydrated, safesMounted])
+  .then(([boot]) => (boot ? mountGachaSheet(boot) : undefined))
+  .catch((error: unknown) => {
+    console.error('CoinPosh gacha failed to mount; the game continues without Capsules.', error);
   });
 
 void hydrated
@@ -1073,6 +1084,83 @@ interface SafesSheet {
 
 function grantedSafes(roll: Roll): readonly Safe[] {
   return roll.rewards.flatMap((reward) => (reward.kind === 'safe' ? [reward.safe] : []));
+}
+
+/**
+ * The capsule machine: a dock door that spends Tickets on server-rolled capsules. Tickets come
+ * from the server's wallet, re-read after every resync and taken from each pull's answer.
+ */
+async function mountGachaSheet(boot: NetBoot): Promise<void> {
+  const dock = uiRoot.querySelector<HTMLElement>('[data-testid="hud-dock"]');
+  if (!dock) {
+    throw new Error(
+      'CoinPosh boot: the HUD dock ([data-testid="hud-dock"]) is missing, so the Capsules button has nowhere to sit; mount the UI before the gacha.',
+    );
+  }
+  const gachaApi = await import('./game/gacha/index.ts');
+  const gacha = gachaApi.mountGacha({
+    ui,
+    host: uiRoot,
+    api: gachaApi.netGachaApi(boot.net.client),
+    fair: boot.net.client,
+    wallet: boot.state.wallet,
+    audio: () => audio,
+    vibrate: browserVibrate(),
+  });
+  const trigger = gachaApi.mountGachaTrigger({
+    ui,
+    dock,
+    onPress: () => {
+      if (ui.store.getState().panel !== null) ui.store.setState({ panel: null });
+      gacha.open();
+    },
+  });
+  trigger.update(gacha.tickets);
+
+  let asked = 0;
+  let current = 0;
+  const sync = (): void => {
+    asked += 1;
+    const ticket = asked;
+    boot.net.client.call('state').then(
+      (fresh) => {
+        if (ticket <= current) return;
+        current = ticket;
+        gacha.setWallet(fresh.wallet);
+        trigger.update(gacha.tickets);
+      },
+      (error: unknown) => {
+        console.warn(
+          'CoinPosh gacha: the Tickets balance did not refresh; the next resync of the table reads it again.',
+          error,
+        );
+      },
+    );
+  };
+  const outdateReads = (): void => {
+    current = asked;
+  };
+  const { counts } = probe;
+  const offs = [
+    gacha.events.on('gacha:requested', outdateReads),
+    gacha.events.on('gacha:pulled', () => {
+      counts.gachaPulls += 1;
+      outdateReads();
+      trigger.update(gacha.tickets);
+      // Brings the roll into the HUD now, where the payout hold keeps its credit until collect.
+      boot.resync('a capsule was pulled');
+    }),
+    gacha.events.on('gacha:collected', () => {
+      counts.gachaCollected += 1;
+      boot.resync('a capsule was collected');
+    }),
+    boot.onResynced(sync),
+  ];
+  teardown.push(() => {
+    for (const off of offs) off();
+    trigger.dispose();
+    gacha.dispose();
+  });
 }
 
 /**
