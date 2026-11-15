@@ -180,20 +180,46 @@ function pityCounters(state: PityState): PityCounters {
   };
 }
 
+function crateOpensBefore(sql: SqlStorage): number {
+  return sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n;
+}
+
+/**
+ * Tickets earlier crate opens paid. The ledger is append-only and has no index on kind, account
+ * or unit, so it is reached through `crate_opens` and the indexed `ref` column, never scanned.
+ */
+function crateTicketsBefore(sql: SqlStorage): number {
+  return sql
+    .exec<{ n: number }>(
+      `SELECT COALESCE(SUM(l.delta), 0) AS n FROM crate_opens o
+       JOIN ledger l ON l.ref = o.crate_id
+       WHERE l.kind = ? AND l.account = 'wallet' AND l.unit = 'tickets'`,
+      CRATE_OPEN_TX_KIND,
+    )
+    .one().n;
+}
+
 /**
  * What the player's earlier crate opens paid, for `crateSpawn.firstTicket`: read before this
  * open's ledger legs and `crate_opens` row are written.
  */
 export function crateOpenHistory(sql: SqlStorage): CrateOpenHistory {
-  const opensBefore = sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM crate_opens').one().n;
-  const ticketsBefore = sql
-    .exec<{ n: number }>(
-      `SELECT COALESCE(SUM(delta), 0) AS n FROM ledger
-       WHERE kind = ? AND account = 'wallet' AND unit = 'tickets'`,
-      CRATE_OPEN_TX_KIND,
-    )
-    .one().n;
-  return { opensBefore, ticketsBefore };
+  return { opensBefore: crateOpensBefore(sql), ticketsBefore: crateTicketsBefore(sql) };
+}
+
+/**
+ * The `crateSpawn.firstTicket` top-up for this open. Only the `byCrate`-th open with no rolled
+ * Tickets can pay, so every other open skips the Tickets read.
+ */
+function firstTicketFor(sql: SqlStorage, rolledTickets: number): number {
+  const rule = crateSpawn.firstTicket;
+  const opensBefore = crateOpensBefore(sql);
+  if (rolledTickets > 0 || opensBefore + 1 !== rule.byCrate) return 0;
+  return firstTicketBonus(
+    rule,
+    { opensBefore, ticketsBefore: crateTicketsBefore(sql) },
+    rolledTickets,
+  );
 }
 
 interface CrateRow extends Record<string, SqlStorageValue> {
@@ -269,11 +295,7 @@ export function openCrate(
   writeCratePity(sql, source, drawn.pity);
 
   const reward = crateRewards[drawn.rarity];
-  const firstTicket = firstTicketBonus(
-    crateSpawn.firstTicket,
-    crateOpenHistory(sql),
-    reward.tickets,
-  );
+  const firstTicket = firstTicketFor(sql, reward.tickets);
   const payout: [Currency, number][] = [
     ['coins', crateIncomeCoins(reward.incomeSeconds, measuredActiveRate(sql), offlineRate)],
     ['pearls', reward.pearls],

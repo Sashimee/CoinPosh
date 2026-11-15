@@ -8,6 +8,11 @@ const PLANT_MARKER = 'e2e.gacha.plant';
 const PLANTED_TICKETS = 2;
 /** SwiftShader renders the game and the machine at a few fps, and the machine's ticker caps dt. */
 const SOFTWARE_GPU_REVEAL_MS = 45_000;
+/**
+ * The capsule after a played session turns with the whole table still rendering behind the sheet,
+ * the slowest case for SwiftShader; a loaded runner overran the 45 s budget there.
+ */
+const FULL_TABLE_CAPSULE_MS = 120_000;
 const FIRST_TICKET = economyConfig.crateSpawn.firstTicket;
 const FTUE_DROP = economyConfig.crateSpawn.ftueScriptedDrop;
 /**
@@ -258,7 +263,7 @@ test.describe('Capsule machine (issue #218)', () => {
     await expect.poll(async () => (await probe(page)).counts.gachaPulls).toBe(1);
     await expect.poll(() => ticketsSpentOnGacha(page)).toBe(1);
     const capsule = panel.getByTestId('gacha-reveal');
-    await expect(capsule).toBeVisible({ timeout: SOFTWARE_GPU_REVEAL_MS });
+    await expect(capsule).toBeVisible({ timeout: FULL_TABLE_CAPSULE_MS });
     await expect(capsule).toHaveAttribute(
       'data-rarity',
       /^(common|fine|rare|exquisite|legendary|heirloom)$/,
