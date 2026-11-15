@@ -1,0 +1,155 @@
+/* The sheet's purse rides under the sheet header as the rows scroll beneath it, so the price of
+   every row and what the wallet can pay stay on screen together. Paint-only animations: the bar
+   keeps its box through a purchase, so no row below it moves. */
+.cp-upgrades-purse {
+  position: sticky;
+  top: -6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -6px calc(-1 * (var(--cp-gutter) + 4px)) 0;
+  padding: 10px calc(var(--cp-gutter) + 4px) 10px;
+  background: linear-gradient(180deg, var(--cp-lacquer) 0%, var(--cp-lacquer-deep) 100%);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  border-bottom: 1px solid var(--cp-hairline-soft);
+}
+
+.cp-upgrades-purse-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--cp-gold-brushed);
+}
+
+.cp-upgrades-chip {
+  position: relative;
+  overflow: visible;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 14px 4px 10px;
+  background:
+    linear-gradient(180deg, rgb(var(--cp-ivory-rgb) / 0.08), transparent 60%), var(--cp-lacquer);
+  box-shadow:
+    inset 0 1px 0 rgb(var(--cp-ivory-rgb) / 0.12),
+    0 2px 8px rgb(0 0 0 / 0.28);
+  transition:
+    border-color 320ms ease,
+    box-shadow 320ms ease;
+}
+
+.cp-upgrades-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.cp-upgrades-chip .cp-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.cp-upgrades-chip .cp-odo {
+  font-size: 22px;
+  transition: opacity 320ms ease;
+}
+
+.cp-upgrades-purse.is-pending .cp-upgrades-chip .cp-odo {
+  opacity: 0.72;
+}
+
+.cp-upgrades-spent {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 10px);
+  font-family: var(--cp-font-display);
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--cp-gold-brushed);
+  text-shadow: 0 0 10px rgb(var(--cp-gold-brushed-rgb) / 0.55);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.cp-upgrades-purse.is-spending .cp-upgrades-chip {
+  border-color: var(--cp-gold-brushed);
+  box-shadow:
+    inset 0 1px 0 rgb(var(--cp-ivory-rgb) / 0.2),
+    0 0 18px rgb(var(--cp-gold-brushed-rgb) / 0.45);
+}
+
+.cp-upgrades-purse.is-spending .cp-upgrades-sheen > .cp-glint {
+  animation: cp-glint 700ms ease-out;
+}
+
+.cp-upgrades-purse.is-spending .cp-upgrades-chip .cp-icon {
+  animation: cp-upgrades-coin-tick 520ms cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+.cp-upgrades-purse.is-spending .cp-upgrades-spent {
+  animation: cp-upgrades-spend 1100ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+/* Reduced motion: the readout changes at once and the spend shows as a still gold flash. */
+.cp-upgrades-purse.is-calm.is-spending .cp-upgrades-sheen > .cp-glint,
+.cp-upgrades-purse.is-calm.is-spending .cp-upgrades-chip .cp-icon {
+  animation: none;
+}
+
+.cp-upgrades-purse.is-calm.is-spending .cp-upgrades-spent {
+  animation: cp-upgrades-spend-calm 1100ms linear both;
+}
+
+@keyframes cp-upgrades-coin-tick {
+  35% {
+    rotate: -24deg;
+    scale: 1.18;
+  }
+}
+
+@keyframes cp-upgrades-spend {
+  0% {
+    opacity: 0;
+    translate: 18px -50%;
+    scale: 0.7;
+  }
+  18% {
+    opacity: 1;
+    translate: 0 -50%;
+    scale: 1.1;
+  }
+  65% {
+    opacity: 1;
+    translate: -6px -60%;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    translate: -14px -80%;
+  }
+}
+
+@keyframes cp-upgrades-spend-calm {
+  0%,
+  70% {
+    opacity: 1;
+    translate: 0 -50%;
+  }
+  100% {
+    opacity: 0;
+    translate: 0 -50%;
+  }
+}
+
+/* A row out of reach names its gap in place of "Buy", in sunset coral over the dimmed price. */
+.cp-upgrade .cp-buy.is-short .cp-buy-label {
+  letter-spacing: 0.08em;
+  color: var(--cp-warning);
+}
