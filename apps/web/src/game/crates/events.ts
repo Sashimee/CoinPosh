@@ -37,11 +37,16 @@ export interface CrateEvents {
   'crate:rejected': { readonly crateId: CrateId; readonly reason: ClaimRejection };
   /** The claim or the open failed outright (offline for good, a contract error). */
   'crate:failed': { readonly crateId: CrateId; readonly error: unknown };
-  /** The server rolled the contents. `wallet` already includes them. */
+  /**
+   * The server rolled the contents. `wallet` already includes them. `replayed` is a roll an
+   * earlier page of this tab opened but never collected, shown again after a reload: its credit
+   * was already in the wallet this page booted with.
+   */
   'crate:opened': {
     readonly crateId: CrateId;
     readonly roll: Roll;
     readonly wallet: Wallet;
+    readonly replayed?: boolean;
   };
   /** The server's album after an open that rolled album cards: each card's set progress. */
   'crate:album': { readonly crateId: CrateId; readonly progress: AlbumProgressMap };

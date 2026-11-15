@@ -11,10 +11,12 @@ import {
 } from '@coinposh/shared';
 import { TICK_RATE_HZ } from '@coinposh/sim/layout';
 import type { Bus } from '../../app/bus.ts';
+import { ApiRequestError } from '../../net/errors.ts';
 import type { ApiClient, TableEvent, TableSync } from '../../net/index.ts';
 import type { CrateEvents } from './events.ts';
 import { albumProgress, rollHasAlbumCard, type AlbumProgressMap } from './loot.ts';
 import { CrateRide } from './ride.ts';
+import type { UnseenCrates } from './unseen.ts';
 
 const CHUTE: CratePlacement = { kind: 'chute' };
 
@@ -28,6 +30,19 @@ export interface CrateControllerOptions {
   readonly client: Pick<ApiClient, 'call'>;
   readonly sim: CrateSimPort;
   readonly events: Bus<CrateEvents>;
+  /** Where crates opened but not yet collected outlive a reload; without it none are replayed. */
+  readonly unseen?: UnseenCrates | null;
+}
+
+/**
+ * The server holds no roll this page can show for the crate: already shown, never opened, or
+ * claimed but never opened (`not_ready`), which the table lays again for a fresh claim.
+ */
+function noRollToShow(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    (error.code === 'conflict' || error.code === 'not_found' || error.code === 'not_ready')
+  );
 }
 
 /**
@@ -62,6 +77,23 @@ export class CrateController {
   /** The server's pity counters after the latest open this session, or `null` before one. */
   get pity(): PityCounters | null {
     return this.latestPity;
+  }
+
+  /**
+   * Asks the server again for every crate an earlier page of this tab opened, or was opening,
+   * whose card the player never collected: a reload or an app switch mid-unbox. Each roll the
+   * server still keeps goes out as `crate:opened` with `replayed`, so the unbox and its card play
+   * once more; the server books nothing for a replay. A crate the table laid again (its open
+   * never reached the server) is left to its ride instead.
+   */
+  replayUnseen(): void {
+    if (this.disposed) return;
+    for (const crateId of this.options.unseen?.list() ?? []) this.open(crateId, true);
+  }
+
+  /** The player collected the crate's card: a later reload never shows it again. */
+  seen(crateId: CrateId): void {
+    this.options.unseen?.remove(crateId);
   }
 
   /** Resolves once every open in flight has answered (and its events have gone out). */
@@ -154,7 +186,10 @@ export class CrateController {
         if (claim.kind !== 'crate' || !this.awaitingClaim.delete(claim.crateId)) break;
         if (result.status === 'accepted') {
           this.options.events.emit('crate:claimed', { crateId: claim.crateId });
-          this.open(claim.crateId);
+          // Kept before the open is sent: a page that dies with the open in flight cannot tell
+          // whether the server booked it, so the next page asks.
+          this.options.unseen?.add(claim.crateId);
+          this.open(claim.crateId, false);
         } else {
           this.options.events.emit('crate:rejected', {
             crateId: claim.crateId,
@@ -207,6 +242,7 @@ export class CrateController {
   }
 
   private place(ride: CrateRide, resumed: boolean): void {
+    this.options.unseen?.remove(ride.crate.id);
     this.rides.set(ride.crate.id, ride);
     this.rodeTo.set(ride.crate.id, this.simTick());
     this.options.events.emit('crate:spawned', {
@@ -244,9 +280,9 @@ export class CrateController {
    * Opens run one at a time, each with its album read, so a crate's set progress is the album
    * right after its own grant: overlapping opens would let a later crate's card land first.
    */
-  private open(crateId: CrateId): void {
+  private open(crateId: CrateId, replay: boolean): void {
     if (this.opening.has(crateId)) return;
-    const run = () => this.request(crateId);
+    const run = () => (replay ? this.replay(crateId) : this.request(crateId));
     // A failed open still surfaces through `settled()`; it must not stall the crates behind it.
     const request = this.queue.then(run, run).finally(() => this.opening.delete(crateId));
     this.opening.set(crateId, request);
@@ -269,6 +305,29 @@ export class CrateController {
       wallet: opened.wallet,
     });
     this.options.events.emit('crate:pity', { pity: opened.roll.pity });
+    if (rollHasAlbumCard(opened.roll.rewards)) await this.readAlbum(crateId, opened.roll.rewards);
+  }
+
+  /** A replayed roll's pity counters are from its own open, so they never replace newer ones. */
+  private async replay(crateId: CrateId): Promise<void> {
+    if (this.known(crateId)) {
+      this.options.unseen?.remove(crateId);
+      return;
+    }
+    const opened = await this.options.client
+      .call('cratesOpen', { body: { crateId } })
+      .catch((error: unknown) => {
+        if (noRollToShow(error)) this.options.unseen?.remove(crateId);
+        else if (!this.disposed) this.options.events.emit('crate:failed', { crateId, error });
+        return null;
+      });
+    if (opened === null || this.disposed) return;
+    this.options.events.emit('crate:opened', {
+      crateId,
+      roll: opened.roll,
+      wallet: opened.wallet,
+      replayed: true,
+    });
     if (rollHasAlbumCard(opened.roll.rewards)) await this.readAlbum(crateId, opened.roll.rewards);
   }
 

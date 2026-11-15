@@ -24,8 +24,9 @@ import { bindArrivalHint, mountArrivalHint } from './hint.ts';
 import { registerCratesStrings } from './i18n.ts';
 import { rewardLines, type AlbumProgressMap } from './loot.ts';
 import { mountCrateReveal, type CrateReveal } from './revealCard.ts';
+import { browserUnseenStorage, unseenCrates, type UnseenCrates } from './unseen.ts';
 import { TableCrateView, trayLanding, UnboxDirector } from './view.ts';
-import { bindCrateWarmup } from './warmup.ts';
+import { bindCrateWarmup, type CrateWarmup } from './warmup.ts';
 
 export interface CratesMountOptions {
   /** Defaults to a fresh bus; pass one to share crate events with HUD or analytics. */
@@ -56,6 +57,45 @@ export interface CratesMountOptions {
   /** Opens the shared fairness panel from the card's Certified Fair chip, on the roll's proof. */
   readonly openFair?: (trigger: HTMLElement, options: FairOpenOptions) => void;
   readonly reducedMotion?: () => boolean;
+  /** Crates opened but not collected before a reload; defaults to this tab's sessionStorage. */
+  readonly unseen?: UnseenCrates | null;
+  /** Whether the table is on screen and takes drops; defaults to the boot's playable mark. */
+  readonly playable?: () => boolean;
+}
+
+const PLAYABLE_MARK = 'coinposh:boot:playable';
+
+function bootPlayable(): boolean {
+  return performance.getEntriesByName(PLAYABLE_MARK).length > 0;
+}
+
+/**
+ * Replays the crates a reload cut off mid-unbox once the player can see them: on a frame after
+ * the table turned playable and with the unbox warm-up done, so the reveal neither plays under
+ * the boot poster nor links its programs a second time beside the warm-up.
+ */
+export function replayWhenPlayable(
+  stage: Pick<CratesMountOptions['stage'], 'onFrame'>,
+  warmup: Pick<CrateWarmup, 'warming'>,
+  playable: () => boolean,
+  replay: () => void,
+): () => void {
+  let seenPlayable = false;
+  let off: (() => void) | null = null;
+  off = stage.onFrame(() => {
+    if (!seenPlayable) {
+      seenPlayable = playable();
+      return;
+    }
+    if (warmup.warming) return;
+    off?.();
+    off = null;
+    replay();
+  });
+  return () => {
+    off?.();
+    off = null;
+  };
 }
 
 const COLLECT = '[data-testid="crate-collect"]';
@@ -197,11 +237,19 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   const albums = new Map<CrateId, AlbumProgressMap>();
   const reveals = new Map<CrateId, CrateReveal>();
   const payout = trackCratePayout(walletPayoutFor(options.ui.store));
+  const warn = (message: string, cause?: unknown): void => {
+    if (cause === undefined) console.warn(message);
+    else console.warn(message, cause);
+  };
   const controller = new CrateController({
     table: options.net.table,
     client: options.net.client,
     sim: options.sim,
     events,
+    unseen:
+      options.unseen === undefined
+        ? unseenCrates(browserUnseenStorage(warn), warn)
+        : options.unseen,
   });
   const coins = options.stage.coins;
   const director = new UnboxDirector({
@@ -267,6 +315,11 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
   disposers.push(holdWhileSheetOpen(options.ui.store, director));
 
   const warmup = bindCrateWarmup(options.stage, director);
+  disposers.push(
+    replayWhenPlayable(options.stage, warmup, options.playable ?? bootPlayable, () => {
+      controller.replayUnseen();
+    }),
+  );
 
   const hint = mountArrivalHint({ ui: options.ui, host: options.host, reducedMotion });
   disposers.push(bindArrivalHint(events, hint), () => {
@@ -299,8 +352,10 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       table.fall(crateId, position);
       events.emit('crate:stinger', { cue: 'fall', rarity: null, step: 1, duckSeconds: 0 });
     }),
-    events.on('crate:opened', ({ crateId, roll, wallet }) => {
-      payout.opened(crateId, roll);
+    events.on('crate:opened', ({ crateId, roll, wallet, replayed }) => {
+      // A replayed roll's credit is already on the plaque the page booted with; holding it would
+      // only keep back the next real gain until the collect.
+      if (replayed !== true) payout.opened(crateId, roll);
       const at = table.landing(crateId) ?? trayLanding(0);
       director.enqueue({ crateId, roll, wallet, at });
     }),
@@ -309,6 +364,7 @@ export function mountCrates(options: CratesMountOptions): CratesModule {
       reveals.get(crateId)?.setAlbum(progress);
     }),
     events.on('crate:collected', ({ crateId, roll, wallet }) => {
+      controller.seen(crateId);
       payout.collected(crateId, roll, wallet, reveals.get(crateId)?.el ?? null);
       albums.delete(crateId);
       reveals.delete(crateId);
