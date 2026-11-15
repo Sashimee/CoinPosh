@@ -19,7 +19,7 @@ const SURFACE_CHUNKS = {
   inventory: /\/assets\/inventory-[\w-]+\.js$/,
   album: /\/assets\/album-[\w-]+\.js$/,
   fair: /\/assets\/fair-[\w-]+\.js$/,
-  scratch: /\/assets\/scratch(?:Sheet)?-[\w-]+\.js$/,
+  scratch: /\/assets\/scratch(?:Sheet|Foil)?-[\w-]+\.js$/,
 } as const;
 
 type Surface = keyof typeof SURFACE_CHUNKS;
@@ -83,6 +83,18 @@ async function playUntilReveal(page: Page, reveal: Locator): Promise<void> {
   }
 }
 
+/**
+ * The pusher keeps shoving after the taps stop, so a crate already near the lip can fall while a
+ * reward sheet is open, and its modal reveal then sits over the sheet. Collect any such crate
+ * before the next action, as a player would.
+ */
+async function collectLaterCrates(page: Page): Promise<void> {
+  await page.addLocatorHandler(page.getByTestId('crate-reveal').last(), async (card) => {
+    await expect(card).toHaveClass(/is-revealed/, { timeout: CINEMATIC_WITHIN_MS });
+    await card.getByTestId('crate-collect').click();
+  });
+}
+
 /** The charms and collectibles the open reveal card lists, by name. */
 async function revealedItems(reveal: Locator): Promise<RevealedItem[]> {
   return reveal.locator('.cp-crate-line--item').evaluateAll((lines) =>
@@ -96,7 +108,7 @@ async function revealedItems(reveal: Locator): Promise<RevealedItem[]> {
 }
 
 test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
-  test('a crate fills the Collection and the Album, and Settings opens the Certified Fair, each loaded on its first tap', async ({
+  test('a crate opens the Certified Fair from its chip and fills the Collection and the Album, each loaded on its first tap', async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -110,18 +122,36 @@ test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
       expect([...requested], 'no reward sheet chunk loads with the table').toEqual([]);
     });
 
-    await test.step('one crate unboxes and its card is collected', async () => {
+    const collect = page.getByTestId('crate-collect');
+    await test.step('one crate unboxes', async () => {
       await playUntilReveal(page, reveal);
       // No Escape skip: once the card is up Escape collects it (bindEscapeCollect), and on a slow
       // frame the key can land after the card, taking the Collect this step means to tap.
       await expect(reveal).toHaveClass(/is-revealed/, { timeout: CINEMATIC_WITHIN_MS });
-      const collect = page.getByTestId('crate-collect');
       await expect(collect).toBeVisible();
       items = await revealedItems(reveal);
       expect(
         items.some((item) => item.kind === 'charm' && item.name !== ''),
         'the first crate grants a named charm',
       ).toBe(true);
+      expect([...requested], 'the reveal loads no reward sheet').toEqual([]);
+    });
+
+    await test.step("the crate's Certified Fair chip opens the desk on this roll", async () => {
+      await reveal.getByTestId('crate-fair').click();
+      const fair = page.getByTestId('fair');
+      await expect(fair).toBeVisible();
+      expect(requested.has('fair'), 'the Certified Fair chunk loads on its first tap').toBe(true);
+      await expect(fair.getByTestId('fair-tab-verify')).toHaveAttribute('aria-selected', 'true');
+      await reviewShot(page, 'reward-surfaces-01-fair-from-crate');
+      // Escape belongs to the desk while it is up: the crate card underneath stays uncollected.
+      await page.keyboard.press('Escape');
+      await expect(fair).toBeHidden();
+      await expect(reveal).toBeAttached();
+      await expect(collect).toBeVisible();
+    });
+
+    await test.step("the crate's card is collected", async () => {
       const collected = await reveal.elementHandle();
       await collect.click();
       await expect
@@ -133,7 +163,8 @@ test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
       await collected.dispose();
       expect((await probe(page)).counts.cratesCollected).toBeGreaterThanOrEqual(1);
       await expect(page.getByTestId('inventory-trigger-badge')).toBeVisible();
-      expect([...requested], 'collecting a crate loads no reward sheet').toEqual([]);
+      expect([...requested], 'collecting a crate loads no further reward sheet').toEqual(['fair']);
+      await collectLaterCrates(page);
     });
 
     await test.step('the Collection lists the charm by name', async () => {
@@ -148,7 +179,7 @@ test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
         ).not.toHaveCount(0);
       }
       await expect(page.getByTestId('inventory-trigger-badge')).toBeHidden();
-      await reviewShot(page, 'reward-surfaces-01-collection');
+      await reviewShot(page, 'reward-surfaces-02-collection');
       expect(requested.has('album')).toBe(false);
     });
 
@@ -166,22 +197,21 @@ test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
           `the Album holds ${item.name}`,
         ).not.toHaveCount(0);
       }
-      await reviewShot(page, 'reward-surfaces-02-album');
+      await reviewShot(page, 'reward-surfaces-03-album');
       await page.keyboard.press('Escape');
       await expect(album).toBeHidden();
     });
 
-    await test.step('Settings opens the Certified Fair desk', async () => {
-      expect(requested.has('fair')).toBe(false);
+    await test.step('Settings opens the Certified Fair desk on its odds', async () => {
       await page.getByTestId('dock-settings').click();
       await expect(page.getByTestId('sheet-settings')).toBeVisible();
       await page.getByTestId('fair-trigger').click();
       const fair = page.getByTestId('fair');
       await expect(fair).toBeVisible();
-      expect(requested.has('fair'), 'the Certified Fair chunk loads on its first tap').toBe(true);
+      await expect(fair.getByTestId('fair-tab-odds')).toHaveAttribute('aria-selected', 'true');
       await expect(fair.getByTestId('fair-odds')).toBeVisible();
       await expect(page.getByTestId('sheet-settings'), 'the desk replaces Settings').toBeHidden();
-      await reviewShot(page, 'reward-surfaces-03-fair');
+      await reviewShot(page, 'reward-surfaces-04-fair-from-settings');
       await page.keyboard.press('Escape');
       await expect(fair).toBeHidden();
     });
@@ -225,7 +255,7 @@ test.describe('reward surfaces in Demo Mode at 390x844 (P-641)', () => {
       expect(requested.has('scratch'), 'the Scratch Cards chunk loads on its first tap').toBe(true);
       await expect(card).toHaveAttribute('data-phase', 'sealed');
       await expect(page.getByTestId('inventory')).toBeHidden();
-      await reviewShot(page, 'reward-surfaces-04-scratch');
+      await reviewShot(page, 'reward-surfaces-05-scratch');
     });
   });
 });

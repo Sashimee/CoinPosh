@@ -653,11 +653,16 @@ function followTable(
   return reflow;
 }
 
+/** The tightest the dock packs its doors: still a 48 px touch target, still a visible gap. */
+const COMPACT_DOOR_PX = 48;
+const COMPACT_GAP_PX = 8;
+
 /**
- * The dock gains doors after boot (Safes, Ascension), and its grid track grows to fit them, so
- * on a narrow phone the last door would sit past the gutter. When the dock no longer fits the
- * HUD's content box, the Upgrades label steps out of sight (still its button's name for screen
- * readers) and the button shows its icon and badge alone.
+ * The dock gains doors after boot (Safes, Collection, Capsules, Ascension), and its grid track
+ * grows to fit them, so on a narrow screen the last door would sit past the gutter. When the
+ * dock no longer fits the HUD's content box, its icon doors first close up to 48 px circles with
+ * a tighter gap; if that is still too wide, the Upgrades label steps out of sight (still its
+ * button's name for screen readers) and the button closes up like the others.
  */
 function collapseLabelWhenCramped(
   ctx: UiContext,
@@ -665,12 +670,31 @@ function collapseLabelWhenCramped(
   dock: HTMLElement,
   label: HTMLElement,
 ): void {
+  const compact = (door: HTMLElement, on: boolean): void => {
+    for (const property of ['min-width', 'height', 'padding-inline'] as const) {
+      door.style.removeProperty(property);
+    }
+    if (!on) return;
+    door.style.minWidth = `${String(COMPACT_DOOR_PX)}px`;
+    door.style.height = `${String(COMPACT_DOOR_PX)}px`;
+    door.style.paddingInline = '0';
+  };
   const fit = (): void => {
     if (hud.clientWidth === 0) return;
-    label.classList.remove('cp-sr-only');
     const style = getComputedStyle(hud);
     const room = hud.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-    label.classList.toggle('cp-sr-only', dock.getBoundingClientRect().width > room + 0.5);
+    const fits = (): boolean => dock.getBoundingClientRect().width <= room + 0.5;
+    const doors = [...dock.children].filter((door) => door instanceof HTMLElement);
+    const primary = label.closest<HTMLElement>('.cp-dock-button');
+    label.classList.remove('cp-sr-only');
+    dock.style.removeProperty('gap');
+    for (const door of doors) compact(door, false);
+    if (fits()) return;
+    dock.style.gap = `${String(COMPACT_GAP_PX)}px`;
+    for (const door of doors) compact(door, door !== primary);
+    if (fits()) return;
+    label.classList.add('cp-sr-only');
+    if (primary) compact(primary, true);
   };
   const resizes = new ResizeObserver(fit);
   resizes.observe(hud);

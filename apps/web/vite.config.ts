@@ -129,41 +129,29 @@ function pureSharedValues(): Plugin {
 const ACCOUNT_UI_MODULE =
   /[\\/]src[\\/](?:ui[\\/]account[\\/][^\\/]+|i18n[\\/]locales[\\/]\w+[\\/]account\.json)$/;
 
+const FAIR_DESK_MODULE =
+  /[\\/]src[\\/](?:ui[\\/]fair[\\/][^\\/]+|i18n[\\/]locales[\\/]\w+[\\/]fair\.json)$/;
+const SCRATCH_FOIL_MODULE = /[\\/]src[\\/]vfx[\\/]scratch[\\/][^\\/]+$/;
+
 /**
  * The account UI (the post-boot prompt clock, the Settings section, the progress choice and
  * their strings) ships under `accountUi-*`, so the bundle gate budgets it apart from the net
- * layer's `account-*` sign-in chunks and from the rest of the lazy JS.
+ * layer's `account-*` sign-in chunks and from the rest of the lazy JS. Two reward surfaces share
+ * code with the capsule machine, so the bundler splits it into chunks named after a module
+ * (`mount-*`, `surface-*`, `mask-*`) that the gate would count as Other lazy JS: the Certified
+ * Fair desk ships under `fair-*` and the scratch foil under `scratchFoil-*`, each in its row.
  */
-function chunkFileName(chunk: { readonly moduleIds: readonly string[] }): string {
-  const accountUi =
-    chunk.moduleIds.length > 0 && chunk.moduleIds.every((id) => ACCOUNT_UI_MODULE.test(id));
-  return accountUi ? 'assets/accountUi-[name]-[hash].js' : 'assets/[name]-[hash].js';
+function chunkFileName(chunk: {
+  readonly name: string;
+  readonly moduleIds: readonly string[];
+}): string {
+  const only = (module: RegExp): boolean =>
+    chunk.moduleIds.length > 0 && chunk.moduleIds.every((id) => module.test(id));
+  if (only(ACCOUNT_UI_MODULE)) return 'assets/accountUi-[name]-[hash].js';
+  if (only(FAIR_DESK_MODULE) && chunk.name !== 'fair') return 'assets/fair-[name]-[hash].js';
+  if (only(SCRATCH_FOIL_MODULE)) return 'assets/scratchFoil-[name]-[hash].js';
+  return 'assets/[name]-[hash].js';
 }
-
-/**
- * The reward sheets (inventory, album, fair, scratch) share the unbox hero, the particle system
- * and the crates strings with the table. Left to itself the bundler splits each shared module
- * into its own small chunk, which costs gzip overhead on chunks the table loads at boot anyway;
- * these groups keep them inside the vfx and crates boot chunks, which a sheet then reuses from
- * cache. P-641 measured Other lazy JS at 120.3 kB gzip without them, 117.8 kB with them.
- * The vfx group names its modules: one the entry chunk imports (vfx/haptics) would pull the
- * whole group, three.webgpu with it, into the initial load.
- * `includeDependenciesRecursively: false` lets a group hold a module without its imports, which
- * can run modules in a different order across chunks. That is safe for these two groups: their
- * modules only declare classes, functions and constants at top level, and the one side effect,
- * crates.css, styles only its own `.cp-crate-*` and `.cp-odds-*` selectors, so no rule competes
- * with another sheet's. A grouped module that runs code on import would need this revisited.
- */
-const TABLE_CHUNKS = [
-  {
-    name: 'vfx',
-    test: /[\\/]src[\\/]vfx[\\/](?:(?:camera|particles|text|time)[\\/]|(?:index|juice|emitters|flash|fusionJuice|glow|shockwave|timeline|palette)\.ts$)/,
-  },
-  {
-    name: 'unbox',
-    test: /[\\/](?:src[\\/](?:vfx[\\/]cinematics[\\/]unbox|game[\\/]crates)[\\/]|three[\\/]examples[\\/]jsm[\\/]math[\\/]ConvexHull\.js$)/,
-  },
-];
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', 'VITE_');
@@ -200,10 +188,7 @@ export default defineConfig(({ mode }) => {
       // their imports, so the polyfill is bytes on the critical path for no change in behavior.
       modulePreload: { polyfill: false },
       rolldownOptions: {
-        output: {
-          chunkFileNames: chunkFileName,
-          codeSplitting: { includeDependenciesRecursively: false, groups: TABLE_CHUNKS },
-        },
+        output: { chunkFileNames: chunkFileName },
       },
     },
   };

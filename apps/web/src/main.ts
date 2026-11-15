@@ -1347,6 +1347,8 @@ interface Collection {
   granted(roll: Roll): void;
   /** A fresh read of the player's table reported these scratch cards and this wallet. */
   adopt(state: Pick<StateResponse, 'inventory' | 'wallet'>): void;
+  /** Opens the Certified Fair desk, loading its code on the first call. */
+  openFair(source: HTMLElement, options?: FairOpenOptions): void;
 }
 
 /** Loads once and shares the result; a failed load is forgotten so the next tap tries again. */
@@ -1536,7 +1538,7 @@ function mountCollection(boot: NetBoot): void {
     ui,
     slot: settingsFairSlot(uiRoot),
     onPress: () => {
-      openFair(settingsButton);
+      openFair(settingsButton, { tab: 'odds' });
     },
   });
 
@@ -1560,7 +1562,9 @@ function mountCollection(boot: NetBoot): void {
       }
       reread(inventoryPanel);
       reread(albumPanel);
+      reread(fairPanel);
     },
+    openFair,
     adopt(state) {
       wallet = state.wallet;
       if (scratch) {
@@ -2402,6 +2406,13 @@ function mountTableCrates(
       haptics,
       audio: () => audio,
       inventoryTarget: () => uiRoot.querySelector<HTMLElement>('.cp-plaque'),
+      openFair: (trigger, options) => {
+        if (collection) collection.openFair(trigger, options);
+        else
+          console.warn(
+            'CoinPosh crates: the Certified Fair is not mounted, so the crate chip has nothing to open.',
+          );
+      },
     });
   } catch (error) {
     console.error(

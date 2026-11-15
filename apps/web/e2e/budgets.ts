@@ -123,9 +123,10 @@ export const BUNDLE_BUDGETS = {
   gachaDock: 6 * 1024,
   /**
    * The capsule machine sheet with its 3D stage, and the odds panel it links to, each imported on
-   * first press. 25.4 kB gzip on 2026-11-15.
+   * first press. 12.7 kB gzip on 2026-11-15, once P-641 moved the Certified Fair desk and the
+   * scratch foil it shares into their own rows (25.4 kB with them).
    */
-  gachaSheet: 26.5 * 1024,
+  gachaSheet: 14 * 1024,
   /**
    * P-425 / P-102: the self-hosted woff2 subsets in public/fonts, counted as served (woff2 is
    * already Brotli inside, so gzip would only hide the bytes). Cormorant Garamond 600, 700 and
@@ -135,21 +136,22 @@ export const BUNDLE_BUDGETS = {
   fonts: 90 * 1024,
   /**
    * P-641: the Collection (inventory) sheet, imported on the first Collection press.
-   * 10.8 kB gzip on 2026-11-14.
+   * 10.8 kB gzip on 2026-11-15.
    */
   inventorySheet: 11.5 * 1024,
-  /** P-641: the Album, imported on its first tap from the Collection sheet. 8.4 kB on 2026-11-14. */
+  /** P-641: the Album, imported on its first tap from the Collection sheet. 8.4 kB on 2026-11-15. */
   albumSheet: 9 * 1024,
   /**
-   * P-641: the Certified Fair desk, imported on its first tap from Settings or a scratch card.
-   * 12.2 kB gzip on 2026-11-14.
+   * P-641: the Certified Fair desk, imported on its first tap from Settings, a crate's Certified
+   * Fair chip, a scratch card or the capsule odds. It still embeds its EN, FR and DE strings
+   * (ui/fair/i18n.ts). 12.3 kB gzip on 2026-11-15.
    */
   fairPanel: 13 * 1024,
   /**
-   * P-641: the scratch module and the foil sheet it imports when a card is put up.
-   * 16.6 kB gzip on 2026-11-14.
+   * P-641: the scratch module, the foil sheet it imports when a card is put up, and the foil
+   * surface it shares with the capsule sheet. 16.9 kB gzip on 2026-11-15.
    */
-  scratchCards: 17 * 1024,
+  scratchCards: 18 * 1024,
 } as const;
 
 /** P-124: a budget fails once exceeded by more than this share. */

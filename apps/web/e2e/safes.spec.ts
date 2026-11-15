@@ -130,11 +130,13 @@ test.describe('Safes sheet (P-544)', () => {
       await expect(page.getByTestId('dock-safes')).toBeVisible();
       await expect(page.getByTestId('dock-gacha')).toBeVisible();
       await expect(page.getByTestId('hud-ascension')).toBeVisible();
+      await expect(page.getByTestId('inventory-trigger')).toBeVisible();
 
       const fit = await dockFit(page);
       expect(fit.doors.map((door) => door.testId)).toEqual([
         'dock-settings',
         'dock-upgrades',
+        'inventory-trigger',
         'dock-safes',
         'dock-gacha',
         'hud-ascension',

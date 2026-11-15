@@ -54,9 +54,15 @@ const LINE_COMMENT = /^[ \t]*\/\/.*$/gm;
 const ESCAPED_IN_OUTPUT = /[`\\]|\$\{|[^\S ]|[\p{Cc}\p{Cf}]/u;
 /**
  * Locale files a feature imports statically as its first-paint fallback, so they ship inside that
- * feature's code chunk; the row named here is the only one allowed to hold them.
+ * feature's code chunk; the row named here is the only one allowed to hold them. The Certified
+ * Fair desk (ui/fair/i18n.ts) still imports all three of its locale files.
  */
-const STATIC_LOCALE_EMBEDS: Readonly<Record<string, BudgetKey>> = { 'en/account': 'accountUi' };
+const STATIC_LOCALE_EMBEDS: Readonly<Record<string, BudgetKey>> = {
+  'en/account': 'accountUi',
+  'en/fair': 'fairPanel',
+  'fr/fair': 'fairPanel',
+  'de/fair': 'fairPanel',
+};
 const GACHA_DOCK_CHUNK = /^gacha-[\w-]+\.js$/;
 const GACHA_SHEET_CHUNK = /^gacha(?:Sheet|Odds)-[\w-]+\.js$/;
 
@@ -72,7 +78,7 @@ const ON_TAP_SURFACES = [
   {
     key: 'scratchCards',
     label: 'Scratch Cards (on tap)',
-    chunk: /^scratch(?:Sheet)?-[\w-]+\.js$/,
+    chunk: /^scratch(?:Sheet|Foil)?-[\w-]+\.js$/,
   },
 ] as const satisfies readonly {
   readonly key: keyof typeof BUNDLE_BUDGETS;
@@ -219,12 +225,19 @@ export function localeOfChunk(
   sources: readonly LocaleSource[],
 ): LocaleFile | undefined {
   const matches = heldLocales(source, sources);
+  const data = isDataModule(source);
+  if (
+    !data &&
+    matches.length > 0 &&
+    matches.every((match) => STATIC_LOCALE_EMBEDS[localeId(match)] !== undefined)
+  ) {
+    return undefined;
+  }
   if (matches.length > 1) {
     fail(
       `${file} matches ${matches.map((match) => `${localeId(match)}.json`).join(' and ')}; update the gate`,
     );
   }
-  const data = isDataModule(source);
   const [match] = matches;
   if (match === undefined) {
     const namespaces = new Set(sources.map((locale) => locale.namespace));
