@@ -379,7 +379,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-684 | todo | | Wave 41 build agent stopped by the usage limit; re-run |
 | T-3.05-p4 | blocked(design: Demo world lacks lifetime fusions, activeDays and coinsBanked counters for quest metrics; waits on P-498) | | |
 | P-707 | blocked(review: bundle-size.ts ACCOUNT_CHUNK claims account-<hash> locale chunks before localeChunks, so account i18n lands in Account (on tap)) | | |
-| P-657 | blocked(design: on a refused fusion the server keeps 3 inputs but the sim has 1 body; lay the missing inputs back down via a new sim API, or keep unposed coins until re-boot) | | Core re-bind already on build branch (35616ad, core.test.ts:916) |
+| P-657 | todo | | Founder decision 2026-11-15: refused fusion lays the missing inputs back on the table via a new sim restore API (POLISH.md); owns widened to packages/sim/** and session bridge |
 | P-670 | done | task/P-670 (merge f49bf57) | Lead salvage: one AdaptiveMusic bed in createAudioEngine, setDropRate/setCascadeTier/playJackpotSting/setMusicEnabled/setReducedMotion forwarded (engine.test.ts); features.test.ts stub widened; pnpm check green |
 | P-642 | blocked(review: streamTicks 45 passes fusion and front-fall criteria, but the Vault hits 0 before the first upgrade on 9/10 seeds; needs an economy retune) | | Lead decision 2026-11-14 in POLISH.md; trial edits reverted |
 | T-3.06-p2 | done | task/T-3.06-p2 (merge d48268d) | Soirée Nights server: runs, guest judging, drafts and ledger payouts (f9c6d5a, retry); pnpm check green after merge; follow-ups P-714, P-715 |
