@@ -207,7 +207,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-12.12 | todo | | Waits on T-12.01. Standing sounds |
 | T-12.13 | todo | | Waits on T-12.07, T-12.08, T-12.09, T-12.10, T-12.11, T-12.12, T-11.15. Standing wiring |
 | T-12.14 | todo | | Waits on T-12.13. E2E: standing |
-| T-13.01 | todo | | Waits on T-11.01. Live events contracts |
+| T-13.01 | done | task/T-13.01 (merge 0fdaff0) | Live events contracts: packages/shared/src/api/liveEvents/** (calendars, puzzle, boss, themes, time zone, rewards, ids, endpoints, fixtures + tests) (44ace76); pnpm check green after merge |
 | T-13.02 | todo | | Waits on T-13.01, T-3.07. Live events numbers |
 | T-13.03 | todo | | Waits on T-13.02. Server: login calendars |
 | T-13.04 | todo | | Waits on T-13.03. Calendar UI |
