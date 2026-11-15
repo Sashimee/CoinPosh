@@ -181,7 +181,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | T-11.02 | done | task/T-11.02 (merge 83cde70) | Sim prop seam: packages/sim/src/props (kinds, params, shape, world), sim and snapshot wiring (462f248); follow-ups P-605..P-608; pnpm check green after merge |
 | T-11.03 | done | task/T-11.03 (merge d6b6277) | Collecting contracts: prizes, coin variants, lounge layout, cellar bottles under packages/shared/src/api/collecting (bdea892); pnpm check green after merge; schema wiring queued as P-716 to P-719 |
 | T-11.04 | todo | | Waits on T-11.03, T-3.07. Collecting numbers |
-| T-11.05 | todo | | Waits on T-11.02, T-11.03. Sim: prize bodies |
+| T-11.05 | done | task/T-11.05 (merge 0cc6829) | Sim: prize bodies (packages/sim/src/props: prizes/index, prizes tests + bench, shape, world, props index + test) (af1df27); pnpm check green after merge |
 | T-11.06 | todo | | Waits on T-11.04. Server: prizes and coin variants |
 | T-11.07 | todo | | Waits on T-11.03. Prize and variant looks |
 | T-11.08 | todo | | Waits on T-11.05, T-11.06, T-11.07. Prize flow and juice |
