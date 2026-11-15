@@ -312,9 +312,20 @@ const CRATE_HALF = CRATE_BODY.size / 2;
  *
  * - spawnZ: the upper-tier spot it drops onto, just behind the pusher's front face.
  * - stepZ: the front of the block at full stroke; past it the crate steps down.
- * - carry 0.6: share of the pusher's forward travel it rides along with, so it creeps
- *   about two and a half strokes from the chute to the lip.
- * - creepPerSecond: how fast the pile settles it forward with the pusher held.
+ * - carry 0.4: share of the pusher's forward travel it rides along with, about 5 cm a
+ *   stroke at the default motion.
+ * - creepPerSecond 16 mm/s: how fast the pile settles it forward, so it edges on through
+ *   the return stroke instead of parking. Its top speed, carry times the face's peak
+ *   speed plus the creep, is 4.6 cm/s; the server bounds a restored crate's travel by
+ *   it, so neither number goes up alone.
+ *
+ *   P-738: at carry 0.6 and 1.5 mm/s it took 8.7 to 10.9 s of sim time from the chute to
+ *   the edge, which in a loaded Demo, plus the claim and the unbox, read as a crate parked
+ *   on the lip for 15 to 45 s under the 'Push it over the edge!' hint. Now, at the default
+ *   motion and over every tick of the cycle it can spawn on, it falls after 5.9 s at the
+ *   soonest, 6.6 s at the median and 7.2 s at the latest, under two strokes
+ *   (validate.test.ts pins it). Faster Pusher Tempo motions only shorten it; the economy's
+ *   crateFallSeconds.min still holds it back from tipping early.
  * - nudgeForward, nudgeSide: how far a forward nudge shoves it and a side nudge rocks it.
  * - teeterZ: it hangs over the lip from here; tipZ: past this its centre is over the
  *   edge and it goes.
@@ -324,8 +335,8 @@ export const CRATE_RIDE = {
   size: CRATE_BODY.size,
   spawnZ: PUSHER.frontZ - 0.01,
   stepZ: PUSHER.frontZ + PUSHER.stroke,
-  carry: 0.6,
-  creepPerSecond: 0.0015,
+  carry: 0.4,
+  creepPerSecond: 0.016,
   nudgeForward: 0.01,
   nudgeSide: 0.008,
   teeterZ: PLAYFIELD.fieldFrontZ - CRATE_HALF * 0.4,

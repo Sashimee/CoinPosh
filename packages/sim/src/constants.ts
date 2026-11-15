@@ -84,5 +84,13 @@ export const SOLVER = {
  *   e187aa35c6006a60) and after a drop 06ae7e37ea2fa3d8 (was e17b6bddb59510d6); a 90 s
  *   Demo pour at 6 ticks hashes 9e48160a1fda528e. Tables without mechanics hash as
  *   before.
+ * - 10: the Vault Crate ride is retimed (CRATE_RIDE carry 0.6 → 0.4, creepPerSecond
+ *   1.5 → 16 mm/s, P-738), so a crate goes from the chute over the edge in 5.9 to 7.2 s
+ *   (median 6.6 s) of sim time at the default motion, where it took 8.7 to 10.9 s; the
+ *   claim tick of every crate in a log moves. Its top speed stays at 4.6 cm/s, so the
+ *   server's crate pose bound is unchanged. Ride times over the pusher cycle hash
+ *   83ff2b821c0539c8 (snapshot/validate.test.ts). No body moves differently: every table pin,
+ *   the rigid-body crate ride (table/crate.test.ts) and the ladder's crate-free runs keep
+ *   their version 9 values.
  */
-export const SIM_VERSION = 9;
+export const SIM_VERSION = 10;
