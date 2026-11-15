@@ -396,6 +396,7 @@ wave workflow (or lead-architect) edits this file. States: `todo` · `in_progres
 | P-752 | done | task/P-752 (merge 5a7158a) | bundle:check runs to completion again: fair strings load per language (fair/i18n.ts), no chunk holds three fair.json; i18n.test.ts, budgets.ts (bd54b01); pnpm check green after merge |
 | P-740 | done | task/P-740 (merge 8b80b02) | persist burst test counts only its own world encodes, deterministic under full pnpm check load; persist.test.ts (b479b11); pnpm check green after merge |
 | P-722 | done | task/P-722 (merge 26fa553) | A crate card left open never times out into a payout: COLLECT pays the card, the plaque holds until then (mount.ts, main.ts, balancePlaque.ts, crate-card-left-open.spec.ts; folds P-734) (6df0947); pnpm check green after merge; follow-up P-753 |
+| P-746 | done | task/P-746 (merge ffe4e4c) | A spent Cascade card shows the best rank as history ('Best: …') with the idle prompt, no live multiplier or next-rank hint; comboLadder.ts, styles.css, ui.json EN/FR/DE, comboLadder.test.ts (5cb252e); pnpm check green after merge |
 
 Tasks not listed yet are `todo`. The integrator appends rows as tasks start.
 
