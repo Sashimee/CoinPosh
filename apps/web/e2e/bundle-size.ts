@@ -46,12 +46,21 @@ const POST_TABLE_ENTRIES = ['crates', 'vfx', 'systems'] as const;
  */
 const DATA_MODULE =
   /^(?:import\{[\w$]+ as [\w$]+\}from"\.\/rolldown-runtime-[\w-]+\.js";)?var [\w$]+=(?:[\w$]+\(\{default:\(\)=>[\w$]+\}\),[\w$]+=)?\{[\s\S]*\};export\{[^}]*\};?$/;
+/** Banners, legal comments and `//# sourceMappingURL` lines a build setting can add to a chunk. */
+const LEADING_BLOCK_COMMENT = /^\/\*[\s\S]*?\*\/\s*/;
+const TRAILING_BLOCK_COMMENT = /\s*\/\*(?:(?!\*\/)[\s\S])*\*\/$/;
+const LINE_COMMENT = /^[ \t]*\/\/.*$/gm;
 /** Characters the minifier escapes in a string, including French no-break spaces before `:`. */
 const ESCAPED_IN_OUTPUT = /[`\\]|\$\{|[^\S ]|[\p{Cc}\p{Cf}]/u;
+/**
+ * Locale files a feature imports statically as its first-paint fallback, so they ship inside that
+ * feature's code chunk; the row named here is the only one allowed to hold them.
+ */
+const STATIC_LOCALE_EMBEDS: Readonly<Record<string, BudgetKey>> = { 'en/account': 'accountUi' };
 
-type BudgetKey = keyof typeof BUNDLE_BUDGETS | 'accountOnTap';
+export type BudgetKey = keyof typeof BUNDLE_BUDGETS | 'accountOnTap';
 
-interface LocaleSource extends LocaleFile {
+export interface LocaleSource extends LocaleFile {
   /** Leaf strings a minifier prints verbatim inside a template literal. */
   readonly leaves: readonly string[];
 }
@@ -65,7 +74,7 @@ const BUDGETS: Record<BudgetKey, number> = {
   accountOnTap: ACCOUNT_ON_TAP_BUDGET,
 };
 
-interface Row {
+export interface Row {
   readonly key: BudgetKey;
   readonly label: string;
   readonly files: readonly string[];
@@ -138,7 +147,7 @@ function leafStrings(tree: unknown): string[] {
 }
 
 /** Every on-demand namespace file (all but the bundled ui.json), with its searchable strings. */
-function localeSources(): LocaleSource[] {
+export function localeSources(): LocaleSource[] {
   const sources: LocaleSource[] = [];
   for (const language of readdirSync(LOCALES)) {
     for (const file of readdirSync(join(LOCALES, language))) {
@@ -153,34 +162,95 @@ function localeSources(): LocaleSource[] {
   return sources;
 }
 
+function localeId({ language, namespace }: LocaleFile): string {
+  return `${language}/${namespace}`;
+}
+
+/** The locale files whose every matchable string appears in the chunk source. */
+export function heldLocales(
+  source: string,
+  sources: readonly LocaleSource[],
+): readonly LocaleSource[] {
+  return sources.filter(({ leaves }) => leaves.every((leaf) => source.includes(leaf)));
+}
+
+export function isDataModule(source: string): boolean {
+  let code = source.replace(LINE_COMMENT, '').trim();
+  for (let previous = ''; previous !== code;) {
+    previous = code;
+    code = code.replace(LEADING_BLOCK_COMMENT, '').replace(TRAILING_BLOCK_COMMENT, '').trim();
+  }
+  return DATA_MODULE.test(code);
+}
+
 /**
- * The lazy chunks that hold exactly one namespace locale file. A data-only chunk named after a
- * namespace that matches no file fails the gate, so a minifier change cannot silently move locale
- * bytes back into a code row.
+ * The locale file a lazy chunk holds as data, or undefined for a code chunk. Every chunk is
+ * content-matched whatever its shape: one holding a whole locale file that is neither a data
+ * module nor a declared static embed fails the gate, so a build change cannot drop locale bytes
+ * into a code row unnoticed.
  */
+export function localeOfChunk(
+  file: string,
+  source: string,
+  sources: readonly LocaleSource[],
+): LocaleFile | undefined {
+  const matches = heldLocales(source, sources);
+  if (matches.length > 1) {
+    fail(
+      `${file} matches ${matches.map((match) => `${localeId(match)}.json`).join(' and ')}; update the gate`,
+    );
+  }
+  const data = isDataModule(source);
+  const [match] = matches;
+  if (match === undefined) {
+    const namespaces = new Set(sources.map((locale) => locale.namespace));
+    if (data && file.split('-').some((part) => namespaces.has(part))) {
+      fail(`${file} looks like a locale chunk but matches no locales/<language>/<ns>.json`);
+    }
+    return undefined;
+  }
+  if (data) return { language: match.language, namespace: match.namespace };
+  if (STATIC_LOCALE_EMBEDS[localeId(match)] !== undefined) return undefined;
+  fail(
+    `${file} holds all of locales/${localeId(match)}.json but is not a data module: the locale chunk shape changed or code bundles it statically; update DATA_MODULE or STATIC_LOCALE_EMBEDS`,
+  );
+}
+
+/** The lazy chunks that hold exactly one namespace locale file. */
 function localeChunks(lazy: readonly string[]): Map<string, LocaleChunk> {
   const sources = localeSources();
-  const namespaces = [...new Set(sources.map((source) => source.namespace))];
   const chunks = new Map<string, LocaleChunk>();
   for (const file of lazy) {
-    const source = read(file).trim();
-    if (!DATA_MODULE.test(source)) continue;
-    const matches = sources.filter(({ leaves }) => leaves.every((leaf) => source.includes(leaf)));
-    if (matches.length > 1) {
-      fail(
-        `${file} matches ${matches.map((match) => `${match.language}/${match.namespace}.json`).join(' and ')}; update the gate`,
-      );
-    }
-    const [match] = matches;
-    if (match === undefined) {
-      if (namespaces.some((namespace) => file.split('-').includes(namespace))) {
-        fail(`${file} looks like a locale chunk but matches no locales/<language>/<ns>.json`);
-      }
-      continue;
-    }
-    chunks.set(file, { file, language: match.language, namespace: match.namespace });
+    const locale = localeOfChunk(file, read(file), sources);
+    if (locale !== undefined) chunks.set(file, { file, ...locale });
   }
   return chunks;
+}
+
+/**
+ * Re-reads every JS file a row other than the namespace row counts and reports each that holds a
+ * whole locale file outside the row STATIC_LOCALE_EMBEDS allows, independently of how the
+ * namespace row was built.
+ */
+export function misfiledLocales(
+  rows: readonly Row[],
+  sourceOf: (file: string) => string,
+  sources: readonly LocaleSource[],
+): string[] {
+  return rows.flatMap((row) =>
+    row.key === 'i18nNamespaces'
+      ? []
+      : row.files
+          .filter((file) => file.endsWith('.js'))
+          .flatMap((file) =>
+            heldLocales(sourceOf(file), sources)
+              .filter((locale) => STATIC_LOCALE_EMBEDS[localeId(locale)] !== row.key)
+              .map(
+                (locale) =>
+                  `${file} holds locales/${localeId(locale)}.json but is counted under ${row.label}`,
+              ),
+          ),
+  );
 }
 
 /** What one player downloads at most: one translation of every namespace, the largest. */
@@ -341,72 +411,71 @@ function kb(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} kB`;
 }
 
-const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, initial, locales } = measure();
-const lines = [
-  '### Bundle budgets (gzip)',
-  '',
-  `Fails above budget + ${String(BUNDLE_TOLERANCE * 100)} %.`,
-  '',
-  '| Bundle | Size | Budget | Used | Status | Files |',
-  '| --- | ---: | ---: | ---: | --- | --- |',
-];
-const failures: string[] = [];
-for (const row of rows) {
-  const budget = BUDGETS[row.key];
-  const used = row.bytes / budget;
-  const over = used > 1 + BUNDLE_TOLERANCE;
-  const status = over ? 'FAIL' : used > 1 ? 'over, within tolerance' : 'ok';
-  if (over) failures.push(`${row.label} is ${kb(row.bytes)}, budget ${kb(budget)}`);
+function main(): void {
+  const { rows, lazyThree, eagerAccount, eagerAccountUi, eagerSafes, initial, locales } = measure();
+  const lines = [
+    '### Bundle budgets (gzip)',
+    '',
+    `Fails above budget + ${String(BUNDLE_TOLERANCE * 100)} %.`,
+    '',
+    '| Bundle | Size | Budget | Used | Status | Files |',
+    '| --- | ---: | ---: | ---: | --- | --- |',
+  ];
+  const failures: string[] = [];
+  for (const row of rows) {
+    const budget = BUDGETS[row.key];
+    const used = row.bytes / budget;
+    const over = used > 1 + BUNDLE_TOLERANCE;
+    const status = over ? 'FAIL' : used > 1 ? 'over, within tolerance' : 'ok';
+    if (over) failures.push(`${row.label} is ${kb(row.bytes)}, budget ${kb(budget)}`);
+    lines.push(
+      `| ${row.label} | ${kb(row.bytes)} | ${kb(budget)} | ${(used * 100).toFixed(0)} % | ${status} | ${row.files.join(', ')} |`,
+    );
+  }
   lines.push(
-    `| ${row.label} | ${kb(row.bytes)} | ${kb(budget)} | ${(used * 100).toFixed(0)} % | ${status} | ${row.files.join(', ')} |`,
+    '',
+    lazyThree
+      ? 'three.webgpu is lazy: no static import reaches it from index.html.'
+      : `FAIL: three.webgpu is in the initial load (${initial.join(', ')}).`,
   );
-}
-lines.push(
-  '',
-  lazyThree
-    ? 'three.webgpu is lazy: no static import reaches it from index.html.'
-    : `FAIL: three.webgpu is in the initial load (${initial.join(', ')}).`,
-);
-if (!lazyThree) failures.push('three.webgpu is statically reachable from index.html');
-lines.push(
-  eagerAccount.length === 0
-    ? 'The account chunks are lazy: they load on the first sign-in tap.'
-    : `FAIL: account code is in the initial load (${eagerAccount.join(', ')}).`,
-);
-if (eagerAccount.length > 0) failures.push('account code is statically reachable from index.html');
-lines.push(
-  eagerAccountUi.length === 0
-    ? 'The account UI chunks are lazy: the prompt clock loads after boot, the section on first need.'
-    : `FAIL: account UI code is in the initial load (${eagerAccountUi.join(', ')}).`,
-);
-if (eagerAccountUi.length > 0) {
-  failures.push('account UI code is statically reachable from index.html');
-}
-lines.push(
-  eagerSafes.length === 0
-    ? 'The safes chunks are lazy: the dock loads after the table, the sheet on the first press.'
-    : `FAIL: safes code is in the initial load (${eagerSafes.join(', ')}).`,
-);
-if (eagerSafes.length > 0) failures.push('safes code is statically reachable from index.html');
-const misfiled = rows.flatMap((row) =>
-  row.key === 'i18nNamespaces'
-    ? []
-    : row.files
-        .filter((file) => locales.has(file))
-        .map((file) => `${file} is a locale chunk counted under ${row.label}`),
-);
-lines.push(
-  misfiled.length === 0
-    ? `Locale chunks count once, in the i18n namespaces row (${String(locales.size)} found): none under Account (on tap) or a code row.`
-    : `FAIL: ${misfiled.join('; ')}.`,
-);
-failures.push(...misfiled);
+  if (!lazyThree) failures.push('three.webgpu is statically reachable from index.html');
+  lines.push(
+    eagerAccount.length === 0
+      ? 'The account chunks are lazy: they load on the first sign-in tap.'
+      : `FAIL: account code is in the initial load (${eagerAccount.join(', ')}).`,
+  );
+  if (eagerAccount.length > 0)
+    failures.push('account code is statically reachable from index.html');
+  lines.push(
+    eagerAccountUi.length === 0
+      ? 'The account UI chunks are lazy: the prompt clock loads after boot, the section on first need.'
+      : `FAIL: account UI code is in the initial load (${eagerAccountUi.join(', ')}).`,
+  );
+  if (eagerAccountUi.length > 0) {
+    failures.push('account UI code is statically reachable from index.html');
+  }
+  lines.push(
+    eagerSafes.length === 0
+      ? 'The safes chunks are lazy: the dock loads after the table, the sheet on the first press.'
+      : `FAIL: safes code is in the initial load (${eagerSafes.join(', ')}).`,
+  );
+  if (eagerSafes.length > 0) failures.push('safes code is statically reachable from index.html');
+  const misfiled = misfiledLocales(rows, read, localeSources());
+  lines.push(
+    misfiled.length === 0
+      ? `Locale chunks count once, in the i18n namespaces row (${String(locales.size)} found): no code row, Account (on tap) included, holds a whole locale file.`
+      : `FAIL: ${misfiled.join('; ')}.`,
+  );
+  failures.push(...misfiled);
 
-const report = `${lines.join('\n')}\n`;
-const summary = process.env.GITHUB_STEP_SUMMARY;
-if (summary) appendFileSync(summary, report);
-process.stdout.write(report);
-if (failures.length > 0) {
-  process.stderr.write(`\nbundle-size: over budget:\n- ${failures.join('\n- ')}\n`);
-  process.exitCode = 1;
+  const report = `${lines.join('\n')}\n`;
+  const summary = process.env.GITHUB_STEP_SUMMARY;
+  if (summary) appendFileSync(summary, report);
+  process.stdout.write(report);
+  if (failures.length > 0) {
+    process.stderr.write(`\nbundle-size: over budget:\n- ${failures.join('\n- ')}\n`);
+    process.exitCode = 1;
+  }
 }
+
+if (import.meta.main) main();
