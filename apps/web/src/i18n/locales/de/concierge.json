@@ -1,0 +1,261 @@
+{
+  "card": {
+    "region": "Der Concierge",
+    "name": "Augustin",
+    "role": "Concierge",
+    "tip": "Ein kleiner Rat",
+    "dismiss": "Danke, Augustin",
+    "portrait": {
+      "pleased": "Augustin, der Concierge, sichtlich erfreut",
+      "wry": "Augustin, der Concierge, mit spöttischem Blick",
+      "scandalised": "Augustin, der Concierge, zutiefst empört"
+    }
+  },
+  "names": {
+    "coin": {
+      "copper": "eine Kupfermünze",
+      "silver": "eine Silbermünze",
+      "gold": "eine Goldmünze",
+      "platinum": "eine Platinmünze",
+      "diamond": "eine Diamantmünze",
+      "heirloom": "ein Erbstück"
+    },
+    "rarity": {
+      "common": "Gewöhnlich",
+      "fine": "Fein",
+      "rare": "Selten",
+      "exquisite": "Exquisit",
+      "legendary": "Legendär",
+      "heirloom": "Erbstück"
+    },
+    "upgradeFallback": "dieses Upgrade",
+    "venueFallback": "unsere neue Adresse"
+  },
+  "greeting": {
+    "firstCascade": {
+      "0": "Ihre erste Kaskade. Willkommen; ich bin Augustin, zu Ihren Diensten.",
+      "1": "Schon eine Kaskade. Augustin, Concierge. Machen Sie genau so weiter.",
+      "2": "Ein glänzender Auftakt. Ich bin Augustin; was immer Sie brauchen, ist arrangiert.",
+      "3": "Da ist sie, Ihre erste Kaskade. Das Haus freut sich, Sie kennenzulernen.",
+      "4": "Willkommen an Bord. Augustin, Concierge. Ich hatte bei Ihnen gleich ein gutes Gefühl."
+    }
+  },
+  "cascade": {
+    "chic": {
+      "0": "{{coins}} Münzen am Stück. Chic, und ganz recht so.",
+      "1": "Chic. Dezent, geschmackvoll, {{coins}} Münzen. Ich billige das.",
+      "2": "Eine kleine, chice Kaskade. {{coins}} ordentliche Münzen, sehr angenehm.",
+      "3": "{{coins}} Münzen, die in bester Ordnung fallen. Sehr chic.",
+      "4": "Chic. So etwas erwähnt man beiläufig beim Abendessen."
+    },
+    "lavish": {
+      "0": "Üppig. {{coins}} Münzen, und kein Haar sitzt schief.",
+      "1": "Das nenne ich üppig. Ich lasse Ihnen zu Ehren das Messing polieren.",
+      "2": "{{coins}} Münzen. Üppig. Das Personal tut so, als starre es nicht.",
+      "3": "Eine üppige Kaskade. Sie verwöhnen diesen Tisch.",
+      "4": "Üppig, wenn ich das sagen darf. Und ich darf; ich bin der Concierge."
+    },
+    "opulent": {
+      "0": "Opulent. {{coins}} Münzen; die Kronleuchter zittern vor Neid.",
+      "1": "{{coins}} Münzen! Opulent. Ich muss mich setzen, ganz diskret.",
+      "2": "Opulent. Ich habe Herzöge gesehen, die aus mehr weniger machten.",
+      "3": "Eine opulente Kaskade. Soll ich nach mehr Champagner läuten?",
+      "4": "Wahrhaft opulent. Die Yacht liegt ein wenig tiefer im Wasser."
+    },
+    "decadent": {
+      "0": "Dekadent. {{coins}} Münzen. Ich sage es niemandem. Fast niemandem.",
+      "1": "{{coins}} Münzen? Dekadent. Mutter wäre entsetzt. Ich bin entzückt.",
+      "2": "Dekadent. Noch eine, und ich hole das Riechsalz.",
+      "3": "Eine dekadente Kaskade. Wie schrecklich, wunderbar maßlos.",
+      "4": "Dekadent. Ich bin verpflichtet, die Stirn zu runzeln. Es misslingt mir."
+    },
+    "obscene": {
+      "0": "OBSZÖN! Bedecken Sie die Augen der Damen. Und der Herren.",
+      "1": "Du lieber Himmel. Das war OBSZÖN. Noch einmal, bitte.",
+      "2": "OBSZÖN! Die anderen Gäste fächeln sich Luft zu.",
+      "3": "Mein Monokel! Das war, es gibt kein anderes Wort, OBSZÖN.",
+      "4": "OBSZÖN. Ich werde den Zeitungen darüber schreiben. Voller Zuneigung."
+    }
+  },
+  "fusion": {
+    "first": {
+      "0": "Drei Gleiche, und nun {{tier}}. Ihre erste Fusion.",
+      "1": "Ihre erste Fusion, und {{tier}} als Lohn. Halten Sie sie beisammen.",
+      "2": "Drei Gleiche ergeben eine Feinere: {{tier}}. Nun kennen Sie das Geheimnis des Hauses.",
+      "3": "Eine Fusion! {{tier}}, entstanden aus guter Gesellschaft. Gut erkannt.",
+      "4": "Erste Fusion: {{tier}}. Halten Sie gleiche Münzen beisammen; sie kommen auf Ideen."
+    },
+    "minor": {
+      "0": "{{tier}}. Stetiger Fortschritt, die beste Sorte.",
+      "1": "Noch eine Fusion: {{tier}}. Ihre Münzen haben ausgezeichnete Manieren.",
+      "2": "Fusion. {{tier}}, und ganz ohne Aufhebens.",
+      "3": "Drei hinein, {{tier}} heraus. Höchst effizient.",
+      "4": "{{tier}}, frisch geprägt. Ich sehe gern, wie Münzen sich vertragen."
+    },
+    "platinum": {
+      "0": "Platin. So etwas bemerkt man.",
+      "1": "Eine Platinmünze. Ich lasse sie beim Abendessen ankündigen.",
+      "2": "Platin! Das Tafelsilber des Hauses wirkt geradezu ärmlich.",
+      "3": "Platin, leibhaftig. Oder vielmehr: metallhaftig.",
+      "4": "Platin. Sie steigen in der Welt auf, und die Welt hat es bemerkt."
+    },
+    "diamond": {
+      "0": "Eine Diamantmünze. Ich brauche einen Moment.",
+      "1": "Diamant! Vorsicht, es blendet; schrecklich hell.",
+      "2": "Diamant. Die Juweliere von Monaco werden außer sich sein.",
+      "3": "Diamant. Selbst ich staune, und ich trug schon das Gepäck eines Sultans.",
+      "4": "Diamant. Ich hole den guten Samt hervor."
+    },
+    "heirloom": {
+      "0": "Ein ERBSTÜCK? Auf meinem Tisch? Ich muss mich setzen.",
+      "1": "Erbstück! Darum werden sich Generationen streiten.",
+      "2": "Du lieber Himmel, eine Erbstückmünze. Davon hatte ich nur gelesen.",
+      "3": "Ein Erbstück. Mir ist glatt das Monokel herausgefallen.",
+      "4": "ERBSTÜCK. Rufen Sie den Familiennotar. Rufen Sie alle."
+    }
+  },
+  "pour": {
+    "perfect": {
+      "0": "Perfekt eingeschenkt. Kein Tropfen vergeudet.",
+      "1": "Perfekt. Der Sommelier weint vor Stolz.",
+      "2": "Jede Münze im Takt. Ein exquisites Timing.",
+      "3": "Perfekt eingeschenkt. Das haben Sie nicht zum ersten Mal getan, scheint mir.",
+      "4": "Perfekt. Ich hätte es selbst nicht besser gekonnt, und ich habe es versucht."
+    }
+  },
+  "decorum": {
+    "warning": {
+      "0": "Sachte, bitte. Das Möbel ist antik.",
+      "1": "Noch ein Stoß, und ich muss die Glocke läuten.",
+      "2": "Contenance, ich bitte Sie. Die anderen Gäste schauen schon.",
+      "3": "Wir stupsen, wir ringen nicht. Ein wenig Zurückhaltung.",
+      "4": "Ähem. Der Tisch ist kein Tanzpartner."
+    },
+    "freeze": {
+      "0": "Genug! Der Tisch ruht {{seconds}} Sekunden.",
+      "1": "Also wirklich! {{seconds}} Sekunden stille Einkehr, wenn ich bitten darf.",
+      "2": "Ding! Hände weg vom Tisch, {{seconds}} Sekunden lang.",
+      "3": "Skandalös! Ich schließe den Tisch für {{seconds}} Sekunden.",
+      "4": "Genug. Fassen Sie sich; der Tisch öffnet wieder in {{seconds}} Sekunden."
+    },
+    "stillFrozen": {
+      "0": "Geduld. Der Tisch muss sich noch sammeln.",
+      "1": "Noch nicht. Ich sagte ein paar Sekunden, und ich meinte es.",
+      "2": "Noch in Ruhe. Bewundern Sie doch so lange die Aussicht.",
+      "3": "Der Tisch schmollt. Geben Sie ihm einen Moment.",
+      "4": "Gleich. Gut Ding will Weile haben, und weniger Schubsen."
+    }
+  },
+  "tip": {
+    "aimCentre": {
+      "0": "Wenn ich darf: Die seitlichen Rinnen behalten alles. Zielen Sie auf die Tischmitte.",
+      "1": "Münzen nahe der Mitte fallen vorn hinunter, und genau dort zahlen sie sich aus.",
+      "2": "Die Seiten sind heute Abend recht gierig. Lassen Sie die Münzen näher an der Mitte fallen.",
+      "3": "Diese Ränder verschlucken Münzen. Zielen Sie mittig; die vordere Kante zahlt.",
+      "4": "Münzen, die seitlich abrutschen, sind einfach fort. Vermögen fallen vorn hinunter."
+    },
+    "upgradeAffordable": {
+      "0": "Sie können sich jetzt „{{upgrade}}“ leisten. Die Upgrades finden Sie gleich unten.",
+      "1": "„{{upgrade}}“ ist in Reichweite. Ein kleiner Luxus, ein großer Unterschied.",
+      "2": "Darf ich „{{upgrade}}“ vorschlagen? Ihre Börse verkraftet es.",
+      "3": "„{{upgrade}}“ wartet in den Upgrades auf Sie. Ich ließe es nicht warten.",
+      "4": "„{{upgrade}}“ ist erschwinglich. Der Tisch würde es Ihnen danken."
+    },
+    "feedTower": {
+      "0": "Füttern Sie den Champagnerturm: Münzen, die sich darauf stapeln, erhöhen seinen Gewinn.",
+      "1": "Dieser Turm sieht recht kahl aus. Landen Sie ein paar Münzen darauf.",
+      "2": "Münzen auf dem Champagnerturm bringen ihn in einer Jackpot-Kaskade zu Fall.",
+      "3": "Der Turm mag Gesellschaft. Füttern Sie ihn, er revanchiert sich.",
+      "4": "Vernachlässigen Sie den Champagnerturm nicht. Ein hoher Turm fällt prachtvoll."
+    },
+    "idle": {
+      "0": "Ihre Münzen werden unruhig. Tippen Sie auf den Tisch, um eine fallen zu lassen.",
+      "1": "Der Schieber wartet auf niemanden. Eine Münze vielleicht? Tippen Sie einfach auf den Tisch.",
+      "2": "In Gedanken? Tippen Sie irgendwo auf den Tisch, um eine Münze fallen zu lassen.",
+      "3": "Ein ruhiger Moment. Der Tisch würde sich über eine weitere Münze freuen.",
+      "4": "Münzen in der Hand bringen leider nichts. Tippen Sie, um eine fallen zu lassen."
+    }
+  },
+  "crate": {
+    "arrived": {
+      "0": "Eine weitere Kiste ist eingetroffen. Schieben Sie sie über die Kante.",
+      "1": "Eine Lieferung für Sie. Stupsen Sie diese Kiste über den Rand.",
+      "2": "Ah, eine Tresorkiste. Da hat jemand an Sie gedacht.",
+      "3": "Eine Kiste auf dem Tisch. Ich frage mich, was darin ist. Nun, Sie werden es erfahren.",
+      "4": "Frische Fracht. Sorgen Sie dafür, dass sie sicher über die Kante kommt."
+    }
+  },
+  "reward": {
+    "modest": {
+      "0": "{{rarity}}. Bescheiden, aber jede Sammlung fängt irgendwo an.",
+      "1": "{{rarity}}. Charmant, auf seine stille Art.",
+      "2": "{{rarity}}. Nicht jeder Abend kann eine Gala sein.",
+      "3": "Ah. {{rarity}}. Ich finde ein hübsches Regal dafür.",
+      "4": "Bescheiden. Doch ein Geschenk verschmäht man nie."
+    },
+    "rare": {
+      "0": "{{rarity}}! Jetzt kommen wir voran.",
+      "1": "Oh, {{rarity}}. Das wird in der Lounge prächtig aussehen.",
+      "2": "{{rarity}}. Ich sehe Ihrem Glück so gern beim Wachsen zu.",
+      "3": "Ein schöner Fang. {{rarity}}, nicht weniger.",
+      "4": "{{rarity}}. Die anderen Gäste werden Ihr Geheimnis wissen wollen."
+    },
+    "legendary": {
+      "0": "{{rarity}}?! Ich muss die Presse verständigen.",
+      "1": "{{rarity}}. Ich brauche einen Stuhl, und womöglich einen Cognac.",
+      "2": "{{rarity}}! Dreißig Jahre in diesem Haus, und ich habe es selten gesehen.",
+      "3": "Gütiger Himmel. {{rarity}}. Halten Sie es ins Licht.",
+      "4": "{{rarity}}! Das Haus wird von nichts anderem mehr sprechen."
+    }
+  },
+  "vault": {
+    "empty": {
+      "0": "Der Tresor ist leer. Warten Sie einen Moment; der Steward steckt Ihnen ein paar Münzen zu.",
+      "1": "Keine Münzen mehr? Die noch rutschenden fallen vielleicht. Wenn nicht, hilft der Steward aus.",
+      "2": "Ein leerer Tresor passiert den Besten. Der Steward ist schon unterwegs.",
+      "3": "Nichts in der Hand. Behalten Sie die Kante im Blick; Münzen auf dem Tisch zählen, sobald sie fallen.",
+      "4": "Nur nicht verzagen. Der Steward füllt einen leeren Tresor nach einer kurzen Pause auf."
+    },
+    "welcomeBack": {
+      "0": "Willkommen zurück. Das Haus hat weitergeschoben: {{coins}} Münzen gesammelt.",
+      "1": "In Ihrer Abwesenheit hat der Tisch {{coins}} verdient. Ich war so frei.",
+      "2": "Ah, Sie sind zurück. {{coins}} Münzen, für Sie warm gehalten.",
+      "3": "Willkommen zurück. Das Nachtpersonal hat {{coins}} für Sie gesammelt.",
+      "4": "{{coins}} Münzen, während Sie ruhten. Das Haus schläft nie."
+    },
+    "capped": {
+      "0": "Willkommen zurück. Der Tresor war bei {{coins}} voll; ein größerer würde mehr fassen.",
+      "1": "{{coins}} gesammelt, aber der Tresor war voll. Mehr Platz heißt mehr Münzen bei Ihrer Rückkehr.",
+      "2": "Der Tresor ist bei {{coins}} übergelaufen. Ein Upgrade würde ihn vergrößern.",
+      "3": "Randvoll: {{coins}}. Der Tresor könnte mehr Platz vertragen.",
+      "4": "{{coins}}, keine Münze mehr; der Tresor war voll. Upgrades schaffen Abhilfe."
+    }
+  },
+  "upgrade": {
+    "purchased": {
+      "0": "„{{upgrade}}“, Stufe {{level}}. Ausgezeichnete Wahl.",
+      "1": "„{{upgrade}}“, verbessert. Der Tisch wirkt schon zufriedener.",
+      "2": "Stufe {{level}} von „{{upgrade}}“. Gut angelegtes Geld.",
+      "3": "Ah, „{{upgrade}}“. Ein Gast mit Geschmack.",
+      "4": "„{{upgrade}}“ auf Stufe {{level}}. Ich unterrichte das Personal."
+    }
+  },
+  "tower": {
+    "wobbling": {
+      "0": "Der Turm wackelt! Ruhig… ganz ruhig…",
+      "1": "Achtung, der Turm! Gleich ist es so weit.",
+      "2": "Er schwankt! Halte mir jemand das Monokel.",
+      "3": "O weh, o weh. Der Turm neigt sich.",
+      "4": "Jeden Moment. Ich kann nicht hinsehen. Ich sehe hin."
+    }
+  },
+  "ascension": {
+    "arrived": {
+      "0": "Willkommen: {{venue}}. Ihr Ruf eilt Ihnen voraus.",
+      "1": "{{venue}}. Ich war so frei, vor Ihnen anzukommen.",
+      "2": "Eine neue Adresse: {{venue}}. Benehmen Sie sich. Oder auch nicht.",
+      "3": "Willkommen: {{venue}}. Derselbe Concierge, schönere Aussicht.",
+      "4": "{{venue}}, endlich. Ihr Gepäck ist bereits in der Suite."
+    }
+  }
+}
